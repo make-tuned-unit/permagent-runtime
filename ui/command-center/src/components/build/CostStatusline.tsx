@@ -9,7 +9,7 @@ import {
   type SubagentCostIncl,
 } from '../../lib/costMeter';
 import { GLOSSARY } from '../../lib/vocabulary';
-import { useLiveGoals } from '../../lib/useLiveGoals';
+import { useLiveGoals, type ActiveGoal } from '../../lib/useLiveGoals';
 import { api } from '../../lib/api';
 import { RoleRoutingPrompt } from '../chat/RoleRoutingPrompt';
 import { ProviderModelPicker } from '../settings/ProviderModelPicker';
@@ -186,6 +186,21 @@ export function statuslineRightPad(launcher: { width: number; height: number } |
   return Math.ceil(launcher.width) + GUTTER + CHAT_LAUNCHER_MARGIN;
 }
 
+/**
+ * The hold or routing note for THIS bar's run: only goals its session created.
+ * Taking the first live goal with any note printed another run's stale "held —
+ * still verifying" beside a fresh run's figures.
+ */
+export function runGoalNote(
+  goals: readonly ActiveGoal[],
+  sessionId: string | null | undefined,
+): string | undefined {
+  if (!sessionId) return undefined;
+  const own = goals.find((g) =>
+    g.created_by_session_id === sessionId && (g.hold_note || g.routing_note));
+  return own?.hold_note || own?.routing_note || undefined;
+}
+
 export function CostStatusline() {
   const { colors } = useTheme();
   const chatLauncherSize = useCommandCenter((s) => s.chatLauncherSize);
@@ -233,8 +248,7 @@ export function CostStatusline() {
   }, [rollupSessionId, liveTokens?.accumulatedCostUsd, codingSpend?.sessionUsd]);
 
   const meter = formatCostMeter(liveTokens, codingSpend, subagents, codingHarnessHydration);
-  const routeNote = goals.find((g) => g.routing_note || g.hold_note);
-  const note = routeNote?.hold_note || routeNote?.routing_note;
+  const note = runGoalNote(goals, rollupSessionId);
 
   return (
     // The bar owns the chrome (border, padding, mono micro type, one clipped

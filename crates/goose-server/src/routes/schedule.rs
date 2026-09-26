@@ -138,7 +138,11 @@ fn inspect_recipe(source: &str) -> Option<InspectRecipe> {
         .instructions
         .clone()
         .or_else(|| recipe.prompt.clone())
-        .map(|text| text.chars().take(INSPECT_INSTRUCTIONS_CHARS).collect::<String>())
+        .map(|text| {
+            text.chars()
+                .take(INSPECT_INSTRUCTIONS_CHARS)
+                .collect::<String>()
+        })
         .filter(|text| !text.trim().is_empty());
     Some(InspectRecipe {
         title: recipe.title,

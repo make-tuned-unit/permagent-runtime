@@ -21,7 +21,7 @@ use crate::goal_transition::{self, TransitionEffects};
 use crate::providers;
 use crate::providers::base::Provider;
 use crate::session::extension_data::EnabledExtensionsState;
-use crate::session::session_manager::SessionType;
+use crate::session::session_manager::{CallPurpose, SessionType};
 use crate::session::{Session, SessionManager};
 use anyhow::Result;
 use async_trait::async_trait;
@@ -1049,6 +1049,13 @@ fn roadmap_proposal_hash(goals: &[goal_state::ProposedGoal]) -> String {
 /// (`cost_router::HOLD_METADATA_KEY`) fired on that never completed.
 /// Best-effort: a query failure reads as "no history" (logged at debug), never
 /// as a failed decomposition.
+///
+/// 2026-09-25 DAG K cost fix: also returns each parked/held goal's title
+/// (capped at `PRIOR_GOAL_TITLES_CAP`) so `assess_planning_complexity` can
+/// require the NEW objective to actually overlap one of them before history
+/// alone escalates the plan to the expert planner — see that function's doc
+/// and `planner_complexity.rs:559`'s trace-linked comment for why an
+/// unrelated stuck goal must not do this on its own.
 async fn prior_plan_history(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     project: &crate::projects::Project,
@@ -1058,25 +1065,51 @@ async fn prior_plan_history(
         .get(ROADMAP_PROPOSAL_METADATA_KEY)
         .is_some_and(|v| !v.is_null());
     // `$.hold_done` is `cost_router::HOLD_METADATA_KEY` (asserted in tests).
-    let row = sqlx::query(
+    let rows = sqlx::query(
         "SELECT
-           COALESCE(SUM(CASE WHEN bc.state_binding = 'failed'
-                     OR COALESCE(json_extract(c.metadata_json, '$.needs_human_attention'), 0) != 0
-                    THEN 1 ELSE 0 END), 0) AS parked,
-           COALESCE(SUM(CASE WHEN json_extract(c.metadata_json, '$.hold_done') IS NOT NULL
-                     AND COALESCE(bc.state_binding, '') != 'complete'
-                    THEN 1 ELSE 0 END), 0) AS held
+           c.title AS title,
+           CASE WHEN bc.state_binding = 'failed'
+                 OR COALESCE(json_extract(c.metadata_json, '$.needs_human_attention'), 0) != 0
+                THEN 1 ELSE 0 END AS is_parked,
+           CASE WHEN json_extract(c.metadata_json, '$.hold_done') IS NOT NULL
+                 AND COALESCE(bc.state_binding, '') != 'complete'
+                THEN 1 ELSE 0 END AS is_held
          FROM cards c LEFT JOIN board_columns bc ON c.column_id = bc.id
          WHERE c.project_id = ? AND c.card_type = 'goal' AND c.archived_at IS NULL",
     )
     .bind(&project.id)
-    .fetch_one(pool)
+    .fetch_all(pool)
     .await;
-    let (parked, held) = match row {
-        Ok(r) => (
-            r.try_get::<i64, _>("parked").unwrap_or(0),
-            r.try_get::<i64, _>("held").unwrap_or(0),
-        ),
+    let mut parked_goals = 0usize;
+    let mut held_goals = 0usize;
+    let mut parked_titles = Vec::new();
+    let mut held_titles = Vec::new();
+    match rows {
+        Ok(rows) => {
+            for row in rows {
+                let title: String = row.try_get("title").unwrap_or_default();
+                let is_parked: i64 = row.try_get("is_parked").unwrap_or(0);
+                let is_held: i64 = row.try_get("is_held").unwrap_or(0);
+                if is_parked != 0 {
+                    parked_goals += 1;
+                    if parked_titles.len()
+                        < crate::cost_router::planner_complexity::PRIOR_GOAL_TITLES_CAP
+                        && !title.is_empty()
+                    {
+                        parked_titles.push(title.clone());
+                    }
+                }
+                if is_held != 0 {
+                    held_goals += 1;
+                    if held_titles.len()
+                        < crate::cost_router::planner_complexity::PRIOR_GOAL_TITLES_CAP
+                        && !title.is_empty()
+                    {
+                        held_titles.push(title);
+                    }
+                }
+            }
+        }
         Err(e) => {
             tracing::debug!(
                 target: "permagentd::orchestrator",
@@ -1084,14 +1117,79 @@ async fn prior_plan_history(
                 error = %e,
                 "planning complexity: plan-history query failed; treating as no history",
             );
-            (0, 0)
         }
-    };
+    }
     crate::cost_router::planner_complexity::PriorPlanHistory {
         unapproved_proposal,
-        parked_goals: usize::try_from(parked).unwrap_or(0),
-        held_goals: usize::try_from(held).unwrap_or(0),
+        parked_goals,
+        held_goals,
+        parked_titles,
+        held_titles,
     }
+}
+
+/// One open (not done/cancelled) goal on the project whose title overlaps
+/// the new objective — the first match found, in no particular order (there
+/// is no ranking requirement here, only "does at least one exist").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DuplicateOpenGoal {
+    pub card_id: String,
+    pub title: String,
+    pub state: String,
+}
+
+/// 2026-09-25 DAG K cost fix (HARNESS_COST_TRACE.md ranked fix 5): before
+/// `decompose_roadmap` pays for a planner call, or `create_roadmap` inserts
+/// new goal cards, check whether an open (not `complete`/`cancelled`) goal
+/// already on this project names essentially the same work — reusing
+/// `planner_complexity::objectives_overlap`'s exact Jaccard-overlap rule so
+/// "is this a duplicate" is the same question `assess_planning_complexity`
+/// already asks about parked/held history, not a second, potentially
+/// drifting implementation.
+///
+/// Best-effort: a query failure reads as "no duplicate found" (logged at
+/// debug) — this check exists to save a planner call and an extra card, not
+/// to ever block a roadmap the coordinator otherwise wants to create.
+async fn find_duplicate_open_goal(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    project_id: &str,
+    objective: &str,
+) -> Option<DuplicateOpenGoal> {
+    let rows = sqlx::query(
+        "SELECT c.id AS id, c.title AS title, COALESCE(bc.state_binding, '') AS state
+         FROM cards c LEFT JOIN board_columns bc ON c.column_id = bc.id
+         WHERE c.project_id = ? AND c.card_type = 'goal' AND c.archived_at IS NULL
+           AND COALESCE(bc.state_binding, '') NOT IN ('complete', 'cancelled')",
+    )
+    .bind(project_id)
+    .fetch_all(pool)
+    .await;
+    let rows = match rows {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::debug!(
+                target: "permagentd::orchestrator",
+                project_id,
+                error = %e,
+                "duplicate-goal check: query failed; treating as no duplicate",
+            );
+            return None;
+        }
+    };
+    for row in rows {
+        let title: String = row.try_get("title").unwrap_or_default();
+        if title.is_empty() {
+            continue;
+        }
+        if crate::cost_router::planner_complexity::objectives_overlap(objective, &title) {
+            return Some(DuplicateOpenGoal {
+                card_id: row.try_get("id").unwrap_or_default(),
+                title,
+                state: row.try_get("state").unwrap_or_default(),
+            });
+        }
+    }
+    None
 }
 
 /// Ruling 2026-09-17 planning-complexity input (r64 s5): where the objective's
@@ -8599,6 +8697,14 @@ pub(crate) async fn dispatch_goal_fn(
         "dispatched_at".to_string(),
         serde_json::json!(dispatched_at),
     );
+    // A new attempt starts: the previous attempt's routing note ("held —
+    // still verifying") no longer describes this goal, and Build's cost bar
+    // kept showing it beside the new attempt's figures. A null in the patch
+    // removes the key (goal_transition::apply_patch).
+    claim_patch.insert(
+        crate::cost_router::ROUTING_SNAPSHOT_KEY.to_string(),
+        serde_json::Value::Null,
+    );
     if card.metadata_json.get("first_dispatched_at").is_none() {
         claim_patch.insert(
             "first_dispatched_at".to_string(),
@@ -9506,7 +9612,10 @@ impl OrchestratorClient {
             conversation_text
         ));
 
-        let (response, _usage) = AccountedFastCompletion::complete_fast_accounted(
+        // 2026-09-25 DAG K cost fix (HARNESS_COST_TRACE.md Q1): summarizing a
+        // conversation is context upkeep, not answering a user or continuing
+        // a tool loop — tag it so it stops falling into `unknown`.
+        let (response, _usage) = AccountedFastCompletion::complete_fast_accounted_with_purpose(
             Arc::clone(&self.context.session_manager),
             session,
             provider,
@@ -9514,6 +9623,7 @@ impl OrchestratorClient {
             &[user_message],
             &[],
             false,
+            CallPurpose::ContextMaintenance,
         )
         .await
         .map_err(|e| format!("LLM summarization failed: {}", e))?;
@@ -11521,6 +11631,22 @@ impl OrchestratorClient {
             return Err(refuse_blocker_roadmap("decompose_roadmap", refusal));
         }
 
+        // 2026-09-25 DAG K cost fix (HARNESS_COST_TRACE.md ranked fix 5):
+        // an open goal on this project already covering essentially the same
+        // objective means this decompose call would just pay for a planner
+        // run whose result gets thrown away as a duplicate (or, worse,
+        // creates a second card racing the first). Check BEFORE any planner
+        // work — this is a plain SQLite query, not a repo scan.
+        if let Some(existing) = find_duplicate_open_goal(&pool, &project.id, &objective).await {
+            return Ok(CallToolResult::success(vec![Content::text(format!(
+                "Not decomposing: an open goal on project '{}' already covers this objective — \
+                 {} ({}, state: {}). Use goal_advance/steer_goal/message_goal on that goal \
+                 instead of creating a new roadmap for the same work. If this is genuinely \
+                 different work, rephrase the objective so it does not read as the same thing.",
+                project.name, existing.card_id, existing.title, existing.state
+            ))]));
+        }
+
         // Planning-complexity gate (ruling 2026-09-17: the expert planner is for
         // complex plans, not the default). Facts only — repo facts, the
         // objective's structure, and this project's plan history — never a
@@ -12153,6 +12279,29 @@ impl OrchestratorClient {
         // is an `escalate`, never a card a worker is dispatched to.
         if let Some(refusal) = roadmap_blocker_refusal(None, &goals, &facts) {
             return Err(refuse_blocker_roadmap("create_roadmap", refusal));
+        }
+
+        // 2026-09-25 DAG K cost fix (HARNESS_COST_TRACE.md ranked fix 5):
+        // `decompose_roadmap` guards the common path (see
+        // `find_duplicate_open_goal`'s call there), but `create_roadmap`
+        // accepts caller-supplied `goals_json` directly (R21b's own comment,
+        // just above `validate_roadmap_ac_or_rewrite`, notes this same gap
+        // for acceptance criteria) — a caller that skipped decompose, or
+        // whose proposal went stale, can still hand this one a goal that
+        // duplicates an already-open card. Checked before ANY card is
+        // materialized: one match refuses the whole submission rather than
+        // silently materializing N-1 goals and dropping the duplicate.
+        for goal in &goals {
+            if let Some(existing) = find_duplicate_open_goal(&pool, &project.id, &goal.title).await
+            {
+                return Err(format!(
+                    "Not creating this roadmap: goal '{}' duplicates an open goal already on \
+                     project '{}' — {} ({}, state: {}). Use goal_advance/steer_goal/message_goal \
+                     on that goal instead, or rephrase this goal's title so it does not read as \
+                     the same work.",
+                    goal.title, project.name, existing.card_id, existing.title, existing.state
+                ));
+            }
         }
 
         let proposal_hash = match self
@@ -13958,7 +14107,11 @@ async fn run_decomposition(
     user_message: &crate::conversation::message::Message,
     answered_model: &mut Option<String>,
 ) -> Result<Vec<goal_state::ProposedGoal>, DecompositionError> {
-    let (response, usage) = AccountedFastCompletion::complete_accounted(
+    // 2026-09-25 DAG K cost fix (HARNESS_COST_TRACE.md Q1): tag the planner
+    // call as Planning so it stops showing up as `unknown` in the cost
+    // ledger — this call site is the reason Q1's real cause needed manual
+    // trace-back through the ledger instead of a `call_purpose` filter.
+    let (response, usage) = AccountedFastCompletion::complete_accounted_with_purpose(
         Arc::clone(manager),
         session.clone(),
         Arc::clone(provider),
@@ -13966,6 +14119,7 @@ async fn run_decomposition(
         std::slice::from_ref(user_message),
         &[],
         false,
+        CallPurpose::Planning,
     )
     .await
     .map_err(|e| DecompositionError::Provider(format!("LLM decomposition failed: {}", e)))?;
@@ -13983,17 +14137,19 @@ async fn run_decomposition(
                  Output ONLY the JSON object with the \"goals\" array. No prose, no markdown fences."
                     .to_string(),
             );
-            let (retry_resp, retry_usage) = AccountedFastCompletion::complete_accounted(
-                Arc::clone(manager),
-                session.clone(),
-                Arc::clone(provider),
-                system,
-                &[user_message.clone(), response, retry_msg],
-                &[],
-                false,
-            )
-            .await
-            .map_err(|e| DecompositionError::Provider(format!("LLM retry failed: {}", e)))?;
+            let (retry_resp, retry_usage) =
+                AccountedFastCompletion::complete_accounted_with_purpose(
+                    Arc::clone(manager),
+                    session.clone(),
+                    Arc::clone(provider),
+                    system,
+                    &[user_message.clone(), response, retry_msg],
+                    &[],
+                    false,
+                    CallPurpose::Planning,
+                )
+                .await
+                .map_err(|e| DecompositionError::Provider(format!("LLM retry failed: {}", e)))?;
             *answered_model = Some(retry_usage.model);
 
             match parse_roadmap_response(&retry_resp.as_concat_text()) {
@@ -24869,9 +25025,13 @@ async fn call_reviewer_provider(
 
     let user_message = Message::user().with_text(prompt);
 
+    // 2026-09-25 DAG K cost fix (HARNESS_COST_TRACE.md Q1): the independent
+    // reviewer's own call is exactly `CallPurpose::Verification`'s doc
+    // comment ("a call whose job is to check other work") — tag it so it
+    // stops falling into `unknown`.
     let completion = tokio::time::timeout(
         timeout,
-        AccountedFastCompletion::complete_fast_accounted(
+        AccountedFastCompletion::complete_fast_accounted_with_purpose(
             std::sync::Arc::new(SessionManager::instance()),
             session,
             provider,
@@ -24879,6 +25039,7 @@ async fn call_reviewer_provider(
             &[user_message],
             &[],
             false,
+            CallPurpose::Verification,
         ),
     )
     .await;
@@ -45039,6 +45200,18 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             "a held goal that completed is not history: {h:?}"
         );
         assert!(!h.unapproved_proposal);
+        // 2026-09-25 DAG K cost fix: titles come back too, so the planning
+        // gate can require the new objective to overlap them before
+        // escalating (a stuck goal elsewhere on the project must not alone
+        // force every future decompose_roadmap call onto the expert planner).
+        let mut parked_titles = h.parked_titles.clone();
+        parked_titles.sort();
+        assert_eq!(
+            parked_titles,
+            vec!["Needs a human".to_string(), "Parked goal".to_string()],
+            "{h:?}"
+        );
+        assert_eq!(h.held_titles, vec!["Held goal".to_string()], "{h:?}");
 
         let mut pending = project.clone();
         pending.metadata_json = serde_json::json!({"roadmap_proposal": {"hash": "abc"}});
@@ -45046,6 +45219,95 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             prior_plan_history(&pool, &pending)
                 .await
                 .unapproved_proposal
+        );
+    }
+
+    /// 2026-09-25 DAG K cost fix (HARNESS_COST_TRACE.md ranked fix 5): the
+    /// exact incident this guards — the coordinator reworded goal 01a0d5ea's
+    /// objective and re-submitted it as a "new" decompose_roadmap call
+    /// (01a0d8d8), which duplicated the still-open original instead of
+    /// reusing it. An open goal with the FIRST exact wording must be found
+    /// as a duplicate of the SECOND, reworded objective.
+    #[tokio::test]
+    async fn find_duplicate_open_goal_catches_the_01a0d5ea_reword_incident() {
+        const FIRST_TITLE: &str =
+            "Instrument event detail pages with cta_visible, scroll_depth analytics \
+             and event_id on event_cta_click.";
+        const REWORDED_OBJECTIVE: &str =
+            "Add cta_visible and scroll_depth analytics plus event_id to the event \
+             detail page's event_cta_click.";
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+        let (project, card) =
+            setup_project_and_goal_at(&pool, "N5 Dedup", tmp.path(), "ready", FIRST_TITLE).await;
+
+        let found = find_duplicate_open_goal(&pool, &project.id, REWORDED_OBJECTIVE)
+            .await
+            .expect("the reworded objective must match the still-open original goal");
+        assert_eq!(found.card_id, card.id);
+        assert_eq!(found.title, FIRST_TITLE);
+        assert_eq!(found.state, "ready");
+    }
+
+    /// An unrelated open goal on the same project is not a false-positive
+    /// duplicate.
+    #[tokio::test]
+    async fn find_duplicate_open_goal_ignores_unrelated_open_goals() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+        let (project, _card) = setup_project_and_goal_at(
+            &pool,
+            "N5 Dedup Unrelated",
+            tmp.path(),
+            "ready",
+            "Rotate the staging API key",
+        )
+        .await;
+
+        assert_eq!(
+            find_duplicate_open_goal(
+                &pool,
+                &project.id,
+                "Instrument event detail pages with cta_visible analytics"
+            )
+            .await,
+            None
+        );
+    }
+
+    /// A `complete` or `cancelled` goal is not "open" — it must never block a
+    /// new decompose/create_roadmap call, even if its title matches exactly.
+    #[tokio::test]
+    async fn find_duplicate_open_goal_ignores_complete_and_cancelled_goals() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+        let (project, _card) = setup_project_and_goal_at(
+            &pool,
+            "N5 Dedup Done",
+            tmp.path(),
+            "complete",
+            "Instrument event detail pages with cta_visible, scroll_depth analytics",
+        )
+        .await;
+
+        assert_eq!(
+            find_duplicate_open_goal(
+                &pool,
+                &project.id,
+                "Add cta_visible and scroll_depth analytics to the event detail page"
+            )
+            .await,
+            None,
+            "a completed goal must not count as an open duplicate"
         );
     }
 

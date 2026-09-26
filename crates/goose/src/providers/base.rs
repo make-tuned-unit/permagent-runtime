@@ -849,6 +849,43 @@ pub trait Provider: Send + Sync {
         collect_stream(stream).await
     }
 
+    /// [`Self::complete`] with the system prompt split into its byte-stable
+    /// prefix and its turn-volatile suffix — the non-streaming counterpart of
+    /// [`Self::stream_split`], for callers that go through
+    /// `AccountedFastCompletion` (`agents::reply_parts`) rather than the
+    /// interactive turn loop.
+    ///
+    /// 2026-09-25 DAG K cost fix (HARNESS_COST_TRACE.md fix 8): every
+    /// `AccountedFastCompletion` call (the planner, the independent reviewer,
+    /// the conversation summarizer, and other internal/background callers)
+    /// routes through [`Self::complete`], whose flat `system: &str` forces
+    /// [`SystemPromptParts::all_stable`] — the SAME `system` string every
+    /// time, wholesale, as "stable." A caller that (like the interactive
+    /// main loop) has actually separated live/volatile content out of its
+    /// system prompt gets NO benefit from that split here: the flat
+    /// `.complete()` path re-merges everything back into one blob before it
+    /// ever reaches the provider, so a single byte of volatile content
+    /// anywhere in that blob invalidates the cached read for everything
+    /// after it — measured as `cost_ledger.cache_read_tokens` staying flat at
+    /// the size of whatever earlier portion happens to still be
+    /// byte-identical, while `input_tokens` keeps growing turn over turn.
+    ///
+    /// Additive on purpose, exactly like [`Self::stream_split`]: the default
+    /// flattens the split via [`SystemPromptParts::render`] and calls
+    /// [`Self::complete`], so a provider that does not override it is
+    /// byte-for-byte unchanged.
+    async fn complete_split(
+        &self,
+        model_config: &ModelConfig,
+        session_id: &str,
+        system: &SystemPromptParts,
+        messages: &[Message],
+        tools: &[Tool],
+    ) -> Result<(Message, ProviderUsage), ProviderError> {
+        self.complete(model_config, session_id, &system.render(), messages, tools)
+            .await
+    }
+
     /// Try fast model first, fall back to regular model on failure.
     async fn complete_fast(
         &self,
@@ -1604,5 +1641,179 @@ pairing.\n\
         assert_eq!(combined.total_tokens, Some(178));
         assert_eq!(combined.cache_read_input_tokens, Some(14));
         assert_eq!(combined.cache_write_input_tokens, Some(6));
+    }
+
+    /// A minimal provider that only implements `stream` (every other method
+    /// on the trait is the default) and records the exact `system` string it
+    /// was handed, so the default `complete_split` -> `complete` -> `stream`
+    /// chain can be verified without a real network call.
+    struct RecordingProvider {
+        seen_system: std::sync::Mutex<Option<String>>,
+    }
+
+    #[async_trait]
+    impl Provider for RecordingProvider {
+        fn get_name(&self) -> &str {
+            "recording-fixture"
+        }
+
+        fn get_model_config(&self) -> ModelConfig {
+            ModelConfig::new("test-model").unwrap()
+        }
+
+        async fn stream(
+            &self,
+            _model_config: &ModelConfig,
+            _session_id: &str,
+            system: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<MessageStream, ProviderError> {
+            *self.seen_system.lock().unwrap() = Some(system.to_string());
+            Ok(stream_from_single_message(
+                Message::assistant().with_text("ok"),
+                ProviderUsage::new("test-model".to_string(), Usage::default()),
+            ))
+        }
+    }
+
+    /// 2026-09-25 DAG K cost fix (HARNESS_COST_TRACE.md fix 8): a provider
+    /// that does not override `complete_split` gets the trait default's
+    /// `system.render()` — the stable prefix and volatile suffix
+    /// concatenated back into one flat string — proving the additive
+    /// contract documented on `Provider::complete_split` (byte-for-byte the
+    /// same as calling `complete` with that flat string directly).
+    #[tokio::test]
+    async fn complete_split_default_flattens_stable_and_volatile_via_render() {
+        let provider = RecordingProvider {
+            seen_system: std::sync::Mutex::new(None),
+        };
+        let parts = SystemPromptParts::new(
+            "STABLE: persona and tools".to_string(),
+            "VOLATILE: 3 jobs scheduled right now".to_string(),
+        );
+        let expected = parts.render();
+
+        provider
+            .complete_split(
+                &ModelConfig::new("test-model").unwrap(),
+                "session-1",
+                &parts,
+                &[Message::user().with_text("hi")],
+                &[],
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            provider.seen_system.lock().unwrap().as_deref(),
+            Some(expected.as_str()),
+            "complete_split's default must hand the provider system.render(), \
+             not the stable prefix alone or the two halves out of order"
+        );
+    }
+
+    /// A provider IS free to override `complete_split` to keep the split
+    /// intact for its own request builder (exactly what `AnthropicProvider`
+    /// now does, routing it through `stream_split` instead of flattening) —
+    /// this fixture proves the trait allows that override to run instead of
+    /// the default, which is the actual fix: a provider's non-streaming path
+    /// can place its cache breakpoint on the true stable prefix alone.
+    struct SplitAwareProvider {
+        seen_stable: std::sync::Mutex<Option<String>>,
+        seen_volatile: std::sync::Mutex<Option<String>>,
+    }
+
+    #[async_trait]
+    impl Provider for SplitAwareProvider {
+        fn get_name(&self) -> &str {
+            "split-aware-fixture"
+        }
+
+        fn get_model_config(&self) -> ModelConfig {
+            ModelConfig::new("test-model").unwrap()
+        }
+
+        async fn stream(
+            &self,
+            model_config: &ModelConfig,
+            session_id: &str,
+            system: &str,
+            messages: &[Message],
+            tools: &[Tool],
+        ) -> Result<MessageStream, ProviderError> {
+            // A caller with no split to offer: same fallback every provider's
+            // `stream` gets (mirrors `AnthropicProvider::stream`).
+            self.stream_split(
+                model_config,
+                session_id,
+                &SystemPromptParts::all_stable(system.to_string()),
+                messages,
+                tools,
+            )
+            .await
+        }
+
+        async fn stream_split(
+            &self,
+            _model_config: &ModelConfig,
+            _session_id: &str,
+            system: &SystemPromptParts,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<MessageStream, ProviderError> {
+            *self.seen_stable.lock().unwrap() = Some(system.stable_prefix().to_string());
+            *self.seen_volatile.lock().unwrap() = Some(system.volatile_suffix().to_string());
+            Ok(stream_from_single_message(
+                Message::assistant().with_text("ok"),
+                ProviderUsage::new("test-model".to_string(), Usage::default()),
+            ))
+        }
+
+        async fn complete_split(
+            &self,
+            model_config: &ModelConfig,
+            session_id: &str,
+            system: &SystemPromptParts,
+            messages: &[Message],
+            tools: &[Tool],
+        ) -> Result<(Message, ProviderUsage), ProviderError> {
+            let stream = self
+                .stream_split(model_config, session_id, system, messages, tools)
+                .await?;
+            collect_stream(stream).await
+        }
+    }
+
+    #[tokio::test]
+    async fn complete_split_override_keeps_the_stable_and_volatile_halves_separate() {
+        let provider = SplitAwareProvider {
+            seen_stable: std::sync::Mutex::new(None),
+            seen_volatile: std::sync::Mutex::new(None),
+        };
+        let parts = SystemPromptParts::new(
+            "STABLE: persona and tools".to_string(),
+            "VOLATILE: 3 jobs scheduled right now".to_string(),
+        );
+
+        provider
+            .complete_split(
+                &ModelConfig::new("test-model").unwrap(),
+                "session-1",
+                &parts,
+                &[Message::user().with_text("hi")],
+                &[],
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            provider.seen_stable.lock().unwrap().as_deref(),
+            Some("STABLE: persona and tools")
+        );
+        assert_eq!(
+            provider.seen_volatile.lock().unwrap().as_deref(),
+            Some("VOLATILE: 3 jobs scheduled right now")
+        );
     }
 }

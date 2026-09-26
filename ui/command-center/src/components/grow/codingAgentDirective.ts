@@ -30,9 +30,12 @@ export interface DirectiveAction {
 export function codingAgentDirective(args: {
   projectName: string;
   projectRoot?: string | null;
+  /** The project's Permagent slug. Without it a harness coordinator guessed
+   *  and passed the repo path where its project tools wanted the slug. */
+  projectSlug?: string | null;
   action: DirectiveAction;
 }): string {
-  const { projectName, projectRoot, action } = args;
+  const { projectName, projectRoot, projectSlug, action } = args;
   const id = action.identity?.id?.trim() || null;
   const metric =
     action.identity?.targetMetric ?? action.targetMetric ?? null;
@@ -47,6 +50,11 @@ export function codingAgentDirective(args: {
   );
   if (projectRoot) {
     lines.push(`Working directory: ${projectRoot}`);
+  }
+  if (projectSlug?.trim()) {
+    lines.push(
+      `Permagent project: ${projectSlug.trim()} (use this, not the path, wherever a Permagent tool asks for the project).`,
+    );
   }
   lines.push(
     'Implement the growth action below in this repo. Do not stop at drafting copy in chat — write the change into the right files.',

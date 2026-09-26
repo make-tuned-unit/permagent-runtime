@@ -36,6 +36,17 @@ import { TrackingRail } from './TrackingRail';
  * copy-confirmation flag belongs to a card rather than to an index into a list
  * that reorders on every review.
  */
+const agentKey = (projectId: string) => `grow.sendAgent.${projectId}`;
+
+/** The agent last chosen for this project, or the first agent when none is stored. */
+export function rememberedAgent(projectId: string): string {
+  try {
+    const stored = localStorage.getItem(agentKey(projectId));
+    if (stored && codingAgentById(stored)) return stored;
+  } catch { /* storage can be unavailable */ }
+  return CODING_AGENTS[0].id;
+}
+
 export function ActionCard({
   project, action, colors, lane, onChanged, showCategory = true,
 }: {
@@ -68,13 +79,21 @@ export function ActionCard({
   const [copied, setCopied] = useState(false);
   const [moving, setMoving] = useState<string | null>(null);
   const [moveError, setMoveError] = useState<string | null>(null);
-  const [agentId, setAgentId] = useState<string>(CODING_AGENTS[0].id);
+  // Remembered per project: the card remounts on every return to Grow, and a
+  // picker that snapped back to the first agent read "Claude" beside a run the
+  // user had actually sent to the Permagent harness.
+  const [agentId, setAgentIdState] = useState<string>(() => rememberedAgent(project.id));
+  const setAgentId = useCallback((id: string) => {
+    setAgentIdState(id);
+    try { localStorage.setItem(agentKey(project.id), id); } catch { /* storage can be unavailable */ }
+  }, [project.id]);
   const [sending, setSending] = useState(false);
   const setPendingTerminalLaunch = useCommandCenter((s) => s.setPendingTerminalLaunch);
 
   const directive = codingAgentDirective({
     projectName: project.name,
     projectRoot: project.rootPath,
+    projectSlug: project.slug,
     action,
   });
 
