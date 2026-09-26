@@ -10,6 +10,7 @@ import { Button } from '../../common/Button';
 import { useDecisions } from '../decisions/useDecisions';
 import { DecisionInbox } from '../decisions/DecisionInbox';
 import { MarkdownContent } from '../../chat/MarkdownContent';
+import { CardScrollBody } from '../atoms';
 
 /**
  * The report body is markdown (the Council writes `**Verdict:**`, `####`
@@ -240,16 +241,16 @@ export function CouncilCard() {
             }}>
               {report.headline}
             </div>
-            <div
-              data-testid="council-report-body"
+            <CardScrollBody
+              testId="council-report-body"
               className={COUNCIL_MD_CLASS}
               style={{
                 fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5,
-                overflow: 'auto', flex: 1, minHeight: 0, overflowWrap: 'anywhere',
+                overflowWrap: 'anywhere',
               }}
             >
               <MarkdownContent content={report.markdown} />
-            </div>
+            </CardScrollBody>
             <div style={{
               display: 'flex', gap: space.lg, marginTop: space.lg, alignItems: 'center',
               fontSize: textSize.micro, color: colors.textDim, flexWrap: 'wrap',

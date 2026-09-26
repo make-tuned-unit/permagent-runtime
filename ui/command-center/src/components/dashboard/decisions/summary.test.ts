@@ -72,4 +72,21 @@ describe('decision summary', () => {
     const s = summarizeDecisions(resp({ goals_in_flight: 2 }), 'Nova', 5);
     expect(s.allClearLabel).toBe('All clear — 5 goals in flight');
   });
+
+  it('names the top-ranked open decision verbatim, so a reader sees WHAT is waiting', () => {
+    const s = summarizeDecisions(resp({
+      total_pending: 2,
+      decisions: [
+        { id: 'd1', kind: 'approve_review', goal_id: null, project_id: null, tier: 2,
+          headline: 'Publish the pricing page redesign', detail: '', payload: null, rank: 1,
+          status: 'open', answer: null, answer_note: null, answer_choice_id: null,
+          answer_input: null, acted_by: null, created_at: new Date().toISOString(), resolved_at: null },
+      ] as DecisionsResponse['decisions'],
+    }), 'Nova').topItemLabel;
+    expect(s).toBe('Publish the pricing page redesign');
+  });
+
+  it('has no top-item line when nothing is open', () => {
+    expect(summarizeDecisions(resp(), 'Nova').topItemLabel).toBeNull();
+  });
 });

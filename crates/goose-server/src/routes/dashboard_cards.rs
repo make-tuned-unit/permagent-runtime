@@ -76,6 +76,14 @@ pub struct CardManifest {
     pub source: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub configure: Option<CardConfigure>,
+    /// `true` for a card whose content is naturally short and doesn't grow
+    /// (a one-line status strip) — the frontend draws it at its content's
+    /// height, up to `default_size.h`, instead of stretching it to fill a
+    /// reserved grid row (dagK Phase-1 presentation pass: "card height must
+    /// follow content"). Omitted (⇒ `false`) for every card whose content
+    /// varies or can overflow.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_height: bool,
 }
 
 // ── Data payload returned by every manifest-card data endpoint ───────────────
@@ -153,6 +161,7 @@ pub fn builtin_card_manifests() -> Vec<CardManifest> {
             refresh_seconds: Some(30),
             source: "built-in".to_string(),
             configure: None,
+            auto_height: false,
         },
         CardManifest {
             card_type: "calendar".to_string(),
@@ -165,6 +174,7 @@ pub fn builtin_card_manifests() -> Vec<CardManifest> {
             refresh_seconds: Some(300),
             source: "built-in".to_string(),
             configure: None,
+            auto_height: false,
         },
         CardManifest {
             card_type: "weather".to_string(),
@@ -180,6 +190,172 @@ pub fn builtin_card_manifests() -> Vec<CardManifest> {
                 label: "Set location".to_string(),
                 placeholder: "City, e.g. San Francisco".to_string(),
             }),
+            auto_height: false,
+        },
+        // dagK home-templates lane: Morning Briefing's top row
+        // (HOME_TEMPLATES_RESEARCH.md §2.1) — "the same numbers Henry's own
+        // status HUD shows, but as a Home card" rather than a second,
+        // divergent status readout (R7: one concept, one place). Existing
+        // data source: `GET /api/henry/status` (was sidebar/HUD-only).
+        CardManifest {
+            card_type: "henry_status".to_string(),
+            name: "Agent status".to_string(),
+            description: "What your agent is doing right now, and today's totals".to_string(),
+            // h:1 is a ceiling, not a fixed height — `auto_height` below (and
+            // ManifestCard's hero-only single-row branch) draws it as one
+            // thin strip that follows its content, not a stretched 60px box.
+            default_size: CardSize { w: 12, h: 1 },
+            layout: "compact".to_string(),
+            data_endpoint: "/api/dashboard/henry-status".to_string(),
+            refresh_seconds: Some(15),
+            source: "built-in".to_string(),
+            configure: None,
+            // A one-line status strip: height follows content instead of
+            // reserving 2 grid rows for it (dagK Phase-1 presentation pass).
+            auto_height: true,
+        },
+        // Operator Command Center (§2.2) — `/api/job-health` already exists
+        // (job_health.rs) and was, per the QA walk, "dead, AutomateZone
+        // unmounted": a real endpoint nothing on Home ever showed. This is
+        // its first Home card, not a new health computation.
+        CardManifest {
+            card_type: "job_health".to_string(),
+            name: "Job health".to_string(),
+            description: "Scheduled jobs and background runs — what's on track, what isn't"
+                .to_string(),
+            default_size: CardSize { w: 4, h: 3 },
+            layout: "list".to_string(),
+            data_endpoint: "/api/dashboard/job-health".to_string(),
+            refresh_seconds: Some(60),
+            source: "built-in".to_string(),
+            configure: None,
+            auto_height: false,
+        },
+        // ── Phase 2 (dagK home-templates lane) — Growth & Money,
+        // Relationships & Commitments and Weekly Story's remaining cards.
+        // Each wraps an existing data source rather than a new computation;
+        // honest-data notes per HOME_TEMPLATES_RESEARCH.md §3 live in the
+        // handler, not here.
+        CardManifest {
+            card_type: "finance_summary".to_string(),
+            name: "Finance Board".to_string(),
+            description: "Open positions and household spend rate".to_string(),
+            default_size: CardSize { w: 8, h: 5 },
+            layout: "list".to_string(),
+            data_endpoint: "/api/dashboard/finance-summary".to_string(),
+            refresh_seconds: Some(120),
+            source: "built-in".to_string(),
+            configure: None,
+            auto_height: false,
+        },
+        CardManifest {
+            card_type: "finance_watchlist".to_string(),
+            name: "Watchlist".to_string(),
+            description: "Tickers you're tracking".to_string(),
+            default_size: CardSize { w: 4, h: 5 },
+            layout: "list".to_string(),
+            data_endpoint: "/api/dashboard/finance-watchlist".to_string(),
+            refresh_seconds: Some(120),
+            source: "built-in".to_string(),
+            configure: None,
+            auto_height: false,
+        },
+        CardManifest {
+            card_type: "cost_vs_outcome".to_string(),
+            name: "Cost vs. Outcome".to_string(),
+            description: "This week's agent spend against verified outcomes".to_string(),
+            default_size: CardSize { w: 12, h: 3 },
+            layout: "list".to_string(),
+            data_endpoint: "/api/dashboard/cost-vs-outcome".to_string(),
+            refresh_seconds: Some(300),
+            source: "built-in".to_string(),
+            configure: None,
+            auto_height: false,
+        },
+        CardManifest {
+            card_type: "people_attention".to_string(),
+            name: "Needs Attention — People".to_string(),
+            description: "People overdue for contact".to_string(),
+            default_size: CardSize { w: 6, h: 5 },
+            layout: "list".to_string(),
+            data_endpoint: "/api/dashboard/people-attention".to_string(),
+            refresh_seconds: Some(300),
+            source: "built-in".to_string(),
+            configure: None,
+            auto_height: false,
+        },
+        CardManifest {
+            card_type: "open_commitments".to_string(),
+            name: "Open Commitments".to_string(),
+            description: "Follow-ups from meetings that are still open".to_string(),
+            default_size: CardSize { w: 6, h: 5 },
+            layout: "list".to_string(),
+            data_endpoint: "/api/dashboard/open-commitments".to_string(),
+            refresh_seconds: Some(300),
+            source: "built-in".to_string(),
+            configure: None,
+            auto_height: false,
+        },
+        CardManifest {
+            card_type: "recent_meetings".to_string(),
+            name: "Recent Meetings".to_string(),
+            description: "Meetings logged in the last 30 days".to_string(),
+            default_size: CardSize { w: 6, h: 4 },
+            layout: "list".to_string(),
+            data_endpoint: "/api/dashboard/recent-meetings".to_string(),
+            refresh_seconds: Some(300),
+            source: "built-in".to_string(),
+            configure: None,
+            auto_height: false,
+        },
+        CardManifest {
+            card_type: "week_headline".to_string(),
+            name: "Week Headline".to_string(),
+            description: "One sentence summarizing the week — deterministic, cached numbers"
+                .to_string(),
+            default_size: CardSize { w: 12, h: 2 },
+            layout: "compact".to_string(),
+            data_endpoint: "/api/dashboard/week-headline".to_string(),
+            refresh_seconds: Some(3600),
+            source: "built-in".to_string(),
+            configure: None,
+            auto_height: true,
+        },
+        CardManifest {
+            card_type: "week_small_multiples".to_string(),
+            name: "Week Small Multiples".to_string(),
+            description: "This week vs last week, side by side".to_string(),
+            default_size: CardSize { w: 12, h: 3 },
+            layout: "list".to_string(),
+            data_endpoint: "/api/dashboard/week-small-multiples".to_string(),
+            refresh_seconds: Some(3600),
+            source: "built-in".to_string(),
+            configure: None,
+            auto_height: false,
+        },
+        CardManifest {
+            card_type: "memory_growth".to_string(),
+            name: "Memory Growth".to_string(),
+            description: "Brain node count, trend once daily snapshots exist".to_string(),
+            default_size: CardSize { w: 6, h: 3 },
+            layout: "compact".to_string(),
+            data_endpoint: "/api/dashboard/memory-growth".to_string(),
+            refresh_seconds: Some(3600),
+            source: "built-in".to_string(),
+            configure: None,
+            auto_height: false,
+        },
+        CardManifest {
+            card_type: "on_this_week".to_string(),
+            name: "On This Week".to_string(),
+            description: "What was happening around this time last month".to_string(),
+            default_size: CardSize { w: 6, h: 3 },
+            layout: "list".to_string(),
+            data_endpoint: "/api/dashboard/on-this-week".to_string(),
+            refresh_seconds: Some(3600),
+            source: "built-in".to_string(),
+            configure: None,
+            auto_height: false,
         },
     ]
 }
@@ -210,6 +386,24 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/api/dashboard/calendar", get(get_calendar))
         .route("/api/dashboard/weather", get(get_weather))
         .route("/api/dashboard/weather/location", put(put_weather_location))
+        .route("/api/dashboard/henry-status", get(get_henry_status))
+        .route("/api/dashboard/job-health", get(get_job_health))
+        .route("/api/dashboard/finance-summary", get(get_finance_summary))
+        .route(
+            "/api/dashboard/finance-watchlist",
+            get(get_finance_watchlist),
+        )
+        .route("/api/dashboard/cost-vs-outcome", get(get_cost_vs_outcome))
+        .route("/api/dashboard/people-attention", get(get_people_attention))
+        .route("/api/dashboard/open-commitments", get(get_open_commitments))
+        .route("/api/dashboard/recent-meetings", get(get_recent_meetings))
+        .route("/api/dashboard/week-headline", get(get_week_headline))
+        .route(
+            "/api/dashboard/week-small-multiples",
+            get(get_week_small_multiples),
+        )
+        .route("/api/dashboard/memory-growth", get(get_memory_growth))
+        .route("/api/dashboard/on-this-week", get(get_on_this_week))
         .with_state(state)
 }
 
@@ -892,9 +1086,635 @@ async fn put_weather_location(
     Ok(Json(loc))
 }
 
+// ── Henry status (Home wrapper; dagK home-templates lane) ────────────────────
+//
+// The same numbers `GET /api/henry/status` (henry_status.rs) already
+// computes for the sidebar HUD, reduced to what a compact Home card needs —
+// deliberately NOT a second computation of "is Henry busy" (R7: one concept,
+// one place). See HOME_TEMPLATES_RESEARCH.md §2.1's "Henry status line".
+
+async fn get_henry_status(State(state): State<Arc<AppState>>) -> Json<CardData> {
+    let persona = state.persona.read().await;
+    let name = persona.first_name.clone();
+    drop(persona);
+
+    let sessions = state
+        .session_manager()
+        .list_session_summaries()
+        .await
+        .unwrap_or_default();
+    let now = chrono::Utc::now();
+    let two_min_ago = now - chrono::Duration::seconds(120);
+    let active_count = sessions
+        .iter()
+        .filter(|s| {
+            s.updated_at >= two_min_ago
+                && matches!(
+                    s.session_type,
+                    permagent::session::session_manager::SessionType::User
+                        | permagent::session::session_manager::SessionType::Scheduled
+                )
+        })
+        .count();
+    let today_midnight = now.date_naive().and_time(chrono::NaiveTime::MIN).and_utc();
+    let sessions_today = sessions
+        .iter()
+        .filter(|s| s.created_at >= today_midnight)
+        .count();
+
+    let summary = match active_count {
+        0 => format!("{name} is ready"),
+        1 => format!("{name} is working on 1 thing for you"),
+        n => format!("{name} is working on {n} things for you"),
+    };
+
+    Json(CardData {
+        cells: vec![CardCell {
+            label: name,
+            value: summary,
+            sub: Some(format!(
+                "{sessions_today} session{} today",
+                if sessions_today == 1 { "" } else { "s" }
+            )),
+            accent: active_count > 0,
+            ..Default::default()
+        }],
+        note: None,
+        configured: None,
+    })
+}
+
+// ── Job health (Home wrapper; dagK home-templates lane) ──────────────────────
+//
+// `GET /api/job-health` (job_health.rs) already exists and computes the real
+// truth table; the 2026-09-24 QA walk found it "dead, AutomateZone unmounted"
+// — a real endpoint nothing on Home ever rendered. This is its first Home
+// card, reusing `job_health::collect` rather than adding a second health
+// computation.
+
+async fn get_job_health(State(state): State<Arc<AppState>>) -> Json<CardData> {
+    let Ok(pool) = state.session_manager().pool_clone().await else {
+        return Json(CardData::note(
+            "Job health is unavailable — the runtime database isn't reachable",
+        ));
+    };
+    let scheduled = state.scheduler().list_scheduled_jobs().await;
+    let digest = permagent::job_health::collect(&pool, &scheduled).await;
+
+    if digest.jobs.is_empty() && digest.dead_letters.dead == 0 {
+        return Json(CardData::note("No scheduled jobs yet"));
+    }
+
+    let unhealthy = digest.unhealthy();
+    let mut cells: Vec<CardCell> = Vec::new();
+    if unhealthy.is_empty() && digest.dead_letters.dead == 0 {
+        cells.push(CardCell {
+            label: "All jobs".to_string(),
+            value: "Healthy".to_string(),
+            accent: true,
+            ..Default::default()
+        });
+    } else {
+        for job in unhealthy.iter().take(5) {
+            cells.push(CardCell {
+                label: job.label.clone(),
+                value: format!(
+                    "{} failure{}",
+                    job.failure_streak,
+                    if job.failure_streak == 1 { "" } else { "s" }
+                ),
+                sub: job.detail.clone(),
+                ..Default::default()
+            });
+        }
+        if digest.dead_letters.dead > 0 {
+            cells.push(CardCell {
+                label: "Dead letters".to_string(),
+                value: digest.dead_letters.dead.to_string(),
+                sub: digest
+                    .dead_letters
+                    .oldest_dead_at
+                    .clone()
+                    .map(|t| format!("oldest {t}")),
+                ..Default::default()
+            });
+        }
+    }
+
+    Json(CardData {
+        cells,
+        note: if digest.all_green {
+            None
+        } else {
+            Some("Needs attention".to_string())
+        },
+        configured: None,
+    })
+}
+
+// ── Phase 2 (dagK home-templates lane) ────────────────────────────────────────
+//
+// Growth & Money, Relationships & Commitments, Weekly Story's remaining
+// cards. Each wraps an existing data source; every handler follows the same
+// honest-data shape as the Phase-1 cards above: a `CardData::note` instead of
+// a fabricated zero/empty-looking success when there's nothing to show yet.
+
+async fn get_finance_summary(State(state): State<Arc<AppState>>) -> Json<CardData> {
+    let Ok(pool) = state.session_manager().pool_clone().await else {
+        return Json(CardData::note(
+            "Finance board is unavailable — the runtime database isn't reachable",
+        ));
+    };
+    let positions = permagent::finance_ledger::list_positions(&pool)
+        .await
+        .unwrap_or_default();
+    let open_positions = positions.iter().filter(|p| p.exit_date.is_none()).count();
+    let forecast = permagent::finance_ledger::spend_forecast(&pool).await.ok();
+    if open_positions == 0 && forecast.is_none() {
+        return Json(CardData::note(
+            "Add a position or a household transaction to see your finance board",
+        ));
+    }
+    let mut cells = vec![CardCell {
+        label: "Open positions".to_string(),
+        value: open_positions.to_string(),
+        ..Default::default()
+    }];
+    if let Some(f) = forecast {
+        cells.push(CardCell {
+            label: "30-day spend rate".to_string(),
+            value: format!("${:.0}", f.run_rate_30d),
+            sub: Some(f.method.clone()),
+            ..Default::default()
+        });
+    }
+    Json(CardData {
+        cells,
+        note: None,
+        configured: None,
+    })
+}
+
+async fn get_finance_watchlist(State(state): State<Arc<AppState>>) -> Json<CardData> {
+    let Ok(pool) = state.session_manager().pool_clone().await else {
+        return Json(CardData::note(
+            "Watchlist is unavailable — the runtime database isn't reachable",
+        ));
+    };
+    let items = permagent::finance_ledger::list_watchlist(&pool)
+        .await
+        .unwrap_or_default();
+    if items.is_empty() {
+        return Json(CardData::note("No tickers on your watchlist yet"));
+    }
+    let cells = items
+        .iter()
+        .take(8)
+        .map(|w| CardCell {
+            label: w.symbol.clone(),
+            value: w.label.clone().unwrap_or_else(|| "—".to_string()),
+            ..Default::default()
+        })
+        .collect();
+    Json(CardData {
+        cells,
+        note: None,
+        configured: None,
+    })
+}
+
+/// The honesty card (§3 `cost_vs_outcome`): this week's real agent spend from
+/// `cost_ledger`, against verified outcomes. The verified-outcome count needs
+/// the growth ledger's fleet aggregation wired in here, which this pass does
+/// not do — so the ratio itself is never shown as a guess (P12); the spend
+/// number alone is real.
+async fn get_cost_vs_outcome(State(state): State<Arc<AppState>>) -> Json<CardData> {
+    let Ok(pool) = state.session_manager().pool_clone().await else {
+        return Json(CardData::note(
+            "Cost vs. outcome is unavailable — the runtime database isn't reachable",
+        ));
+    };
+    let since_ts = chrono::Utc::now() - chrono::Duration::days(7);
+    let since = since_ts.to_rfc3339();
+    let spend: f64 =
+        sqlx::query_scalar("SELECT COALESCE(SUM(cost_usd), 0.0) FROM cost_ledger WHERE ts >= ?")
+            .bind(&since)
+            .fetch_one(&pool)
+            .await
+            .unwrap_or(0.0);
+
+    // Verified outcomes this week, reusing growth_actions.rs's own fleet
+    // join rather than a second query against the same tables (coordinator
+    // ruling: wire this up rather than leave the ratio permanently absent).
+    // `.11` is the action's status, `.4` its judged_at — VERIFIED-only, and
+    // only ones judged in the window, so this agrees with what the Growth
+    // card itself would call "verified this week".
+    let rows = crate::routes::growth_actions::fleet_outcome_rows(&pool).await;
+    let verified_this_week = rows
+        .iter()
+        .filter(|r| {
+            r.11 == permagent::growth::store::STATUS_VERIFIED
+                && chrono::DateTime::parse_from_rfc3339(&r.4)
+                    .map(|t| t.with_timezone(&chrono::Utc) >= since_ts)
+                    .unwrap_or(false)
+        })
+        .count();
+
+    let mut cells = vec![CardCell {
+        label: "This week's agent spend".to_string(),
+        value: format!("${spend:.2}"),
+        ..Default::default()
+    }];
+    let note = if verified_this_week == 0 {
+        // Honest per P12: division by zero dressed up as a ratio is exactly
+        // the fabrication this rule forbids — the spend number stands alone.
+        Some(
+            "Not enough verified outcomes yet this week to compute a cost-per-outcome ratio"
+                .to_string(),
+        )
+    } else {
+        cells.push(CardCell {
+            label: "Verified outcomes this week".to_string(),
+            value: verified_this_week.to_string(),
+            ..Default::default()
+        });
+        cells.push(CardCell {
+            label: "Cost per verified outcome".to_string(),
+            value: format!("${:.2}", spend / verified_this_week as f64),
+            ..Default::default()
+        });
+        None
+    };
+    Json(CardData {
+        cells,
+        note,
+        configured: None,
+    })
+}
+
+/// Env var name for the overdue-contact threshold (coordinator ruling: a
+/// config key, never a hardcoded personal preference — "agnostic and
+/// plug-and-play"). Per-person cadence is round 2; this is the fleet-wide
+/// default in the meantime.
+const PEOPLE_ATTENTION_DAYS_ENV: &str = "PERMAGENT_PEOPLE_ATTENTION_DAYS";
+const PEOPLE_ATTENTION_DAYS_DEFAULT: i64 = 21;
+
+/// Read fresh on every call (not cached at startup) so changing the env var
+/// takes effect without a daemon restart. Anything unparsable falls back to
+/// the default rather than erroring the whole card.
+fn people_attention_threshold_days() -> i64 {
+    std::env::var(PEOPLE_ATTENTION_DAYS_ENV)
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(PEOPLE_ATTENTION_DAYS_DEFAULT)
+}
+
+/// People overdue for contact (§3 `people_attention`). No per-person cadence
+/// field exists yet, so a configurable fleet-wide threshold
+/// (`PERMAGENT_PEOPLE_ATTENTION_DAYS`, default 21) stands in for "your stated
+/// or inferred cadence" — people with no `last_contact_at` at all are
+/// excluded rather than defaulted to overdue (honest-data rule).
+async fn get_people_attention(State(state): State<Arc<AppState>>) -> Json<CardData> {
+    let Ok(pool) = state.session_manager().pool_clone().await else {
+        return Json(CardData::note(
+            "People overdue for contact is unavailable — the runtime database isn't reachable",
+        ));
+    };
+    let people = permagent::people::list_people(&pool, &permagent::people::PeopleFilter::default())
+        .await
+        .unwrap_or_default();
+    let now = chrono::Utc::now();
+    let overdue_after_days = people_attention_threshold_days();
+    let mut overdue: Vec<(i64, String)> = people
+        .iter()
+        .filter_map(|p| {
+            let at = p.last_contact_at.as_deref()?;
+            let dt = chrono::DateTime::parse_from_rfc3339(at)
+                .ok()?
+                .with_timezone(&chrono::Utc);
+            let days = (now - dt).num_days();
+            (days >= overdue_after_days).then_some((days, p.display_name.clone()))
+        })
+        .collect();
+    overdue.sort_by_key(|(days, _)| std::cmp::Reverse(*days));
+    if overdue.is_empty() {
+        return Json(CardData::note("Nobody is overdue for contact right now"));
+    }
+    let cells = overdue
+        .iter()
+        .take(5)
+        .map(|(days, name)| CardCell {
+            label: name.clone(),
+            value: format!("{days}d"),
+            ..Default::default()
+        })
+        .collect();
+    Json(CardData {
+        cells,
+        note: None,
+        configured: None,
+    })
+}
+
+/// Open follow-ups from meetings (§3 `open_commitments`) — the structured
+/// `follow_up_at`/`follow_up_note` fields `person_meetings` already has, read
+/// directly rather than an LLM re-extracting them from free text (more
+/// honest AND simpler than the research doc's LLM-extraction proposal).
+async fn get_open_commitments(State(state): State<Arc<AppState>>) -> Json<CardData> {
+    let Ok(pool) = state.session_manager().pool_clone().await else {
+        return Json(CardData::note(
+            "Open commitments is unavailable — the runtime database isn't reachable",
+        ));
+    };
+    let start = chrono::Utc::now() - chrono::Duration::days(90);
+    let end = chrono::Utc::now() + chrono::Duration::days(30);
+    let commitments = person_meetings::list_follow_ups_in_range(&pool, start, end)
+        .await
+        .unwrap_or_default();
+    if commitments.is_empty() {
+        return Json(CardData::note(
+            "Nothing open — every logged follow-up is done",
+        ));
+    }
+    let cells = commitments
+        .iter()
+        .take(6)
+        .map(|m| CardCell {
+            label: m.display_name.clone(),
+            value: if m.follow_up_note.is_empty() {
+                m.title.clone()
+            } else {
+                m.follow_up_note.clone()
+            },
+            sub: m.follow_up_at.clone(),
+            ..Default::default()
+        })
+        .collect();
+    Json(CardData {
+        cells,
+        note: None,
+        configured: None,
+    })
+}
+
+async fn get_recent_meetings(State(state): State<Arc<AppState>>) -> Json<CardData> {
+    let Ok(pool) = state.session_manager().pool_clone().await else {
+        return Json(CardData::note(
+            "Recent meetings is unavailable — the runtime database isn't reachable",
+        ));
+    };
+    let now = chrono::Utc::now();
+    let since = now - chrono::Duration::days(30);
+    let meetings = person_meetings::list_in_range(&pool, since, now)
+        .await
+        .unwrap_or_default();
+    if meetings.is_empty() {
+        return Json(CardData::note("No meetings logged in the last 30 days"));
+    }
+    let cells = meetings
+        .iter()
+        .rev()
+        .take(6)
+        .map(|m| CardCell {
+            label: m.display_name.clone(),
+            value: m.title.clone(),
+            sub: Some(m.starts_at.clone()),
+            ..Default::default()
+        })
+        .collect();
+    Json(CardData {
+        cells,
+        note: None,
+        configured: None,
+    })
+}
+
+/// One deterministic sentence about the week (§3 `week_headline`) — plain
+/// aggregation, template-worded, never a model call per view (routing
+/// principle: a cached local pass would be fine, a cloud call per dashboard
+/// refresh is not; this pass ships the deterministic half only).
+async fn get_week_headline(State(state): State<Arc<AppState>>) -> Json<CardData> {
+    let Ok(pool) = state.session_manager().pool_clone().await else {
+        return Json(CardData::note(
+            "Week headline is unavailable — the runtime database isn't reachable",
+        ));
+    };
+    let sessions = state
+        .session_manager()
+        .list_session_summaries()
+        .await
+        .unwrap_or_default();
+    let since = chrono::Utc::now() - chrono::Duration::days(7);
+    let sessions_this_week = sessions.iter().filter(|s| s.created_at >= since).count();
+    if sessions_this_week == 0 {
+        return Json(CardData::note(
+            "Not enough data yet — check back after a few days of activity",
+        ));
+    }
+    let decisions = permagent::decisions::list_open_decisions(&pool)
+        .await
+        .unwrap_or_default();
+    let sentence = format!(
+        "This week: {} across your projects, {} still open.",
+        permagent::dashboard_insights::plural(sessions_this_week, "session", "sessions"),
+        permagent::dashboard_insights::plural(decisions.len(), "decision", "decisions"),
+    );
+    Json(CardData {
+        cells: vec![CardCell {
+            label: "This week".to_string(),
+            value: sentence,
+            ..Default::default()
+        }],
+        note: None,
+        configured: None,
+    })
+}
+
+async fn get_week_small_multiples(State(state): State<Arc<AppState>>) -> Json<CardData> {
+    let sessions = state
+        .session_manager()
+        .list_session_summaries()
+        .await
+        .unwrap_or_default();
+    let now = chrono::Utc::now();
+    let this_week_start = now - chrono::Duration::days(7);
+    let last_week_start = now - chrono::Duration::days(14);
+    let this_week = sessions
+        .iter()
+        .filter(|s| s.created_at >= this_week_start)
+        .count();
+    let last_week = sessions
+        .iter()
+        .filter(|s| s.created_at >= last_week_start && s.created_at < this_week_start)
+        .count();
+    if this_week == 0 && last_week == 0 {
+        return Json(CardData::note(
+            "Not enough session history yet to compare weeks",
+        ));
+    }
+    let mut cells = vec![CardCell {
+        label: "Sessions this week".to_string(),
+        value: this_week.to_string(),
+        ..Default::default()
+    }];
+    if last_week > 0 {
+        // A comparison delta is only shown once a prior week actually exists
+        // — no fabricated "vs last week" on someone's first week (§3).
+        cells.push(CardCell {
+            label: "Sessions last week".to_string(),
+            value: last_week.to_string(),
+            ..Default::default()
+        });
+    }
+    Json(CardData {
+        cells,
+        note: None,
+        configured: None,
+    })
+}
+
+/// Current Brain size (§3 `memory_growth`). A trend needs day-over-day
+/// snapshots this pass does not add — current count only, never an invented
+/// delta (P12; the daily-snapshot table is future work, noted in the report).
+async fn get_memory_growth(State(state): State<Arc<AppState>>) -> Json<CardData> {
+    let persona = state.persona.read().await;
+    let name = persona.first_name.clone();
+    drop(persona);
+    let Some(brain) = state.brain.as_ref() else {
+        return Json(CardData::note("Memory growth needs the Brain connected"));
+    };
+    match brain.recall(&name, spectral::Visibility::Private).await {
+        Ok(r) => {
+            let count = r.graph.neighborhood.entities.len() + r.memory_hits.len();
+            Json(CardData {
+                cells: vec![CardCell {
+                    label: "Memory nodes".to_string(),
+                    value: count.to_string(),
+                    ..Default::default()
+                }],
+                note: Some(
+                    "Trend needs a few days of daily snapshots — current count only for now"
+                        .to_string(),
+                ),
+                configured: None,
+            })
+        }
+        Err(_) => Json(CardData::note("Couldn't reach the Brain")),
+    }
+}
+
+/// What was happening ~1 month ago (§3 `on_this_week`), read from the
+/// durable activity journal. No fabricated "similar week" when the journal
+/// simply has nothing from that window (P12).
+/// Plain-words label for an `activity_journal` row's `kind` (R3: no internal
+/// identifiers in user copy) — the same closed vocabulary
+/// `activity_journal::KNOWN_KINDS` defines, worded for a reader instead of a
+/// filter chip.
+fn human_activity_kind(kind: &str) -> &'static str {
+    match kind {
+        "goal_state_changed" => "Goal update",
+        "decision_created" => "Decision raised",
+        "decision_resolved" => "Decision resolved",
+        "librarian_describe_completed" => "Librarian run",
+        "proactive_nudge" => "Proactive nudge",
+        "task_failed" => "Task failed",
+        "a2a_message" => "Agent message",
+        _ => "Activity",
+    }
+}
+
+async fn get_on_this_week(State(state): State<Arc<AppState>>) -> Json<CardData> {
+    let Ok(pool) = state.session_manager().pool_clone().await else {
+        return Json(CardData::note(
+            "On this week is unavailable — the runtime database isn't reachable",
+        ));
+    };
+    let now = chrono::Utc::now();
+    let month_ago_end = now - chrono::Duration::days(28);
+    let month_ago_start = now - chrono::Duration::days(35);
+    let items =
+        permagent::activity_journal::page(&pool, Some(&month_ago_end.to_rfc3339()), 50, None, None)
+            .await
+            .unwrap_or_default();
+    let matching: Vec<_> = items
+        .into_iter()
+        .filter(|i| {
+            chrono::DateTime::parse_from_rfc3339(&i.ts)
+                .map(|t| t.with_timezone(&chrono::Utc) >= month_ago_start)
+                .unwrap_or(false)
+        })
+        .collect();
+    if matching.is_empty() {
+        return Json(CardData::note(
+            "No activity logged from around this time last month",
+        ));
+    }
+    let cells = matching
+        .iter()
+        .take(5)
+        .map(|i| CardCell {
+            label: i.title.clone(),
+            // Never the raw journal `kind` (R3: no internal identifiers in
+            // user copy) — a plain-words label for the same closed vocabulary
+            // `activity_journal::KNOWN_KINDS` defines.
+            value: human_activity_kind(&i.kind).to_string(),
+            ..Default::default()
+        })
+        .collect();
+    Json(CardData {
+        cells,
+        note: None,
+        configured: None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[serial_test::serial]
+    fn people_attention_threshold_defaults_to_21_days() {
+        let _guard = env_lock::lock_env([(PEOPLE_ATTENTION_DAYS_ENV, None::<&str>)]);
+        assert_eq!(people_attention_threshold_days(), 21);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn people_attention_threshold_reads_the_env_var() {
+        let _guard = env_lock::lock_env([(PEOPLE_ATTENTION_DAYS_ENV, Some("10"))]);
+        assert_eq!(people_attention_threshold_days(), 10);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn people_attention_threshold_ignores_garbage_and_falls_back() {
+        // One guard at a time: env_lock holds a single process-wide mutex, so
+        // taking it again on this thread while the first guard lives would
+        // deadlock the test binary.
+        for garbage in ["not-a-number", "-5"] {
+            let _guard = env_lock::lock_env([(PEOPLE_ATTENTION_DAYS_ENV, Some(garbage))]);
+            assert_eq!(
+                people_attention_threshold_days(),
+                21,
+                "{garbage:?} must fall back"
+            );
+        }
+    }
+
+    #[test]
+    fn human_activity_kind_never_leaks_the_raw_identifier() {
+        for kind in permagent::activity_journal::KNOWN_KINDS {
+            let label = human_activity_kind(kind);
+            assert!(
+                !label.contains('_'),
+                "{kind} -> {label} still looks internal"
+            );
+        }
+        assert_eq!(human_activity_kind("goal_state_changed"), "Goal update");
+        assert_eq!(human_activity_kind("made_up_kind"), "Activity");
+    }
 
     #[test]
     fn card_type_serializes_as_type_key() {
@@ -908,6 +1728,7 @@ mod tests {
             refresh_seconds: Some(30),
             source: "built-in".to_string(),
             configure: None,
+            auto_height: false,
         };
         let v = manifest_to_json(&m);
         assert_eq!(v["type"], "system_stats");
@@ -915,6 +1736,36 @@ mod tests {
         assert_eq!(v["dataEndpoint"], "/api/dashboard/system-stats");
         assert_eq!(v["defaultSize"]["w"], 5);
         assert_eq!(v["refreshSeconds"], 30);
+        assert!(
+            v.get("autoHeight").is_none(),
+            "false is the quiet default, omitted from the wire"
+        );
+    }
+
+    #[test]
+    fn only_the_one_line_strips_are_auto_height_builtins() {
+        // The agent status strip and the week headline are single-line strips
+        // that must follow their content; every other builtin keeps its h.
+        const AUTO_HEIGHT: [&str; 2] = ["henry_status", "week_headline"];
+        let manifests = builtin_card_manifests();
+        for card_type in AUTO_HEIGHT {
+            let strip = manifests.iter().find(|m| m.card_type == card_type).unwrap();
+            assert!(
+                strip.auto_height,
+                "{card_type}: a one-line strip must follow its content, not stretch"
+            );
+            assert_eq!(manifest_to_json(strip)["autoHeight"], true);
+        }
+        for other in manifests
+            .iter()
+            .filter(|m| !AUTO_HEIGHT.contains(&m.card_type.as_str()))
+        {
+            assert!(
+                !other.auto_height,
+                "{} should not be auto-height",
+                other.card_type
+            );
+        }
     }
 
     #[test]

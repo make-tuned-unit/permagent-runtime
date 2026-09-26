@@ -55,6 +55,10 @@ const DRAWINGS: Record<string, { count: number; why: string }> = {
     count: 1,
     why: 'the holdings P&L sparkline and its fitted trend line',
   },
+  'components/dashboard/cards/ProjectHealthGridCard.tsx': {
+    count: 1,
+    why: 'the per-project 14-day activity sparkline — a data graphic',
+  },
   'components/dashboard/Echo.tsx': {
     count: 1,
     why: 'the 132x46 red string of memory — an animated signature mark with a '

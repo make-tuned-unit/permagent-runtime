@@ -2,7 +2,7 @@ import { memo, useEffect, useState } from 'react';
 import { duration, ease, font, radius, space, textSize } from '../../../styles/tokens';
 import type { ThemeColors } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
-import { SectionTitle, EmptyNote, StatCompact } from '../atoms';
+import { SectionTitle, EmptyNote, StatCompact, CardScrollBody } from '../atoms';
 import { apiFetch } from '../../../lib/api';
 import { navigateToTool, useCommandCenter } from '../../../lib/store';
 import { GrowthSparkline } from '../../grow/GrowthSparkline';
@@ -57,6 +57,7 @@ export const GrowthResultsCard = memo(function GrowthResultsCard() {
   const trend = fleet?.trend ?? [];
   const byProject = fleet?.byProject ?? [];
   const hasTrend = trend.some((p) => p.helped + p.hindered + p.noEffect > 0);
+  const summary = fleet ? growthSummary(fleet) : null;
 
   return (
     <div
@@ -73,7 +74,7 @@ export const GrowthResultsCard = memo(function GrowthResultsCard() {
     >
       <Tooltip content="Open growth results">
         <div onClick={openFleet} style={{ cursor: 'pointer' }}>
-          <SectionTitle title="Growth" right={measured > 0 ? `${measured} measured` : undefined} />
+          <SectionTitle title="Growth" right={summary?.right} />
         </div>
       </Tooltip>
 
@@ -88,16 +89,36 @@ export const GrowthResultsCard = memo(function GrowthResultsCard() {
       ) : (
         <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
           <div style={{
+            // Capped (R3, coordinator 2560px round 2): an unbounded 4-column
+            // `1fr` grid stretched to the card's full width spread Helped /
+            // Hindered / No change / Inconclusive ~2,000px apart on a wide
+            // card — four numbers that belong to one summary read as four
+            // unrelated ones. Same 720px ceiling as the by-project row below
+            // (GrowthProjectRow), so every label/value cluster in this card
+            // stays a readable width no matter how wide the card is drawn.
             display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
-            gap: `${space.lg}px ${space.xl}px`,
+            gap: `${space.lg}px ${space.xl}px`, maxWidth: 720,
           }}>
             <StatCompact label="Helped" value={fleet.helped} cyan={fleet.helped > 0} />
             <StatCompact label="Hindered" value={fleet.hindered} />
             <StatCompact label="No change" value={fleet.noEffect} />
-            <StatCompact label="Projects" value={fleet.projects} />
+            <StatCompact label="Inconclusive" value={fleet.inconclusive} />
           </div>
 
-          {trend.length > 0 && (
+          {summary?.allInconclusive && (
+            // Every measured window came back inconclusive. Without this the
+            // card read "13 measured" over Helped 0 / Hindered 0 / No change 0
+            // and flat lines — which looks like the numbers failed to load.
+            <div data-testid="growth-inconclusive-note" style={{ marginTop: space.lg }}>
+              <EmptyNote hint="Inconclusive means the change stayed inside the project's normal week-to-week swing — the common result at low traffic. Later windows may still decide it.">
+                No verdict yet: all {measured} measured window{measured === 1 ? ' was' : 's were'} inconclusive
+              </EmptyNote>
+            </div>
+          )}
+
+          {/* A 12-week line with no decisive verdict in it is a flat zero: it
+              says nothing the note above does not, and reads as broken. */}
+          {hasTrend && trend.length > 0 && (
             <Tooltip content="All projects, last 12 weeks">
               <div onClick={openFleet} style={{ cursor: 'pointer', marginTop: space.xl }}>
                 <div style={{
@@ -110,13 +131,14 @@ export const GrowthResultsCard = memo(function GrowthResultsCard() {
           )}
 
           {byProject.length > 0 && (
-            <div style={{ flex: 1, overflowY: 'auto', marginTop: space.lg, minHeight: 0 }}>
+            <CardScrollBody testId="growth-by-project" style={{ marginTop: space.lg }}>
               <div style={{
                 fontFamily: font.mono, fontSize: 9, letterSpacing: '0.08em',
                 textTransform: 'uppercase', color: colors.textDim, marginBottom: space.xs,
               }}>By project</div>
               {byProject.map((row) => {
                 const net = lastCumulativeNet(row.points);
+                const decisive = row.helped + row.hindered + row.noEffect > 0;
                 return (
                   // Not on the Button primitive: the whole row IS the button —
                   // a truncating project name that must flex, a stats line, and
@@ -140,11 +162,15 @@ export const GrowthResultsCard = memo(function GrowthResultsCard() {
                       <span style={{
                         fontFamily: font.mono, fontSize: 10, color: colors.textDim, flexShrink: 0,
                       }}>
-                        {row.helped} helped
-                        {row.hindered > 0 ? ` · ${row.hindered} hindered` : ''}
-                        {net !== 0 ? ` · ${net > 0 ? '+' : ''}${net}` : ''}
+                        {decisive ? (
+                          <>
+                            {row.helped} helped
+                            {row.hindered > 0 ? ` · ${row.hindered} hindered` : ''}
+                            {net !== 0 ? ` · ${net > 0 ? '+' : ''}${net}` : ''}
+                          </>
+                        ) : 'inconclusive so far'}
                       </span>
-                      <div style={{ width: 88, flexShrink: 0 }}>
+                      <div style={{ width: 88, flexShrink: 0, visibility: decisive ? 'visible' : 'hidden' }}>
                         <GrowthSparkline
                           points={row.points}
                           colors={colors}
@@ -156,7 +182,7 @@ export const GrowthResultsCard = memo(function GrowthResultsCard() {
                     </GrowthProjectRow>
                 );
               })}
-            </div>
+            </CardScrollBody>
           )}
         </div>
       )}
@@ -185,13 +211,14 @@ function GrowthProjectRow({
     <Tooltip content={title}>
       <button
         type="button"
+        data-card-row=""
         onClick={onClick}
         onMouseEnter={() => setHover(true)}
         onMouseLeave={() => { setHover(false); setPressed(false); }}
         onPointerDown={() => setPressed(true)}
         onPointerUp={() => setPressed(false)}
         style={{
-          display: 'flex', alignItems: 'center', gap: space.lg,
+          display: 'flex', alignItems: 'center',
           width: '100%', padding: `${space.sm}px 0`,
           border: 'none', borderTop: `1px solid ${colors.border}`,
           background: pressed ? colors.fillActive : hover ? colors.fillHover : 'transparent',
@@ -199,8 +226,42 @@ function GrowthProjectRow({
           transition: reduceMotion ? 'none' : `background ${duration.fast}ms ${ease.out}`,
         }}
       >
-        {children}
+        {/* dagK coordinator, 2560px pass: this row used to be the flex
+            container itself, so a card stretched to the full 12-column grid
+            (fillHoles) put the project name at the left edge and its stats
+            ~1,800px away at the right edge — readable as two unrelated lines,
+            not one row. Capped at a readable width (R3), the name/stats/
+            sparkline cluster together regardless of how wide the card is
+            drawn; the row's hit target and hover fill still span the card. */}
+        <span style={{ display: 'flex', alignItems: 'center', gap: space.lg, width: '100%', maxWidth: 720, minWidth: 0 }}>
+          {children}
+        </span>
       </button>
     </Tooltip>
   );
+}
+
+/**
+ * The card's headline numbers, said without contradiction.
+ *
+ * "Measured" counts every judged window — helped, hindered, no change AND
+ * inconclusive (`tally_verdicts` in growth_actions.rs folds `inconclusive` and
+ * `confounded` together). The stat row used to show only the first three, so a
+ * fleet whose 13 windows were all inconclusive read "13 measured" beside three
+ * zeros. The fourth number is now on the card, and the all-inconclusive case
+ * is named.
+ */
+export function growthSummary(fleet: {
+  helped: number; hindered: number; noEffect: number; inconclusive: number; projects: number;
+}): { measured: number; decisive: number; allInconclusive: boolean; right: string | undefined } {
+  const decisive = fleet.helped + fleet.hindered + fleet.noEffect;
+  const measured = decisive + fleet.inconclusive;
+  if (measured === 0) return { measured, decisive, allInconclusive: false, right: undefined };
+  const projects = fleet.projects > 0 ? ` · ${fleet.projects} project${fleet.projects === 1 ? '' : 's'}` : '';
+  return {
+    measured,
+    decisive,
+    allInconclusive: decisive === 0,
+    right: `${measured} measured${projects}`,
+  };
 }

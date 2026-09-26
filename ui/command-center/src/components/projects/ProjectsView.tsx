@@ -13,6 +13,9 @@ import { CardDetailModal } from './CardDetailModal';
 import { PERSONAL_ID, CANCELLABLE_STATES, type Project, type BoardColumn, type Card } from './types';
 import { ViewHeader } from '../common/ViewHeader';
 import { StateBlock } from '../common/StateBlock';
+import { Chip } from '../common/Chip';
+import { relativeTimeAgo } from '../../lib/time-decay';
+import { useProjectSignals, type ProjectSignal } from './useProjectSignals';
 
 
 import { Tooltip } from '../common/Tooltip';
@@ -293,6 +296,11 @@ projects, onOpenProject, onStatusChange }: {
   };
   const active = projects.filter(p => p.status === 'active').sort(byRecency);
   const hasShelved = projects.some(p => p.status === 'paused' || p.status === 'archived');
+  // P3 (QA 2026-09-24): the grid showed name/description/tags only, with no
+  // way to tell which project needed attention without opening it. Fetched
+  // for the active grid only — the shelved sections are collapsed by default
+  // and load their signal once expanded, below.
+  const signals = useProjectSignals(active.map(p => p.id));
 
   return (
     <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', background: gradient.workspace, color: colors.text, fontFamily: font.body }}>
@@ -322,6 +330,7 @@ projects, onOpenProject, onStatusChange }: {
             <ProjectCard
               key={project.id}
               project={project}
+              signal={signals[project.id]}
               onOpen={() => onOpenProject(project.id)}
               onDragStart={(e) => handleDragStart(e, project.id)}
             />
@@ -421,15 +430,19 @@ projects, onOpenProject, onStatusChange }: {
 }
 
 function ProjectCard({
-project, onOpen, onDragStart }: {
+project, signal, onOpen, onDragStart }: {
   project: Project;
+  /** Open tasks / goals in flight / last activity (P3). Absent while the
+   *  fetch is in flight or for a shelved project the grid never fetched — the
+   *  signal row is simply left off rather than shown as zeros, so "no signal
+   *  yet" is never confused with "genuinely quiet". */
+  signal?: ProjectSignal;
   onOpen: () => void;
   onDragStart: (e: React.DragEvent) => void;
 }) {
   const { colors, reduceMotion } = useTheme();
-  const tagVeil = colors.fillHover;
-  // The chip tint, one rung up the same neutral ladder (4/7/11).
   const isPersonal = project.id === PERSONAL_ID;
+  const hasSignal = !!signal && (signal.openTasks > 0 || signal.goalsInFlight > 0 || !!signal.lastActivityAt);
 
   return (
     <div
@@ -453,11 +466,7 @@ project, onOpen, onDragStart }: {
       onBlur={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.border; }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: space.sm }}>
-        {isPersonal && (
-          <span style={{ fontSize: 10, padding: `${space.xxs}px ${space.xs}px`, borderRadius: radius.xs, background: colors.cyanSoft, color: colors.cyan, fontWeight: 600 }}>
-            DEFAULT
-          </span>
-        )}
+        {isPersonal && <Chip kind="static" tone="accent">DEFAULT</Chip>}
         <span style={{ fontSize: textSize.small, fontWeight: 600, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {project.name}
         </span>
@@ -467,12 +476,36 @@ project, onOpen, onDragStart }: {
           {project.description}
         </div>
       )}
+      {/* P3 live signal: what's actually in flight, so a reader can tell
+          which project needs a look without opening it (NN/g H1, visibility
+          of system status; HAX G4, contextually relevant info). Same Chip
+          primitive the rest of the app uses for counts, not a hand-rolled
+          pill — R6/R7 convergence. */}
+      {hasSignal && (
+        <div data-testid="project-card-signal" style={{ display: 'flex', alignItems: 'center', gap: space.xs, marginTop: space.sm, flexWrap: 'wrap' }}>
+          {signal!.goalsInFlight > 0 && (
+            <Chip kind="count" tone="accent" quiet title={`${signal!.goalsInFlight} goal${signal!.goalsInFlight === 1 ? '' : 's'} in flight`}>
+              {signal!.goalsInFlight} goal{signal!.goalsInFlight === 1 ? '' : 's'}
+            </Chip>
+          )}
+          {signal!.openTasks > 0 && (
+            <Chip kind="count" quiet title={`${signal!.openTasks} open task${signal!.openTasks === 1 ? '' : 's'}`}>
+              {signal!.openTasks} open
+            </Chip>
+          )}
+          {signal!.lastActivityAt && (
+            <Tooltip content={new Date(signal!.lastActivityAt).toLocaleString()}>
+              <span style={{ fontSize: 10, color: colors.textDim }}>
+                {relativeTimeAgo(signal!.lastActivityAt) || 'just now'}
+              </span>
+            </Tooltip>
+          )}
+        </div>
+      )}
       {project.tags.length > 0 && (
         <div style={{ display: 'flex', gap: space.xs, marginTop: space.sm, flexWrap: 'wrap' }}>
           {project.tags.slice(0, 3).map((tag, ti) => (
-            <span key={`${tag}-${ti}`} style={{ fontSize: 10, padding: `${space.xxs}px ${space.xs}px`, borderRadius: radius.xs, background: tagVeil, color: colors.textDim }}>
-              {tag}
-            </span>
+            <Chip key={`${tag}-${ti}`} kind="static" quiet>{tag}</Chip>
           ))}
         </div>
       )}

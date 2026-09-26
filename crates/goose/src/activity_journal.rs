@@ -564,6 +564,54 @@ pub async fn prune_older_than_days(pool: &Pool<Sqlite>, days: i64) -> Result<u64
     Ok(result.rows_affected())
 }
 
+/// One project's activity count on one calendar day — the Home dashboard's
+/// `project_health_grid` sparkline source (dagK home-templates lane, Phase-1
+/// presentation pass). Real counts from the durable journal, never a
+/// fabricated series: a project with no `goal_state_changed` rows in the
+/// window simply has no entries here, which the caller reads as "no history
+/// yet" rather than drawing a flat, misleadingly-confident zero line (P12).
+#[derive(Debug, Clone, Serialize)]
+pub struct DailyProjectActivity {
+    pub project_id: String,
+    /// `YYYY-MM-DD`, local to the daemon's SQLite `date()` — good enough for
+    /// a 14-day trend shape, not a billing boundary.
+    pub date: String,
+    pub count: i64,
+}
+
+/// `goal_state_changed` rows joined to their card's `project_id`, grouped by
+/// project + day, for the last `days` days. Only `goal_state_changed` counts
+/// today — it is the one journaled kind with a reliable `project_id` join
+/// (via `ref_kind = 'goal'`); decisions/librarian/nudge rows have no project
+/// column to group by yet, so folding them in would need a second join this
+/// function does not have evidence for.
+pub async fn daily_goal_activity_by_project(
+    pool: &Pool<Sqlite>,
+    days: i64,
+) -> Result<Vec<DailyProjectActivity>> {
+    let since =
+        (Utc::now() - chrono::Duration::days(days)).to_rfc3339_opts(SecondsFormat::Millis, true);
+    let rows = sqlx::query(
+        "SELECT c.project_id AS project_id, date(aj.ts) AS date, COUNT(*) AS count
+         FROM activity_journal aj
+         JOIN cards c ON aj.ref_kind = 'goal' AND c.id = aj.ref_id
+         WHERE aj.kind = 'goal_state_changed' AND aj.ts >= ? AND c.project_id IS NOT NULL
+         GROUP BY c.project_id, date(aj.ts)
+         ORDER BY c.project_id, date(aj.ts)",
+    )
+    .bind(&since)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| DailyProjectActivity {
+            project_id: r.get("project_id"),
+            date: r.get("date"),
+            count: r.get("count"),
+        })
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef, type CSSProperties } from 'react';
 import { radius, font, space, textSize } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
-import { Stat, SectionTitle, EmptyNote } from '../atoms';
+import { Stat, SectionTitle, EmptyNote, CardScrollBody } from '../atoms';
 import { apiFetch } from '../../../lib/api';
 import type { CardManifest } from './registry';
 import { CardIcon } from './cardIcons';
@@ -20,6 +20,15 @@ import { Tooltip } from '../../common/Tooltip';
  * cannot present breakfast's numbers as this moment's.
  */
 const STATIC_CARD_STALE_AFTER_MS = 5 * 60_000;
+
+/**
+ * Widest a `list`/`key-value` label/value row is ever drawn, regardless of
+ * how wide the card itself is (R3 "status near label"; coordinator, 2560px
+ * round 2). Within the 560–720px range the coordinator gave, matching the
+ * 720 already used for Growth's per-project row (GrowthResultsCard.tsx) so
+ * the two label/value treatments in this app read the same width.
+ */
+const KV_ROW_MAX_WIDTH = 640;
 
 /**
  * The normalized payload every manifest-card data endpoint returns. Layout is
@@ -163,7 +172,11 @@ export function ManifestCard({ manifest }: Props) {
       background: colors.surface,
       border: `1px solid ${colors.border}`,
       boxShadow: [colors.elevationRaised, colors.cardHighlight].filter(Boolean).join(', '),
-      height: '100%', boxSizing: 'border-box',
+      // auto_height cards (a one-line status strip) size to their content
+      // instead of stretching to fill the grid row the packer reserved —
+      // Dashboard.tsx pairs this with `alignSelf: 'start'` on the grid cell
+      // itself so the reserved space is left blank below, not stretched into.
+      height: manifest.autoHeight ? 'auto' : '100%', boxSizing: 'border-box',
       overflow: 'hidden',
       display: 'flex', flexDirection: 'column',
     }}>
@@ -360,6 +373,36 @@ export function ManifestCard({ manifest }: Props) {
     const [hero, ...rest] = cells;
     const inline = rest.filter(c => c.group !== 'forecast');
     const forecast = rest.filter(c => c.group === 'forecast');
+    // A hero-only card (no supporting values, no forecast — e.g. a "status
+    // line" card like henry_status) has nothing that needs the label/value
+    // stacked on their own rows; one inline row is the whole content, so the
+    // tile's height follows it instead of reserving two rows' worth of
+    // vertical space for a single fact (coordinator, Phase-1 presentation
+    // pass: "card height must follow content"). Weather/system-stats always
+    // carry inline cells, so this branch never changes their look.
+    const heroOnly = inline.length === 0 && forecast.length === 0;
+    if (heroOnly) {
+      return shell(
+        <div style={{ display: 'flex', alignItems: 'center', gap: space.md, minHeight: 0 }}>
+          <CardIcon name={hero.icon} size={14} />
+          <span style={{
+            fontFamily: font.body, fontSize: 10, fontWeight: 600, letterSpacing: '0.08em',
+            textTransform: 'uppercase', color: colors.textDim, flexShrink: 0,
+            whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+          }}>
+            {hero.label || manifest.name}
+          </span>
+          <span style={{
+            fontFamily: font.display, fontSize: 15, fontWeight: 600, lineHeight: 1.2,
+            color: hero.accent ? colors.cyan : colors.text,
+            whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 0,
+            fontVariantNumeric: 'tabular-nums',
+          }}>
+            {hero.value}
+          </span>
+        </div>,
+      );
+    }
     return shell(
       <div style={{ display: 'flex', flexDirection: 'column', gap: space.sm, minHeight: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: space.sm, color: colors.textDim }}>
@@ -451,7 +494,7 @@ export function ManifestCard({ manifest }: Props) {
   return shell(
     <>
       <SectionTitle title={manifest.name} />
-      <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
+      <CardScrollBody testId="manifest-body">
         {manifest.layout === 'stat-grid' && (
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: space.xxxl, alignContent: 'center', height: '100%' }}>
             {cells.map((c, i) => (
@@ -461,9 +504,16 @@ export function ManifestCard({ manifest }: Props) {
         )}
 
         {manifest.layout === 'key-value' && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: space.lg }}>
+          // Capped (R3, coordinator 2560px round 2): a card stretched to the
+          // full grid width used to put `justifyContent: 'space-between'`'s
+          // two ends ~1,900px apart — a label at the left edge and its own
+          // value at the right, read as two unrelated lines instead of one
+          // row. `KV_ROW_MAX_WIDTH` keeps every row the width of its content
+          // regardless of how wide the card is drawn, same fix already
+          // applied to Growth's per-project row (GrowthResultsCard.tsx).
+          <div style={{ display: 'flex', flexDirection: 'column', gap: space.lg, maxWidth: KV_ROW_MAX_WIDTH }}>
             {cells.map((c, i) => (
-              <div key={i} style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: space.xl }}>
+              <div key={i} data-card-row="" style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: space.xl }}>
                 <span style={{ fontFamily: font.body, fontSize: textSize.caption, color: colors.textDim }}>{c.label}</span>
                 <span style={{ fontFamily: font.body, fontSize: textSize.small, fontWeight: 600, color: c.accent ? colors.cyan : colors.text }}>{c.value}</span>
               </div>
@@ -472,9 +522,13 @@ export function ManifestCard({ manifest }: Props) {
         )}
 
         {manifest.layout === 'list' && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: space.xs }}>
+          // Same cap as `key-value` above, and for the same reason: this is
+          // the layout Cost vs outcome and the Finance board actually use, so
+          // it is the one the coordinator's 2560px reading caught label and
+          // value stretched apart on.
+          <div style={{ display: 'flex', flexDirection: 'column', gap: space.xs, maxWidth: KV_ROW_MAX_WIDTH }}>
             {cells.map((c, i) => (
-              <div key={i} style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: space.xl, padding: `${space.sm}px 0`, borderBottom: i < cells.length - 1 ? `1px solid ${colors.border}` : 'none' }}>
+              <div key={i} data-card-row="" style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: space.xl, padding: `${space.sm}px 0`, borderBottom: i < cells.length - 1 ? `1px solid ${colors.border}` : 'none' }}>
                 <div style={{ minWidth: 0 }}>
                   <div style={{ fontFamily: font.body, fontSize: textSize.small, fontWeight: 500, color: colors.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.label}</div>
                   {c.sub && <div style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.textDim, marginTop: space.xxs }}>{c.sub}</div>}
@@ -486,7 +540,7 @@ export function ManifestCard({ manifest }: Props) {
             ))}
           </div>
         )}
-      </div>
+      </CardScrollBody>
       {/* Events from People are listed, but Apple Calendar is not connected:
           the way to connect it stays on the card rather than disappearing
           the moment anything else has something to show. */}

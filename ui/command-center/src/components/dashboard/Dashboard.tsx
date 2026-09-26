@@ -6,7 +6,11 @@ import { Mobius } from '../mobius/Mobius';
 import { useDashboard } from './useDashboard';
 import { useLiveGoals } from '../../lib/useLiveGoals';
 import { useDueTodos } from '../../lib/useDueTodos';
-import { useLayout, reflow, DEFAULT_LAYOUT, type DashboardLayoutData, type DashboardCardLayout } from './useLayout';
+import {
+  useLayout, reflow, layoutForDisplay, minSpanForWidth, DEFAULT_LAYOUT,
+  MASONRY_ROW_UNIT, spanForContent, settleSpan,
+  type DashboardLayoutData, type DashboardCardLayout, type SpanSettleState,
+} from './useLayout';
 import { useCardRegistry } from './cards/useCardRegistry';
 import { AddCardPicker } from './AddCardPicker';
 import { DashboardOverflowMenu } from './DashboardOverflowMenu';
@@ -19,7 +23,12 @@ import { HeaderAgentStatus } from '../sidebar/NavAgentStatus';
 import { ConfirmDialog } from '../common/ConfirmDialog';
 import { Button } from '../common/Button';
 import { AsOf } from '../common/AsOf';
-import { useState, useCallback, useRef, useMemo, type CSSProperties } from 'react';
+import { useState, useCallback, useEffect, useRef, useMemo, type CSSProperties } from 'react';
+import { FiLayout } from 'react-icons/fi';
+import { LayoutsGallery } from './LayoutsGallery';
+import { LayoutPreviewOverlay } from './LayoutPreviewOverlay';
+import { comingSoonCards, DASHBOARD_TEMPLATES } from './templates';
+import { useDashboardLayoutPreviewEvent, clearDashboardLayoutPreview } from './dashboardLayoutPreviewEvent';
 
 import { Tooltip } from '../common/Tooltip';
 type SaveState = 'idle' | 'saving' | 'saved' | 'error';
@@ -52,23 +61,128 @@ export function Dashboard() {
   // the goal subscription above — the card must not fetch per render.
   const dueTodos = useDueTodos();
   const todosProps = useMemo(() => ({ todos: dueTodos }), [dueTodos]);
-  const { layout, persistLayout } = useLayout();
+  const { layout, persistLayout, revertLayout } = useLayout();
   // Rendered registry = first-party code cards + daemon-served manifest cards.
   const { registry, status: registryStatus } = useCardRegistry();
   const [isEditMode, setIsEditMode] = useState(false);
   const [saveState, setSaveState] = useState<SaveState>('idle');
   const [showPicker, setShowPicker] = useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [showLayouts, setShowLayouts] = useState(false);
+  // dagK home-templates lane: the agent's preview_dashboard_layout tool
+  // proposes via a `dashboard_layout_preview` event rather than the gallery —
+  // this surfaces it the same way the gallery's own "Try" does (P9: always an
+  // inspectable overlay, never a silent write).
+  const agentPreview = useDashboardLayoutPreviewEvent();
+  const agentPreviewTemplate = agentPreview?.templateId
+    ? DASHBOARD_TEMPLATES.find(t => t.id === agentPreview.templateId)
+    : undefined;
   const [dragSrcId, setDragSrcId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
   const [dragPos, setDragPos] = useState<{ x: number; y: number } | null>(null);
   const dragGhostSize = useRef<{ w: number; h: number }>({ w: 0, h: 0 });
   const cardRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const gridRef = useRef<HTMLDivElement>(null);
+  // Content-driven row spans (masonry via CSS grid; coordinator, 2560px round
+  // 2). Each card's rendered span (in MASONRY_ROW_UNIT-tall tracks) tracks its
+  // OWN measured height, capped at what its configured `h` would reserve
+  // under the old fixed-row grid — see `spanForContent`'s doc. `spans` is
+  // what render reads; `spanSettle`/`pendingHeights`/`flushHandle` are the
+  // measurement pipeline behind it, kept in refs so a ResizeObserver firing
+  // mid-frame never triggers more than one state update per animation frame.
+  const [spans, setSpans] = useState<Record<string, number>>({});
+  const spanSettle = useRef<Map<string, SpanSettleState>>(new Map());
+  const pendingHeights = useRef<Map<string, number>>(new Map());
+  const flushHandle = useRef<number | null>(null);
+  // Each visible card's CURRENT configured `h`, refreshed every render — read
+  // by `measureCard` (stable identity; never re-created) instead of being
+  // captured in a closure, so a resize in Customize is reflected the next
+  // time a measurement lands without giving the callback a changing identity
+  // (which would otherwise mean tearing down and rebuilding every card's
+  // ResizeObserver on every render).
+  const configuredHeights = useRef<Map<string, number>>(new Map());
+  const cellObservers = useRef<Map<string, ResizeObserver>>(new Map());
+  const cellRefFns = useRef<Map<string, (el: HTMLDivElement | null) => void>>(new Map());
+
+  const measureCard = useCallback((id: string, heightPx: number) => {
+    pendingHeights.current.set(id, heightPx);
+    if (flushHandle.current != null) return;
+    flushHandle.current = requestAnimationFrame(() => {
+      flushHandle.current = null;
+      const updates: Record<string, number> = {};
+      let changed = false;
+      pendingHeights.current.forEach((h, cardId) => {
+        const configuredH = configuredHeights.current.get(cardId) ?? 1;
+        const raw = spanForContent(h, configuredH, MASONRY_ROW_UNIT, GAP, ROW_HEIGHT);
+        const prevSettle = spanSettle.current.get(cardId);
+        const next = settleSpan(prevSettle, raw);
+        spanSettle.current.set(cardId, next);
+        if (!prevSettle || prevSettle.span !== next.span) { updates[cardId] = next.span; changed = true; }
+      });
+      pendingHeights.current.clear();
+      if (changed) setSpans(s => ({ ...s, ...updates }));
+    });
+  }, []);
+
+  // Stable per-card ref callback: caches one function per id so the DOM node
+  // is never torn down and re-observed just because a re-render passed a new
+  // inline arrow function (the pitfall with callback refs). `measureCard`
+  // above is itself stable, so a cached function keeps working forever.
+  const getCellRef = useCallback((id: string) => {
+    let fn = cellRefFns.current.get(id);
+    if (fn) return fn;
+    fn = (el: HTMLDivElement | null) => {
+      if (el) {
+        cardRefs.current.set(id, el);
+        if (typeof ResizeObserver !== 'undefined') {
+          let ro = cellObservers.current.get(id);
+          if (!ro) {
+            ro = new ResizeObserver(entries => {
+              const h = entries[0]?.contentRect.height;
+              if (h != null) measureCard(id, h);
+            });
+            cellObservers.current.set(id, ro);
+          }
+          ro.observe(el);
+        }
+      } else {
+        cardRefs.current.delete(id);
+        const ro = cellObservers.current.get(id);
+        if (ro) { ro.disconnect(); cellObservers.current.delete(id); }
+      }
+    };
+    cellRefFns.current.set(id, fn);
+    return fn;
+  }, [measureCard]);
+
+  useEffect(() => {
+    return () => {
+      cellObservers.current.forEach(ro => ro.disconnect());
+      cellObservers.current.clear();
+      if (flushHandle.current != null) cancelAnimationFrame(flushHandle.current);
+    };
+  }, []);
   // Resize state
   const [resizeId, setResizeId] = useState<string | null>(null);
   const resizeStart = useRef<{ pointerId: number; startX: number; startY: number; origW: number; origH: number; colPx: number }>({ pointerId: 0, startX: 0, startY: 0, origW: 0, origH: 0, colPx: 0 });
   const [resizePreview, setResizePreview] = useState<{ w: number; h: number } | null>(null);
+  // The grid's own width, so cards can be drawn no narrower than is readable
+  // (see minSpanForWidth). Observed rather than read once: the chat dock and
+  // sidebar change it without a window resize.
+  const [gridWidth, setGridWidth] = useState(0);
+  const gridMounted = !loading && !!data;
+  useEffect(() => {
+    const el = gridRef.current;
+    if (!el) return;
+    setGridWidth(el.getBoundingClientRect().width);
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(entries => {
+      const w = entries[0]?.contentRect.width;
+      if (w) setGridWidth(w);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [gridMounted]);
 
   const reorderCards = useCallback((srcId: string, targetId: string) => {
     if (srcId === targetId) return;
@@ -223,8 +337,20 @@ export function Dashboard() {
   };
 
   const visibleCards = layout.cards.filter(c => c.visible);
+  // Where each card is DRAWN. The stored x/y were a shelf packing that left
+  // holes; this is a dense first-fit pack in the user's order, stretched into
+  // any hole nothing else fits (display-only). Customize shows true sizes —
+  // no stretch — so the resize grip edits what you see.
+  const cells = layoutForDisplay(
+    visibleCards.map(c => (resizeId === c.id && resizePreview ? { id: c.id, size: resizePreview } : c)),
+    { minSpan: minSpanForWidth(gridWidth, GAP), fill: !isEditMode },
+  );
   const canRemove = visibleCards.length > 1;
   const currentTypes = layout.cards.map(c => c.type);
+  // Refreshed every render (not an effect) so `measureCard` — stable, never
+  // re-created — always reads the CURRENT configured `h` for a card, even one
+  // just resized in Customize, without needing `h` in its own dependencies.
+  visibleCards.forEach(c => configuredHeights.current.set(c.id, c.size.h));
 
   return (
     <div
@@ -276,11 +402,41 @@ export function Dashboard() {
           </Button>
         )}
         <SaveIndicator state={saveState} />
-        {isEditMode && (
-          <DashboardOverflowMenu items={[
-            { label: 'Reset to default', icon: <FiRotateCcw size={14} />, onClick: () => setShowResetConfirm(true) },
-          ]} />
-        )}
+        <DashboardOverflowMenu items={[
+          {
+            label: 'Revert to previous layout',
+            icon: <FiRotateCcw size={14} />,
+            onClick: () => {
+              setSaveState('saving');
+              revertLayout()
+                .then(() => { setSaveState('saved'); setTimeout(() => setSaveState('idle'), 1000); })
+                .catch(() => { setSaveState('error'); setTimeout(() => setSaveState('idle'), 2000); });
+            },
+          },
+          ...(isEditMode
+            ? [{ label: 'Reset to default', icon: <FiRotateCcw size={14} />, onClick: () => setShowResetConfirm(true) }]
+            : []),
+        ]} />
+        <Button
+          colors={colors}
+          type="button"
+          onClick={() => setShowLayouts(true)}
+          style={{
+            '--pa-btn-bg': colors.surface,
+            '--pa-btn-fg': colors.textMuted,
+            '--pa-btn-border': colors.border,
+            '--pa-btn-bg-hover': colors.surfaceHi,
+            '--pa-btn-fg-hover': colors.text,
+            '--pa-btn-border-hover': colors.borderHi,
+            '--pa-btn-pad': '5px 14px',
+            '--pa-btn-radius': `${radius.md}px`,
+            fontFamily: font.body, fontSize: textSize.caption,
+          } as CSSProperties}
+        >
+          <span style={{ display: 'flex', alignItems: 'center', gap: space.sm }}>
+            <FiLayout size={14} /> Layouts
+          </span>
+        </Button>
         <CustomizeButton
           editing={isEditMode}
           onToggle={() => setIsEditMode(!isEditMode)}
@@ -330,13 +486,21 @@ export function Dashboard() {
         style={{
           display: 'grid',
           gridTemplateColumns: 'repeat(12, 1fr)',
-          gridAutoRows: ROW_HEIGHT,
+          // Customize keeps the original fixed-row grid — the resize grip
+          // drags in whole `h` units of exactly this height. Outside it, a
+          // fine row unit plus dense auto-flow is the masonry technique
+          // (coordinator, 2560px round 2): each card below sets only a row
+          // SPAN (no explicit start), so the browser's own dense packing
+          // decides where it lands, backfilling a shorter neighbour's leftover
+          // tracks instead of leaving them reserved underneath it.
+          gridAutoRows: isEditMode ? ROW_HEIGHT : MASONRY_ROW_UNIT,
+          gridAutoFlow: isEditMode ? 'row' : 'row dense',
           gap: GAP,
           touchAction: isEditMode ? 'none' : 'auto',
           userSelect: (dragSrcId || resizeId) ? 'none' : 'auto',
         }}
       >
-        {visibleCards.map(card => {
+        {visibleCards.map((card, index) => {
           const entry = registry[card.type];
           // A card in the layout with no registry entry used to `return null`:
           // it left a hole in the grid and no explanation. Two of the default
@@ -347,20 +511,51 @@ export function Dashboard() {
           // Manifest cards self-fetch and only need their manifest; first-party
           // code cards read pre-fetched data from cardDataMap.
           const props = entry?.manifest ? { manifest: entry.manifest } : (cardDataMap[card.type] || {});
-          const { x, y } = card.position;
+          const { x, y, w, h } = cells[index];
           const isResizing = resizeId === card.id;
-          const w = isResizing && resizePreview ? resizePreview.w : card.size.w;
-          const h = isResizing && resizePreview ? resizePreview.h : card.size.h;
           const isDragging = dragSrcId === card.id;
           const isDragTarget = dragOverId === card.id && !isDragging;
+          // The row span this card is actually drawn at, outside Customize:
+          // whatever `measureCard` last settled on, or — before any
+          // measurement has landed (first paint, or a card just added/resized)
+          // — the same ceiling `spanForContent` would cap it at, so a card
+          // never flashes at a single row before its first real measurement.
+          const contentSpan = spans[card.id] ?? spanForContent(0, h, MASONRY_ROW_UNIT, GAP, ROW_HEIGHT);
           return (
             <div
               key={card.id}
-              ref={el => { if (el) cardRefs.current.set(card.id, el); else cardRefs.current.delete(card.id); }}
+              data-testid={`dashboard-cell-${card.id}`}
+              ref={getCellRef(card.id)}
               onPointerDown={isEditMode && !resizeId ? (e) => handlePointerDown(card.id, e) : undefined}
               style={{
                 gridColumn: `${x + 1} / span ${w}`,
-                gridRow: `${y + 1} / span ${h}`,
+                // Customize: explicit start AND span, on the fixed ROW_HEIGHT
+                // grid above — the resize grip drags `h` directly, so this
+                // must be exactly what it edits. Outside Customize: span
+                // ONLY, no explicit start, on the fine masonry grid above —
+                // that is what lets `grid-auto-flow: dense` place this card
+                // wherever its column range is free for `contentSpan` tracks,
+                // backfilling a shorter neighbour's leftover space instead of
+                // stacking strictly under whichever card came before it.
+                gridRow: isEditMode ? `${y + 1} / span ${h}` : `span ${contentSpan}`,
+                // Rows size to content, with the configured `h` as a MAX, not
+                // a fixed height (coordinator, 2560px pass: In Flight/Needs
+                // You/To-dos sat 50%+ empty; ambient status strips left a
+                // void band under them). Outside Customize, every card is
+                // top-aligned instead of stretched to the row's full track
+                // height, and capped at the pixel height its own `h` would
+                // have reserved — content shorter than that shrinks the box
+                // (no more empty band); content at or past it hits the cap,
+                // which gives the card's own CardScrollBody/overflow a
+                // DEFINITE height to fill-then-scroll against, unchanged from
+                // before. Customize keeps the true stretched box so the
+                // resize grip still edits what you see (layoutForDisplay's
+                // `fill: false` does the matching thing for width). This box
+                // cap is independent of (and unchanged by) the row-TRACK fix
+                // above: that fix is what stops the now-shrunk box from
+                // leaving a reserved-but-empty band in the grid underneath it.
+                alignSelf: isEditMode ? undefined : 'start',
+                maxHeight: isEditMode ? undefined : h * ROW_HEIGHT + (h - 1) * GAP,
                 cursor: isEditMode ? (isDragging ? 'grabbing' : 'grab') : 'default',
                 borderRadius: radius.lg,
                 outline: isDragTarget
@@ -493,6 +688,28 @@ export function Dashboard() {
           failureLabel="Couldn't reset the dashboard"
           onConfirm={resetToDefault}
           onCancel={() => setShowResetConfirm(false)}
+        />
+      )}
+
+      {showLayouts && (
+        <LayoutsGallery
+          currentLayout={layout}
+          onApply={async (next) => { await persistLayout(next); }}
+          onClose={() => setShowLayouts(false)}
+        />
+      )}
+
+      {/* The agent's preview_dashboard_layout tool proposed a layout — shown
+          as the same overlay the gallery's own "Try" uses (R7), regardless of
+          whether Layouts is open. Never applies on its own (P9). */}
+      {!showLayouts && agentPreview && (
+        <LayoutPreviewOverlay
+          current={layout}
+          proposed={agentPreview.layout}
+          reason={agentPreview.reason}
+          comingSoon={agentPreviewTemplate ? comingSoonCards(agentPreviewTemplate) : []}
+          onApply={async () => { await persistLayout(agentPreview.layout); clearDashboardLayoutPreview(); }}
+          onKeepCurrent={() => clearDashboardLayoutPreview()}
         />
       )}
     </div>

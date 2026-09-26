@@ -2,7 +2,7 @@ import { memo, useState, type CSSProperties } from 'react';
 import { duration, ease, radius, space, textSize } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { Button } from '../../common/Button';
-import { SectionTitle, EmptyNote } from '../atoms';
+import { SectionTitle, EmptyNote, CardScrollBody } from '../atoms';
 import { useCommandCenter } from '../../../lib/store';
 import {
   relativeDueLabel,
@@ -86,11 +86,11 @@ export const TodosCard = memo(function TodosCard({ todos }: Props) {
           Nothing due
         </EmptyNote>
       ) : (
-        <div style={{ flex: 1, overflowY: 'auto', marginTop: space.xs, marginRight: -space.md, paddingRight: space.md }}>
+        <CardScrollBody testId="todos-body" style={{ marginTop: space.xs, marginRight: -space.md, paddingRight: space.md }}>
           {groups.map(group => (
             <Group key={group.bucket} group={group} today={today} todos={todos} />
           ))}
-        </div>
+        </CardScrollBody>
       )}
     </div>
   );
@@ -144,6 +144,7 @@ function TodoRow({
 
   return (
     <div
+      data-card-row=""
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       style={{

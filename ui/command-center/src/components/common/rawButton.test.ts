@@ -108,6 +108,27 @@ const STANDING_EXCEPTIONS: Record<string, { count: number; why: string }> = {
     why: 'the whole project row is the control: truncating name, stats line and a '
       + 'fixed-width sparkline',
   },
+  'components/dashboard/cards/ProjectHealthGridCard.tsx': {
+    count: 1,
+    why: 'the whole project row is the control: truncating name, a stats line and '
+      + 'a status chip laid out by the button itself',
+  },
+  'components/dashboard/cards/OvernightDigestCard.tsx': {
+    count: 1,
+    why: 'the truncating digest row IS the control — a title-only link that '
+      + 'must ellipsize inside a max-width the primitive\'s single label span '
+      + 'cannot express',
+  },
+  'components/dashboard/cards/StalledPatternCard.tsx': {
+    count: 1,
+    why: 'the goal row is the control: a truncating title beside a fixed-width '
+      + 'project name, laid out by the button itself',
+  },
+  'components/dashboard/cards/TodayFocusCard.tsx': {
+    count: 1,
+    why: "the whole focus block is the control: a clamped title, the agent's "
+      + 'reason sentence and a trailing action link, stacked by the button',
+  },
   'components/dashboard/cards/TodosCard.tsx': {
     count: 1,
     why: 'the whole todo row is the control: a two-line title and provenance block',

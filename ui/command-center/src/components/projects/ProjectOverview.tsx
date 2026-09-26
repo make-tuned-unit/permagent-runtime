@@ -12,7 +12,10 @@ import { StateBlock } from '../common/StateBlock';
 import { ActivityPanel } from './ActivityPanel';
 import { readBrief, readLinks, normalizeUrl, saveProjectSummary, type WorkspaceLink } from './workspaceMeta';
 import { PublishSequencePanel } from './PublishSequencePanel';
+import { CardDetailModal } from './CardDetailModal';
 import type { Project, BoardColumn, Card } from './types';
+import { usePersona } from '../settings/useSettings';
+import { Chip } from '../common/Chip';
 
 import { Tooltip } from '../common/Tooltip';
 // ── Project Overview ────────────────────────────────────────────────────────
@@ -37,6 +40,9 @@ export function ProjectOverview({ project, onProjectUpdated }: {
   const [cards, setCards] = useState<Card[]>([]);
   const [boardLoading, setBoardLoading] = useState(true);
   const [boardError, setBoardError] = useState(false);
+  // The non-goal card whose detail is open — the same CardDetailModal the
+  // Kanban lens opens on a click, so a task reads and edits the same in both.
+  const [detailCardId, setDetailCardId] = useState<string | null>(null);
   const openGoalDetail = useCommandCenter(s => s.openGoalDetail);
   const growProject = useCommandCenter(s => s.growProject);
 
@@ -116,12 +122,22 @@ export function ProjectOverview({ project, onProjectUpdated }: {
             error={boardError}
             onRetry={retryBoard}
             onOpenGoal={(cardId) => openGoalDetail(project.id, cardId)}
+            onOpenCard={setDetailCardId}
           />
           {/* Publish sequence (#457) — post-push steps before "live"; the
               orchestrator reads the same metadata key at dispatch/review. */}
           <PublishSequencePanel project={project} />
         </div>
       </div>
+      {detailCardId && (
+        <CardDetailModal
+          projectId={project.id}
+          projectName={project.name}
+          cardId={detailCardId}
+          onClose={() => setDetailCardId(null)}
+          onSaved={loadBoard}
+        />
+      )}
     </div>
   );
 }
@@ -753,15 +769,31 @@ export function LinksPanel({ project, onProjectUpdated, title = 'Links' }: {
  *  binding) sort last, in board position order. */
 const STATE_ORDER = ['triage', 'ready', 'in_progress', 'review', 'complete', 'cancelled', 'failed'];
 
-export function TasksPanel({ columns, cards, loading, error, onRetry, onOpenGoal }: {
+/** The session that produced this card, when the card carries one
+ *  (`created_by_session_id`, written by the orchestrator/goal engine into
+ *  `metadata_json`). Vendor/agent-agnostic on purpose — this only asks
+ *  "did an agent do this", never which one. */
+function provenanceSessionId(card: Card): string | null {
+  const id = card.metadataJson?.created_by_session_id;
+  return typeof id === 'string' && id.length > 0 ? id : null;
+}
+
+export function TasksPanel({ columns, cards, loading, error, onRetry, onOpenGoal, onOpenCard }: {
   columns: BoardColumn[];
   cards: Card[];
   loading: boolean;
   error: boolean;
   onRetry: () => void;
   onOpenGoal: (cardId: string) => void;
+  /** Every other card type — opens CardDetailModal, as the Kanban lens does.
+   *  These rows used to look clickable and do nothing (QA 2026-09-24). */
+  onOpenCard: (cardId: string) => void;
 }) {
   const { colors } = useTheme();
+  const { data: persona } = usePersona();
+  const agentName = persona?.display_name ?? 'your agent';
+  const switchToSession = useCommandCenter(s => s.switchToSession);
+  const openChatDock = useCommandCenter(s => s.openChatDock);
   // White veils vanish on silver — flip to a faint graphite tint there.
   const rowVeil = colors.fillSubtle;
   // `fillSubtle` IS this idiom, tokenised (#1162). The hand-written pair it
@@ -819,30 +851,68 @@ export function TasksPanel({ columns, cards, loading, error, onRetry, onOpenGoal
                 <div style={{ display: 'flex', flexDirection: 'column', gap: space.xxs }}>
                   {colCards.map(card => {
                     const isGoal = card.cardType === 'goal';
+                    const open = () => (isGoal ? onOpenGoal(card.id) : onOpenCard(card.id));
                     return (
                       <div
                         key={card.id}
-                        role={isGoal ? 'button' : undefined}
-                        tabIndex={isGoal ? 0 : undefined}
-                        aria-label={isGoal ? `Open goal ${card.title}` : undefined}
-                        onClick={isGoal ? () => onOpenGoal(card.id) : undefined}
-                        onKeyDown={isGoal ? e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpenGoal(card.id); } } : undefined}
+                        data-testid="overview-task-row"
+                        role="button"
+                        tabIndex={0}
+                        aria-label={isGoal ? `Open goal ${card.title}` : `Open task ${card.title}`}
+                        onClick={open}
+                        onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } }}
                         style={{
                           fontSize: textSize.caption, padding: `${space.xs}px ${space.md}px`, borderRadius: radius.sm,
                           background: rowVeil,
-                          color: colors.text, cursor: isGoal ? 'pointer' : 'default',
+                          color: colors.text, cursor: 'pointer',
                           display: 'flex', alignItems: 'center', gap: space.sm,
                           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                         }}
-                        onMouseEnter={e => { if (isGoal) (e.currentTarget as HTMLElement).style.background = colors.cyanSoft; }}
+                        onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = colors.cyanSoft; }}
                         onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = rowVeil; }}
-                        onFocus={e => { if (isGoal) (e.currentTarget as HTMLElement).style.background = colors.cyanSoft; }}
+                        onFocus={e => { (e.currentTarget as HTMLElement).style.background = colors.cyanSoft; }}
                         onBlur={e => { (e.currentTarget as HTMLElement).style.background = rowVeil; }}
                       >
                         {isGoal && (
                           <span style={{ width: 5, height: 5, borderRadius: '50%', background: colors.purpleBright, flexShrink: 0 }} />
                         )}
-                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{card.title}</span>
+                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', flex: 1 }}>{card.title}</span>
+                        {/* R5 agent transparency / UX_BENCHMARK_RESEARCH.md §7.2:
+                            a task the agent itself created or moved reads
+                            identically to one a human did — the row is the
+                            one place on the Projects surface not already
+                            covered by a transcript or decision view. Shown
+                            only when the card actually carries who did it
+                            (`createdBy`), and links to the run only when it
+                            also carries which one (`created_by_session_id`)
+                            — never a fabricated link. */}
+                        {card.createdBy && card.createdBy !== 'user' && (() => {
+                          const sessionId = provenanceSessionId(card);
+                          const label = `by ${agentName}`;
+                          if (!sessionId) {
+                            return <Chip kind="static" quiet data-testid="task-provenance">{label}</Chip>;
+                          }
+                          // The chip's own click must never also fire the
+                          // row's `open` (which would pop the card detail on
+                          // top of switching sessions) — stop it at this
+                          // wrapper, the one ancestor below the row.
+                          return (
+                            <span onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()}>
+                              <Chip
+                                kind="link"
+                                quiet
+                                data-testid="task-provenance"
+                                title="Open the run that did this"
+                                onClick={() => {
+                                  switchToSession(sessionId).catch(err => console.error('[tasks] open provenance session failed:', err));
+                                  openChatDock();
+                                }}
+                              >
+                                {label}
+                              </Chip>
+                            </span>
+                          );
+                        })()}
                       </div>
                     );
                   })}

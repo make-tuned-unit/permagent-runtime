@@ -169,6 +169,21 @@ export function DecisionsCard({ activeCount }: Props = {}) {
                   {s.headline}
                 </div>
               </Tooltip>
+              {/* The card named the count but nothing about WHAT is waiting —
+                  a reader had to open the inbox just to see the one thing at
+                  its top. `topItemLabel` is that item's own plain-language
+                  outcome (server-ranked, "render as given" — never reworded
+                  here), so the most consequential ask is readable without a
+                  second surface (UX_BENCHMARK_RESEARCH.md §1/§2). Same
+                  column-drop technique as every other line here: it is simply
+                  the next one to go when the tile is too short. */}
+              {s.topItemLabel && (
+                <Tooltip content={s.topItemLabel}>
+                  <div data-testid="decisions-card-top-item" style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.textMuted, marginTop: space.sm, ...oneLine }}>
+                    {s.topItemLabel}
+                  </div>
+                </Tooltip>
+              )}
               {s.oldestLabel && (
                 <Tooltip content={s.oldestLabel}>
                   <div style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textDim, marginTop: space.sm, ...oneLine }}>

@@ -6,8 +6,21 @@ import {
   ensureGrowthCardTallEnough,
   ensureGrowthResultsCard,
   reflow,
+  packDense,
+  fillHoles,
+  hasInteriorHole,
+  justifyRows,
+  countHoles,
+  layoutForDisplay,
+  minSpanForWidth,
   stripRetiredCards,
+  NO_STRETCH_CARD_TYPES,
+  MASONRY_ROW_UNIT,
+  spanForContent,
+  settleSpan,
+  type PackedCell,
   type DashboardLayoutData,
+  type SpanSettleState,
 } from './useLayout';
 
 function card(type: string, w: number, h: number) {
@@ -180,5 +193,258 @@ describe('ensureGrowthCardTallEnough', () => {
     const layout: DashboardLayoutData = { cards: [card('growth_results', 12, 8)] };
     const { changed } = ensureGrowthCardTallEnough(layout);
     expect(changed).toBe(false);
+  });
+});
+
+/** Every cell of rows [0, bottom) is covered by exactly one card. */
+function holes(cells: PackedCell[], cols = 12): string[] {
+  const bottom = cells.reduce((m, c) => Math.max(m, c.y + c.h), 0);
+  const owner: (string | null)[][] = Array.from({ length: bottom }, () => new Array(cols).fill(null));
+  const overlaps: string[] = [];
+  for (const c of cells) {
+    for (let r = c.y; r < c.y + c.h; r++) for (let k = c.x; k < c.x + c.w; k++) {
+      if (owner[r][k]) overlaps.push(`overlap ${owner[r][k]}/${c.id} @${k},${r}`);
+      owner[r][k] = c.id;
+    }
+  }
+  const empty: string[] = [];
+  owner.forEach((row, r) => row.forEach((o, k) => { if (!o) empty.push(`${k},${r}`); }));
+  return [...overlaps, ...empty];
+}
+
+describe('dense dashboard packing (QA 2026-09-24: holes at 1456px)', () => {
+  // The walk's board: "Needs you" + "To-dos" on a row, then full-width cards.
+  // The shelf packer left 5 empty columns beside them and a hole under the
+  // shorter one.
+  const walkBoard = [
+    card('stats', 5, 3), card('calendar', 7, 4),
+    card('decisions', 3, 3), card('todos', 4, 5),
+    card('timeline', 12, 5), card('recent', 8, 5), card('growth_results', 12, 6), card('council', 12, 5),
+  ];
+
+  it('the old shelf layout had holes; the display layout has none', () => {
+    const shelf = walkBoard.map((c, i) => ({ id: c.id, x: 0, y: 0, w: c.size.w, h: c.size.h, i }));
+    // Reconstruct the old shelf packing to prove the test catches the bug.
+    let x = 0; let y = 0; let rowH = 0;
+    for (const c of shelf) {
+      if (x + c.w > 12) { x = 0; y += rowH; rowH = 0; }
+      c.x = x; c.y = y; x += c.w; rowH = Math.max(rowH, c.h);
+    }
+    expect(holes(shelf).length).toBeGreaterThan(0);
+    expect(holes(layoutForDisplay(walkBoard))).toEqual([]);
+  });
+
+  it('has no holes at a narrow (~1100px window) grid width either', () => {
+    const minSpan = minSpanForWidth(800, 16);
+    expect(minSpan).toBeGreaterThan(3);
+    const cells = layoutForDisplay(walkBoard, { minSpan });
+    expect(holes(cells)).toEqual([]);
+    expect(cells.every(c => c.w >= minSpan)).toBe(true);
+  });
+
+  it('back-fills a hole with a later card that fits (grid-auto-flow: dense)', () => {
+    const cells = packDense([card('a', 7, 4), card('b', 12, 2), card('c', 5, 2)]);
+    expect(cells[2]).toMatchObject({ x: 7, y: 0 });
+    expect(cells[1]).toMatchObject({ x: 0, y: 4 });
+  });
+
+  it('keeps the Customize order: the earlier card is placed first', () => {
+    const ab = packDense([card('a', 6, 2), card('b', 6, 2)]);
+    const ba = packDense([card('b', 6, 2), card('a', 6, 2)]);
+    expect(ab.find(c => c.id === 'a')!.x).toBe(0);
+    expect(ba.find(c => c.id === 'b')!.x).toBe(0);
+  });
+
+  it('Customize mode (fill: false) draws the true stored sizes', () => {
+    const cells = layoutForDisplay([card('decisions', 3, 3), card('todos', 4, 5), card('timeline', 12, 5)], { fill: false });
+    expect(cells.map(c => [c.w, c.h])).toEqual([[3, 3], [4, 5], [12, 5]]);
+  });
+
+  it('fillHoles never grows a card below the last row of the board', () => {
+    const cells = fillHoles([{ id: 'a', x: 0, y: 0, w: 6, h: 2 }, { id: 'b', x: 6, y: 0, w: 6, h: 4 }]);
+    // 'a' is capped at a third of its OWN height (dagK coordinator, 2560px
+    // pass): it grows toward 'b' but stops short rather than doubling into a
+    // half-empty card — the trailing gutter below it is deliberate, not a bug.
+    expect(cells[0]).toMatchObject({ w: 6, h: 3 });
+    expect(cells[1]).toMatchObject({ h: 4 });
+  });
+
+  it('fillHoles caps stretch at a third of the span, in both axes', () => {
+    // Rightward: a 3-wide card next to a 9-tall gap should grow by at most 1
+    // column (⌈3/3⌉), not annex the whole row.
+    const wide = fillHoles([{ id: 'a', x: 0, y: 0, w: 3, h: 2 }, { id: 'b', x: 3, y: 2, w: 9, h: 2 }]);
+    expect(wide[0].w).toBe(4);
+    // Downward: a 3-tall card above open rows should grow by at most 1 row.
+    const tall = fillHoles([{ id: 'a', x: 0, y: 0, w: 6, h: 3 }, { id: 'b', x: 6, y: 0, w: 6, h: 8 }]);
+    expect(tall[0].h).toBe(4);
+  });
+
+  it('hasInteriorHole is false for a trailing gutter, true for a boxed hole', () => {
+    // Trailing gutter: nothing to the right of the empty cell on its row.
+    expect(hasInteriorHole([{ id: 'a', x: 0, y: 0, w: 6, h: 2 }])).toBe(false);
+    // Boxed: a card sits to the right of the gap on the same row.
+    expect(hasInteriorHole([
+      { id: 'a', x: 0, y: 0, w: 4, h: 1 },
+      { id: 'b', x: 8, y: 0, w: 4, h: 1 },
+    ])).toBe(true);
+  });
+
+  it('fillHoles never stretches an ambient (no-stretch) card, even alone in a wide gap', () => {
+    // 'weather' is 3 wide with 9 empty columns to its right on the same row —
+    // an interior-hole-free layout, so fillHoles alone decides its width.
+    const out = fillHoles([{ id: 'weather', x: 0, y: 0, w: 3, h: 2 }]);
+    expect(out[0].w).toBe(3);
+  });
+
+  it('justifyRows gives an ambient card none of the row\'s spare width', () => {
+    // A row with one ambient (weather, 3 wide) and one stretchable (system,
+    // renamed to avoid also matching NO_STRETCH_CARD_TYPES) card, 12 total —
+    // all 6 spare columns must go to the stretchable card only.
+    const cells = justifyRows([
+      { id: 'weather', size: { w: 3, h: 2 } },
+      { id: 'recent', size: { w: 3, h: 2 } },
+    ]);
+    const weather = cells.find(c => c.id === 'weather')!;
+    const recent = cells.find(c => c.id === 'recent')!;
+    expect(weather.w).toBe(3);
+    expect(recent.w).toBe(9);
+  });
+
+  it('justifyRows leaves a trailing gutter when an entire row is ambient cards', () => {
+    const cells = justifyRows([{ id: 'weather', size: { w: 3, h: 2 } }]);
+    expect(cells[0].w).toBe(3);
+  });
+
+  it('NO_STRETCH_CARD_TYPES names the ambient card types', () => {
+    expect(NO_STRETCH_CARD_TYPES.has('weather')).toBe(true);
+    expect(NO_STRETCH_CARD_TYPES.has('system_stats')).toBe(true);
+    expect(NO_STRETCH_CARD_TYPES.has('decisions')).toBe(false);
+  });
+
+  it('minSpanForWidth is 1 while the width is unknown and grows as the grid narrows', () => {
+    expect(minSpanForWidth(0, 16)).toBe(1);
+    expect(minSpanForWidth(1150, 16)).toBeLessThanOrEqual(3);
+    expect(minSpanForWidth(800, 16)).toBeGreaterThan(minSpanForWidth(1150, 16));
+  });
+
+  it('a boxed-in hole dense packing cannot fill falls back to justified rows', () => {
+    // This exact board leaves an enclosed 2-cell hole under "stats" after
+    // dense packing + stretching; the display layout must still have none.
+    expect(countHoles(fillHoles(packDense(walkBoard)))).toBeGreaterThan(0);
+    expect(countHoles(layoutForDisplay(walkBoard))).toBe(0);
+  });
+
+  it('justifyRows shares a row\'s spare columns and height, in order', () => {
+    const cells = justifyRows([card('decisions', 3, 3), card('todos', 4, 5), card('timeline', 12, 5)]);
+    expect(cells[0]).toMatchObject({ x: 0, y: 0, h: 5 });
+    expect(cells[1]).toMatchObject({ y: 0, h: 5 });
+    expect(cells[0].w + cells[1].w).toBe(12);
+    expect(cells[1].x).toBe(cells[0].w);
+    expect(cells[2]).toMatchObject({ x: 0, y: 5, w: 12 });
+    expect(holes(cells)).toEqual([]);
+  });
+
+  it('reflow persists the dense positions', () => {
+    const out = reflow([card('a', 7, 4), card('b', 12, 2), card('c', 5, 2)]);
+    expect(out[2].position).toEqual({ x: 7, y: 0 });
+  });
+});
+
+// Content-driven row spans (masonry via CSS grid; coordinator, 2560px round
+// 2). `spanForContent` is the arithmetic Dashboard.tsx feeds into each card's
+// `grid-row: span N` outside Customize; `settleSpan` is the guard that stops
+// a ResizeObserver-driven measurement from re-rendering forever if a card's
+// own content never settles on one height. GAP below is `space.xxl` (16),
+// matching Dashboard.tsx's own constant.
+describe('spanForContent', () => {
+  const GAP = 16;
+
+  it('exports the row unit Dashboard.tsx uses for its masonry grid', () => {
+    expect(MASONRY_ROW_UNIT).toBe(8);
+  });
+
+  it('starts at the configured ceiling before anything has been measured', () => {
+    // A card just added, or one whose ResizeObserver has not reported yet —
+    // must render at the SAME size the old fixed-row grid gave it, never a
+    // one-row flash before its first real measurement lands.
+    expect(spanForContent(0, 1, 8, GAP)).toBe(4);
+    expect(spanForContent(0, 3, 8, GAP)).toBe(10);
+    expect(spanForContent(-5, 3, 8, GAP)).toBe(10);
+  });
+
+  it('tracks measured content within one row unit, rounding up', () => {
+    // ceil((100 + 16) / (8 + 16)) = ceil(4.833) = 5, well under the h=3
+    // ceiling (10) — the row track shrinks to the content, not the old
+    // fixed h*60px.
+    expect(spanForContent(100, 3, 8, GAP)).toBe(5);
+  });
+
+  it('never grows past the ceiling the configured h would have reserved', () => {
+    // Content asking for far more than h=3 ever allowed (the old maxHeight
+    // cap) still stops at the same ceiling as the unmeasured case.
+    expect(spanForContent(10_000, 3, 8, GAP)).toBe(10);
+  });
+
+  it('never returns less than one row', () => {
+    expect(spanForContent(1, 1, 8, GAP)).toBeGreaterThanOrEqual(1);
+  });
+
+  it('falls back to the configured h when the row unit is degenerate', () => {
+    expect(spanForContent(100, 5, 0, 0, 60)).toBe(5);
+  });
+});
+
+describe('settleSpan (the no-loop guard)', () => {
+  it('accepts the first measurement outright', () => {
+    const next = settleSpan(undefined, 7);
+    expect(next).toEqual({ span: 7, attempts: 1, frozen: false });
+  });
+
+  it('a repeated measurement settles: attempts resets to 0', () => {
+    const first = settleSpan(undefined, 7);
+    const second = settleSpan(first, 7);
+    expect(second).toEqual({ span: 7, attempts: 0, frozen: false });
+  });
+
+  it('a single change is accepted, not frozen', () => {
+    const settled: SpanSettleState = { span: 7, attempts: 0, frozen: false };
+    const next = settleSpan(settled, 9);
+    expect(next).toEqual({ span: 9, attempts: 1, frozen: false });
+  });
+
+  it('freezes after maxAttempts consecutive changes, breaking a flap forever', () => {
+    // A card whose content adapts to whatever height it is given can flap
+    // between two spans (5, 6, 5, 6, ...) if every measurement were applied
+    // unconditionally. Six flushes in a row that all change the span (the
+    // default maxAttempts) must stop it rather than let it re-render on
+    // every animation frame indefinitely.
+    let state: SpanSettleState | undefined;
+    const flapSequence = [5, 6, 5, 6, 5, 6];
+    for (const measured of flapSequence) {
+      state = settleSpan(state, measured);
+    }
+    expect(state).toEqual({ span: 6, attempts: 6, frozen: true });
+
+    // Once frozen, further measurements — even wildly different ones — are
+    // ignored: the card stops chasing a moving target.
+    const afterFreeze = settleSpan(state, 1);
+    expect(afterFreeze).toBe(state);
+  });
+
+  it('honors a smaller maxAttempts', () => {
+    let state = settleSpan(undefined, 5);
+    state = settleSpan(state, 6, 2); // attempts=2, hits the custom ceiling
+    expect(state).toEqual({ span: 6, attempts: 2, frozen: true });
+    const ignored = settleSpan(state, 100, 2);
+    expect(ignored).toBe(state);
+  });
+
+  it('a stable run resets the attempt counter, so a brief flap does not freeze a card', () => {
+    let state = settleSpan(undefined, 5);
+    state = settleSpan(state, 6); // attempts: 1
+    state = settleSpan(state, 6); // repeat — settles, attempts resets to 0
+    expect(state).toEqual({ span: 6, attempts: 0, frozen: false });
+    state = settleSpan(state, 7); // a later, unrelated change starts counting fresh
+    expect(state).toEqual({ span: 7, attempts: 1, frozen: false });
   });
 });

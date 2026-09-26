@@ -2483,7 +2483,7 @@ struct GrowthResults {
     fleet: GrowthFleetResults,
 }
 
-type FleetJoin = (
+pub(crate) type FleetJoin = (
     String,         // o.action_id
     i64,            // o.window_days
     String,         // o.verdict
@@ -2508,7 +2508,7 @@ fn is_implemented(status: &str) -> bool {
     )
 }
 
-async fn fleet_outcome_rows(pool: &Pool<Sqlite>) -> Vec<FleetJoin> {
+pub(crate) async fn fleet_outcome_rows(pool: &Pool<Sqlite>) -> Vec<FleetJoin> {
     let rows = sqlx::query_as::<_, FleetJoin>(
         "SELECT o.action_id, o.window_days, o.verdict, o.delta_pct, o.judged_at,
                 a.category, a.title, a.project_id, p.name,

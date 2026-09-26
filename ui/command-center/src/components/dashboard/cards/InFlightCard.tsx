@@ -106,9 +106,18 @@ export const InFlightCard = memo(function InFlightCard({ goals }: Props) {
           Nothing in flight
         </EmptyNote>
       ) : (
-        // `minHeight: 0` lets this region be exactly what the tile has left
-        // under the title, whatever the list holds; it is what gets measured.
-        <div ref={regionRef} data-testid="inflight-region" style={{ flex: '1 1 0', minHeight: 0, overflow: 'hidden' }}>
+        // `flex: '0 1 auto'` (not `'1 1 0'`): the card's outer height is now
+        // content-driven, capped at its configured `h` by the GRID CELL's
+        // own max-height (Dashboard.tsx) rather than a stretched, definite
+        // height passed down through here. A flex-basis of 0 asks this
+        // region to grow into space a content-sized ancestor doesn't have to
+        // give, which measured as 0 and collapsed the whole tile grid to
+        // nothing (coordinator, 2560px pass — In Flight went blank). `auto`
+        // sizes the region to its OWN natural content first; when the
+        // ancestor's max-height cap later clips that (a long list), the
+        // region's measured height shrinks to the capped value and the
+        // existing whole-rows-only snap logic below still engages correctly.
+        <div ref={regionRef} data-testid="inflight-region" style={{ flex: '0 1 auto', minHeight: 0, overflow: 'hidden' }}>
           <div
             data-testid="inflight-list"
             style={{
@@ -207,9 +216,17 @@ const GoalCard = memo(function GoalCard({ goal }: { goal: ActiveGoal }) {
             two rows fit a 230px tile and each line has the tile's width. */}
         <div style={{ display: 'flex', alignItems: 'center', gap: space.sm, minWidth: 0 }}>
           <div data-testid="inflight-row-text" style={{ flex: 1, minWidth: 0 }}>
+            {/* Coordinator, 2560px pass: at ~1,900px the auto-fill tiles grow
+                well past 280px, and a title that still cut itself off at one
+                line was truncating with room to spare — R3 (never truncate
+                with free space on the row). Two lines, clamped, uses that
+                width instead; status/note below stay single-line so the
+                whole-row height math (measured, not assumed) still resolves
+                to a clean row boundary regardless of a 1- or 2-line title. */}
             <div style={{
               fontFamily: font.body, fontSize: textSize.small, fontWeight: 600, color: colors.text,
-              ...oneLine,
+              display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
+              overflow: 'hidden', overflowWrap: 'anywhere', minWidth: 0, lineHeight: 1.3,
             }}>{goal.title}</div>
             <div style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.cyan, ...oneLine }}>
               {status}

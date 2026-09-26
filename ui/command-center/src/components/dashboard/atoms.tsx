@@ -1,5 +1,7 @@
-import { font, space, tabularNums, textSize } from '../../styles/tokens';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { font, radius, space, tabularNums, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { Button } from '../common/Button';
 
 export function SectionTitle({ title, right }: { title: string; right?: string }) {
   const { colors } = useTheme();
@@ -106,5 +108,131 @@ export function StatusIcon({ state }: { state: string }) {
       display: 'flex', alignItems: 'center', justifyContent: 'center',
       fontFamily: font.body, fontSize: textSize.caption, color: c.color, flexShrink: 0,
     }}>{c.icon}</div>
+  );
+}
+
+/** Height of the fade over the last visible line when more is below. */
+const SCROLL_FADE_PX = 28;
+
+/**
+ * Rows a card body counts for its "+N more" pill. Mark each list row with
+ * `data-card-row`; a body with no marked rows says "More" instead of a count.
+ */
+export const CARD_ROW_ATTR = 'data-card-row';
+
+/**
+ * How many marked rows end below the visible bottom of `el`. A row cut in half
+ * counts: it is exactly the one the reader cannot finish.
+ */
+export function rowsBelowFold(el: HTMLElement): number {
+  const bottom = el.getBoundingClientRect().bottom;
+  let n = 0;
+  el.querySelectorAll(`[${CARD_ROW_ATTR}]`).forEach(row => {
+    if (row.getBoundingClientRect().bottom > bottom + 0.5) n++;
+  });
+  return n;
+}
+
+/**
+ * The one scrolling body every Home card's list sits in.
+ *
+ * Each card used to roll its own `flex: 1; overflow: auto` div. The grid sets
+ * a card's height, not its content, so the last row landed wherever the tile
+ * ended — To-dos showed "Refresh pricing and venture landing pages" sliced
+ * through the middle of its glyphs, with nothing saying there was more below
+ * (QA walk, 1456px). Fixed here once instead of per card: while content
+ * continues below, the bottom edge fades out (so a cut line reads as "keeps
+ * going", not as broken) and a "+N more" pill counts the rows still hidden and
+ * scrolls to them. At the end of the list both go away.
+ */
+export function CardScrollBody({ children, style, testId, className }: {
+  children: ReactNode;
+  style?: CSSProperties;
+  testId?: string;
+  className?: string;
+}) {
+  const { colors } = useTheme();
+  const ref = useRef<HTMLDivElement>(null);
+  // null = everything fits; 0 = overflowing with no marked rows; n = n rows.
+  const [hidden, setHidden] = useState<number | null>(null);
+
+  const measure = useCallback(() => {
+    const el = ref.current;
+    if (!el) return;
+    const more = el.scrollHeight - el.clientHeight - el.scrollTop > 1;
+    const next = more ? rowsBelowFold(el) : null;
+    setHidden(prev => (prev === next ? prev : next));
+  }, []);
+
+  // Every render: rows arrive, collapse and reorder without a size change.
+  useLayoutEffect(measure);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    if (el.firstElementChild) ro.observe(el.firstElementChild);
+    return () => ro.disconnect();
+  }, [measure]);
+
+  const fade = hidden !== null
+    ? `linear-gradient(to bottom, #000 calc(100% - ${SCROLL_FADE_PX}px), transparent)`
+    : undefined;
+
+  return (
+    <div style={{ position: 'relative', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+      <div
+        ref={ref}
+        data-testid={testId}
+        className={className}
+        data-overflowing={hidden !== null ? 'true' : undefined}
+        onScroll={measure}
+        style={{
+          flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden',
+          maskImage: fade, WebkitMaskImage: fade,
+          ...style,
+        }}
+      >
+        {children}
+      </div>
+      {hidden !== null && (
+        <Button
+          colors={colors}
+          variant="bare"
+          type="button"
+          flashSuccess={false}
+          data-testid={testId ? `${testId}-more` : undefined}
+          onClick={() => {
+            const el = ref.current;
+            if (!el) return;
+            const top = el.scrollTop + Math.max(el.clientHeight - SCROLL_FADE_PX, SCROLL_FADE_PX);
+            if (typeof el.scrollTo === 'function') el.scrollTo({ top, behavior: 'smooth' });
+            else el.scrollTop = top;
+          }}
+          style={{
+            '--pa-btn-bg': colors.surfaceHi,
+            '--pa-btn-fg': colors.textMuted,
+            '--pa-btn-border': colors.border,
+            '--pa-btn-bg-hover': colors.surfaceHi,
+            '--pa-btn-fg-hover': colors.text,
+            '--pa-btn-border-hover': colors.borderHi,
+            '--pa-btn-pad': `${space.xxs}px ${space.md}px`,
+            '--pa-btn-radius': `${radius.md}px`,
+            '--pa-btn-weight': 600,
+            // Bottom-RIGHT on the fade, not centred over content: centred, the
+            // pill sat on top of whichever row's text happened to be under the
+            // middle column — on a wide card that is real text, not empty fade
+            // (dagK coordinator, 2560px pass). The fade covers the full width,
+            // so a corner affordance still reads as "there's more" without
+            // masking anything a reader is mid-line on.
+            position: 'absolute', bottom: space.xxs, right: space.xxs,
+            fontFamily: font.body, fontSize: textSize.micro, whiteSpace: 'nowrap',
+            boxShadow: colors.elevationRaised,
+          } as CSSProperties}
+        >
+          {hidden > 0 ? `+${hidden} more ↓` : 'More ↓'}
+        </Button>
+      )}
+    </div>
   );
 }
