@@ -2124,8 +2124,8 @@ mod tests {
     }
 
     /// A run whose only attempted task is an honest escalate is `Unrated`
-    /// overall, never `Excellent` — `dag_enforcement` passes on `escalated
-    /// >= 1`, but `verification_integrity` and `cost_routing` contribute no
+    /// overall, never `Excellent` — `dag_enforcement` passes on
+    /// `escalated >= 1`, but `verification_integrity` and `cost_routing` contribute no
     /// evidence at all, so `qualify`'s "every area Excellent" requirement is
     /// never met.
     #[test]

@@ -784,8 +784,7 @@ pub fn workspace_patch(workspace: &Path) -> Result<String> {
     let root = roots
         .lines()
         .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .last()
+        .rfind(|l| !l.is_empty())
         .context("workspace has no root commit")?
         .to_string();
     let mut diff: Vec<&str> = vec![
@@ -1175,7 +1174,7 @@ fn resolve_case<'a>(case: &str, map: &'a StatusMap) -> Option<&'a str> {
         let matches: Vec<&String> = map.keys().filter(|k| k.starts_with(case)).collect();
         let passing = |k: &String| matches!(map[k].as_str(), PASSED | XFAIL);
         if let Some(first) = matches.first() {
-            if matches.iter().all(|k| passing(*k) == passing(*first)) {
+            if matches.iter().all(|k| passing(k) == passing(first)) {
                 return Some(first.as_str());
             }
         }
@@ -1666,8 +1665,7 @@ fn container_name(instance_id: &str) -> String {
 fn last_line(s: &str) -> String {
     s.lines()
         .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .last()
+        .rfind(|l| !l.is_empty())
         .unwrap_or("")
         .to_string()
 }

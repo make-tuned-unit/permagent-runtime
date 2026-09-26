@@ -797,13 +797,13 @@ mod tests {
 
     /// Lane K12: the real `select-checks-worker-before-dispatch` fixture
     /// seed, round-tripped through the full public `apply()` (warm-up boot
-    /// + insert) with a fresh temp workspace standing in for a run's own
-    /// isolated `run_dir/workspace` -- the resulting project row's
+    /// and insert) with a fresh temp workspace standing in for a run's own
+    /// isolated `run_dir/workspace`. The resulting project row's
     /// `root_path` must equal that temp workspace path exactly, the same
-    /// equality `resolve_decompose_project` / `resolve_resume_project` /
-    /// `goal_cards_for_project_matching_cwd` require for their cwd match to
-    /// find it. Skips (does not fail) when no `permagent` binary is
-    /// available -- see [`find_permagent_bin`].
+    /// equality that `resolve_decompose_project`, `resolve_resume_project`
+    /// and `goal_cards_for_project_matching_cwd` require for their cwd match
+    /// to find it. Skips (does not fail) when no `permagent` binary is
+    /// available; see [`find_permagent_bin`].
     #[test]
     fn checks_worker_seed_round_trips_through_apply_with_a_temp_workspace() {
         let Some(permagent_bin) = find_permagent_bin() else {
