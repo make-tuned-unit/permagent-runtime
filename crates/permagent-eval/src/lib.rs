@@ -45,6 +45,11 @@
 //! - [`runner`] — the thin orchestration glue that ties the above together
 //!   against real subprocesses (behind traits, so the decision logic is tested
 //!   with mocks).
+//! - [`swebench`] — SWE-bench as a task source: a pinned slice
+//!   (`benchmarks/swe-arm-30.yaml`) materialized into ordinary task
+//!   directories, judged by applying the agent's diff inside the instance's
+//!   arm64 image on a remote Docker host over SSH, plus the upstream log
+//!   parsers and resolved rule, and a $/solved summary.
 //! - [`seed_state`] — Lane K8: a fixture may ship `seed/harness_state.json`
 //!   describing pre-existing projects/roadmaps/goal cards to insert into a
 //!   run's isolated store before the harness starts, so a selection fixture
@@ -68,6 +73,7 @@ pub mod report;
 pub mod runner;
 pub mod seed_state;
 pub mod selection;
+pub mod swebench;
 pub mod task;
 pub mod tier;
 pub mod tier0;

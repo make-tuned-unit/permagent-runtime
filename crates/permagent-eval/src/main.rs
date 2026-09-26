@@ -18,6 +18,12 @@
 //! - `regrade`  — re-grade a report file's pre-K15 `errored: provider
 //!   unavailable` verdicts from its already-paid-for run directories (no
 //!   models are called, nothing is spent).
+//! - `swe-materialize` — turn a pinned SWE-bench slice into a `--tasks-dir`
+//!   of ordinary tasks (repo at `base_commit`, issue as the prompt).
+//! - `swe-judge` — the oracle those tasks call: apply the workspace's diff in
+//!   the instance's arm64 image on a remote Docker host and grade the tests.
+//! - `swe-summary` — per-task cost / model calls / wall time and $/solved for
+//!   the SWE-bench tasks in a `run --format json` report.
 //! - `graduate` — fold retained run reports into the capability directory's
 //!   durable per-role evidence (D1, `docs/orchestrator/
 //!   CODING_HARNESS_ROLE_GRADUATION_DAG.md` G2).
@@ -107,6 +113,12 @@ enum Command {
     Graduate(GraduateArgs),
     /// Inventory production provider/process dispatch seams without running a model.
     DispatchInventory(DispatchInventoryArgs),
+    /// Materialize a pinned SWE-bench slice into a tasks directory for `run`.
+    SweMaterialize(SweMaterializeArgs),
+    /// Judge one SWE-bench instance (the oracle a materialized task runs).
+    SweJudge(SweJudgeArgs),
+    /// Summarize the SWE-bench tasks of a `run --format json` report.
+    SweSummary(SweSummaryArgs),
     /// Inspect or advance the master program manifest. The existing Permagent
     /// roadmap remains the execution authority; this command only validates
     /// and records explicit child-DAG exit receipts.
@@ -711,6 +723,348 @@ struct PlanArgs {
     use_keyring: bool,
 }
 
+/// Where and how `swe-judge` runs containers (shared by `swe-materialize`,
+/// which bakes these flags into every task's oracle argv).
+#[derive(Args, Debug, Clone)]
+struct SweHostArgs {
+    /// SSH target of the Docker host (`m1`, `user@host`).
+    #[arg(long = "ssh", default_value = "m1")]
+    ssh_target: String,
+
+    /// DOCKER_HOST on the remote side (expanded by the remote shell).
+    #[arg(long, default_value = permagent_eval::swebench::DEFAULT_DOCKER_HOST)]
+    docker_host: String,
+
+    /// Prepended to PATH on the remote side.
+    #[arg(long, default_value = permagent_eval::swebench::DEFAULT_REMOTE_PATH_PREFIX)]
+    remote_path_prefix: String,
+
+    /// Refuse to pull an image when the remote disk would drop below this.
+    #[arg(long, default_value_t = 15.0)]
+    min_free_gib: f64,
+
+    /// Wall-clock cap on one container run.
+    #[arg(long, default_value_t = 1800)]
+    run_timeout_secs: u64,
+
+    /// `docker run --memory` for the test container (`none` for no limit).
+    #[arg(long, default_value = "2g")]
+    container_memory: String,
+
+    /// Keep pulled images instead of removing them after each run.
+    #[arg(long)]
+    keep_image: bool,
+
+    /// Skip the `colima ssh -- sudo fstrim` that returns freed blocks to the host.
+    #[arg(long)]
+    no_trim_colima: bool,
+
+    /// Write each verdict (and the judged patch) here.
+    #[arg(long, value_name = "DIR")]
+    verdict_dir: Option<PathBuf>,
+}
+
+impl SweHostArgs {
+    fn to_config(&self) -> permagent_eval::swebench::JudgeConfig {
+        permagent_eval::swebench::JudgeConfig {
+            ssh_target: self.ssh_target.clone(),
+            docker_host: self.docker_host.clone(),
+            remote_path_prefix: self.remote_path_prefix.clone(),
+            min_free_gib: self.min_free_gib,
+            run_timeout_secs: self.run_timeout_secs,
+            keep_image: self.keep_image,
+            trim_colima: !self.no_trim_colima,
+            container_memory: match self.container_memory.as_str() {
+                "none" | "" => None,
+                m => Some(m.to_string()),
+            },
+            verdict_dir: self.verdict_dir.clone(),
+        }
+    }
+}
+
+#[derive(Args, Debug)]
+struct SweMaterializeArgs {
+    /// The pinned slice YAML (e.g. crates/permagent-eval/benchmarks/swe-arm-30.yaml).
+    #[arg(long, value_name = "FILE")]
+    slice: PathBuf,
+
+    /// Output tasks directory (pass it to `run --tasks-dir`).
+    #[arg(long, value_name = "DIR")]
+    out: PathBuf,
+
+    /// Bare repository mirrors (default: <cache dir>/permagent-eval/swe-repos).
+    #[arg(long, value_name = "DIR")]
+    repo_cache: Option<PathBuf>,
+
+    /// Also materialize the slice's spare instances.
+    #[arg(long)]
+    spares: bool,
+
+    /// Only these instance ids (repeatable; any role).
+    #[arg(long = "instance", value_name = "ID")]
+    instances: Vec<String>,
+
+    /// The binary the oracle calls (default: this executable).
+    #[arg(long, value_name = "FILE")]
+    judge_bin: Option<PathBuf>,
+
+    /// Harness wall-clock ceiling written into each task.yaml.
+    #[arg(long, default_value_t = 1800)]
+    harness_timeout_secs: u64,
+
+    /// Oracle (judge) ceiling; default: --run-timeout-secs plus 30 min for the pull.
+    #[arg(long)]
+    oracle_timeout_secs: Option<u64>,
+
+    /// Optional `max_turns` for each task.
+    #[arg(long)]
+    max_turns: Option<u32>,
+
+    /// Re-create workspaces that already exist.
+    #[arg(long)]
+    force: bool,
+
+    #[command(flatten)]
+    host: SweHostArgs,
+}
+
+#[derive(Args, Debug)]
+struct SweJudgeArgs {
+    /// The pinned slice YAML.
+    #[arg(long, value_name = "FILE")]
+    slice: PathBuf,
+
+    /// The instance to judge.
+    #[arg(long, value_name = "ID")]
+    instance: String,
+
+    /// The finished workspace (its diff against the seed commit is judged).
+    #[arg(long, value_name = "DIR", default_value = ".")]
+    workspace: PathBuf,
+
+    /// Judge this patch file instead of a workspace diff (gold validation).
+    #[arg(long, value_name = "FILE", conflicts_with = "empty")]
+    patch_file: Option<PathBuf>,
+
+    /// Judge an empty patch (validation: it must NOT resolve).
+    #[arg(long)]
+    empty: bool,
+
+    #[command(flatten)]
+    host: SweHostArgs,
+}
+
+#[derive(Args, Debug)]
+struct SweSummaryArgs {
+    /// A report written by `run --format json --out <FILE>`.
+    #[arg(long, value_name = "FILE")]
+    report: PathBuf,
+
+    /// The slice, for each task's repo and difficulty.
+    #[arg(long, value_name = "FILE")]
+    slice: Option<PathBuf>,
+
+    /// The judges' verdict directory, to separate judge errors from failures.
+    #[arg(long, value_name = "DIR")]
+    verdict_dir: Option<PathBuf>,
+
+    /// Also write the markdown here.
+    #[arg(long, value_name = "FILE")]
+    out: Option<PathBuf>,
+}
+
+fn cmd_swe_materialize(args: SweMaterializeArgs) -> Result<()> {
+    use permagent_eval::swebench::{materialize, LoadedSlice, MaterializeOptions, TaskLimits};
+    let slice = LoadedSlice::load(&args.slice)?;
+    let entries = slice.manifest.select(args.spares, &args.instances)?;
+    fs::create_dir_all(&args.out).with_context(|| format!("creating {}", args.out.display()))?;
+    let out_dir = fs::canonicalize(&args.out)?;
+    let mut judge = args.host.to_config();
+    if judge.verdict_dir.is_none() {
+        judge.verdict_dir = Some(out_dir.join("verdicts"));
+    }
+    let repo_cache = match args.repo_cache {
+        Some(p) => p,
+        None => dirs::cache_dir()
+            .context("no cache directory; pass --repo-cache")?
+            .join("permagent-eval")
+            .join("swe-repos"),
+    };
+    let judge_bin = match args.judge_bin {
+        Some(p) => fs::canonicalize(&p).with_context(|| format!("resolving {}", p.display()))?,
+        None => std::env::current_exe().context("resolving this executable")?,
+    };
+    let oracle_timeout_secs = args
+        .oracle_timeout_secs
+        .unwrap_or(judge.run_timeout_secs + 1800);
+    let opts = MaterializeOptions {
+        out_dir: out_dir.clone(),
+        repo_cache,
+        judge_bin,
+        judge,
+        limits: TaskLimits {
+            harness_timeout_secs: args.harness_timeout_secs,
+            oracle_timeout_secs,
+            max_turns: args.max_turns,
+        },
+        force: args.force,
+    };
+    let written = materialize(&slice, &entries, &opts)?;
+    println!(
+        "materialized {} task(s) from {} (dataset {}@{}) into {}",
+        written.len(),
+        slice.manifest.id,
+        slice.manifest.dataset.repo,
+        slice.manifest.dataset.revision,
+        out_dir.display()
+    );
+    println!(
+        "next: permagent-eval run --tasks-dir {} --tier <tier> --format json --out <report.json>",
+        out_dir.display()
+    );
+    Ok(())
+}
+
+fn cmd_swe_judge(args: SweJudgeArgs) -> Result<()> {
+    use permagent_eval::swebench::{
+        judge_instance, write_verdict, JudgeOutcome, JudgeRunOptions, SshExec,
+    };
+    // Every failure before a verdict exists is the judge's, not the agent's:
+    // exit 2 so it is never mistaken for a graded "not resolved" (exit 1).
+    let prepared = prepare_swe_judge(&args);
+    let PreparedJudge {
+        entry,
+        inst,
+        patch,
+        run_dir,
+    } = match prepared {
+        Ok(p) => p,
+        Err(e) => {
+            println!("swe-judge: {}: judge error: {e:#}", args.instance);
+            std::process::exit(JudgeOutcome::InfraError.exit_code());
+        }
+    };
+    let cfg = args.host.to_config();
+    let exec = SshExec {
+        target: cfg.ssh_target.clone(),
+    };
+    let mut verdict = judge_instance(
+        &inst,
+        &entry,
+        &patch,
+        &cfg,
+        JudgeRunOptions {
+            run_empty_patch: args.empty,
+        },
+        &exec,
+        entry.image_compressed_bytes,
+    );
+    verdict.run_dir = run_dir;
+    println!(
+        "swe-judge: {} {:?}{} (F2P {}/{}, P2P {}/{}, patch {} bytes, test {}s)",
+        verdict.instance_id,
+        verdict.outcome,
+        verdict
+            .reason
+            .as_ref()
+            .map(|r| format!(": {r}"))
+            .unwrap_or_default(),
+        verdict.f2p_passed,
+        verdict.f2p_total,
+        verdict.p2p_passed,
+        verdict.p2p_total,
+        verdict.patch_bytes,
+        verdict
+            .test_secs
+            .map_or("-".to_string(), |s| format!("{s:.0}")),
+    );
+    println!("{}", serde_json::to_string(&verdict)?);
+    if let Some(dir) = &cfg.verdict_dir {
+        match write_verdict(dir, &verdict) {
+            Ok(path) => {
+                let _ = fs::write(path.with_extension("patch"), &patch);
+            }
+            Err(e) => eprintln!("swe-judge: could not write verdict: {e:#}"),
+        }
+    }
+    std::process::exit(verdict.outcome.exit_code());
+}
+
+/// What `swe-judge` needs before it talks to the Docker host.
+struct PreparedJudge {
+    entry: permagent_eval::swebench::SliceEntry,
+    inst: permagent_eval::swebench::SweInstance,
+    patch: String,
+    /// The runner's scratch-dir name, when judging a workspace.
+    run_dir: Option<String>,
+}
+
+/// Load the instance and produce the patch to judge: the workspace diff, a
+/// patch file, or empty.
+fn prepare_swe_judge(args: &SweJudgeArgs) -> Result<PreparedJudge> {
+    let slice = permagent_eval::swebench::LoadedSlice::load(&args.slice)?;
+    let entry = slice.entry(&args.instance)?.clone();
+    let inst = slice.instance(&args.instance)?.clone();
+    if args.empty {
+        return Ok(PreparedJudge {
+            entry,
+            inst,
+            patch: String::new(),
+            run_dir: None,
+        });
+    }
+    if let Some(file) = &args.patch_file {
+        let text =
+            fs::read_to_string(file).with_context(|| format!("reading {}", file.display()))?;
+        return Ok(PreparedJudge {
+            entry,
+            inst,
+            patch: text,
+            run_dir: None,
+        });
+    }
+    let ws = fs::canonicalize(&args.workspace)
+        .with_context(|| format!("resolving {}", args.workspace.display()))?;
+    let run_dir = ws
+        .parent()
+        .and_then(|p| p.file_name())
+        .map(|n| n.to_string_lossy().into_owned());
+    let patch = permagent_eval::swebench::workspace_patch(&ws)?;
+    Ok(PreparedJudge {
+        entry,
+        inst,
+        patch,
+        run_dir,
+    })
+}
+
+fn cmd_swe_summary(args: SweSummaryArgs) -> Result<()> {
+    use permagent_eval::swebench::{
+        load_verdicts, render_summary_markdown, summarize_report, LoadedSlice,
+    };
+    let text = fs::read_to_string(&args.report)
+        .with_context(|| format!("reading {}", args.report.display()))?;
+    let report: serde_json::Value =
+        serde_json::from_str(&text).context("the report is not JSON (use `run --format json`)")?;
+    let slice = args.slice.as_deref().map(LoadedSlice::load).transpose()?;
+    let verdicts = args
+        .verdict_dir
+        .as_deref()
+        .map(load_verdicts)
+        .unwrap_or_default();
+    let summaries = summarize_report(&report, slice.as_ref(), &verdicts);
+    if summaries.is_empty() {
+        bail!("no swe-bench tasks in {}", args.report.display());
+    }
+    let md = render_summary_markdown(&summaries);
+    print!("{md}");
+    if let Some(out) = &args.out {
+        fs::write(out, &md).with_context(|| format!("writing {}", out.display()))?;
+    }
+    Ok(())
+}
+
 fn resolve_tasks_dir(arg: &TasksDirArg) -> PathBuf {
     arg.tasks_dir
         .clone()
@@ -732,6 +1086,9 @@ fn main() -> Result<()> {
         Command::Regrade(args) => cmd_regrade(args),
         Command::Graduate(args) => cmd_graduate(args),
         Command::DispatchInventory(args) => cmd_dispatch_inventory(args),
+        Command::SweMaterialize(args) => cmd_swe_materialize(args),
+        Command::SweJudge(args) => cmd_swe_judge(args),
+        Command::SweSummary(args) => cmd_swe_summary(args),
         Command::Program { command } => cmd_program(command),
     }
 }

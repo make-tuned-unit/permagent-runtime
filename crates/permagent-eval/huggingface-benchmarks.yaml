@@ -27,6 +27,22 @@ benchmarks:
     headline_harness_score: true
     execution: isolated_container
 
+  # The fast loop's headline slice (reports/Cheap coding harness on Mac minis.md,
+  # "Iteration plan"): 30 pinned Verified instances + 6 spares whose Epoch arm64
+  # images exist, stratified 12 "<15 min fix" / 18 "15 min - 1 hour", no
+  # scikit-learn/matplotlib/xarray. IDs, image digests and validation state live
+  # in the slice file; `permagent-eval swe-materialize --slice <it>` imports it.
+  - id: swe-arm-30
+    dataset: SWE-bench/SWE-bench_Verified
+    revision: 78f471bf655a3137b2e8a75af1501690ec009ec3
+    slice: benchmarks/swe-arm-30.yaml
+    purpose: real repository issue resolution on native arm64 images (paired A/B loop)
+    cadence: every_harness_change
+    target_tasks: 30
+    spare_tasks: 6
+    headline_harness_score: true
+    execution: arm64_container
+
   - id: swe-bench-verified-release
     dataset: princeton-nlp/SWE-bench_Verified
     purpose: real repository issue resolution
