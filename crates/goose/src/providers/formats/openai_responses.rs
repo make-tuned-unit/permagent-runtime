@@ -617,6 +617,40 @@ pub fn create_responses_request(
     Ok(payload)
 }
 
+/// [`create_responses_request`] for a stable/volatile-split system prompt: the
+/// stable prefix leads `input` as before, and the volatile suffix is emitted as
+/// a trailing `system` item AFTER the conversation — the same placement
+/// `formats::openai::create_request_split` uses for chat/completions.
+///
+/// OpenAI caches automatically on an exact prefix. Flattened into the leading
+/// system item (the old `system.render()` call) the live-status block sat
+/// upstream of the entire history, so any change to it — a worker finishing, a
+/// briefing read — re-billed every prior turn at the full input rate. At the
+/// tail it is never replayed: next turn's request repeats this one up to the
+/// start of this item. An empty suffix produces exactly
+/// [`create_responses_request`]'s payload.
+pub fn create_responses_request_split(
+    model_config: &ModelConfig,
+    system: &crate::cost_router::cache::SystemPromptParts,
+    messages: &[Message],
+    tools: &[Tool],
+) -> anyhow::Result<Value, Error> {
+    let mut payload =
+        create_responses_request(model_config, system.stable_prefix(), messages, tools)?;
+    if !system.volatile_suffix().is_empty() {
+        if let Some(input) = payload.get_mut("input").and_then(Value::as_array_mut) {
+            input.push(json!({
+                "role": "system",
+                "content": [{
+                    "type": "input_text",
+                    "text": system.volatile_suffix()
+                }]
+            }));
+        }
+    }
+    Ok(payload)
+}
+
 pub fn responses_api_to_message(response: &ResponsesApiResponse) -> anyhow::Result<Message> {
     let mut content = Vec::new();
 
@@ -1414,5 +1448,69 @@ mod tests {
         // cache discount is applied to the 8,000 cached tokens.
         let naive_full_price_cost = 10000.0 / 1_000_000.0 * 0.75;
         assert!(breakdown.total_cost < naive_full_price_cost);
+    }
+
+    /// Two consecutive turns whose live status changed: turn N's request minus
+    /// its trailing volatile item must be a byte-prefix of turn N+1's request,
+    /// so OpenAI's automatic prefix cache covers the whole history.
+    #[test]
+    fn volatile_suffix_trails_the_conversation_and_keeps_the_prefix_stable() {
+        use crate::cost_router::cache::SystemPromptParts;
+        let model_config = ModelConfig {
+            model_name: "gpt-5.4-mini".to_string(),
+            context_limit: None,
+            temperature: None,
+            max_tokens: None,
+            toolshim: false,
+            toolshim_model: None,
+            fast_model_config: None,
+            request_params: None,
+            reasoning: None,
+        };
+        let stable = "You are Henry.\n# Tools\n...".to_string();
+        let mut history = vec![Message::user().with_text("instrument the page")];
+        let turn_n = history.clone();
+        history.push(Message::assistant().with_text("reading the page"));
+        history.push(Message::user().with_text("continue"));
+
+        let a = create_responses_request_split(
+            &model_config,
+            &SystemPromptParts::new(stable.clone(), "\n# Live Status\n- worker running\n".into()),
+            &turn_n,
+            &[],
+        )
+        .unwrap();
+        let b = create_responses_request_split(
+            &model_config,
+            &SystemPromptParts::new(stable.clone(), "\n# Live Status\n- worker done\n".into()),
+            &history,
+            &[],
+        )
+        .unwrap();
+
+        let a_items = a["input"].as_array().unwrap();
+        let b_items = b["input"].as_array().unwrap();
+        // The leading system item is the stable prefix alone.
+        assert_eq!(a_items[0]["content"][0]["text"], json!(stable));
+        assert_eq!(a_items[0], b_items[0]);
+        // The volatile block is the LAST item.
+        assert!(a_items.last().unwrap()["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("worker running"));
+        // Everything before it reappears unchanged at the head of the next turn.
+        let replayed = &a_items[..a_items.len() - 1];
+        assert_eq!(&b_items[..replayed.len()], replayed);
+
+        // An empty suffix is exactly the unsplit payload.
+        let flat = create_responses_request(&model_config, &stable, &turn_n, &[]).unwrap();
+        let split = create_responses_request_split(
+            &model_config,
+            &SystemPromptParts::all_stable(stable.clone()),
+            &turn_n,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(flat, split);
     }
 }

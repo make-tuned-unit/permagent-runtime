@@ -4,7 +4,7 @@ use super::embedding::{EmbeddingCapable, EmbeddingRequest, EmbeddingResponse};
 use super::errors::ProviderError;
 use super::formats::openai::{create_request_split, get_usage, response_to_message};
 use super::formats::openai_responses::{
-    create_responses_request, get_responses_incomplete_reason, get_responses_usage,
+    create_responses_request_split, get_responses_incomplete_reason, get_responses_usage,
     responses_api_to_message, responses_api_to_streaming_message, ResponsesApiResponse,
 };
 use super::inventory::{config_secret_value, InventoryIdentityInput};
@@ -603,9 +603,10 @@ impl Provider for OpenAiProvider {
     /// whole conversation from that cache every turn. See
     /// `formats::openai::create_request_split`.
     ///
-    /// Only the chat/completions branch can act on the split; the responses API
-    /// takes a single `instructions` string, so that path flattens exactly as
-    /// before.
+    /// Both branches act on the split: chat/completions via
+    /// `formats::openai::create_request_split`, the responses API via
+    /// `formats::openai_responses::create_responses_request_split` (a trailing
+    /// `system` input item after the conversation).
     async fn stream_split(
         &self,
         model_config: &ModelConfig,
@@ -645,7 +646,7 @@ impl OpenAiProvider {
         }
         if use_responses {
             let mut payload =
-                create_responses_request(model_config, &system.render(), messages, tools)?;
+                create_responses_request_split(model_config, system, messages, tools)?;
             payload["stream"] = serde_json::Value::Bool(self.supports_streaming);
 
             let mut log = RequestLog::start(model_config, &payload)?;

@@ -223,6 +223,45 @@ impl SystemPromptParts {
     }
 }
 
+// ── Per-turn context that rides at the END of the request ────────────────────
+
+/// Opening tag of the MOIM block (`ExtensionManager::collect_moim`): the clock,
+/// working directory and context-fill line the harness adds to every turn.
+pub const MOIM_OPEN: &str = "<info-msg>";
+
+/// Opening/closing tags wrapping the system prompt's volatile suffix when a
+/// request builder relocates it from the system block to the tail of the last
+/// user message (the Anthropic path — its messages array has no system role).
+pub const TURN_CONTEXT_OPEN: &str = "<turn-context>";
+pub const TURN_CONTEXT_CLOSE: &str = "</turn-context>";
+
+/// True for a text block that is per-turn host context (MOIM or a relocated
+/// volatile suffix) rather than conversation.
+///
+/// Measured 2026-09-25 (research_notes/Cheap coding harness on Mac minis/
+/// context_cost_measurement.md): on Anthropic every turn of a session read the
+/// same ~8.9k cached tokens (tools + system) and RE-WROTE the whole history at
+/// 1.25x, because the per-turn blocks sat upstream of the history — MOIM two
+/// messages back, the live-status block in `system`. Request builders use this
+/// to keep a cache breakpoint OFF these blocks: a breakpoint must sit on the
+/// last block that will be byte-identical when the next turn replays this
+/// message as history.
+pub fn is_turn_context_text(text: &str) -> bool {
+    let t = text.trim_start();
+    t.starts_with(MOIM_OPEN) || t.starts_with(TURN_CONTEXT_OPEN)
+}
+
+/// Wrap a system prompt's volatile suffix for delivery as a trailing text block
+/// of the last user message. The wrapper says who wrote it, so the model does
+/// not read host status as something the user just typed.
+pub fn wrap_turn_context(volatile_suffix: &str) -> String {
+    format!(
+        "{TURN_CONTEXT_OPEN}\nHost-provided context for this turn (live status and \
+         turn-specific instructions; not written by the user):\n{}\n{TURN_CONTEXT_CLOSE}",
+        volatile_suffix.trim()
+    )
+}
+
 /// Policy: a conversation's main-loop model MUST stay stable for its lifetime.
 /// Cheaper-tier work routes through subagents instead of swapping the model.
 pub const KEEP_MAIN_LOOP_MODEL_STABLE: bool = true;
@@ -459,6 +498,22 @@ mod tests {
         assert_eq!(parts.stable_prefix(), "base\n\ntools");
         assert_eq!(parts.volatile_suffix(), "\n\ntail");
         assert_eq!(parts.render(), "base\n\ntools\n\ntail");
+    }
+
+    #[test]
+    fn turn_context_blocks_are_recognised_and_conversation_is_not() {
+        assert!(is_turn_context_text(
+            "<info-msg>\nIt is currently 2026-09-25 11:02:00\n</info-msg>"
+        ));
+        assert!(is_turn_context_text(&wrap_turn_context(
+            "\n# Live Status (this turn)\n- 3 unread\n"
+        )));
+        assert!(!is_turn_context_text("please fix <info-msg> parsing"));
+        assert!(!is_turn_context_text("hello"));
+        let wrapped = wrap_turn_context("\n# Live Status\n- 1\n");
+        assert!(wrapped.starts_with(TURN_CONTEXT_OPEN));
+        assert!(wrapped.ends_with(TURN_CONTEXT_CLOSE));
+        assert!(wrapped.contains("# Live Status\n- 1"));
     }
 
     #[test]
