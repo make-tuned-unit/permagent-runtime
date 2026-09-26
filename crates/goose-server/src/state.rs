@@ -416,7 +416,16 @@ impl AppState {
         // still the sole semantic memory/index; rows disappear on receipt.
         if let Some(ref b) = brain {
             if let Ok(pool) = agent_manager.session_manager().pool_clone().await {
-                crate::brain_ops::spawn_chat_memory_outbox_drain(b.clone(), pool);
+                crate::brain_ops::spawn_chat_memory_outbox_drain(b.clone(), pool.clone());
+                // `brain_feed`'s own outbox mirrors the chat one but had no
+                // startup drain at all: a fact enqueued before the Brain
+                // mounted (or a failed delivery's 30s retry backoff) would
+                // otherwise sit until some unrelated `feed()` call happened
+                // to fire `spawn_drain` again — possibly never, in a
+                // short-lived process. A periodic drain both delivers that
+                // backlog immediately (its first pass runs with no delay)
+                // and keeps honouring retry backoffs afterward.
+                permagent::brain_feed::spawn_periodic_drain(b.clone(), pool);
             }
         }
 

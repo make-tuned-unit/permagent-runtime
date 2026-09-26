@@ -207,27 +207,43 @@ pub const ENRICHABLE_FIELD_NAMES: [&str; 8] = [
 ];
 
 impl Person {
-    /// Null every graph-sourced attribute. The read overlay calls this before
-    /// applying graph `entity_fields`, so the response reflects the graph only —
-    /// never a stale people-table column (Decision A). The columns remain in the
-    /// DB as a safety net until the Step-3 drop, but are not the response source.
+    /// Null every graph-sourced attribute — including `last_contact_at`. The
+    /// read overlay calls this before applying graph `entity_fields`, so the
+    /// response reflects the graph only — never a stale people-table column
+    /// (Decision A). The columns remain in the DB as a safety net until the
+    /// Step-3 drop, but are not the response source.
     ///
-    /// `last_contact_at` is deliberately EXCLUDED (memory-feed lane, 2026-09-25):
-    /// unlike the other columns it is not solely graph-sourced — it is also
-    /// bumped directly on the `people` row when a meeting is logged
-    /// ([`crate::person_meetings::bump_last_contact`]) — so clearing it here
-    /// unconditionally lost that column's value on every request that had no
-    /// graph override, regressing to "no last contact" for someone the CRM DID
-    /// have a date for. [`Person::set_attribute`] only overwrites it with a
-    /// graph value when that value is newer (max-of-sources), and
-    /// [`crate::person_meetings::merge_last_contact`] then takes the max
-    /// against the latest logged meeting on top of that.
+    /// 2026-09-26 (DAG K review fix, #255 follow-up): `last_contact_at` was
+    /// briefly EXCLUDED here (memory-feed lane, 2026-09-25) because, unlike
+    /// the other columns, it is not solely graph-sourced — it is also bumped
+    /// directly on the `people` row when a meeting is logged
+    /// ([`crate::person_meetings::bump_last_contact`]) — and clearing it
+    /// unconditionally, with nothing recomputing it afterward, would have
+    /// regressed to "no last contact" for someone the CRM DID have a date
+    /// for. That exclusion broke the general clearable contract instead
+    /// (`every_settable_attribute_is_clearable`): a value this method leaves
+    /// set can outlive the graph read that dropped it.
+    ///
+    /// The exclusion turned out to be unnecessary: the read overlay's own
+    /// downstream steps already reconstruct `last_contact_at` as
+    /// max(graph/manual value, latest meeting) *after* this clear runs —
+    /// [`Person::set_attribute`] re-applies a graph-sourced value (a manual
+    /// edit lands in `entity_fields`, same as every other attribute here),
+    /// and [`crate::person_meetings::merge_last_contact`] then folds in the
+    /// latest logged meeting on top, querying `person_meetings` fresh rather
+    /// than trusting this struct's pre-clear state. So this method can null
+    /// the field like every other one without losing meeting-derived or
+    /// manually-set contact dates — only a value that is neither graph-backed
+    /// nor meeting-backed (e.g. a bare column artifact from a people-merge
+    /// with no corresponding graph field or meeting row) is dropped, which is
+    /// the same fate every other Decision-A column already has.
     pub fn clear_attributes(&mut self) {
         self.role = None;
         self.company = None;
         self.email = None;
         self.phone = None;
         self.notes = None;
+        self.last_contact_at = None;
         self.birthday = None;
         self.relationship_strength = None;
         self.how_met = None;
@@ -250,16 +266,31 @@ impl Person {
             "email" => self.email = Some(value),
             "phone" => self.phone = Some(value),
             "notes" => self.notes = Some(value),
-            // Max-of-sources, not overwrite (see `clear_attributes`): a graph
-            // value only wins when it is actually newer than the column's own
-            // (meeting-bumped) value, else the more recent contact is lost.
+            // Max-of-sources, not overwrite: whatever is already in
+            // `self.last_contact_at` only gets replaced when the incoming
+            // value is actually newer. In the normal read-overlay call order
+            // (`clear_attributes` then one `set_attribute` per graph field),
+            // `self.last_contact_at` is already `None` by the time this runs,
+            // so the comparison is usually a no-op — but this still protects
+            // a caller that applies more than one source for this field in
+            // one pass (e.g. an alias collision, or calling `set_attribute`
+            // without a preceding `clear_attributes`) from letting an older
+            // value stomp a newer one.
+            //
+            // Both sides are parsed with `parse_rfc3339_or_date`, not the
+            // strict `parse_rfc3339`: a manual edit routes through this same
+            // arm, and the UI's own placeholder tells the person to type a
+            // bare `YYYY-MM-DD` date, which strict RFC-3339 parsing rejects.
+            // A rejected *incoming* value used to fall into `unwrap_or(false)`
+            // ("not newer") and get silently discarded instead of applied —
+            // the manual edit had no way to ever win.
             "last_contact_at" => {
                 let take_graph = match self
                     .last_contact_at
                     .as_deref()
-                    .and_then(|c| crate::person_meetings::parse_rfc3339(c).ok())
+                    .and_then(|c| crate::person_meetings::parse_rfc3339_or_date(c).ok())
                 {
-                    Some(current) => crate::person_meetings::parse_rfc3339(&value)
+                    Some(current) => crate::person_meetings::parse_rfc3339_or_date(&value)
                         .map(|graph_dt| graph_dt >= current)
                         .unwrap_or(false),
                     None => true,
@@ -645,14 +676,17 @@ mod tests {
             created_at: "t".into(),
             updated_at: "t".into(),
         };
-        // clear_attributes nulls every graph-sourced attribute (identity kept).
-        // last_contact_at is the one deliberate exception (memory-feed lane,
-        // 2026-09-25): it is also a meeting-bumped column value, not solely
-        // graph-sourced, so clearing it here would lose that column's value
-        // whenever the request had no graph override.
+        // clear_attributes nulls every graph-sourced attribute (identity kept),
+        // including last_contact_at (2026-09-26 DAG K review fix, #255
+        // follow-up): a brief exclusion for last_contact_at was removed
+        // because the read overlay's own downstream steps — re-applying a
+        // graph/manual value via `set_attribute`, then folding in the latest
+        // logged meeting via `merge_last_contact` — already reconstruct it
+        // after this clear runs, so nothing here needs to skip it. See
+        // `every_settable_attribute_is_clearable` for the general contract.
         p.clear_attributes();
         assert_eq!(p.role, None);
-        assert_eq!(p.last_contact_at.as_deref(), Some("old"));
+        assert_eq!(p.last_contact_at, None);
         assert_eq!(p.birthday, None);
         assert_eq!(p.relationship_strength, None);
         assert_eq!(p.how_met, None);
@@ -685,6 +719,47 @@ mod tests {
         assert_eq!(p.personal_site.as_deref(), Some("v-personal_site"));
         assert_eq!(p.photo_url.as_deref(), Some("v-photo_url"));
         assert_eq!(p.find_online_hints.as_deref(), Some("v-find_online_hints"));
+    }
+
+    /// #3 (memory-feed lane, 2026-09-26): a manual edit of `last_contact_at`
+    /// typed as a bare `YYYY-MM-DD` — exactly what the UI's own placeholder
+    /// tells the person to type — must not be silently discarded just
+    /// because the person already has an older, strictly-RFC-3339
+    /// meeting-bumped value in that slot. Before the fix, `set_attribute`
+    /// parsed the incoming value with the strict `parse_rfc3339`, which
+    /// rejects a bare date, and `.unwrap_or(false)` then treated that parse
+    /// failure as "not newer", dropping the edit with no error anywhere.
+    #[test]
+    fn set_attribute_last_contact_accepts_bare_date_over_older_rfc3339() {
+        let mut p = blank_person();
+        // A meeting-bumped column value, older than the manual edit below.
+        p.last_contact_at = Some("2026-09-01T09:00:00Z".into());
+
+        p.set_attribute("last_contact_at", "2026-09-10".into());
+
+        assert_eq!(
+            p.last_contact_at.as_deref(),
+            Some("2026-09-10"),
+            "a bare YYYY-MM-DD manual edit newer than the existing value must win, \
+             not be silently discarded"
+        );
+    }
+
+    /// The inverse: a bare-date manual edit that is chronologically *older*
+    /// than the existing value is still correctly rejected (max-of-sources
+    /// is about recency, not about rejecting every unparsed-looking value).
+    #[test]
+    fn set_attribute_last_contact_rejects_older_bare_date() {
+        let mut p = blank_person();
+        p.last_contact_at = Some("2026-09-20T09:00:00Z".into());
+
+        p.set_attribute("last_contact_at", "2026-09-10".into());
+
+        assert_eq!(
+            p.last_contact_at.as_deref(),
+            Some("2026-09-20T09:00:00Z"),
+            "an older manual edit must not overwrite a newer existing value"
+        );
     }
 
     /// A `Person` with identity set and every attribute blank.

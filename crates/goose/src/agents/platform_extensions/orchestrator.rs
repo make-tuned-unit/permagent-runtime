@@ -52400,6 +52400,42 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         ]
     }
 
+    /// A second objective for a test that must decompose (and create) a
+    /// SECOND, genuinely distinct roadmap on the SAME project while the
+    /// first roadmap's goals (`roadmap_fixture_goals()`, still open) are
+    /// still on the board (2026-09-26 DAG K review fix). Reusing "ship the
+    /// R2 fixture" for that second call would trip the 2026-09-25
+    /// duplicate-open-goal check (`find_duplicate_open_goal`) at either of
+    /// its two call sites: decompose-time compares this objective against
+    /// every open goal card's title, and create-time compares each of the
+    /// NEW goals' own titles against the same open cards. Deliberately
+    /// shares no content word (see `planner_complexity::content_tokens`)
+    /// with "ship the R2 fixture" or with "R2 fixture A"/"R2 fixture B", so
+    /// `objectives_overlap` reads 0.0 at both sites regardless of threshold.
+    const SECOND_ROADMAP_OBJECTIVE: &str = "audit the payments webhook retry policy";
+
+    /// The goals `RoadmapMockProvider` returns for [`SECOND_ROADMAP_OBJECTIVE`]
+    /// — see that constant's doc comment for why these titles must not share
+    /// a content word with `roadmap_fixture_goals()`'s.
+    fn roadmap_fixture_goals_for_second_objective() -> Vec<goal_state::ProposedGoal> {
+        vec![
+            goal_state::ProposedGoal {
+                title: "Webhook retry audit A".to_string(),
+                description: "first".to_string(),
+                acceptance_criteria: vec![],
+                tags: vec![],
+                depends_on: vec![],
+            },
+            goal_state::ProposedGoal {
+                title: "Webhook retry audit B".to_string(),
+                description: "second".to_string(),
+                acceptance_criteria: vec![],
+                tags: vec![],
+                depends_on: vec![0],
+            },
+        ]
+    }
+
     /// A `LocalFree` provider (no marginal cost, so no durable-task/budget
     /// reservation is required) that always answers with
     /// `roadmap_fixture_goals()` as the decomposition response, driving
@@ -52441,10 +52477,24 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             _tools: &[Tool],
         ) -> Result<crate::providers::base::MessageStream, crate::providers::errors::ProviderError>
         {
-            let text = serde_json::to_string(&serde_json::json!({
-                "goals": roadmap_fixture_goals(),
-            }))
-            .unwrap();
+            // 2026-09-26 DAG K review fix: `handle_decompose_roadmap` embeds
+            // the literal objective verbatim ("Objective: {objective}\n...")
+            // in the user message it sends (see its `user_text` build). A
+            // test driving a SECOND, distinct roadmap on the same project
+            // (`SECOND_ROADMAP_OBJECTIVE`) needs a fixture whose goal titles
+            // do not collide with the default `roadmap_fixture_goals()`
+            // under `find_duplicate_open_goal` — detected here from the
+            // request rather than threaded through this trait's fixed
+            // signature.
+            let wants_second_objective = _messages
+                .iter()
+                .any(|m| m.as_concat_text().contains(SECOND_ROADMAP_OBJECTIVE));
+            let goals = if wants_second_objective {
+                roadmap_fixture_goals_for_second_objective()
+            } else {
+                roadmap_fixture_goals()
+            };
+            let text = serde_json::to_string(&serde_json::json!({ "goals": goals })).unwrap();
             let message = Message::assistant().with_text(text);
             let usage = crate::providers::base::ProviderUsage::new(
                 "mock-roadmap".to_string(),
@@ -52520,11 +52570,33 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         pool: &sqlx::Pool<sqlx::Sqlite>,
         session_id: &str,
     ) -> (CallToolResult, String, String, String) {
+        decompose_then_read_proof_with(
+            client,
+            pool,
+            session_id,
+            "ship the R2 fixture",
+            &roadmap_fixture_goals(),
+        )
+        .await
+    }
+
+    /// Same as [`decompose_then_read_proof`], but for a caller that must
+    /// decompose a SECOND, genuinely distinct objective on the same project
+    /// while a prior roadmap's goals are still open (2026-09-26 DAG K review
+    /// fix) — see [`SECOND_ROADMAP_OBJECTIVE`]'s doc comment for why the
+    /// default objective/fixture pair cannot just be reused there.
+    /// `expected_goals` must be exactly what `RoadmapMockProvider::stream`
+    /// returns for `objective` (see its `wants_second_objective` check), or
+    /// the proof-hash assertion below fails for an unrelated reason.
+    async fn decompose_then_read_proof_with(
+        client: &OrchestratorClient,
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        session_id: &str,
+        objective: &str,
+        expected_goals: &[goal_state::ProposedGoal],
+    ) -> (CallToolResult, String, String, String) {
         let mut args = JsonObject::new();
-        args.insert(
-            "objective".to_string(),
-            serde_json::json!("ship the R2 fixture"),
-        );
+        args.insert("objective".to_string(), serde_json::json!(objective));
         let decompose_result = client
             .handle_decompose_roadmap(session_id, Some(args))
             .await
@@ -52539,9 +52611,8 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             .as_str()
             .unwrap()
             .to_string();
-        let goals = roadmap_fixture_goals();
-        let goals_json = serde_json::to_string(&goals).unwrap();
-        let proposal_hash = roadmap_proposal_hash(&goals);
+        let goals_json = serde_json::to_string(expected_goals).unwrap();
+        let proposal_hash = roadmap_proposal_hash(expected_goals);
         assert_eq!(
             project.metadata_json[ROADMAP_PROPOSAL_METADATA_KEY]["hash"], proposal_hash,
             "the handler's stored proof hash must match the fixture goals' hash"
@@ -53382,8 +53453,20 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
                 }) as GoalDispatchFuture
             }));
 
+        // A distinct objective/fixture pair, not the default "ship the R2
+        // fixture" — Phase 1's goals are still open on this same project, so
+        // reusing it would trip `find_duplicate_open_goal` at either its
+        // decompose-time or create-time call site (see
+        // `SECOND_ROADMAP_OBJECTIVE`'s doc comment above).
         let (_decompose_result2, approval_decision_id2, goals_json2, proposal_hash2) =
-            decompose_then_read_proof(&client, &pool, &session.id).await;
+            decompose_then_read_proof_with(
+                &client,
+                &pool,
+                &session.id,
+                SECOND_ROADMAP_OBJECTIVE,
+                &roadmap_fixture_goals_for_second_objective(),
+            )
+            .await;
         let result2 = client
             .handle_create_roadmap(Some(create_roadmap_args(
                 &goals_json2,

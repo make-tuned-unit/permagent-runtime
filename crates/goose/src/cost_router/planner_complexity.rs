@@ -222,11 +222,21 @@ pub struct PriorPlanHistory {
 pub const PRIOR_GOAL_TITLES_CAP: usize = 20;
 
 /// Content words shared between the new objective and a stuck goal's title
-/// below which the two are not considered "the same problem." Deliberately
-/// low: an exact rewording (the 01a0d5ea case, "Instrument event detail
-/// pages…" redispatched with different phrasing) has to clear it, but two
-/// unrelated one-line objectives on the same project must not.
-const HISTORY_OVERLAP_JACCARD_THRESHOLD: f64 = 0.2;
+/// below which the two are not considered "the same problem." An exact
+/// rewording (the 01a0d5ea case, "Instrument event detail pages…"
+/// redispatched with different phrasing) has to clear it, but two
+/// *different* short imperative titles that merely share one common verb
+/// or object noun must not.
+///
+/// 2026-09-26 DAG K review fix (REVIEW_CONFIRMED.json #4): this used to be
+/// 0.2, which made any two short titles (the common "Fix X" / "Rotate the Y
+/// key" style used throughout this codebase) sharing a single content word
+/// cross the bar — e.g. "Fix signup redirect" vs. "Fix login redirect"
+/// scores 0.5 and "Rotate the staging API key" vs. "Rotate the production
+/// API key" scores 0.6, both genuinely unrelated goals. Raised well above
+/// both of those false-positive ratios; the real rewording case above
+/// shares nearly every content word (0.8+) and still clears it.
+const HISTORY_OVERLAP_JACCARD_THRESHOLD: f64 = 0.7;
 
 /// Generic words too common to signal that two objectives are "the same
 /// problem" — kept deliberately short and non-domain-specific so it never
@@ -1028,6 +1038,23 @@ mod tests {
         assert!(!objectives_overlap(
             "Add the login retry limit for the mobile app",
             "Add the checkout timeout copy for the desktop site",
+        ));
+    }
+
+    /// REVIEW_CONFIRMED.json #4: two short imperative titles sharing one
+    /// verb (and, in the second pair, one more object noun) used to cross
+    /// the old 0.2 Jaccard threshold at ratios of 0.5 and 0.6 respectively,
+    /// even though the goals are genuinely different work. Neither may be
+    /// treated as "the same problem."
+    #[test]
+    fn objectives_overlap_does_not_false_positive_on_short_same_verb_titles() {
+        assert!(!objectives_overlap(
+            "Fix signup redirect",
+            "Fix login redirect"
+        ));
+        assert!(!objectives_overlap(
+            "Rotate the staging API key",
+            "Rotate the production API key",
         ));
     }
 
