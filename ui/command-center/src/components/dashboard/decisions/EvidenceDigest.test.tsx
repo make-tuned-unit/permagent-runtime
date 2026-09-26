@@ -115,3 +115,36 @@ it('benchmark follow-up: the per-file diff renders in the visible summary layer,
   // "Show details" (not yet expanded) while the files are already visible.
   expect(container.textContent).toContain('Show details');
 });
+
+// The compact row used to append the digest's own attempt count and duration
+// after the decision's lead facts: "3 attempts · 3 attempts · …" and
+// "4 min used · 1 attempt · 5 min · …". Each fact is stated once, and the
+// decision's own figure wins.
+async function compactRow(leadFacts: Parameters<typeof EvidenceDigest>[0]['leadFacts']) {
+  client.evidence.mockResolvedValue({ ...DIGEST, costs: { ...DIGEST.costs, attempt_count: 3 } });
+  client.dispatchEvidence.mockResolvedValue(null);
+  await act(async () => { root.render(<EvidenceDigest compact projectId="p1" goalId="g1" leadFacts={leadFacts} />); });
+  await settle();
+  return container.querySelector('[data-testid="evidence-facts"]')!.textContent!;
+}
+
+it('compact: an attempt-cap lead replaces the digest\'s attempt count instead of repeating it', async () => {
+  const row = await compactRow({ attempts: 3 });
+  expect(row.match(/attempt/g)).toHaveLength(1);
+  expect(row.startsWith('3 attempts · 5 min')).toBe(true);
+});
+
+it('compact: a time-used lead replaces the digest\'s duration instead of repeating it', async () => {
+  const row = await compactRow({ timeUsed: '4 min' });
+  expect(row).toContain('4 min used');
+  expect(row).not.toContain('5 min');
+  expect(row.match(/attempt/g)).toHaveLength(1);
+});
+
+it('compact: with no evidence recorded, the lead facts still show on their own', async () => {
+  client.evidence.mockResolvedValue(null);
+  client.dispatchEvidence.mockResolvedValue(null);
+  await act(async () => { root.render(<EvidenceDigest compact projectId="p1" goalId="g1" leadFacts={{ attempts: 2 }} />); });
+  await settle();
+  expect(container.querySelector('[data-testid="evidence-facts"]')!.textContent).toBe('2 attempts');
+});

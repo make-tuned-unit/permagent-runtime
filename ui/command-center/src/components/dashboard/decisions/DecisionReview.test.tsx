@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   goalDetail: null as { projectId: string; cardId: string } | null,
-  apiFetch: vi.fn(), openGoalDetail: vi.fn(), closeGoalDetail: vi.fn(), toast: vi.fn(),
+  apiFetch: vi.fn(), openGoalDetail: vi.fn(), closeGoalDetail: vi.fn(), toast: vi.fn(), retire: vi.fn(),
   answer: vi.fn(), showAll: vi.fn(), refresh: vi.fn(), discard: vi.fn(), history: vi.fn(),
   cancelGoal: vi.fn(), dispatchEvidence: vi.fn(),
 }));
@@ -13,7 +13,7 @@ vi.mock('../../../lib/api', () => ({ apiFetch: mocks.apiFetch }));
 vi.mock('../../../lib/store', () => ({
   useCommandCenter: (select: (state: Record<string, unknown>) => unknown) => select(mocks),
 }));
-vi.mock('../../../lib/notifications', () => ({ toast: mocks.toast }));
+vi.mock('../../../lib/notifications', () => ({ toast: mocks.toast, retireToastAction: mocks.retire }));
 vi.mock('../../../lib/useLiveGoals', () => ({ useLiveGoals: () => ({ activeCount: 0, loaded: true }) }));
 vi.mock('../../settings/useSettings', () => ({ usePersona: () => ({ data: null }) }));
 vi.mock('./DiscussionPane', () => ({
@@ -25,8 +25,9 @@ vi.mock('./client', () => ({ decisionsClient: { dispatchEvidence: mocks.dispatch
 
 import { DecisionInbox } from './DecisionInbox';
 import { UNDO_MS } from './DecisionReview.undo';
+import { HELD_STORE_KEY } from './DecisionReview.heldStore';
 import { MOCK_PENDING_DECISIONS } from './mockDecisions';
-import { decisionPlan, effectRows } from './decisionEffects';
+import { UNBLOCK_REJECT_EFFECT, decisionPlan, effectRows } from './decisionEffects';
 import type { Decision, DecisionsResponse } from './types';
 import type { useDecisions } from './useDecisions';
 
@@ -78,6 +79,9 @@ beforeEach(() => {
   mocks.showAll.mockResolvedValue(undefined); mocks.refresh.mockResolvedValue(undefined); mocks.history.mockResolvedValue([]);
   mocks.dispatchEvidence.mockResolvedValue(null); mocks.cancelGoal.mockResolvedValue(undefined); mocks.discard.mockResolvedValue(undefined);
   mocks.answer.mockImplementation(async (id: string) => ok(decision(id)));
+  let toastSeq = 0;
+  mocks.toast.mockImplementation(() => `toast-${++toastSeq}`);
+  localStorage.removeItem(HELD_STORE_KEY);
   container = document.createElement('div'); document.body.appendChild(container); root = createRoot(container);
 });
 afterEach(() => { act(() => root.unmount()); container.remove(); vi.useRealTimers(); });
@@ -108,7 +112,7 @@ describe('layout: one question, read top to bottom', () => {
     render([d]);
     const rows = Array.from(document.body.querySelectorAll('[data-testid="effect-rows"] > div'))
       .map(row => row.firstElementChild!.textContent);
-    const plan = decisionPlan(d, 'Henry');
+    const plan = decisionPlan(d, 'Your agent');
     expect(rows).toEqual(effectRows(plan).map(r => r.label));
     expect(new Set(barLabels())).toEqual(new Set(plan.actions.map(a => a.label)));
   });
@@ -280,7 +284,7 @@ describe('navigation and help keys (U14)', () => {
     expect(mocks.answer).not.toHaveBeenCalled();
   });
 
-  it('/ focuses Ask Henry; ? toggles the shortcut sheet and Escape closes only the sheet', () => {
+  it('/ focuses Ask; ? toggles the shortcut sheet and Escape closes only the sheet', () => {
     render([decision('a')]);
     key('/');
     expect(document.activeElement?.getAttribute('aria-label')).toBe('Ask about a');
@@ -403,5 +407,272 @@ describe('kind-specific content', () => {
     key('1');
     await elapse(UNDO_MS);
     expect(mocks.answer).toHaveBeenCalledWith('s', { answer: 'approve', note: 'go ahead' });
+  });
+});
+
+describe('Return and keys do what their keycap-marked control does', () => {
+  // Focus off the field: a click on the cause text lands on the review host.
+  const host = () => document.body.querySelector('[data-testid="decision-review"]')!;
+  const field = () => document.body.querySelector('textarea[id^="field-"]') as HTMLTextAreaElement;
+
+  it('with Send back open, Return sends the reason — not the demoted Accept work', async () => {
+    render([fixture('dec-001')]);
+    key('3');
+    act(() => Simulate.change(field(), { target: { value: 'Missing tests' } } as never));
+    expect(button('Send back').getAttribute('aria-keyshortcuts')).toBe('3 Enter');
+    expect(button('Accept work').getAttribute('aria-keyshortcuts')).toBe('1');
+    key('Enter', {}, host());
+    await elapse(UNDO_MS);
+    expect(mocks.answer).toHaveBeenCalledTimes(1);
+    expect(mocks.answer).toHaveBeenCalledWith('dec-001', { answer: 'reject', note: 'Missing tests' });
+  });
+
+  it("the open field's own number sends it too, instead of reopening it empty", async () => {
+    render([fixture('dec-001')]);
+    key('3');
+    act(() => Simulate.change(field(), { target: { value: 'Needs a rebase' } } as never));
+    key('3', {}, host());
+    await elapse(UNDO_MS);
+    expect(mocks.answer).toHaveBeenCalledWith('dec-001', { answer: 'reject', note: 'Needs a rebase' });
+  });
+
+  it('with an empty required field, Return does nothing (its button is disabled), then sends the notes', async () => {
+    render([fixture('dec-004a-wallclock')]);
+    key('2');
+    key('Enter', {}, host());
+    expect(field()).not.toBeNull();
+    expect(mocks.toast).not.toHaveBeenCalled();
+    act(() => Simulate.change(field(), { target: { value: 'Split it in two' } } as never));
+    key('Enter', {}, host());
+    await elapse(UNDO_MS);
+    expect(mocks.answer).toHaveBeenCalledTimes(1);
+    expect(mocks.answer).toHaveBeenCalledWith('dec-004a-wallclock', { answer: 'input', input_text: 'Split it in two' });
+  });
+
+  it('holding a key answers one decision, not every one the auto-advance brings up', async () => {
+    render([decision('a'), decision('b'), decision('c')]);
+    key('1');
+    key('1', { repeat: true });
+    key('1', { repeat: true });
+    key('Enter', { repeat: true });
+    expect(current()).toBe('decision-b');
+    expect(mocks.toast).toHaveBeenCalledTimes(1);
+    await elapse(UNDO_MS);
+    expect(mocks.answer).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('an open field takes focus only when it opens', () => {
+  it('a poll or decision event does not pull the caret out of Ask', () => {
+    render([fixture('dec-004a-wallclock')]);
+    key('2');
+    expect(document.activeElement?.id).toMatch(/^field-/);
+    const ask = document.body.querySelector('textarea[aria-label="Ask about dec-004a-wallclock"]') as HTMLTextAreaElement;
+    act(() => ask.focus());
+    // The 15 s poll and a decision_created event: fresh objects each time.
+    render([fixture('dec-004a-wallclock')]);
+    render([fixture('dec-004a-wallclock'), decision('new')]);
+    expect(document.activeElement).toBe(ask);
+  });
+});
+
+describe('the Undo toast never offers a dead button', () => {
+  it('once the hold is sent, its toast keeps its place but loses Undo', async () => {
+    render([decision('a'), decision('b')]);
+    key('1');
+    expect(mocks.retire).not.toHaveBeenCalled();
+    await elapse(UNDO_MS);
+    expect(mocks.answer).toHaveBeenCalledWith('a', { answer: 'approve' });
+    expect(mocks.retire).toHaveBeenCalledWith('toast-1', { body: 'Headline a: sending now, so it can no longer be undone.' });
+  });
+
+  it('closing the inbox sends the hold and retires its Undo too', async () => {
+    render([decision('a'), decision('b')]);
+    key('1');
+    await act(async () => root.unmount());
+    expect(mocks.retire).toHaveBeenCalledWith('toast-1', expect.objectContaining({ body: expect.stringContaining('can no longer be undone') }));
+    root = createRoot(container);
+  });
+
+  it('Z retires the toast as well, so its Undo cannot fire a second time for nothing', () => {
+    render([decision('a'), decision('b')]);
+    key('1');
+    key('z');
+    expect(mocks.retire).toHaveBeenCalledWith('toast-1', { title: 'Undone', body: 'Headline a is back in your queue.' });
+  });
+
+  it("the toast's own Undo closes its toast, so nothing is left to retire", async () => {
+    render([decision('a'), decision('b')]);
+    key('1');
+    const opts = mocks.toast.mock.calls[0][3] as { action: { onAction: () => void } };
+    act(() => opts.action.onAction());
+    expect(current()).toBe('decision-a');
+    await elapse(UNDO_MS);
+    expect(mocks.retire).not.toHaveBeenCalled();
+  });
+});
+
+describe('leaving the page never drops a held verdict', () => {
+  it('pagehide sends what is held at once, as keepalive requests, exactly once', async () => {
+    render([decision('a'), decision('b')]);
+    key('1');
+    act(() => { window.dispatchEvent(new Event('pagehide')); });
+    expect(mocks.answer).toHaveBeenCalledWith('a', { answer: 'approve' }, { keepalive: true });
+    expect(mocks.retire).toHaveBeenCalledWith('toast-1', expect.anything());
+    await elapse(UNDO_MS);
+    expect(mocks.answer).toHaveBeenCalledTimes(1);
+  });
+
+  // Minimised or covered is not leaving: WKWebView reports hidden for both,
+  // and flushing there cut the Undo window short (and sent as keepalive).
+  it('the page going hidden keeps the full Undo window and sends as usual', async () => {
+    render([decision('a'), decision('b')]);
+    key('3');
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
+    try {
+      act(() => { document.dispatchEvent(new Event('visibilitychange')); });
+    } finally {
+      delete (document as unknown as { visibilityState?: string }).visibilityState;
+    }
+    expect(mocks.answer).not.toHaveBeenCalled();
+    expect(mocks.retire).not.toHaveBeenCalled();
+    key('z');
+    expect(current()).toBe('decision-a');
+    key('3');
+    await elapse(UNDO_MS);
+    expect(mocks.answer).toHaveBeenCalledTimes(1);
+    expect(mocks.answer).toHaveBeenCalledWith('a', { answer: 'reject' });
+  });
+
+  it('pagehide leaves an answer too big for a keepalive request held, and it still sends in its window', async () => {
+    const draft = 'x'.repeat(70 * 1024);
+    render([decision('a', { kind: 'automation_proposal', payload: { draft: 'short' } }), decision('b')]);
+    key('2');
+    const field = document.body.querySelector('textarea[id^="field-"]') as HTMLTextAreaElement;
+    act(() => Simulate.change(field, { target: { value: draft } } as never));
+    await click('Approve edited');
+    expect(current()).toBe('decision-b');
+    key('1');
+    act(() => { window.dispatchEvent(new Event('pagehide')); });
+    // The small one goes out as keepalive; the big one would make fetch reject.
+    expect(mocks.answer).toHaveBeenCalledTimes(1);
+    expect(mocks.answer).toHaveBeenCalledWith('b', { answer: 'approve' }, { keepalive: true });
+    await elapse(UNDO_MS);
+    expect(mocks.answer).toHaveBeenCalledTimes(2);
+    expect(mocks.answer).toHaveBeenLastCalledWith('a', { answer: 'edit', input_text: draft });
+    expect(mocks.toast).not.toHaveBeenCalledWith("Couldn't send your answer", expect.anything(), undefined, expect.anything());
+  });
+
+  // Cmd+Q ends the process with no page event, so the hold is stored until
+  // it settles; the next page sends what is left (DecisionReview.persist.test).
+  it('a hold is stored the moment it is made, and cleared once its send settles or it is undone', async () => {
+    const stored = () => JSON.parse(localStorage.getItem(HELD_STORE_KEY) ?? '[]') as Array<{ id: string; body: unknown; label: string; title: string }>;
+    render([decision('a'), decision('b'), decision('c')]);
+    key('1');
+    expect(stored()).toEqual([expect.objectContaining({ id: 'a', body: { answer: 'approve' }, label: 'Allowed', title: 'Headline a' })]);
+    key('3');
+    expect(stored().map(h => h.id)).toEqual(['a', 'b']);
+    key('z');
+    expect(stored().map(h => h.id)).toEqual(['a']);
+    let settle!: (value: unknown) => void;
+    mocks.answer.mockImplementationOnce(() => new Promise(resolve => { settle = resolve; }));
+    await elapse(UNDO_MS);
+    // Sent but not yet settled: a page that died now must leave it behind.
+    expect(stored().map(h => h.id)).toEqual(['a']);
+    await act(async () => { settle(ok(decision('a'))); });
+    expect(stored()).toEqual([]);
+  });
+
+  it('a failed send clears the stored hold too: the decision is back in the queue instead', async () => {
+    mocks.answer.mockRejectedValueOnce(new Error('daemon down'));
+    render([decision('a'), decision('b')]);
+    key('1');
+    await elapse(UNDO_MS);
+    expect(current()).toBe('decision-a');
+    expect(localStorage.getItem(HELD_STORE_KEY)).toBeNull();
+  });
+
+  it('a decision another window is holding an answer for stays out of this queue until that answer settles', () => {
+    localStorage.setItem(HELD_STORE_KEY, JSON.stringify([
+      { id: 'a', body: { answer: 'approve' }, label: 'Allowed', title: 'Headline a', owner: 'another-window', heldAt: Date.now() },
+    ]));
+    render([decision('a'), decision('b')]);
+    expect(current()).toBe('decision-b');
+    expect(live()).not.toContain('no longer pending');
+  });
+});
+
+describe('the user\'s own irreversible answers are not "resolved elsewhere"', () => {
+  it('a confirmed deletion announces what the user did, not that it is no longer pending', async () => {
+    render([fixture('dec-004d-delete')]);
+    await click('Delete goal…');
+    await click('Delete goal');
+    // The answer's own refetch: the decision is gone.
+    render([]);
+    expect(live()).not.toContain('no longer pending');
+    expect(live()).toContain('Deleted');
+  });
+
+  it('a confirmed goal cancel likewise', async () => {
+    render([fixture('dec-004a-wallclock')]);
+    await click('Cancel goal…');
+    await click('Cancel goal');
+    render([]);
+    expect(live()).not.toContain('no longer pending');
+    expect(live()).toContain('Goal cancelled');
+  });
+
+  it('a 409 on a confirmed answer still says it was resolved elsewhere', async () => {
+    mocks.answer.mockResolvedValueOnce({ ok: false, conflict: true });
+    render([fixture('dec-004d-delete')]);
+    await click('Delete goal…');
+    await click('Delete goal');
+    render([]);
+    expect(live()).toContain('no longer pending');
+  });
+});
+
+describe('a staged verdict with no plain button stays visible and discardable', () => {
+  const staged = (answer: string, note: string | null = null) => ({ answer, note, staged_at: new Date().toISOString(), staged_via: 'voice' });
+
+  it('a staged approve on a person deletion shows, names its confirm route, and can be discarded', async () => {
+    render([decision('p', { kind: 'person_delete_proposal', payload: { display_name: 'Sample Person' }, staged_answer: staged('approve', 'remove them') })]);
+    const row = document.body.querySelector('[data-testid="staged-p"]')!;
+    expect(row.textContent).toContain('Voice staged: Approve');
+    expect(row.textContent).toContain('press Delete person… to commit it; it asks you to confirm first');
+    expect(row.textContent).toContain('Said with it: remove them');
+    await click('Discard');
+    expect(mocks.discard).toHaveBeenCalledWith('p');
+  });
+
+  it('a staged reject on a goal unblock says what reject does now and commits only through a confirm', async () => {
+    render([{ ...fixture('dec-004a-wallclock'), staged_answer: staged('reject', 'drop it') }]);
+    const row = document.body.querySelector('[data-testid="staged-dec-004a-wallclock"]')!;
+    expect(row.textContent).toContain('Voice staged: Reject');
+    expect(row.textContent).toContain(UNBLOCK_REJECT_EFFECT);
+    await click('Commit reject…');
+    expect(document.body.textContent).toContain('Commit the staged Reject?');
+    expect(mocks.answer).not.toHaveBeenCalled();
+    await click('Reject');
+    expect(mocks.answer).toHaveBeenCalledWith('dec-004a-wallclock', { answer: 'reject', note: 'drop it' });
+  });
+
+  it("a staged goal-unblock reject shows the daemon's own sentence, in the row and in the confirm", async () => {
+    const sentence = 'Cancels this goal for good. It will not run again.';
+    render([{ ...fixture('dec-004a-wallclock'), effects: { reject: sentence }, staged_answer: staged('reject') }]);
+    const row = document.body.querySelector('[data-testid="staged-dec-004a-wallclock"]')!;
+    expect(row.textContent).toContain(sentence);
+    expect(row.textContent).not.toContain(UNBLOCK_REJECT_EFFECT);
+    await click('Commit reject…');
+    const dialog = Array.from(document.body.querySelectorAll('[role="dialog"]'))
+      .find(el => el.textContent?.includes('Commit the staged Reject?') && !el.querySelector('[data-testid^="staged-"]'));
+    expect(dialog?.textContent).toContain(sentence);
+  });
+
+  it('a staged verdict on a kind this surface cannot answer still shows, with Discard only', async () => {
+    render([decision('g', { kind: 'capability_gap', payload: {}, staged_answer: staged('approve') })]);
+    const row = document.body.querySelector('[data-testid="staged-g"]')!;
+    expect(row.textContent).toContain("can't be committed here yet");
+    expect(Array.from(row.querySelectorAll('button')).map(b => b.textContent)).toEqual(['Discard']);
   });
 });

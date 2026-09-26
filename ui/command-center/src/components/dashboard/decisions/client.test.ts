@@ -166,6 +166,24 @@ describe('realDecisionsClient.answer', () => {
     await expect(realDecisionsClient.answer('d-1', { answer: 'approve' }))
       .rejects.toBeInstanceOf(DecisionConflictError);
   });
+
+  // A hold flushed on pagehide: the request must be `keepalive` (so it
+  // outlives the page) and be ISSUED inside the handler, not in a later
+  // continuation the closing page may never run.
+  it('a keepalive answer is sent as keepalive, synchronously, with the Bearer token', async () => {
+    fetchMock.mockImplementation(async () => jsonResponse({ decision: { ...wireDecision, status: 'answered' }, effect: null, effectError: null }));
+    await realDecisionsClient.answer('d-0', { answer: 'approve' });
+    fetchMock.mockClear();
+    const pending = realDecisionsClient.answer('d-1', { answer: 'approve' }, { keepalive: true });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('http://daemon.test/api/decisions/d-1/answer');
+    expect(init.keepalive).toBe(true);
+    expect((init.headers as Record<string, string>).Authorization).toBe('Bearer tok-123');
+    await pending;
+    await realDecisionsClient.answer('d-2', { answer: 'approve' });
+    expect(fetchMock.mock.calls[1][1].keepalive).toBeUndefined();
+  });
 });
 
 describe('realDecisionsClient.history', () => {

@@ -58,9 +58,17 @@ interface WireHistoryResponse {
   nextBefore: number | null;
 }
 
+/**
+ * The last token a request here resolved. A `keepalive` send reuses it
+ * without awaiting, so the request is issued inside the `pagehide` handler
+ * itself rather than in a continuation the closing page may never run.
+ */
+let lastToken: string | null = null;
+
 /** apiFetch-alike that surfaces HTTP 409 as DecisionConflictError. */
 async function decisionsFetch<T>(endpoint: string, options?: RequestInit): Promise<T> {
-  const token = await loadDaemonToken();
+  const token = options?.keepalive && lastToken ? lastToken : await loadDaemonToken();
+  lastToken = token;
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...((options?.headers as Record<string, string>) ?? {}),
@@ -98,7 +106,7 @@ export const realDecisionsClient: DecisionsClient = {
     };
   },
 
-  async answer(id: string, body: AnswerBody): Promise<AnswerOutcome> {
+  async answer(id: string, body: AnswerBody, opts?: { keepalive?: boolean }): Promise<AnswerOutcome> {
     // Wire body is camelCase (AnswerRequest rename_all, routes/decisions.rs:53-60).
     const wireBody: Record<string, unknown> = { answer: body.answer };
     if (body.note !== undefined) wireBody.note = body.note;
@@ -106,7 +114,7 @@ export const realDecisionsClient: DecisionsClient = {
     if (body.input_text !== undefined) wireBody.inputText = body.input_text;
     const res = await decisionsFetch<WireAnswerResponse>(
       `/api/decisions/${encodeURIComponent(id)}/answer`,
-      { method: 'POST', body: JSON.stringify(wireBody) },
+      { method: 'POST', body: JSON.stringify(wireBody), ...(opts?.keepalive ? { keepalive: true } : {}) },
     );
     return { decision: res.decision, effect: res.effect, effect_error: res.effectError };
   },

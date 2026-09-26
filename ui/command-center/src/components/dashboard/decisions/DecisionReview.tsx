@@ -14,14 +14,16 @@
  * which lives above the shell so a body remount keeps drafts and holds.
  *
  * A reversible verdict is held for the Undo toast's lifetime, the queue
- * auto-advances, and Z (or the toast's Undo) brings it back. Irreversible
- * actions go through ConfirmDialog instead (U12/U13, R4).
+ * auto-advances, and Z (or the toast's Undo) brings it back. Once the hold is
+ * sent (timer, close, page exit) or undone with Z, the toast keeps its place
+ * but loses its Undo, so it never offers a button that can do nothing.
+ * Irreversible actions go through ConfirmDialog instead (U12/U13, R4).
  */
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { apiFetch, type CouncilLatest } from '../../../lib/api';
 import { useCommandCenter } from '../../../lib/store';
-import { toast } from '../../../lib/notifications';
+import { retireToastAction, toast } from '../../../lib/notifications';
 import { concentric, duration, ease, font, radius, space, tabularNums, textSize, type } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { AnimatedNumber } from '../../common/AnimatedNumber';
@@ -33,9 +35,9 @@ import { Skeleton, SkeletonText } from '../../common/Skeleton';
 import { Tooltip } from '../../common/Tooltip';
 import { DecisionActionBar } from './DecisionItem';
 import { DiscussionPane } from './DiscussionPane';
-import { EvidenceDigest } from './EvidenceDigest';
+import { EvidenceDigest, type LeadFacts } from './EvidenceDigest';
 import {
-  decisionPlan, effectRows, pushedRejectWarning, recommendedLabel, toolArgumentsText,
+  decisionPlan, effectRows, pushedRejectWarning, recommendedLabel, returnTarget, stagedCommit, toolArgumentsText,
   type VerdictAction,
 } from './decisionEffects';
 import {
@@ -44,6 +46,7 @@ import {
 } from './decisionEvidence';
 import { decisionsClient } from './client';
 import { commandForKey } from './DecisionReview.keymap';
+import { useHeldElsewhere } from './DecisionReview.heldStore';
 import { useHeldAnswers } from './DecisionReview.undo';
 import { useDecisionQueue } from './useDecisionQueue';
 import type { useDecisions } from './useDecisions';
@@ -68,9 +71,21 @@ export function useDecisionReviewState(inbox: ReturnType<typeof useDecisions>, a
   const titles = useRef(new Map<string, string>());
   for (const d of all) titles.current.set(d.id, decisionTitle(d));
   const titleOf = (id: string) => titles.current.get(id) ?? 'This decision';
+  /** Decision id → the toast offering its Undo, while that Undo can work. */
+  const undoToasts = useRef(new Map<string, string>());
+  const retireUndo = (id: string, text: { title?: string; body?: string }) => {
+    const toastId = undoToasts.current.get(id);
+    if (!toastId) return;
+    undoToasts.current.delete(id);
+    retireToastAction(toastId, text);
+  };
+  /** Ids the user just resolved through ConfirmDialog (not held): they leave
+   *  the queue by the user's own hand, not "elsewhere". */
+  const resolvedHere = useRef(new Set<string>());
 
   const held = useHeldAnswers({
     send: inbox.answer,
+    onCommit: id => retireUndo(id, { body: `${titleOf(id)}: sending now, so it can no longer be undone.` }),
     onSent: (_id, result) => {
       if (result.effect_error) {
         toast('Answer recorded — but the follow-through failed', result.effect_error, undefined, { tone: 'danger', force: true });
@@ -90,7 +105,10 @@ export function useDecisionReviewState(inbox: ReturnType<typeof useDecisions>, a
   const { hidden, settle } = held;
   useEffect(() => { settle(new Set(all.map(d => d.id))); }, [all, settle]);
 
-  const visible = useMemo(() => all.filter(d => !hidden.has(d.id)), [all, hidden]);
+  // Answered in another window, or by a page that closed inside its Undo
+  // window and is being sent for it now: not this queue's to offer again.
+  const heldElsewhere = useHeldElsewhere();
+  const visible = useMemo(() => all.filter(d => !hidden.has(d.id) && !heldElsewhere.has(d.id)), [all, hidden, heldElsewhere]);
   const queue = useDecisionQueue({ decisions: visible });
   const d = queue.ordered.find(item => item.id === queue.focusedId);
   useEffect(() => {
@@ -121,7 +139,7 @@ export function useDecisionReviewState(inbox: ReturnType<typeof useDecisions>, a
   const previous = useRef<Decision | undefined>(d);
   useEffect(() => {
     const old = previous.current;
-    if (old && !all.some(item => item.id === old.id) && !hidden.has(old.id)) {
+    if (old && !all.some(item => item.id === old.id) && !hidden.has(old.id) && !heldElsewhere.has(old.id) && !resolvedHere.current.has(old.id)) {
       setAnnouncement(`${decisionTitle(old)} is no longer pending.`);
     }
     if (old?.id !== d?.id) {
@@ -129,13 +147,18 @@ export function useDecisionReviewState(inbox: ReturnType<typeof useDecisions>, a
       setReport(null);
     }
     previous.current = d;
-  }, [d, all, hidden]);
+  }, [d, all, hidden, heldElsewhere]);
 
-  useEffect(() => { if (fieldAction) fieldRef.current?.focus(); }, [fieldAction]);
+  // Focus the field when it OPENS, never on a refresh: every poll or decision
+  // event rebuilds `d`, `plan` and so `fieldAction`, and keying on the object
+  // pulled the caret out of whatever the user was typing in.
+  const openField = fieldAction && field ? `${field.decisionId}:${fieldAction.id}` : null;
+  useEffect(() => { if (openField) fieldRef.current?.focus(); }, [openField]);
 
   const undo = useCallback((id?: string) => {
     const restored = held.undo(id);
     if (restored) {
+      retireUndo(restored, { title: 'Undone', body: `${titleOf(restored)} is back in your queue.` });
       setRefocus(restored);
       setAnnouncement(`${titleOf(restored)} is back in your queue.`);
     }
@@ -143,14 +166,16 @@ export function useDecisionReviewState(inbox: ReturnType<typeof useDecisions>, a
   }, [held]);
 
   const hold = (target: Decision, action: VerdictAction, body: AnswerBody) => {
-    held.hold(target.id, body, action.doneLabel);
+    held.hold(target.id, body, action.doneLabel, decisionTitle(target));
     setField(null);
     setShortcutsOpen(false);
     setAnnouncement(`${action.doneLabel}. Press Z to undo.`);
-    toast(action.doneLabel, decisionTitle(target), undefined, {
+    const toastId = toast(action.doneLabel, decisionTitle(target), undefined, {
       force: true,
-      action: { label: 'Undo', onAction: () => { undo(target.id); } },
+      // The toast closes itself after firing this, so its entry goes first.
+      action: { label: 'Undo', onAction: () => { undoToasts.current.delete(target.id); undo(target.id); } },
     });
+    if (toastId) undoToasts.current.set(target.id, toastId);
   };
 
   /** A verdict was chosen (click, key or Return). */
@@ -180,6 +205,12 @@ export function useDecisionReviewState(inbox: ReturnType<typeof useDecisions>, a
     if (fieldAction && field) choose(fieldAction, field.text);
   };
 
+  /** Exactly what the bar's button for `action` does on a click: an open
+   *  field's button sends the field, every other one chooses. */
+  const activate = (action: VerdictAction) => {
+    if (fieldAction && action.id === fieldAction.id) submitField(); else choose(action);
+  };
+
   const later = () => {
     setField(null);
     queue.later();
@@ -188,20 +219,34 @@ export function useDecisionReviewState(inbox: ReturnType<typeof useDecisions>, a
   const runConfirm = async () => {
     if (!confirm) return;
     const { decision: target, action, body } = confirm;
-    if (action.id === 'cancel_goal') {
-      await decisionsClient.cancelGoal(target.project_id!, target.goal_id!);
-      await inbox.refresh();
-      toast('Goal cancelled', decisionTitle(target), undefined, { force: true });
-    } else if (body) {
-      const result = await inbox.answer(target.id, body);
-      if (!result.ok) {
+    // Marked before the send: the answer's own refetch drops the decision
+    // before the send resolves, and that is not an outside resolution.
+    resolvedHere.current.add(target.id);
+    try {
+      if (action.id === 'cancel_goal') {
+        await decisionsClient.cancelGoal(target.project_id!, target.goal_id!);
         await inbox.refresh();
-        toast("That answer wasn't accepted", 'It may have been answered elsewhere. The inbox has been refreshed.', undefined, { force: true });
-      } else if (result.effect_error) {
-        toast('Answer recorded — but the follow-through failed', result.effect_error, undefined, { tone: 'danger', force: true });
-      } else {
-        toast(action.doneLabel, decisionTitle(target), undefined, { force: true });
+        setAnnouncement(`Goal cancelled: ${decisionTitle(target)}.`);
+        toast('Goal cancelled', decisionTitle(target), undefined, { force: true });
+      } else if (body) {
+        const result = await inbox.answer(target.id, body);
+        if (!result.ok) {
+          // Someone else did resolve it: the refresh may say so.
+          resolvedHere.current.delete(target.id);
+          await inbox.refresh();
+          toast("That answer wasn't accepted", 'It may have been answered elsewhere. The inbox has been refreshed.', undefined, { force: true });
+        } else {
+          setAnnouncement(`${action.doneLabel}: ${decisionTitle(target)}.`);
+          if (result.effect_error) {
+            toast('Answer recorded — but the follow-through failed', result.effect_error, undefined, { tone: 'danger', force: true });
+          } else {
+            toast(action.doneLabel, decisionTitle(target), undefined, { force: true });
+          }
+        }
       }
+    } catch (error) {
+      resolvedHere.current.delete(target.id);
+      throw error;
     }
     setConfirm(null);
     return true;
@@ -227,7 +272,7 @@ export function useDecisionReviewState(inbox: ReturnType<typeof useDecisions>, a
     shortcutsOpen, setShortcutsOpen,
     report, openReport, closeReport,
     evidenceGoal, setEvidenceGoal,
-    choose, submitField, later,
+    choose, submitField, activate, later,
     discardStaged: inbox.discardStaged,
   };
 }
@@ -349,19 +394,21 @@ export function DecisionReview({ inbox, agentName, state, active = true }: {
     if (command.type === 'undo') { event.preventDefault(); state.undo(); return; }
     if (!d || !plan) return;
     if (shortcutsOpen && command.type !== 'shortcuts') state.setShortcutsOpen(false);
+    // A key does what the control wearing its keycap does on a click; with a
+    // field open, ↩ (and the field action's own number) are on its send.
     switch (command.type) {
       case 'verdict': {
         const action = plan.actions.find(a => a.key === command.key);
         if (!action) return;
         event.preventDefault();
-        state.choose(action);
+        state.activate(action);
         return;
       }
       case 'default': {
-        const action = plan.actions.find(a => a.returnDefault);
+        const action = returnTarget(plan, state.fieldAction);
         if (!action) return;
         event.preventDefault();
-        state.choose(action);
+        state.activate(action);
         return;
       }
       case 'later': event.preventDefault(); state.later(); return;
@@ -489,14 +536,16 @@ function DecisionBody({ d, agentName, state }: { d: Decision; agentName: string;
   const toolArgs = toolArgumentsText(d);
   const technical = technicalDetails(d);
   const staged = d.staged_answer ?? null;
-  const stagedAction = staged ? plan.actions.find(a => a.body?.answer === staged.answer && a.role !== 'danger') : null;
+  const commit = stagedCommit(d, plan);
   const intelItems = d.kind === 'project_intel_proposal' && Array.isArray(d.payload?.items)
     ? (d.payload!.items as unknown[]).filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null)
     : [];
-  const leadFacts: string[] = [];
+  // What the decision itself knows; each replaces the digest's own figure for
+  // the same thing, so the one fact row never says it twice.
+  const leadFacts: LeadFacts = {};
   const spent = typeof d.payload?.spent === 'number' ? d.payload.spent : null;
-  if (unblockReason(d) === 'wallclock_cap' && spent !== null) leadFacts.push(`${humanDuration(spent)} used`);
-  if (unblockReason(d) === 'attempt_cap' && spent !== null) leadFacts.push(`${spent} attempt${spent === 1 ? '' : 's'}`);
+  if (unblockReason(d) === 'wallclock_cap' && spent !== null) leadFacts.timeUsed = humanDuration(spent);
+  if (unblockReason(d) === 'attempt_cap' && spent !== null) leadFacts.attempts = spent;
 
   const hasEvidence = target.kind === 'dispatch' || target.kind === 'council_report' || target.kind === 'budget'
     || !!check || !!toolArgs || intelItems.length > 0;
@@ -543,13 +592,23 @@ function DecisionBody({ d, agentName, state }: { d: Decision; agentName: string;
         </p>
       </header>
 
-      {staged && stagedAction && (
+      {staged && commit && (
         <div data-testid={`staged-${d.id}`} style={{ display: 'flex', alignItems: 'center', gap: space.md, flexWrap: 'wrap', ...type.small, color: colors.textMuted }}>
           <span>
             <strong style={{ color: colors.text, fontWeight: 600 }}>{stagedSummary(staged)}</strong>
-            {` · ${ageLabel(staged.staged_at)}. Nothing has happened yet — press ${stagedAction.label} to commit it.`}
+            {` · ${ageLabel(staged.staged_at)}. Nothing has happened yet`}
+            {commit.barAction
+              ? ` — press ${commit.barAction.label} to commit it${commit.barAction.confirm ? '; it asks you to confirm first' : ''}.`
+              : commit.rowAction
+                ? `. Committing it: ${commit.rowAction.effect}`
+                : ". It can't be committed here yet; discard it to clear it."}
             {staged.note ? ` Said with it: ${staged.note}` : ''}
           </span>
+          {commit.rowAction && (
+            <Button colors={colors} variant="ghost" flashSuccess={false} onClick={() => state.choose(commit.rowAction!)} style={{ fontFamily: font.body }}>
+              {commit.rowAction.label}
+            </Button>
+          )}
           <Button colors={colors} variant="bare" onClick={async () => { await state.discardStaged(d.id); }} style={quietBare(colors)}>
             Discard
           </Button>

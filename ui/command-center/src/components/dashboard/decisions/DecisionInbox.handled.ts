@@ -4,9 +4,11 @@
  * "overnight" — and the History footer.
  *
  * With the daemon's windowed agent-only count (`handled: {count, since}`,
- * daemon lane D3) it reads "4 handled since 9 PM". Without it, it falls back
- * to "N handled" from the legacy total and names no window at all: saying
- * "overnight" or "since…" about a count that has no window is the defect.
+ * daemon lane D3) it reads "4 handled since 9 PM" and opens what the agent
+ * did in that window. Without it, the only number is the legacy total of
+ * every resolved decision, by anyone, so it says "N resolved", opens the full
+ * history, and credits nobody: calling the user's own answers "handled" by
+ * the agent, or naming a window the count doesn't have, is the defect.
  */
 import type { DecisionsResponse } from './types';
 
@@ -14,6 +16,10 @@ export interface HandledSummary {
   count: number;
   /** "since 9 PM", "since yesterday 9 PM", or null when there is no window. */
   since: string | null;
+  /** The window's start (RFC 3339), for the agent history it opens. */
+  sinceIso: string | null;
+  /** True only for the daemon's agent-only count; the fallback is any actor. */
+  agentOnly: boolean;
 }
 
 /** "9 PM" / "9:30 PM" — minutes only when they are not zero. */
@@ -37,20 +43,27 @@ export function handledSummary(data: Pick<DecisionsResponse, 'handled_count' | '
   const w = data?.handled;
   if (w && typeof w.count === 'number' && Number.isFinite(w.count) && typeof w.since === 'string') {
     const since = windowStartLabel(w.since, now);
-    return { count: Math.max(0, w.count), since: since ? `since ${since}` : null };
+    return { count: Math.max(0, w.count), since: since ? `since ${since}` : null, sinceIso: since ? w.since : null, agentOnly: true };
   }
-  return { count: Math.max(0, data?.handled_count ?? 0), since: null };
+  return { count: Math.max(0, data?.handled_count ?? 0), since: null, sinceIso: null, agentOnly: false };
 }
 
-/** Link text: "4 handled since 9 PM", "4 handled", or "History" at zero. */
+/** Which history the link opens: the agent's own window, or everything. */
+export function handledHistoryFilter(summary: HandledSummary): 'agent' | 'all' {
+  return summary.agentOnly && summary.count > 0 ? 'agent' : 'all';
+}
+
+/** Link text: "4 handled since 9 PM", "4 handled", "12 resolved", or "History" at zero. */
 export function handledLinkLabel(summary: HandledSummary): string {
   if (summary.count === 0) return 'History';
+  if (!summary.agentOnly) return `${summary.count} resolved`;
   return summary.since ? `${summary.count} handled ${summary.since}` : `${summary.count} handled`;
 }
 
-/** Empty-state detail: "Henry handled 4 routine items since 9 PM." */
+/** Empty-state detail: "Your agent handled 4 items since 9 PM." Null when
+ *  the count is not the agent's alone. */
 export function handledSentence(summary: HandledSummary, agentName: string): string | null {
-  if (summary.count === 0) return null;
+  if (summary.count === 0 || !summary.agentOnly) return null;
   const items = `${summary.count} item${summary.count === 1 ? '' : 's'}`;
   return summary.since
     ? `${agentName} handled ${items} ${summary.since}.`

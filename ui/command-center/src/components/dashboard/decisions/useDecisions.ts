@@ -11,6 +11,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { eventsWsUrl } from '../../../lib/api';
 import { wireEventType } from '../../../lib/wireEvent';
 import { decisionsClient } from './client';
+import { nextOrphanDueIn, sendOrphanedHolds } from './DecisionReview.heldStore';
 import { emitActivity } from '../../../lib/emitActivity';
 import { useCommandCenter } from '../../../lib/store';
 import type { AnswerBody, Decision, DecisionsResponse, HistoryItem } from './types';
@@ -19,6 +20,11 @@ import { DecisionConflictError } from './types';
 export type AnswerResult =
   | { ok: true; decision: Decision; effect: string | null; effect_error: string | null }
   | { ok: false; conflict: true };
+
+export interface AnswerOptions {
+  /** Send as a request that survives the page closing (the hold's exit flush). */
+  keepalive?: boolean;
+}
 
 export function useDecisions() {
   const [data, setData] = useState<DecisionsResponse | null>(null);
@@ -126,9 +132,9 @@ export function useDecisions() {
    * other errors propagate.
    */
   const answer = useCallback(
-    async (id: string, body: AnswerBody): Promise<AnswerResult> => {
+    async (id: string, body: AnswerBody, opts?: AnswerOptions): Promise<AnswerResult> => {
       try {
-        const outcome = await decisionsClient.answer(id, body);
+        const outcome = await decisionsClient.answer(id, body, opts);
         // The user answered a decision — genuine engagement with the Decision
         // Inbox. Report it so the onboarding coach stops offering to teach it.
         emitActivity('decision_resolved', 'dashboard', {
@@ -158,6 +164,19 @@ export function useDecisions() {
     },
     [fetchDecisions],
   );
+
+  // An answer held for Undo when the app quit (or its window closed) is still
+  // stored: send it now that the daemon has answered a read. One still in its
+  // page's own send time is checked again once that has passed.
+  useEffect(() => {
+    if (!data) return;
+    const open = new Set(data.decisions.map(d => d.id));
+    void sendOrphanedHolds({ open, complete: data.decisions.length >= data.total_pending }, answer);
+    const due = nextOrphanDueIn();
+    if (due === null) return;
+    const timer = setTimeout(() => { void fetchDecisions(); }, due + 50);
+    return () => clearTimeout(timer);
+  }, [data, answer, fetchDecisions]);
 
   /**
    * Throw away a staged (spoken, uncommitted) verdict — D29's discard. The

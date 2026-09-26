@@ -3,7 +3,8 @@
  * Superhuman's J/K/H/Z. Pure, so the whole table is testable without a DOM.
  *
  *   1…9 / 0   the verdict carrying that key (bar order)
- *   Return    the primary, only where the plan marks it reversible
+ *   Return    whatever carries the ↩ keycap: an open field's send, else
+ *             the primary, only where the plan marks it reversible
  *   H         Later
  *   J / K     next / previous (arrows too)
  *   Z, ⌘Z     undo the last verdict
@@ -13,6 +14,9 @@
  * Every key is inert while a text field has focus. Buttons are NOT text
  * fields: focus lands on a header button when the sheet opens, and the keys
  * must work from there. Return/Space on a focused button stay the button's.
+ *
+ * Only J/K (and the arrows) auto-repeat. A held key's repeats would otherwise
+ * answer each decision the auto-advance brings up, unseen, or undo several.
  */
 
 export type ReviewCommand =
@@ -32,6 +36,8 @@ export interface KeyLike {
   metaKey?: boolean;
   shiftKey?: boolean;
   isComposing?: boolean;
+  /** An OS auto-repeat of a key that is being held down. */
+  repeat?: boolean;
   defaultPrevented?: boolean;
   target?: EventTarget | null;
 }
@@ -45,6 +51,12 @@ function closest(target: EventTarget | null | undefined, selector: string): bool
 }
 
 export function commandForKey(e: KeyLike): ReviewCommand | null {
+  const command = commandFor(e);
+  if (e.repeat && command && command.type !== 'next' && command.type !== 'prev') return null;
+  return command;
+}
+
+function commandFor(e: KeyLike): ReviewCommand | null {
   if (e.defaultPrevented || e.isComposing || e.altKey) return null;
   if (closest(e.target, TEXT_ENTRY)) return null;
   const mod = !!(e.metaKey || e.ctrlKey);
