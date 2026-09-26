@@ -22,13 +22,17 @@
 //!    harness does ([`LogParser`], [`evaluate_log`], [`grade`]). Resolved means
 //!    every `FAIL_TO_PASS` test passes and every `PASS_TO_PASS` test still
 //!    passes. Exit 0 = resolved, 1 = not resolved, 2 = infrastructure error
-//!    (the runner reads both 1 and 2 as a fail; the verdict file says which).
+//!    (the runner records 2 as `errored`, not a fail: [`is_judge_infra_exit`]).
+//!    Which images the judges pulled, and which judge is using which, lives
+//!    in a ledger on the Docker host (`HostLedger`), so an interrupted or
+//!    overlapping judge never strands a multi-GB image.
 //! 4. **Summary** ([`summarize_report`]): per-task cost, model calls (the cost
 //!    ledger's row count, one per provider response), wall time and the tier's
 //!    $/solved, from a `run --format json` report.
 //!
 //! The remote side sits behind [`RemoteExec`] so the judge's decisions (disk
-//! floor, pull failure, apply failure, grading) are unit-tested with a fake.
+//! floor, pull failure, apply failure, grading) are unit-tested with a fake,
+//! and the ledger's shell scripts run in tests against a stand-in `docker`.
 //! The SSH conventions (BatchMode, a validated target, the Colima
 //! `DOCKER_HOST`) follow `crates/goose-server/src/strix.rs`, without depending
 //! on it: this crate must stay independent of the app crates.
@@ -39,6 +43,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 /// `category:` of every materialized SWE-bench task.
@@ -446,6 +451,8 @@ pub struct JudgeConfig {
     pub container_memory: Option<String>,
     /// Where each verdict JSON is written (None = stdout only).
     pub verdict_dir: Option<PathBuf>,
+    /// The Docker host ledger's lock timing (not a CLI flag; tests shorten it).
+    pub ledger: LedgerTiming,
 }
 
 impl Default for JudgeConfig {
@@ -460,6 +467,7 @@ impl Default for JudgeConfig {
             trim_colima: true,
             container_memory: Some("2g".to_string()),
             verdict_dir: None,
+            ledger: LedgerTiming::default(),
         }
     }
 }
@@ -529,11 +537,67 @@ impl JudgeConfig {
         args
     }
 
+    /// Anchor a relative `verdict_dir` at `base` (the operator's cwd). The
+    /// judge runs with each run's scratch workspace as its cwd, which the
+    /// runner deletes after the task, so a relative dir baked into task.yaml
+    /// would put every verdict (and judged patch) there.
+    pub fn anchor_verdict_dir(&mut self, base: &Path) {
+        if let Some(dir) = self.verdict_dir.as_mut() {
+            if dir.is_relative() {
+                *dir = base.join(dir.as_path());
+            }
+        }
+    }
+
     fn prelude(&self) -> String {
         format!(
             "export PATH={}:$PATH; export DOCKER_HOST={}; ",
             self.remote_path_prefix, self.docker_host
         )
+    }
+
+    /// SSH cap on one ledger step (claim/reap, release): the lock wait plus
+    /// the work done while holding it.
+    pub fn ledger_step_timeout_secs(&self) -> u64 {
+        self.ledger.lock_wait_secs.saturating_add(LEDGER_WORK_SECS)
+    }
+
+    /// The longest one `swe-judge` can take with every remote step at its
+    /// cap: claim/reap, pull, container run, release, plus local overhead.
+    pub fn worst_case_secs(&self) -> u64 {
+        self.ledger_step_timeout_secs()
+            .saturating_mul(2)
+            .saturating_add(PULL_TIMEOUT_SECS)
+            .saturating_add(self.run_timeout_secs)
+            .saturating_add(JUDGE_OVERHEAD_SECS)
+    }
+
+    /// The runner-side oracle ceiling a materialized task gets by default:
+    /// past the judge's worst case, so the runner never kills `swe-judge`
+    /// (which cannot catch the signal) before its release step has run.
+    pub fn default_oracle_timeout_secs(&self) -> u64 {
+        self.worst_case_secs()
+            .saturating_add(ORACLE_TIMEOUT_MARGIN_SECS)
+    }
+
+    /// Refuse an explicit oracle ceiling the judge could outlive.
+    pub fn check_oracle_timeout(&self, oracle_timeout_secs: u64) -> Result<()> {
+        let worst = self.worst_case_secs();
+        if oracle_timeout_secs <= worst {
+            bail!(
+                "an oracle timeout of {} s is not above the judge's worst case ({} s: pull {} s + \
+                 run {} s + two ledger steps of {} s + {} s overhead), so the runner could kill \
+                 swe-judge before it releases its container and image; lower --run-timeout-secs \
+                 instead",
+                oracle_timeout_secs,
+                worst,
+                PULL_TIMEOUT_SECS,
+                self.run_timeout_secs,
+                self.ledger_step_timeout_secs(),
+                JUDGE_OVERHEAD_SECS
+            );
+        }
+        Ok(())
     }
 }
 
@@ -610,6 +674,20 @@ pub fn materialize(
     opts: &MaterializeOptions,
 ) -> Result<Vec<String>> {
     opts.judge.validate()?;
+    // The oracle runs with the run's scratch workspace as its cwd, which the
+    // runner deletes after the task: a relative verdict dir would land there.
+    if let Some(dir) = opts
+        .judge
+        .verdict_dir
+        .as_deref()
+        .filter(|d| d.is_relative())
+    {
+        bail!(
+            "verdict dir {} is relative; the judge runs inside each run's scratch workspace, so \
+             it must be absolute",
+            dir.display()
+        );
+    }
     std::fs::create_dir_all(&opts.out_dir)
         .with_context(|| format!("creating {}", opts.out_dir.display()))?;
     std::fs::create_dir_all(&opts.repo_cache)
@@ -665,7 +743,9 @@ fn git(args: &[&str], envs: &[(&str, &Path)]) -> Result<std::process::Output> {
     Ok(out)
 }
 
-fn git_ok(args: &[&str], envs: &[(&str, &Path)]) -> Result<String> {
+/// A successful git command's stdout, byte for byte (a diff of a non-UTF-8
+/// file must reach `git apply` unaltered).
+fn git_ok_bytes(args: &[&str], envs: &[(&str, &Path)]) -> Result<Vec<u8>> {
     let out = git(args, envs)?;
     if !out.status.success() {
         bail!(
@@ -674,7 +754,12 @@ fn git_ok(args: &[&str], envs: &[(&str, &Path)]) -> Result<String> {
             String::from_utf8_lossy(&out.stderr).trim()
         );
     }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    Ok(out.stdout)
+}
+
+/// [`git_ok_bytes`] for commands whose output is text (SHAs, names).
+fn git_ok(args: &[&str], envs: &[(&str, &Path)]) -> Result<String> {
+    git_ok_bytes(args, envs).map(|out| String::from_utf8_lossy(&out).into_owned())
 }
 
 /// A bare, blob-less mirror of `https://github.com/<repo>` under `cache`.
@@ -763,12 +848,50 @@ pub fn checkout_at(mirror: &Path, commit: &str, dest: &Path) -> Result<()> {
     result.map(|_| ())
 }
 
+/// The agent's change, as [`workspace_patch`] found it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspacePatch {
+    /// `git diff --binary` output, byte for byte: a text file in another
+    /// encoding (Latin-1 fixtures, say) is diffed raw, and any re-encoding
+    /// would stop the patch applying to `/testbed`.
+    pub bytes: Vec<u8>,
+    /// The runner's seed commit the diff is against — also the run's key in
+    /// the report (`seed_commit`), which is how `swe-summary` ties a verdict
+    /// to exactly one run.
+    pub seed_commit: String,
+}
+
+/// The runner's seed commit in `workspace`: the repository's root commit
+/// (the oldest one, should the harness have made another root).
+pub fn workspace_seed_commit(workspace: &Path) -> Result<String> {
+    let ws = workspace.to_string_lossy().into_owned();
+    let roots = git_ok(
+        &["-C", ws.as_str(), "rev-list", "--max-parents=0", "HEAD"],
+        &[],
+    )?;
+    Ok(roots
+        .lines()
+        .map(str::trim)
+        .rfind(|l| !l.is_empty())
+        .context("workspace has no root commit")?
+        .to_string())
+}
+
+/// The runner's scratch directory name (`<tier>-<task>-<stamp>`) for a
+/// workspace at `<runs_root>/<that>/workspace`.
+pub fn workspace_run_dir(workspace: &Path) -> Option<String> {
+    let ws = std::fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf());
+    ws.parent()
+        .and_then(|p| p.file_name())
+        .map(|n| n.to_string_lossy().into_owned())
+}
+
 /// The agent's change: everything in `workspace` that differs from the
 /// runner's seed commit (the repository's root commit), untracked files
 /// included, harness-private directories excluded. Stages into the
 /// workspace's index, which is safe: grading is the last thing that touches
 /// the scratch workspace.
-pub fn workspace_patch(workspace: &Path) -> Result<String> {
+pub fn workspace_patch(workspace: &Path) -> Result<WorkspacePatch> {
     let ws = workspace.to_string_lossy().into_owned();
     let excludes: Vec<String> = HARNESS_PRIVATE_PATHS
         .iter()
@@ -777,16 +900,7 @@ pub fn workspace_patch(workspace: &Path) -> Result<String> {
     let mut add: Vec<&str> = vec!["-C", ws.as_str(), "add", "-A", "--", "."];
     add.extend(excludes.iter().map(String::as_str));
     git_ok(&add, &[])?;
-    let roots = git_ok(
-        &["-C", ws.as_str(), "rev-list", "--max-parents=0", "HEAD"],
-        &[],
-    )?;
-    let root = roots
-        .lines()
-        .map(str::trim)
-        .rfind(|l| !l.is_empty())
-        .context("workspace has no root commit")?
-        .to_string();
+    let root = workspace_seed_commit(workspace)?;
     let mut diff: Vec<&str> = vec![
         "-C",
         ws.as_str(),
@@ -809,7 +923,11 @@ pub fn workspace_patch(workspace: &Path) -> Result<String> {
         ".",
     ];
     diff.extend(excludes.iter().map(String::as_str));
-    git_ok(&diff, &[])
+    let bytes = git_ok_bytes(&diff, &[])?;
+    Ok(WorkspacePatch {
+        bytes,
+        seed_commit: root.clone(),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1268,7 +1386,8 @@ pub fn base64_wrapped(data: &[u8]) -> String {
 /// apply the patch in `/testbed` (git apply, then `patch --fuzz` like
 /// upstream), then run the eval script with stderr folded into the log.
 /// `benchmarks/tools/validate_swe_arm.py` sends the same script.
-pub fn judge_script(patch: &str, eval_script: &str) -> String {
+/// `patch` is raw bytes: base64 carries them into the container unaltered.
+pub fn judge_script(patch: &[u8], eval_script: &str) -> String {
     format!(
         "set -u\nexec 2>&1\n\
          base64 -d > /tmp/permagent.patch <<'PERMAGENT_B64_EOF'\n{p}\nPERMAGENT_B64_EOF\n\
@@ -1278,7 +1397,7 @@ pub fn judge_script(patch: &str, eval_script: &str) -> String {
          elif git apply --verbose /tmp/permagent.patch || patch --batch --fuzz=5 -p1 -i /tmp/permagent.patch; then\n  echo '{pass}'\n\
          else\n  echo '{fail}'\n  exit 3\nfi\n\
          bash /tmp/permagent_eval.sh\n",
-        p = base64_wrapped(patch.as_bytes()),
+        p = base64_wrapped(patch),
         e = base64_wrapped(eval_script.as_bytes()),
         pass = APPLY_PATCH_PASS,
         fail = APPLY_PATCH_FAIL,
@@ -1384,7 +1503,9 @@ pub enum JudgeOutcome {
     Resolved,
     Unresolved,
     /// The judge could not produce a verdict (disk floor, pull failure, SSH or
-    /// Docker failure). Not the agent's fault; reported separately.
+    /// Docker failure, a workspace it could not diff). Not the agent's fault:
+    /// the runner records it as `errored` ([`is_judge_infra_exit`]) and the
+    /// summary reports it separately.
     InfraError,
 }
 
@@ -1397,6 +1518,15 @@ impl JudgeOutcome {
             Self::InfraError => 2,
         }
     }
+}
+
+/// Whether a task's oracle exit means the SWE-bench judge could not grade:
+/// `swe-judge` exits 2 for its [`JudgeOutcome::InfraError`], and clap exits 2
+/// on a bad argv. The runner records such a run as `errored` (the oracle
+/// produced no verdict), never as the agent's `fail`; every other category's
+/// oracle keeps the plain zero / non-zero reading.
+pub fn is_judge_infra_exit(category: &str, exit: Option<i32>) -> bool {
+    category == SWE_CATEGORY && exit == Some(JudgeOutcome::InfraError.exit_code())
 }
 
 /// What `swe-judge` decided, written as JSON next to the other verdicts.
@@ -1422,10 +1552,20 @@ pub struct JudgeVerdict {
     /// The runner's scratch directory name (`<tier>-<task>-<stamp>`), when
     /// judged from a workspace — how `swe-summary` ties a verdict to a tier.
     pub run_dir: Option<String>,
+    /// The workspace's seed commit, when judged from a workspace. With
+    /// `run_dir` it keys the verdict to exactly one run of a report (whose
+    /// rows carry the same `seed_commit`), so a verdict an earlier run left in
+    /// a shared verdict dir never labels a later run.
+    #[serde(default)]
+    pub seed_commit: Option<String>,
+    /// Leftovers of earlier judges (a dead judge's container, an image no
+    /// judge claims any more) this judge removed from the Docker host first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reaped: Vec<String>,
 }
 
 impl JudgeVerdict {
-    fn new(inst: &SweInstance, entry: &SliceEntry, patch: &str) -> Self {
+    fn new(inst: &SweInstance, entry: &SliceEntry, patch: &[u8]) -> Self {
         Self {
             instance_id: inst.instance_id.clone(),
             image: entry.image_ref(),
@@ -1444,7 +1584,50 @@ impl JudgeVerdict {
             test_secs: None,
             remote_free_gib: None,
             run_dir: None,
+            seed_commit: None,
+            reaped: Vec::new(),
         }
+    }
+
+    /// The verdict of a judge that failed before it could judge anything (the
+    /// slice would not load, the workspace would not diff): an InfraError, so
+    /// that failure is never read as the agent's.
+    pub fn infra_error(instance_id: &str, reason: impl Into<String>) -> Self {
+        Self {
+            instance_id: instance_id.to_string(),
+            image: String::new(),
+            outcome: JudgeOutcome::InfraError,
+            reason: Some(reason.into()),
+            patch_bytes: 0,
+            patch_applied: None,
+            f2p_passed: 0,
+            f2p_total: 0,
+            p2p_passed: 0,
+            p2p_total: 0,
+            f2p_failures: Vec::new(),
+            p2p_failures: Vec::new(),
+            pulled: false,
+            pull_secs: None,
+            test_secs: None,
+            remote_free_gib: None,
+            run_dir: None,
+            seed_commit: None,
+            reaped: Vec::new(),
+        }
+    }
+
+    /// [`Self::infra_error`] for a judge pointed at a runner workspace, keyed
+    /// to that run (`run_dir`, `seed_commit`) as far as the workspace still
+    /// allows, like every verdict of a judge that got further.
+    pub fn infra_error_for_workspace(
+        instance_id: &str,
+        reason: impl Into<String>,
+        workspace: &Path,
+    ) -> Self {
+        let mut v = Self::infra_error(instance_id, reason);
+        v.run_dir = workspace_run_dir(workspace);
+        v.seed_commit = workspace_seed_commit(workspace).ok();
+        v
     }
 
     fn with(mut self, outcome: JudgeOutcome, reason: impl Into<String>) -> Self {
@@ -1466,18 +1649,373 @@ pub struct JudgeRunOptions {
 /// Docker: compressed content plus the unpacked snapshot.
 pub const PULL_DISK_FACTOR: f64 = 4.0;
 
+// ---------------------------------------------------------------------------
+// The Docker host's ledger: which images judges pulled, and who uses them
+// ---------------------------------------------------------------------------
+
+/// Where the judges' shared state lives on the Docker host (expanded by the
+/// remote shell); one directory per `DOCKER_HOST` below it.
+pub const LEDGER_ROOT: &str = "$HOME/.permagent-swe";
+
+/// Label on every judge container: the remote epoch second after which it is
+/// a leftover (its judge died or overran) that the next judge removes.
+pub const DEADLINE_LABEL: &str = "permagent.swe.deadline";
+
+/// Label naming the judge that started a container, for `docker ps`.
+pub const JUDGE_LABEL: &str = "permagent.swe.judge";
+
+/// Wall-clock cap on one image pull.
+pub const PULL_TIMEOUT_SECS: u64 = 3600;
+
+/// What a ledger step may do once it holds the lock: remove leftover
+/// containers and images, then `fstrim`.
+pub const LEDGER_WORK_SECS: u64 = 540;
+
+/// How long a judge container outlives its own run cap before the next judge
+/// treats it as a leftover.
+pub const CONTAINER_REAP_GRACE_SECS: u64 = 300;
+
+/// A judge's time outside its remote steps: diffing the workspace, SSH
+/// connection setup, process start and exit.
+pub const JUDGE_OVERHEAD_SECS: u64 = 300;
+
+/// How far past the judge's worst case the default oracle ceiling sits.
+pub const ORACLE_TIMEOUT_MARGIN_SECS: u64 = 300;
+
+const COLIMA_TRIM: &str = "colima ssh -- sudo fstrim /mnt/lima-colima >/dev/null 2>&1";
+
+/// First line (a shell comment) of each ledger script, so a log or a test
+/// fake can tell the steps apart.
+const BEGIN_TAG: &str = "# permagent-swe-judge: begin";
+const RELEASE_TAG: &str = "# permagent-swe-judge: release";
+
+/// The ledger's per-host lock timing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LedgerTiming {
+    /// How long a ledger step waits for the lock before the judge gives up
+    /// (an InfraError).
+    pub lock_wait_secs: u64,
+    /// A lock older than this many minutes belongs to a judge that died
+    /// holding it, and is broken. Shorter than the wait, so a dead holder
+    /// never outlasts one; longer than any step's real work (a few `docker
+    /// rmi` and one `fstrim`), so a live holder is not broken.
+    pub lock_stale_mins: u64,
+}
+
+impl Default for LedgerTiming {
+    fn default() -> Self {
+        Self {
+            lock_wait_secs: 360,
+            lock_stale_mins: 5,
+        }
+    }
+}
+
+/// `s` as a file name: ASCII alphanumerics kept, everything else `_`.
+fn file_key(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect()
+}
+
+/// A per-judge id for its claim file and container label: pid, wall-clock
+/// nanos and an in-process counter, so two judges in one process (as in the
+/// tests) never share one.
+fn judge_id() -> String {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("{}-{nanos}-{n}", std::process::id())
+}
+
+/// POSIX `sh`: does any live judge claim image `$1`?
+const CLAIMED_FN: &str = r#"claimed() {
+  for c in "$D"/claims/*; do
+    [ -f "$c" ] || continue
+    _dl=
+    _img=
+    read -r _dl _img < "$c" || true
+    if [ "$_img" = "$1" ]; then return 0; fi
+  done
+  return 1
+}
+"#;
+
+/// One judge's handle on the Docker host's ledger, a directory per
+/// `DOCKER_HOST` under [`LEDGER_ROOT`]:
+///
+/// - `images/<key>` — an image some judge pulled (content: the image ref).
+///   Only listed images are ever removed; one the host already had is never
+///   listed, so no judge touches it.
+/// - `claims/<judge id>` — `<deadline> <image ref>`: that judge uses the image
+///   until the remote epoch second `<deadline>` (its whole worst case).
+/// - `lock/` — the per-host lock (`mkdir`), held only for the short begin and
+///   release steps, never across a pull or a test run.
+///
+/// So image ownership outlives the judge process: an image is removed by the
+/// last judge to release it, whoever pulled it, and a killed judge's
+/// leftovers (its container, an image it pulled) are reaped by the next judge
+/// to begin once the dead judge's deadline has passed. The begin and release
+/// steps are POSIX `sh` scripts (the remote login shell may be zsh).
+struct HostLedger {
+    /// `$HOME/.permagent-swe/<docker host key>`, expanded remotely.
+    dir: String,
+    judge_id: String,
+    container: String,
+    image: String,
+    image_key: String,
+}
+
+/// What the begin step found.
+struct LedgerBegin {
+    present: bool,
+    free_gib: Option<f64>,
+    reaped: Vec<String>,
+}
+
+impl HostLedger {
+    fn new(cfg: &JudgeConfig, instance_id: &str, image: &str) -> Self {
+        Self {
+            dir: format!("{}/{}", LEDGER_ROOT, file_key(&cfg.docker_host)),
+            judge_id: judge_id(),
+            container: container_name(instance_id),
+            image: image.to_string(),
+            image_key: file_key(image),
+        }
+    }
+
+    /// `sh -c` of: the tag, the prelude, `before_lock`, then `body` holding the
+    /// per-host lock (`mkdir`; a lock older than the stale age is broken, and
+    /// the lock is dropped on every exit, signals included).
+    fn script(&self, cfg: &JudgeConfig, tag: &str, before_lock: &str, body: &str) -> String {
+        let script = format!(
+            r#"{tag}
+{prelude}
+{before_lock}D="{dir}"
+{claimed}mkdir -p "$D/claims" "$D/images" || {{ echo ledger=unwritable; exit 73; }}
+waited=0
+until mkdir "$D/lock" 2>/dev/null; do
+  waited=$((waited + 1))
+  if [ "$waited" -gt {wait} ]; then echo lock=busy; exit 75; fi
+  if [ -n "$(find "$D/lock" -maxdepth 0 -mmin +{stale} 2>/dev/null)" ]; then
+    rmdir "$D/lock" 2>/dev/null && continue
+  fi
+  sleep 1
+done
+trap 'rmdir "$D/lock" 2>/dev/null' EXIT
+trap 'exit 129' HUP INT TERM PIPE
+{body}"#,
+            tag = tag,
+            prelude = cfg.prelude(),
+            before_lock = before_lock,
+            dir = self.dir,
+            claimed = CLAIMED_FN,
+            wait = cfg.ledger.lock_wait_secs,
+            stale = cfg.ledger.lock_stale_mins,
+            body = body,
+        );
+        format!("sh -c {}", posix_single_quote(&script))
+    }
+
+    /// Claim the image, reap earlier judges' leftovers, probe the host. The
+    /// claim comes first, so no other judge removes this image between this
+    /// probe and this judge's release.
+    fn begin_command(&self, cfg: &JudgeConfig) -> String {
+        let body = format!(
+            r#"docker info >/dev/null 2>&1 || {{ echo docker=down; exit 69; }}
+now=$(date +%s)
+for c in "$D"/claims/*; do
+  [ -f "$c" ] || continue
+  dl=
+  read -r dl _rest < "$c" || true
+  case "$dl" in ''|*[!0-9]*) dl=0 ;; esac
+  if [ "$dl" -lt "$now" ]; then rm -f "$c"; fi
+done
+printf '%s %s\n' "$((now + {claim_secs}))" {img} > "$D/claims/{judge}"
+docker ps -a --filter label={label} --format '{{{{.Names}}}} {{{{.Label "{label}"}}}}' 2>/dev/null |
+while read -r n dl; do
+  case "$dl" in ''|*[!0-9]*) continue ;; esac
+  if [ -n "$n" ] && [ "$dl" -lt "$now" ] && docker rm -f "$n" >/dev/null 2>&1; then
+    echo "reaped=container $n"
+  fi
+done
+freed=0
+for f in "$D"/images/*; do
+  [ -f "$f" ] || continue
+  ref=$(cat "$f")
+  if [ -z "$ref" ]; then rm -f "$f"; continue; fi
+  if claimed "$ref"; then continue; fi
+  if ! docker image inspect "$ref" >/dev/null 2>&1; then rm -f "$f"; continue; fi
+  if docker rmi "$ref" >/dev/null 2>&1; then
+    rm -f "$f"
+    freed=1
+    echo "reaped=image $ref"
+  fi
+done
+if [ "$freed" = 1 ]; then {trim}; fi
+if docker image inspect {img} >/dev/null 2>&1; then echo present=1; else echo present=0; fi
+echo "free_kb=$(df -k "$HOME" | tail -1 | awk '{{print $4}}')"
+echo ledger=ok
+"#,
+            claim_secs = cfg.worst_case_secs(),
+            img = posix_single_quote(&self.image),
+            judge = self.judge_id,
+            label = DEADLINE_LABEL,
+            trim = if cfg.trim_colima { COLIMA_TRIM } else { ":" },
+        );
+        self.script(cfg, BEGIN_TAG, "", &body)
+    }
+
+    /// Run [`Self::begin_command`] and read what it found.
+    fn begin(
+        &self,
+        cfg: &JudgeConfig,
+        exec: &dyn RemoteExec,
+    ) -> std::result::Result<LedgerBegin, String> {
+        let out = exec
+            .run(
+                &self.begin_command(cfg),
+                None,
+                Duration::from_secs(cfg.ledger_step_timeout_secs()),
+            )
+            .map_err(|e| format!("{e:#}"))?;
+        let mut fields: BTreeMap<&str, &str> = BTreeMap::new();
+        let mut reaped = Vec::new();
+        for line in out.stdout.lines() {
+            match line.trim().split_once('=') {
+                Some(("reaped", what)) => reaped.push(what.to_string()),
+                Some((key, value)) => {
+                    fields.insert(key, value);
+                }
+                None => {}
+            }
+        }
+        if fields.get("ledger") != Some(&"ok") {
+            return Err(if fields.contains_key("docker") {
+                format!("docker unreachable on {}", cfg.ssh_target)
+            } else if fields.contains_key("lock") {
+                format!(
+                    "the judge ledger on {} stayed locked for {} s",
+                    cfg.ssh_target, cfg.ledger.lock_wait_secs
+                )
+            } else if fields.contains_key("ledger") {
+                format!("cannot write the judge ledger on {}", cfg.ssh_target)
+            } else {
+                format!(
+                    "docker unreachable on {}: {}",
+                    cfg.ssh_target,
+                    last_line(&out.stderr)
+                )
+            });
+        }
+        Ok(LedgerBegin {
+            present: fields.get("present") == Some(&"1"),
+            free_gib: fields
+                .get("free_kb")
+                .and_then(|kb| kb.trim().parse::<f64>().ok())
+                .map(|kb| kb / 1024.0 / 1024.0),
+            reaped,
+        })
+    }
+
+    /// Pull the image, listing it in the ledger FIRST (unless images are
+    /// kept): a judge killed mid-pull then leaves a listed image, which the
+    /// next judge reaps, rather than an unlisted one nobody ever would.
+    fn pull_command(&self, cfg: &JudgeConfig) -> String {
+        let img = posix_single_quote(&self.image);
+        let record = if cfg.keep_image {
+            String::new()
+        } else {
+            format!(
+                "mkdir -p \"{dir}/images\" && printf '%s\\n' {img} > \"{dir}/images/{key}\" && ",
+                dir = self.dir,
+                img = img,
+                key = self.image_key,
+            )
+        };
+        format!("{}{record}docker pull -q {img}", cfg.prelude())
+    }
+
+    /// The test container: never pulls on its own (`--pull=never`, so a
+    /// vanished image is an error, not an unrecorded pull that skips the disk
+    /// floor), labelled with the moment it becomes a leftover.
+    fn run_command(&self, cfg: &JudgeConfig) -> String {
+        let memory = cfg
+            .container_memory
+            .as_ref()
+            .map(|m| format!("--memory {m} "))
+            .unwrap_or_default();
+        format!(
+            "{prelude}docker run --rm -i --pull=never --name {name} --label {judge_label}={id} \
+             --label {deadline_label}=$(($(date +%s) + {secs})) {memory}{img} bash -s",
+            prelude = cfg.prelude(),
+            name = self.container,
+            judge_label = JUDGE_LABEL,
+            id = self.judge_id,
+            deadline_label = DEADLINE_LABEL,
+            secs = cfg
+                .run_timeout_secs
+                .saturating_add(CONTAINER_REAP_GRACE_SECS),
+            memory = memory,
+            img = posix_single_quote(&self.image),
+        )
+    }
+
+    /// Remove the container (a timeout leaves it running), drop this judge's
+    /// claim, then remove the image if the ledger lists it and no other judge
+    /// still claims it, and hand the freed blocks back to the host.
+    fn release_command(&self, cfg: &JudgeConfig) -> String {
+        let img = posix_single_quote(&self.image);
+        let key = &self.image_key;
+        let trim = if cfg.trim_colima { COLIMA_TRIM } else { ":" };
+        // Outside the lock: removing the container needs no ledger state, and
+        // a busy lock must not leave it running.
+        let before_lock = format!("docker rm -f {} >/dev/null 2>&1\n", self.container);
+        let remove = if cfg.keep_image {
+            String::new()
+        } else {
+            format!(
+                r#"if docker info >/dev/null 2>&1 && [ -f "$D/images/{key}" ] && ! claimed {img}; then
+  if ! docker image inspect {img} >/dev/null 2>&1; then
+    rm -f "$D/images/{key}"
+  elif docker rmi {img} >/dev/null 2>&1; then
+    rm -f "$D/images/{key}"
+    echo removed=1
+    {trim}
+  fi
+fi
+"#
+            )
+        };
+        let body = format!(
+            "rm -f \"$D/claims/{}\"\n{remove}echo ledger=ok\n",
+            self.judge_id
+        );
+        self.script(cfg, RELEASE_TAG, &before_lock, &body)
+    }
+}
+
 /// Judge one patch for one instance on the remote host.
+///
+/// Remote steps, each capped (their sum is [`JudgeConfig::worst_case_secs`]):
+/// begin (claim the image in the host ledger, reap earlier judges'
+/// leftovers, probe), pull when absent, run the container, and release
+/// (remove the container, drop the claim, remove the image when the ledger
+/// lists it and no other judge claims it).
 pub fn judge_instance(
     inst: &SweInstance,
     entry: &SliceEntry,
-    patch: &str,
+    patch: &[u8],
     cfg: &JudgeConfig,
     run: JudgeRunOptions,
     exec: &dyn RemoteExec,
     image_compressed_bytes: Option<u64>,
 ) -> JudgeVerdict {
     let mut v = JudgeVerdict::new(inst, entry, patch);
-    if patch.trim().is_empty() && !run.run_empty_patch {
+    if patch.iter().all(u8::is_ascii_whitespace) && !run.run_empty_patch {
         v.patch_applied = Some(false);
         return v.with(JudgeOutcome::Unresolved, "the agent produced no change");
     }
@@ -1490,111 +2028,66 @@ pub fn judge_instance(
     if let Err(e) = cfg.validate() {
         return v.with(JudgeOutcome::InfraError, format!("{e:#}"));
     }
-    let image = entry.image_ref();
-    let q_image = posix_single_quote(&image);
-    let prelude = cfg.prelude();
-    let short = Duration::from_secs(60);
-
-    // Already present (pre-pulled or someone else's)? Then it is not ours to
-    // remove, and no disk is needed.
-    let present = match exec.run(
-        &format!("{prelude}docker image inspect {q_image} >/dev/null 2>&1 && echo present || echo absent"),
-        None,
-        short,
-    ) {
-        Ok(o) if o.stdout.contains("present") => true,
-        Ok(o) if o.stdout.contains("absent") => false,
-        Ok(o) => {
-            return v.with(
-                JudgeOutcome::InfraError,
-                format!("docker unreachable on {}: {}", cfg.ssh_target, o.stderr.trim()),
-            )
-        }
-        Err(e) => return v.with(JudgeOutcome::InfraError, format!("{e:#}")),
+    let ledger = HostLedger::new(cfg, &inst.instance_id, &entry.image_ref());
+    let begin = match ledger.begin(cfg, exec) {
+        Ok(b) => b,
+        Err(why) => return v.with(JudgeOutcome::InfraError, why),
     };
+    v.reaped = begin.reaped;
 
-    if !present {
-        let free = match exec.run("df -k \"$HOME\" | tail -1 | awk '{print $4}'", None, short) {
-            Ok(o) => o
-                .stdout
-                .trim()
-                .parse::<f64>()
-                .ok()
-                .map(|kb| kb / 1024.0 / 1024.0),
-            Err(_) => None,
-        };
-        let Some(free) = free else {
-            return v.with(
-                JudgeOutcome::InfraError,
-                "could not read free disk on the Docker host",
-            );
-        };
-        v.remote_free_gib = Some(round1(free));
-        let need = image_compressed_bytes
-            .map(|b| b as f64 * PULL_DISK_FACTOR / 1024f64.powi(3))
-            .unwrap_or(4.0);
-        if free - need < cfg.min_free_gib {
-            return v.with(
-                JudgeOutcome::InfraError,
-                format!(
+    // This judge holds a claim from here on, so every path ends at release.
+    let run_result: std::result::Result<RemoteOutput, String> = 'claimed: {
+        if !begin.present {
+            let Some(free) = begin.free_gib else {
+                break 'claimed Err("could not read free disk on the Docker host".to_string());
+            };
+            v.remote_free_gib = Some(round1(free));
+            let need = image_compressed_bytes
+                .map(|b| b as f64 * PULL_DISK_FACTOR / 1024f64.powi(3))
+                .unwrap_or(4.0);
+            if free - need < cfg.min_free_gib {
+                break 'claimed Err(format!(
                     "disk floor: {:.1} GiB free, pull needs ~{:.1} GiB, floor {} GiB",
                     free,
                     need,
                     format_gib(cfg.min_free_gib)
-                ),
-            );
-        }
-        let t = Instant::now();
-        let pull = exec.run(
-            &format!("{prelude}docker pull -q {q_image}"),
-            None,
-            Duration::from_secs(3600),
-        );
-        v.pull_secs = Some(round1(t.elapsed().as_secs_f64()));
-        match pull {
-            Ok(o) if o.exit == Some(0) => v.pulled = true,
-            Ok(o) => {
-                return v.with(
-                    JudgeOutcome::InfraError,
-                    format!("docker pull failed: {}", last_line(&o.stderr)),
-                )
+                ));
             }
-            Err(e) => return v.with(JudgeOutcome::InfraError, format!("{e:#}")),
+            let t = Instant::now();
+            let pull = exec.run(
+                &ledger.pull_command(cfg),
+                None,
+                Duration::from_secs(PULL_TIMEOUT_SECS),
+            );
+            v.pull_secs = Some(round1(t.elapsed().as_secs_f64()));
+            match pull {
+                Ok(o) if o.exit == Some(0) => v.pulled = true,
+                Ok(o) => {
+                    break 'claimed Err(format!("docker pull failed: {}", last_line(&o.stderr)))
+                }
+                Err(e) => break 'claimed Err(format!("{e:#}")),
+            }
         }
-    }
-
-    let name = container_name(&inst.instance_id);
-    let memory = cfg
-        .container_memory
-        .as_ref()
-        .map(|m| format!("--memory {m} "))
-        .unwrap_or_default();
-    let script = judge_script(patch, &inst.eval_script);
-    let t = Instant::now();
-    let run_result = exec.run(
-        &format!("{prelude}docker run --rm -i --name {name} {memory}{q_image} bash -s"),
-        Some(script.as_str()),
-        Duration::from_secs(cfg.run_timeout_secs),
-    );
-    v.test_secs = Some(round1(t.elapsed().as_secs_f64()));
-
-    // Always clean up: the container (a timeout leaves it running), then the
-    // image if this judge pulled it, then hand freed blocks back to the host.
-    let mut cleanup = format!("{prelude}docker rm -f {name} >/dev/null 2>&1; ");
-    if v.pulled && !cfg.keep_image {
-        cleanup.push_str(&format!("docker rmi {q_image} >/dev/null 2>&1; "));
-        if cfg.trim_colima {
-            cleanup.push_str("colima ssh -- sudo fstrim /mnt/lima-colima >/dev/null 2>&1; ");
-        }
-    }
-    cleanup.push_str("true");
-    let _ = exec.run(&cleanup, None, Duration::from_secs(300));
-
-    let out = match run_result {
-        Ok(o) => o,
-        Err(e) => return v.with(JudgeOutcome::InfraError, format!("{e:#}")),
+        let script = judge_script(patch, &inst.eval_script);
+        let t = Instant::now();
+        let out = exec.run(
+            &ledger.run_command(cfg),
+            Some(script.as_str()),
+            Duration::from_secs(cfg.run_timeout_secs),
+        );
+        v.test_secs = Some(round1(t.elapsed().as_secs_f64()));
+        out.map_err(|e| format!("{e:#}"))
     };
-    decide(v, &out, parser, inst)
+
+    let _ = exec.run(
+        &ledger.release_command(cfg),
+        None,
+        Duration::from_secs(cfg.ledger_step_timeout_secs()),
+    );
+    match run_result {
+        Ok(out) => decide(v, &out, parser, inst),
+        Err(why) => v.with(JudgeOutcome::InfraError, why),
+    }
 }
 
 /// The judge's verdict from one container run (pure).
@@ -1721,7 +2214,8 @@ pub struct SummaryRow {
     /// Harness wall time plus judge wall time.
     pub wall_secs: f64,
     pub judge_secs: f64,
-    /// A matching verdict said the judge, not the agent, failed.
+    /// This run's judge, not the agent, failed: the report row says so (see
+    /// `report_row_is_judge_error`), or this run's own verdict does.
     pub infra_error: bool,
 }
 
@@ -1753,8 +2247,51 @@ fn median(mut xs: Vec<f64>) -> Option<f64> {
     })
 }
 
+/// Whether a report row records the judge failing rather than the agent:
+/// `swe-judge` exits 2 when it could not grade ([`is_judge_infra_exit`]), and
+/// a runner-side oracle timeout means the judge ran past its whole worst case
+/// without a verdict. Both are facts about this row's own run, so nothing
+/// from another run can leak in.
+fn report_row_is_judge_error(row: &serde_json::Value) -> bool {
+    let timed_out = row
+        .get("oracle_timed_out")
+        .and_then(|x| x.as_bool())
+        .unwrap_or(false);
+    let exit = row
+        .get("oracle_exit")
+        .and_then(|x| x.as_i64())
+        .and_then(|x| i32::try_from(x).ok());
+    timed_out || is_judge_infra_exit(SWE_CATEGORY, exit)
+}
+
+/// Whether the verdict this row's own judge wrote says InfraError. Keyed by
+/// the run, not just the task: same instance, same tier (the run dir is
+/// `<tier>-<task>-<stamp>`) and the same seed commit. The runner seeds every
+/// run's workspace with a fresh root commit (its hash carries the seeding
+/// time) and the report records it, so a verdict an earlier run left in the
+/// shared verdict dir never matches. A row without a seed commit matches no
+/// verdict.
+fn verdict_marks_run_infra(
+    verdicts: &[JudgeVerdict],
+    tier: &str,
+    task_id: &str,
+    seed_commit: Option<&str>,
+) -> bool {
+    let Some(seed_commit) = seed_commit else {
+        return false;
+    };
+    let prefix = format!("{tier}-{task_id}-");
+    verdicts.iter().any(|v| {
+        v.instance_id == task_id
+            && v.outcome == JudgeOutcome::InfraError
+            && v.seed_commit.as_deref() == Some(seed_commit)
+            && v.run_dir.as_deref().is_some_and(|d| d.starts_with(&prefix))
+    })
+}
+
 /// Summarize a `run --format json` report (only `swe-bench` tasks). `slice`
-/// supplies repo/difficulty; `verdicts` marks judge infrastructure errors.
+/// supplies repo/difficulty; each row's own oracle exit, plus the verdict its
+/// own run wrote in `verdicts`, marks judge infrastructure errors.
 pub fn summarize_report(
     report: &serde_json::Value,
     slice: Option<&LoadedSlice>,
@@ -1804,12 +2341,11 @@ pub fn summarize_report(
                 .and_then(|s| s.instances.get(&task_id))
                 .map(|i| (i.repo.clone(), i.difficulty.clone()))
                 .unwrap_or_default();
-            let prefix = format!("{name}-{task_id}-");
-            let infra_error = verdicts.iter().any(|v| {
-                v.instance_id == task_id
-                    && v.outcome == JudgeOutcome::InfraError
-                    && v.run_dir.as_deref().is_some_and(|d| d.starts_with(&prefix))
-            });
+            let solved = t.get("solved").and_then(|x| x.as_bool()).unwrap_or(false);
+            let seed_commit = t.get("seed_commit").and_then(|x| x.as_str());
+            let infra_error = !solved
+                && (report_row_is_judge_error(&t)
+                    || verdict_marks_run_infra(verdicts, &name, &task_id, seed_commit));
             let duration = t
                 .get("duration_secs")
                 .and_then(|x| x.as_f64())
@@ -1819,7 +2355,7 @@ pub fn summarize_report(
                 task_id,
                 repo,
                 difficulty,
-                solved: t.get("solved").and_then(|x| x.as_bool()).unwrap_or(false),
+                solved,
                 oracle,
                 cost_usd: t.get("cost_usd").and_then(|x| x.as_f64()),
                 model_calls: t.get("ledger_rows").and_then(|x| x.as_u64()).unwrap_or(0),
@@ -2177,6 +2713,68 @@ instances:\n\
         assert!(joined.contains("--container-memory 2g"));
     }
 
+    /// The judge runs inside each run's scratch workspace, which the runner
+    /// deletes after the task: a relative `--verdict-dir` baked into task.yaml
+    /// sent every verdict there. `swe-materialize` anchors it at the
+    /// operator's cwd, and `materialize` refuses one that was not anchored.
+    #[test]
+    fn a_relative_verdict_dir_never_reaches_task_yaml() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut sympy = inst();
+        sympy.instance_id = "sympy__sympy-13877".to_string();
+        sympy.repo = "sympy/sympy".to_string();
+        sympy.base_commit = "1659712001810f5fc563a443949f8e3bb38af4bd".to_string();
+        sympy.log_parser = "parse_log_sympy".to_string();
+        let slice = LoadedSlice::from_parts(
+            SliceManifest::from_yaml(SLICE_YAML).unwrap(),
+            PathBuf::from("/s.yaml"),
+            vec![inst(), sympy],
+        )
+        .unwrap();
+        let opts = |judge: JudgeConfig| MaterializeOptions {
+            out_dir: tmp.path().join("tasks"),
+            repo_cache: tmp.path().join("repos"),
+            judge_bin: PathBuf::from("/bin/permagent-eval"),
+            judge,
+            limits: TaskLimits {
+                harness_timeout_secs: 1800,
+                oracle_timeout_secs: 9000,
+                max_turns: None,
+            },
+            force: false,
+        };
+        let mut judge = JudgeConfig {
+            verdict_dir: Some(PathBuf::from("verdicts")),
+            ..JudgeConfig::default()
+        };
+        let err = materialize(&slice, &[], &opts(judge.clone())).unwrap_err();
+        assert!(format!("{err:#}").contains("relative"), "{err:#}");
+
+        judge.anchor_verdict_dir(Path::new("/home/op/swe"));
+        assert_eq!(
+            judge.verdict_dir.as_deref(),
+            Some(Path::new("/home/op/swe/verdicts"))
+        );
+        assert!(materialize(&slice, &[], &opts(judge.clone()))
+            .unwrap()
+            .is_empty());
+        let argv = judge_argv(
+            Path::new("/bin/permagent-eval"),
+            &slice.path,
+            "django__django-11880",
+            &judge,
+        );
+        assert!(argv
+            .join(" ")
+            .contains("--verdict-dir /home/op/swe/verdicts"));
+        // An absolute dir is left as given.
+        judge.anchor_verdict_dir(Path::new("/elsewhere"));
+        assert_eq!(
+            judge.verdict_dir.as_deref(),
+            Some(Path::new("/home/op/swe/verdicts"))
+        );
+    }
+
     #[test]
     fn long_titles_are_truncated_by_chars() {
         let mut i = inst();
@@ -2450,7 +3048,7 @@ instances:\n\
 
     #[test]
     fn judge_script_embeds_patch_and_eval_safely() {
-        let s = judge_script("PERMAGENT_B64_EOF\n'$(rm -rf /)'", "echo hi");
+        let s = judge_script(b"PERMAGENT_B64_EOF\n'$(rm -rf /)'", "echo hi");
         assert!(s.starts_with("set -u\nexec 2>&1\n"));
         assert_eq!(
             s.matches("\nPERMAGENT_B64_EOF\n").count(),
@@ -2472,24 +3070,25 @@ instances:\n\
         pull_exit: i32,
         run: RemoteOutput,
         calls: std::cell::RefCell<Vec<String>>,
+        /// The cap each call was given, in call order.
+        timeouts: std::cell::RefCell<Vec<Duration>>,
     }
 
     impl RemoteExec for FakeHost {
-        fn run(&self, command: &str, _stdin: Option<&str>, _t: Duration) -> Result<RemoteOutput> {
+        fn run(&self, command: &str, _stdin: Option<&str>, t: Duration) -> Result<RemoteOutput> {
             self.calls.borrow_mut().push(command.to_string());
+            self.timeouts.borrow_mut().push(t);
             let ok = |s: &str| RemoteOutput {
                 exit: Some(0),
                 stdout: s.to_string(),
                 ..Default::default()
             };
-            Ok(if command.contains("docker image inspect") {
-                ok(if self.present {
-                    "present\n"
-                } else {
-                    "absent\n"
-                })
-            } else if command.starts_with("df -k") {
-                ok(self.free_kb)
+            Ok(if command.contains(BEGIN_TAG) {
+                ok(&format!(
+                    "present={}\nfree_kb={}\nledger=ok\n",
+                    u8::from(self.present),
+                    self.free_kb.trim()
+                ))
             } else if command.contains("docker pull") {
                 RemoteOutput {
                     exit: Some(self.pull_exit),
@@ -2499,7 +3098,7 @@ instances:\n\
             } else if command.contains("docker run") {
                 self.run.clone()
             } else {
-                ok("")
+                ok("ledger=ok\n")
             })
         }
     }
@@ -2515,6 +3114,7 @@ instances:\n\
                 ..Default::default()
             },
             calls: Default::default(),
+            timeouts: Default::default(),
         }
     }
 
@@ -2534,7 +3134,7 @@ instances:\n\
         let v = judge_instance(
             &inst(),
             &entry(),
-            "diff --git a/x b/x\n",
+            b"diff --git a/x b/x\n",
             &JudgeConfig::default(),
             JudgeRunOptions::default(),
             &h,
@@ -2544,7 +3144,9 @@ instances:\n\
         assert_eq!((v.f2p_passed, v.p2p_passed), (1, 2));
         assert!(v.pulled);
         let calls = h.calls.borrow();
+        assert!(calls[0].contains(BEGIN_TAG));
         let cleanup = calls.last().unwrap();
+        assert!(cleanup.contains(RELEASE_TAG));
         assert!(cleanup.contains("docker rm -f permagent-swe-"));
         assert!(cleanup.contains("docker rmi"));
         assert!(cleanup.contains("fstrim"));
@@ -2554,23 +3156,57 @@ instances:\n\
             .all(|c| !c.contains("docker") || c.contains("DOCKER_HOST=unix://$HOME/.colima")));
     }
 
+    /// The container never pulls by itself: a vanished image must be an
+    /// error, not an unrecorded pull that skipped the disk floor.
     #[test]
-    fn judge_never_removes_an_image_it_did_not_pull() {
+    fn judge_container_never_pulls_and_carries_its_reap_deadline() {
         let h = host(PLENTY, true, &passing_log());
         let v = judge_instance(
             &inst(),
             &entry(),
-            "diff\n",
+            b"diff\n",
             &JudgeConfig::default(),
             JudgeRunOptions::default(),
             &h,
             None,
         );
-        assert_eq!(v.outcome, JudgeOutcome::Resolved);
-        assert!(!v.pulled);
-        assert!(h.calls.borrow().iter().all(|c| !c.contains("docker rmi")
-            && !c.contains("docker pull")
-            && !c.starts_with("df")));
+        assert_eq!(v.outcome, JudgeOutcome::Resolved, "{:?}", v.reason);
+        let calls = h.calls.borrow();
+        let run = calls.iter().find(|c| c.contains("docker run")).unwrap();
+        assert!(run.contains("docker run --rm -i --pull=never --name permagent-swe-"));
+        assert!(run.contains("--label permagent.swe.deadline=$(($(date +%s) + 2100))"));
+        assert!(run.contains("--label permagent.swe.judge="));
+    }
+
+    /// The runner can only SIGTERM/SIGKILL `swe-judge`, which cannot catch
+    /// either, so the oracle ceiling must outlast every cap the judge gives
+    /// its remote steps, cleanup included. The old default (run cap + 30 min)
+    /// did not even cover the pull cap plus the run cap.
+    #[test]
+    fn the_default_oracle_timeout_outlasts_every_step_the_judge_can_take() {
+        let cfg = JudgeConfig::default();
+        let h = host(PLENTY, false, &passing_log());
+        let v = judge_instance(
+            &inst(),
+            &entry(),
+            b"diff\n",
+            &cfg,
+            JudgeRunOptions::default(),
+            &h,
+            None,
+        );
+        assert_eq!(v.outcome, JudgeOutcome::Resolved, "{:?}", v.reason);
+        let caps: Vec<u64> = h.timeouts.borrow().iter().map(Duration::as_secs).collect();
+        assert_eq!(caps.len(), 4, "begin, pull, run, release: {caps:?}");
+        let remote: u64 = caps.iter().sum();
+        assert!(remote + JUDGE_OVERHEAD_SECS <= cfg.worst_case_secs());
+        assert!(cfg.default_oracle_timeout_secs() > cfg.worst_case_secs());
+        let old_default = cfg.run_timeout_secs + 1800;
+        assert!(old_default < remote);
+        assert!(cfg.check_oracle_timeout(old_default).is_err());
+        assert!(cfg
+            .check_oracle_timeout(cfg.default_oracle_timeout_secs())
+            .is_ok());
     }
 
     #[test]
@@ -2580,7 +3216,7 @@ instances:\n\
         let v = judge_instance(
             &inst(),
             &entry(),
-            "diff\n",
+            b"diff\n",
             &JudgeConfig::default(),
             JudgeRunOptions::default(),
             &h,
@@ -2588,7 +3224,12 @@ instances:\n\
         );
         assert_eq!(v.outcome, JudgeOutcome::InfraError);
         assert!(v.reason.unwrap().contains("disk floor"));
-        assert!(h.calls.borrow().iter().all(|c| !c.contains("docker pull")));
+        let calls = h.calls.borrow();
+        assert!(calls.iter().all(|c| !c.contains("docker pull")));
+        assert!(
+            calls.last().unwrap().contains(RELEASE_TAG),
+            "the claim is released even though nothing ran"
+        );
     }
 
     #[test]
@@ -2598,7 +3239,7 @@ instances:\n\
         let v = judge_instance(
             &inst(),
             &entry(),
-            "diff\n",
+            b"diff\n",
             &JudgeConfig::default(),
             JudgeRunOptions::default(),
             &h,
@@ -2611,7 +3252,7 @@ instances:\n\
         let v = judge_instance(
             &inst(),
             &entry(),
-            "diff\n",
+            b"diff\n",
             &JudgeConfig::default(),
             JudgeRunOptions::default(),
             &h,
@@ -2629,7 +3270,7 @@ instances:\n\
         let v = judge_instance(
             &inst(),
             &entry(),
-            "diff\n",
+            b"diff\n",
             &JudgeConfig::default(),
             JudgeRunOptions::default(),
             &h,
@@ -2647,7 +3288,7 @@ instances:\n\
         let v = judge_instance(
             &inst(),
             &entry(),
-            "diff\n",
+            b"diff\n",
             &JudgeConfig::default(),
             JudgeRunOptions::default(),
             &h,
@@ -2664,7 +3305,7 @@ instances:\n\
         let v = judge_instance(
             &inst(),
             &entry(),
-            "diff\n",
+            b"diff\n",
             &JudgeConfig::default(),
             JudgeRunOptions::default(),
             &h,
@@ -2674,13 +3315,24 @@ instances:\n\
         assert_eq!(v.reason.as_deref(), Some("tests timed out"));
     }
 
+    /// The runner reads a SWE-bench oracle's exit 2 as errored; every other
+    /// category, and every other exit, keeps its plain reading.
+    #[test]
+    fn only_a_swe_judge_exit_2_is_an_infrastructure_exit() {
+        assert!(is_judge_infra_exit(SWE_CATEGORY, Some(2)));
+        assert!(!is_judge_infra_exit(SWE_CATEGORY, Some(1)));
+        assert!(!is_judge_infra_exit(SWE_CATEGORY, Some(0)));
+        assert!(!is_judge_infra_exit(SWE_CATEGORY, None));
+        assert!(!is_judge_infra_exit("classic", Some(2)));
+    }
+
     #[test]
     fn empty_patch_short_circuits_unless_validating() {
         let h = host(PLENTY, true, &passing_log());
         let v = judge_instance(
             &inst(),
             &entry(),
-            "  \n",
+            b"  \n",
             &JudgeConfig::default(),
             JudgeRunOptions::default(),
             &h,
@@ -2691,7 +3343,7 @@ instances:\n\
         let v = judge_instance(
             &inst(),
             &entry(),
-            "",
+            b"",
             &JudgeConfig::default(),
             JudgeRunOptions {
                 run_empty_patch: true,
@@ -2706,6 +3358,386 @@ instances:\n\
         );
     }
 
+    // ---- the host ledger, run for real against a stand-in docker ----
+
+    /// A stand-in `docker` CLI: images and containers are files under
+    /// `$FAKE_DOCKER_STATE`, every call is appended to its `calls` file, and
+    /// `rmi` refuses an image a container still uses, as the real one does.
+    #[cfg(unix)]
+    const FAKE_DOCKER: &str = r#"#!/bin/sh
+S="$FAKE_DOCKER_STATE"
+echo "$*" >> "$S/calls"
+[ -f "$S/down" ] && exit 1
+key() { printf '%s' "$1" | tr -c 'A-Za-z0-9' '_'; }
+case "$1" in
+info) exit 0 ;;
+image) [ -f "$S/images/$(key "$3")" ] ;;
+pull) : > "$S/images/$(key "$3")" ;;
+rmi)
+  f="$S/images/$(key "$2")"
+  [ -f "$f" ] || exit 1
+  for c in "$S"/containers/*; do
+    [ -f "$c" ] || continue
+    if [ "$(sed -n 1p "$c")" = "$2" ]; then echo "conflict: image is in use" >&2; exit 1; fi
+  done
+  rm -f "$f" ;;
+rm) rm -f "$S/containers/$3" ;;
+ps)
+  for c in "$S"/containers/*; do
+    [ -f "$c" ] || continue
+    echo "$(basename "$c") $(sed -n 2p "$c")"
+  done ;;
+run)
+  name=
+  img=
+  dl=
+  prev=
+  for a in "$@"; do
+    if [ "$prev" = --name ]; then name=$a; fi
+    case "$prev=$a" in --label=permagent.swe.deadline=*) dl=${a#*=} ;; esac
+    if [ "$a" = bash ]; then img=$prev; fi
+    prev=$a
+  done
+  if [ ! -f "$S/images/$(key "$img")" ]; then echo "No such image: $img" >&2; exit 125; fi
+  printf '%s\n%s\n' "$img" "$dl" > "$S/containers/$name"
+  cat > /dev/null
+  cat "$S/run_stdout" 2>/dev/null
+  rm -f "$S/containers/$name" ;;
+esac
+"#;
+
+    #[cfg(unix)]
+    const FAKE_COLIMA: &str = "#!/bin/sh\necho \"colima $*\" >> \"$FAKE_DOCKER_STATE/calls\"\n";
+
+    /// A Docker host simulated in a temp dir: the ledger scripts run for real
+    /// under `/bin/sh` with `$HOME` pointed at it and the stand-in `docker`
+    /// first on the prelude's PATH.
+    #[cfg(unix)]
+    struct SimHost {
+        _tmp: tempfile::TempDir,
+        home: PathBuf,
+        state: PathBuf,
+        bin: PathBuf,
+    }
+
+    #[cfg(unix)]
+    impl SimHost {
+        fn new() -> Self {
+            use std::os::unix::fs::PermissionsExt;
+            let tmp = tempfile::tempdir().unwrap();
+            let home = tmp.path().join("home");
+            let state = tmp.path().join("docker");
+            let bin = tmp.path().join("bin");
+            for d in [
+                home.clone(),
+                state.join("images"),
+                state.join("containers"),
+                bin.clone(),
+            ] {
+                std::fs::create_dir_all(d).unwrap();
+            }
+            for (name, text) in [("docker", FAKE_DOCKER), ("colima", FAKE_COLIMA)] {
+                let path = bin.join(name);
+                std::fs::write(&path, text).unwrap();
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            Self {
+                _tmp: tmp,
+                home,
+                state,
+                bin,
+            }
+        }
+
+        fn cfg(&self) -> JudgeConfig {
+            JudgeConfig {
+                remote_path_prefix: self.bin.to_string_lossy().into_owned(),
+                min_free_gib: 0.0,
+                ledger: LedgerTiming {
+                    lock_wait_secs: 1,
+                    lock_stale_mins: 5,
+                },
+                ..JudgeConfig::default()
+            }
+        }
+
+        fn ledger_dir(&self, cfg: &JudgeConfig) -> PathBuf {
+            self.home
+                .join(".permagent-swe")
+                .join(file_key(&cfg.docker_host))
+        }
+
+        /// List `image` in the ledger, as a judge that pulled it would.
+        fn list_in_ledger(&self, cfg: &JudgeConfig, image: &str) {
+            let images = self.ledger_dir(cfg).join("images");
+            std::fs::create_dir_all(&images).unwrap();
+            std::fs::write(images.join(file_key(image)), format!("{image}\n")).unwrap();
+        }
+
+        fn listed_in_ledger(&self, cfg: &JudgeConfig, image: &str) -> bool {
+            self.ledger_dir(cfg)
+                .join("images")
+                .join(file_key(image))
+                .exists()
+        }
+
+        fn claim(&self, cfg: &JudgeConfig, judge: &str, deadline: u64, image: &str) {
+            let claims = self.ledger_dir(cfg).join("claims");
+            std::fs::create_dir_all(&claims).unwrap();
+            std::fs::write(claims.join(judge), format!("{deadline} {image}\n")).unwrap();
+        }
+
+        fn add_image(&self, image: &str) {
+            std::fs::write(self.state.join("images").join(file_key(image)), "").unwrap();
+        }
+
+        fn has_image(&self, image: &str) -> bool {
+            self.state.join("images").join(file_key(image)).exists()
+        }
+
+        fn set_run_stdout(&self, text: &str) {
+            std::fs::write(self.state.join("run_stdout"), text).unwrap();
+        }
+
+        fn docker_calls(&self) -> String {
+            std::fs::read_to_string(self.state.join("calls")).unwrap_or_default()
+        }
+
+        fn count(dir: &Path) -> usize {
+            std::fs::read_dir(dir).map(|d| d.count()).unwrap_or(0)
+        }
+    }
+
+    #[cfg(unix)]
+    impl RemoteExec for SimHost {
+        fn run(&self, command: &str, stdin: Option<&str>, _t: Duration) -> Result<RemoteOutput> {
+            let mut child = Command::new("/bin/sh")
+                .arg("-c")
+                .arg(command)
+                .env("HOME", &self.home)
+                .env("FAKE_DOCKER_STATE", &self.state)
+                .stdin(if stdin.is_some() {
+                    Stdio::piped()
+                } else {
+                    Stdio::null()
+                })
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()?;
+            if let (Some(text), Some(mut pipe)) = (stdin, child.stdin.take()) {
+                let _ = pipe.write_all(text.as_bytes());
+            }
+            let out = child.wait_with_output()?;
+            Ok(RemoteOutput {
+                exit: out.status.code(),
+                stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+                stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+                timed_out: false,
+            })
+        }
+    }
+
+    #[cfg(unix)]
+    fn sim_judge(sim: &SimHost, cfg: &JudgeConfig) -> JudgeVerdict {
+        judge_instance(
+            &inst(),
+            &entry(),
+            b"diff --git a/x b/x\n",
+            cfg,
+            JudgeRunOptions::default(),
+            sim,
+            Some(1 << 20),
+        )
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn judge_removes_the_image_it_pulled_and_leaves_no_ledger_state() {
+        let sim = SimHost::new();
+        sim.set_run_stdout(&passing_log());
+        let cfg = sim.cfg();
+        let image = entry().image_ref();
+        let v = sim_judge(&sim, &cfg);
+        assert_eq!(v.outcome, JudgeOutcome::Resolved, "{:?}", v.reason);
+        assert!(v.pulled);
+        assert!(!sim.has_image(&image), "{}", sim.docker_calls());
+        let ledger = sim.ledger_dir(&cfg);
+        assert_eq!(SimHost::count(&ledger.join("images")), 0);
+        assert_eq!(SimHost::count(&ledger.join("claims")), 0);
+        assert!(!ledger.join("lock").exists(), "the lock is released");
+        let calls = sim.docker_calls();
+        assert!(calls.contains("run --rm -i --pull=never"), "{calls}");
+        assert!(calls.contains("colima ssh -- sudo fstrim"), "{calls}");
+    }
+
+    /// An image the host already had is listed in no ledger, so no judge
+    /// ever removes it. (This test used to assert that no command sent to a
+    /// fake host even mentioned `docker rmi`; the removal decision now runs
+    /// on the host against the ledger, so it checks the image itself.)
+    #[cfg(unix)]
+    #[test]
+    fn judge_never_removes_an_image_it_did_not_pull() {
+        let sim = SimHost::new();
+        sim.set_run_stdout(&passing_log());
+        let cfg = sim.cfg();
+        let image = entry().image_ref();
+        sim.add_image(&image);
+        let v = sim_judge(&sim, &cfg);
+        assert_eq!(v.outcome, JudgeOutcome::Resolved, "{:?}", v.reason);
+        assert!(!v.pulled);
+        assert!(sim.has_image(&image));
+        let calls = sim.docker_calls();
+        assert!(
+            calls
+                .lines()
+                .all(|l| !l.starts_with("pull ") && !l.starts_with("rmi ")),
+            "{calls}"
+        );
+    }
+
+    /// Two judges of one image overlap (two tiers over the same tasks): A
+    /// pulls, B finds it present. Whoever releases last removes it, whoever
+    /// pulled it; before, A's `rmi` failed under B's container and B never
+    /// removed an image it had not pulled, so it stayed for good.
+    #[cfg(unix)]
+    #[test]
+    fn overlapping_judges_the_last_to_release_removes_the_image() {
+        let sim = SimHost::new();
+        let cfg = sim.cfg();
+        let image = entry().image_ref();
+        let step = Duration::from_secs(60);
+        let a = HostLedger::new(&cfg, "django__django-11880", &image);
+        let b = HostLedger::new(&cfg, "django__django-11880", &image);
+        assert!(!a.begin(&cfg, &sim).unwrap().present);
+        assert_eq!(
+            sim.run(&a.pull_command(&cfg), None, step).unwrap().exit,
+            Some(0)
+        );
+        assert!(sim.listed_in_ledger(&cfg, &image), "listed before the pull");
+        let begin_b = b.begin(&cfg, &sim).unwrap();
+        assert!(begin_b.present);
+        assert!(begin_b.reaped.is_empty(), "A's claim protects its image");
+        sim.run(&a.release_command(&cfg), None, step).unwrap();
+        assert!(sim.has_image(&image), "B still claims it");
+        sim.run(&b.release_command(&cfg), None, step).unwrap();
+        assert!(!sim.has_image(&image), "the last judge out removes it");
+        assert!(!sim.listed_in_ledger(&cfg, &image));
+    }
+
+    /// A judge killed mid-run (Ctrl-C of `run`, a runner timeout) leaves its
+    /// container and its pulled image behind. The next judge reaps both once
+    /// the dead judge's claim has expired, and leaves a live judge's alone.
+    #[cfg(unix)]
+    #[test]
+    fn a_killed_judges_leftovers_are_reaped_by_the_next_judge() {
+        let sim = SimHost::new();
+        sim.set_run_stdout(&passing_log());
+        let cfg = sim.cfg();
+        let dead = format!("ghcr.io/example/dead@sha256:{}", "d".repeat(64));
+        sim.add_image(&dead);
+        sim.list_in_ledger(&cfg, &dead);
+        sim.claim(&cfg, "dead-judge", 100, &dead);
+        std::fs::write(
+            sim.state.join("containers").join("permagent-swe-dead"),
+            format!("{dead}\n100\n"),
+        )
+        .unwrap();
+        let live = format!("ghcr.io/example/live@sha256:{}", "e".repeat(64));
+        sim.add_image(&live);
+        sim.list_in_ledger(&cfg, &live);
+        sim.claim(&cfg, "live-judge", 99_999_999_999, &live);
+        sim.add_image(&entry().image_ref());
+
+        let v = sim_judge(&sim, &cfg);
+        assert_eq!(v.outcome, JudgeOutcome::Resolved, "{:?}", v.reason);
+        assert!(!sim.has_image(&dead), "{}", sim.docker_calls());
+        assert!(!sim.listed_in_ledger(&cfg, &dead));
+        assert!(!sim.state.join("containers/permagent-swe-dead").exists());
+        let claims = sim.ledger_dir(&cfg).join("claims");
+        assert!(!claims.join("dead-judge").exists());
+        assert!(v
+            .reaped
+            .contains(&"container permagent-swe-dead".to_string()));
+        assert!(v.reaped.contains(&format!("image {dead}")));
+        assert!(sim.has_image(&live), "a live claim is never reaped");
+        assert!(sim.listed_in_ledger(&cfg, &live));
+        assert!(claims.join("live-judge").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_held_lock_makes_the_judge_give_up_and_a_stale_one_is_broken() {
+        let sim = SimHost::new();
+        sim.set_run_stdout(&passing_log());
+        let cfg = sim.cfg();
+        sim.add_image(&entry().image_ref());
+        let lock = sim.ledger_dir(&cfg).join("lock");
+        std::fs::create_dir_all(&lock).unwrap();
+        let v = sim_judge(&sim, &cfg);
+        assert_eq!(v.outcome, JudgeOutcome::InfraError);
+        assert!(
+            v.reason.as_deref().unwrap_or("").contains("locked"),
+            "{:?}",
+            v.reason
+        );
+        assert!(lock.exists(), "another judge's lock is left alone");
+        // The same lock, left by a judge that died holding it.
+        let st = Command::new("touch")
+            .args(["-t", "202001010000"])
+            .arg(&lock)
+            .status()
+            .unwrap();
+        assert!(st.success());
+        let v = sim_judge(&sim, &cfg);
+        assert_eq!(v.outcome, JudgeOutcome::Resolved, "{:?}", v.reason);
+        assert!(!lock.exists());
+    }
+
+    /// With Docker down every `image inspect` fails; the reaper must not read
+    /// that as "the image is gone" and forget what the ledger lists.
+    #[cfg(unix)]
+    #[test]
+    fn an_unreachable_docker_is_an_infra_error_that_keeps_the_ledger() {
+        let sim = SimHost::new();
+        let cfg = sim.cfg();
+        let listed = format!("ghcr.io/example/listed@sha256:{}", "f".repeat(64));
+        sim.list_in_ledger(&cfg, &listed);
+        std::fs::write(sim.state.join("down"), "").unwrap();
+        let v = sim_judge(&sim, &cfg);
+        assert_eq!(v.outcome, JudgeOutcome::InfraError);
+        assert!(
+            v.reason
+                .as_deref()
+                .unwrap_or("")
+                .contains("docker unreachable"),
+            "{:?}",
+            v.reason
+        );
+        assert!(sim.listed_in_ledger(&cfg, &listed));
+        assert!(!sim.ledger_dir(&cfg).join("lock").exists());
+    }
+
+    /// `--keep-image`: the pulled image is never listed, so neither this
+    /// judge nor any later one removes it.
+    #[cfg(unix)]
+    #[test]
+    fn keep_image_never_lists_what_it_pulls() {
+        let sim = SimHost::new();
+        sim.set_run_stdout(&passing_log());
+        let cfg = JudgeConfig {
+            keep_image: true,
+            ..sim.cfg()
+        };
+        let image = entry().image_ref();
+        let v = sim_judge(&sim, &cfg);
+        assert_eq!(v.outcome, JudgeOutcome::Resolved, "{:?}", v.reason);
+        assert!(v.pulled);
+        assert!(sim.has_image(&image));
+        assert!(!sim.listed_in_ledger(&cfg, &image));
+        assert!(sim_judge(&sim, &cfg).reaped.is_empty());
+        assert!(sim.has_image(&image));
+    }
+
     // ---- workspace patch (real git, temp dir) ----
 
     #[test]
@@ -2713,7 +3745,7 @@ instances:\n\
         let dir = tempfile::tempdir().unwrap();
         let ws = dir.path();
         std::fs::write(ws.join("a.py"), "x = 1\n").unwrap();
-        crate::runner::seed_git_repo(ws, "t").unwrap();
+        let seed = crate::runner::seed_git_repo(ws, "t").unwrap();
         std::fs::write(ws.join("a.py"), "x = 2\n").unwrap();
         std::fs::write(ws.join("new.py"), "y = 1\n").unwrap();
         std::fs::create_dir_all(ws.join(".permagent-goal-worktrees/g1")).unwrap();
@@ -2745,7 +3777,9 @@ instances:\n\
             .status()
             .unwrap();
         assert!(st.success());
-        let patch = workspace_patch(ws).unwrap();
+        let wp = workspace_patch(ws).unwrap();
+        assert_eq!(wp.seed_commit, seed, "diffed against the runner's seed");
+        let patch = String::from_utf8(wp.bytes).unwrap();
         assert!(patch.contains("diff --git a/a.py b/a.py"));
         assert!(patch.contains("+x = 2"));
         assert!(patch.contains("diff --git a/new.py b/new.py"));
@@ -2758,7 +3792,101 @@ instances:\n\
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.py"), "x = 1\n").unwrap();
         crate::runner::seed_git_repo(dir.path(), "t").unwrap();
-        assert_eq!(workspace_patch(dir.path()).unwrap().trim(), "");
+        assert!(workspace_patch(dir.path())
+            .unwrap()
+            .bytes
+            .iter()
+            .all(u8::is_ascii_whitespace));
+    }
+
+    /// A text file in another encoding is diffed as raw bytes. Decoding that
+    /// lossily turned 0xE9 into EF BF BD, so the patch no longer matched
+    /// `/testbed` and a correct fix was graded "did not apply".
+    #[test]
+    fn workspace_patch_keeps_non_utf8_bytes_so_it_still_applies() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path().join("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+        let before: &[u8] = b"# -*- coding: latin-1 -*-\n# caf\xe9\nx = 1\n";
+        let after: &[u8] = b"# -*- coding: latin-1 -*-\n# caf\xe9\nx = 2\n";
+        std::fs::write(ws.join("latin1.py"), before).unwrap();
+        crate::runner::seed_git_repo(&ws, "t").unwrap();
+        std::fs::write(ws.join("latin1.py"), after).unwrap();
+        let patch = workspace_patch(&ws).unwrap().bytes;
+        assert!(
+            patch.windows(2).any(|w| w == b"\xe9\n"),
+            "the raw byte survives"
+        );
+        assert!(!patch.windows(3).any(|w| w == "\u{fffd}".as_bytes()));
+        // It applies to a pristine copy byte for byte, as `/testbed` sees it.
+        let testbed = dir.path().join("testbed");
+        std::fs::create_dir_all(&testbed).unwrap();
+        std::fs::write(testbed.join("latin1.py"), before).unwrap();
+        let patch_file = dir.path().join("agent.patch");
+        std::fs::write(&patch_file, &patch).unwrap();
+        let st = Command::new("git")
+            .arg("-C")
+            .arg(&testbed)
+            .args(["apply", "--verbose"])
+            .arg(&patch_file)
+            .status()
+            .unwrap();
+        assert!(st.success(), "git apply rejected the patch");
+        assert_eq!(std::fs::read(testbed.join("latin1.py")).unwrap(), after);
+        // ...and the judge ships those same bytes into the container.
+        assert!(judge_script(&patch, "true").contains(&base64_wrapped(&patch)));
+    }
+
+    #[test]
+    fn workspace_run_dir_is_the_runners_scratch_dir_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir
+            .path()
+            .join("cheap-django__django-11880-17-0")
+            .join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        assert_eq!(
+            workspace_run_dir(&ws).as_deref(),
+            Some("cheap-django__django-11880-17-0")
+        );
+    }
+
+    /// A judge that cannot even diff the workspace (the harness was killed
+    /// mid auto-land and left `.git/index.lock`) still has an InfraError
+    /// verdict keyed to its run, which the summary reads as a judge error.
+    #[test]
+    fn a_workspace_the_judge_cannot_diff_is_a_keyed_infra_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir
+            .path()
+            .join("cheap-sympy__sympy-13877-17-0")
+            .join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::write(ws.join("a.py"), "x = 1\n").unwrap();
+        let seed = crate::runner::seed_git_repo(&ws, "t").unwrap();
+        std::fs::write(ws.join("a.py"), "x = 2\n").unwrap();
+        std::fs::write(ws.join(".git").join("index.lock"), "").unwrap();
+        let err = workspace_patch(&ws).unwrap_err();
+        let v =
+            JudgeVerdict::infra_error_for_workspace("sympy__sympy-13877", format!("{err:#}"), &ws);
+        assert_eq!(v.outcome, JudgeOutcome::InfraError);
+        assert_eq!(v.outcome.exit_code(), 2);
+        assert!(v.reason.as_deref().unwrap().contains("index.lock"));
+        assert_eq!(v.run_dir.as_deref(), Some("cheap-sympy__sympy-13877-17-0"));
+        assert_eq!(v.seed_commit.as_deref(), Some(seed.as_str()));
+
+        // Written and read back like any other verdict...
+        let verdicts = dir.path().join("verdicts");
+        write_verdict(&verdicts, &v).unwrap();
+        let loaded = load_verdicts(&verdicts);
+        assert_eq!(loaded, vec![v]);
+        // ...it marks this run's row, which the runner graded from exit 2.
+        let report = serde_json::json!({"tiers": [{"tier": "cheap", "model": "m", "tasks": [
+            {"task_id": "sympy__sympy-13877", "category": "swe-bench", "solved": false,
+             "oracle": "errored", "oracle_exit": 2, "oracle_timed_out": false,
+             "cost_usd": 0.1, "ledger_rows": 3, "duration_secs": 10.0, "oracle_secs": 1.0,
+             "seed_commit": seed}]}]});
+        assert_eq!(summarize_report(&report, None, &loaded)[0].infra_errors, 1);
     }
 
     // ---- summary ----
@@ -2771,15 +3899,18 @@ instances:\n\
             {"task_id": "django__django-11880", "category": "swe-bench", "solved": true, "oracle": "pass",
              "cost_usd": 0.02, "ledger_rows": 12, "duration_secs": 100.0, "oracle_secs": 30.0},
             {"task_id": "sympy__sympy-13877", "category": "swe-bench", "solved": false, "oracle": "fail",
-             "cost_usd": 0.04, "ledger_rows": 30, "duration_secs": 300.0, "oracle_secs": 10.0},
+             "cost_usd": 0.04, "ledger_rows": 30, "duration_secs": 300.0, "oracle_secs": 10.0,
+             "seed_commit": "s2"},
             {"task_id": "fizzbuzz", "category": "classic", "solved": true, "oracle": "pass",
              "cost_usd": 1.0, "ledger_rows": 1, "duration_secs": 1.0, "oracle_secs": 1.0},
             {"task_id": "x", "category": "swe-bench", "solved": false, "oracle": "not_run",
              "cost_usd": null, "ledger_rows": 0, "duration_secs": 0.0, "oracle_secs": 0.0}
         ]}]});
+        // The verdict this very run's judge wrote (same tier, same seed).
         let verdicts = [JudgeVerdict {
             outcome: JudgeOutcome::InfraError,
             run_dir: Some("cheap-sympy__sympy-13877-123".to_string()),
+            seed_commit: Some("s2".to_string()),
             ..JudgeVerdict::new(
                 &{
                     let mut i = inst();
@@ -2787,7 +3918,7 @@ instances:\n\
                     i
                 },
                 &entry(),
-                "",
+                b"",
             )
         }];
         let s = summarize_report(&report, None, &verdicts);
@@ -2820,5 +3951,86 @@ instances:\n\
             summarize_report(&report, None, &[])[0].dollars_per_solved,
             None
         );
+    }
+
+    /// One graded row of a `run --format json` report.
+    fn graded_row(task_id: &str, solved: bool, exit: i64, seed_commit: &str) -> serde_json::Value {
+        let oracle = if solved { "pass" } else { "fail" };
+        serde_json::json!({"task_id": task_id, "category": "swe-bench", "solved": solved,
+            "oracle": oracle, "oracle_exit": exit,
+            "oracle_timed_out": false, "cost_usd": 0.1, "ledger_rows": 3,
+            "duration_secs": 10.0, "oracle_secs": 1.0, "seed_commit": seed_commit})
+    }
+
+    /// Every run over one tasks dir writes into the same verdict dir. An
+    /// InfraError an earlier run of the same tier and task left there must
+    /// not label a later run of it; only that run's own verdict (same seed
+    /// commit) does. Before, a `<tier>-<task>-` prefix match marked round 2's
+    /// real failure, and even its solve, as judge errors.
+    #[test]
+    fn summary_keys_judge_errors_to_the_run_not_the_task() {
+        let report = serde_json::json!({"tiers": [{"tier": "cheap", "model": "m", "tasks": [
+            graded_row("sympy__sympy-13877", false, 1, "round2-sympy"),
+            graded_row("django__django-11880", true, 0, "round2-django")]}]});
+        let round1 = |id: &str| JudgeVerdict {
+            run_dir: Some(format!("cheap-{id}-1700000000000000000-0")),
+            seed_commit: Some(format!("round1-{id}")),
+            ..JudgeVerdict::infra_error(id, "disk floor: 14.9 GiB free")
+        };
+        // A verdict from before verdicts carried a seed commit matches nothing.
+        let legacy = JudgeVerdict {
+            run_dir: Some("cheap-sympy__sympy-13877-1600000000000000000-0".to_string()),
+            ..JudgeVerdict::infra_error("sympy__sympy-13877", "ssh down")
+        };
+        let stale = vec![
+            round1("sympy__sympy-13877"),
+            round1("django__django-11880"),
+            legacy,
+        ];
+        let s = summarize_report(&report, None, &stale);
+        assert_eq!(s[0].infra_errors, 0);
+        assert!(s[0].rows.iter().all(|r| !r.infra_error));
+        assert!(!render_summary_markdown(&s).contains("judge error"));
+
+        // The same run's own verdict still marks it; another tier's does not.
+        let mut verdicts = stale;
+        verdicts.push(JudgeVerdict {
+            run_dir: Some("other-sympy__sympy-13877-1800000000000000000-0".to_string()),
+            seed_commit: Some("round2-sympy".to_string()),
+            ..JudgeVerdict::infra_error("sympy__sympy-13877", "ssh down")
+        });
+        assert_eq!(
+            summarize_report(&report, None, &verdicts)[0].infra_errors,
+            0
+        );
+        verdicts.push(JudgeVerdict {
+            run_dir: Some("cheap-sympy__sympy-13877-1800000000000000000-0".to_string()),
+            seed_commit: Some("round2-sympy".to_string()),
+            ..JudgeVerdict::infra_error("sympy__sympy-13877", "ssh down")
+        });
+        let s = summarize_report(&report, None, &verdicts);
+        assert_eq!(s[0].infra_errors, 1);
+        assert!(s[0].rows[0].infra_error, "{:?}", s[0].rows[0]);
+        assert!(
+            !s[0].rows[1].infra_error,
+            "a solved row is never a judge error"
+        );
+    }
+
+    /// A row's own oracle exit says when its judge could not grade (exit 2,
+    /// or the runner's oracle ceiling), with no verdict dir at all.
+    #[test]
+    fn summary_reads_a_rows_own_judge_exit() {
+        let mut timed_out = graded_row("psf__requests-1142", false, 0, "s3");
+        timed_out["oracle_exit"] = serde_json::Value::Null;
+        timed_out["oracle_timed_out"] = serde_json::json!(true);
+        let report = serde_json::json!({"tiers": [{"tier": "cheap", "model": "m", "tasks": [
+            graded_row("sympy__sympy-13877", false, 2, "s1"),
+            graded_row("django__django-11880", false, 1, "s2"),
+            timed_out]}]});
+        let s = summarize_report(&report, None, &[]);
+        let marked: Vec<bool> = s[0].rows.iter().map(|r| r.infra_error).collect();
+        assert_eq!(marked, vec![true, false, true]);
+        assert_eq!(s[0].infra_errors, 2);
     }
 }

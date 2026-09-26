@@ -351,6 +351,14 @@ pub fn run_task(task: &Task, tier: &Tier, cfg: &RunConfig, deps: &Deps<'_>) -> R
     // cannot be trusted as a graded verdict, and why an oracle timeout must
     // be reported `errored`, never `fail`.
     let mut outcome = outcome_from_run(oracle_run.exit, oracle_run.timed_out);
+    // A SWE-bench judge exits 2 when IT could not grade (disk floor, SSH,
+    // image pull): the oracle produced no verdict, so `errored`, never the
+    // agent's `fail`.
+    let judge_infra_error = !oracle_run.timed_out
+        && crate::swebench::is_judge_infra_exit(&task.spec.category, oracle_run.exit);
+    if judge_infra_error {
+        outcome = OracleOutcome::Errored;
+    }
 
     // Lane K10 (2026-09-14 M22 zai w1 defect): a billing/auth/quota failure
     // means the harness never got a real chance to attempt the task at
@@ -433,6 +441,8 @@ pub fn run_task(task: &Task, tier: &Tier, cfg: &RunConfig, deps: &Deps<'_>) -> R
         result.note = Some(format!("provider unavailable: {marker}"));
     } else if harness_run.timed_out {
         result.note = Some("harness run hit its wall-clock ceiling".to_string());
+    } else if judge_infra_error {
+        result.note = Some("the SWE-bench judge could not grade (see its verdict)".to_string());
     }
     result.provider_error = provider_error;
 
@@ -1210,6 +1220,25 @@ mod tests {
         }
     }
 
+    /// An oracle that exits with a fixed code, as `swe-judge` does.
+    struct ExitOracle(i32);
+    impl OracleRunner for ExitOracle {
+        fn run(
+            &self,
+            _w: &Path,
+            _a: &[String],
+            _envs: &[(String, String)],
+            _t: Duration,
+            _l: &Path,
+        ) -> Result<OracleRun> {
+            Ok(OracleRun {
+                exit: Some(self.0),
+                timed_out: false,
+                duration: Duration::ZERO,
+            })
+        }
+    }
+
     struct NeverOracle;
     impl OracleRunner for NeverOracle {
         fn run(
@@ -1469,6 +1498,54 @@ mod tests {
         );
         // Without --keep, the successful run leaves no scratch dir behind.
         assert_no_leftover_run_dirs(&cfg.runs_root);
+    }
+
+    fn run_with_oracle_exit(task: &Task, runs_root: &Path, exit: i32) -> TaskResult {
+        let cfg = RunConfig {
+            permagent_bin: "permagent".to_string(),
+            runs_root: runs_root.to_path_buf(),
+            ..Default::default()
+        };
+        let deps = Deps {
+            harness: &FakeHarness {
+                drop_file: ("agent.txt".to_string(), "hi".to_string()),
+                exit: Some(0),
+            },
+            oracle: &ExitOracle(exit),
+            cost: &UnknownCost,
+            recipe: &FakeRecipe,
+        };
+        run_task(task, &Tier::builtin("frontier").unwrap(), &cfg, &deps).unwrap()
+    }
+
+    /// `swe-judge` exits 2 when it could not grade (disk floor, SSH down,
+    /// image pull). That used to be stored as the agent's `fail` in the
+    /// report, the `--record`/`qualify` evidence and the A/B arm counts; it
+    /// is `errored`. A graded exit 1, and exit 2 from any other category's
+    /// oracle, keep their plain reading.
+    #[test]
+    fn a_swe_bench_judge_infrastructure_exit_is_errored_not_a_fail() {
+        let tmp = tempfile::tempdir().unwrap();
+        let runs = tmp.path().join("runs");
+        let mut swe = make_task(&tmp.path().join("swe"), &[("seed.txt", "s")], &[]);
+        swe.spec.category = crate::swebench::SWE_CATEGORY.to_string();
+
+        let r = run_with_oracle_exit(&swe, &runs, 2);
+        assert_eq!(r.oracle, OracleOutcome::Errored);
+        assert!(!r.solved);
+        assert_eq!(r.oracle_exit, Some(2));
+        assert!(!r.oracle_timed_out);
+        assert!(r.note.as_deref().unwrap_or("").contains("judge"));
+
+        assert_eq!(
+            run_with_oracle_exit(&swe, &runs, 1).oracle,
+            OracleOutcome::Fail
+        );
+        let classic = make_task(&tmp.path().join("classic"), &[("seed.txt", "s")], &[]);
+        assert_eq!(
+            run_with_oracle_exit(&classic, &runs, 2).oracle,
+            OracleOutcome::Fail
+        );
     }
 
     /// The whole point of the peer-reported bug fix: `run_task` writes the
