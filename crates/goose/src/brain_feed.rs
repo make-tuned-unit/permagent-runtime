@@ -27,7 +27,10 @@
 //!   Spectral confirms, and go `dead` after [`MAX_ATTEMPTS`].
 //! - **No Brain, no-op.** Without a mounted Brain (tests, early boot) rows
 //!   simply stay pending; nothing panics and nothing is written anywhere else.
-//!   The startup drain delivers them once a Brain is mounted.
+//!   [`spawn_periodic_drain`], started once the Brain is mounted, delivers
+//!   them — both the startup backlog and any row whose retry backoff
+//!   (`next_attempt_at`) has since elapsed — without depending on some other
+//!   caller happening to call [`feed`] again.
 //! - **Per-source status.** `brain_feed_status` counts deliveries per source
 //!   with `last_fed_at` / `last_error`; [`feed_status`] joins it with outbox
 //!   depth for `GET /api/brain/feed-status` and Settings → Memory.
@@ -474,6 +477,38 @@ pub fn spawn_drain(brain: crate::brain_handle::SafeBrain, pool: Pool<Sqlite>) {
     });
 }
 
+/// How often [`spawn_periodic_drain`] sweeps the outbox on its own, with no
+/// [`feed`] call to trigger it. A failed delivery's backoff
+/// (`next_attempt_at = now + 30s`, see [`drain`]) is only honoured promptly if
+/// this is comfortably tighter than that; a daily or hourly cadence (like
+/// `analytics_drain`'s) would leave a retry — or a whole backlog enqueued
+/// before the Brain mounted — waiting far longer than the failure itself.
+const PERIODIC_DRAIN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Run [`drain`] on a fixed interval for as long as the process lives.
+///
+/// This is the ONLY periodic trigger for delivery: without it, a fact
+/// enqueued before a Brain is mounted (daemon boot window, or a prior crash),
+/// or one whose retry deadline has already passed, is only reclaimed by
+/// whatever unrelated [`feed`] call happens to fire `spawn_drain` next —
+/// which may be minutes, hours, or, in a short-lived process, never. Call
+/// this once, right after the Brain becomes available (see `state.rs`); the
+/// first pass runs immediately, so a startup backlog does not wait out the
+/// full interval either.
+pub fn spawn_periodic_drain(brain: crate::brain_handle::SafeBrain, pool: Pool<Sqlite>) {
+    if tokio::runtime::Handle::try_current().is_err() {
+        return;
+    }
+    tokio::spawn(async move {
+        loop {
+            if let Err(e) = drain(&brain, &pool).await {
+                tracing::debug!(target: "permagentd::brain", "brain feed periodic drain failed: {e}");
+            }
+            tokio::time::sleep(PERIODIC_DRAIN_INTERVAL).await;
+        }
+    });
+}
+
 struct FeedJob {
     id: i64,
     memory_key: String,
@@ -511,6 +546,35 @@ async fn claim(pool: &Pool<Sqlite>) -> anyhow::Result<Option<FeedJob>> {
     }))
 }
 
+/// Finish one successful delivery: delete the claimed row, guarded by
+/// `revision` so a row re-fed while in flight survives, and only count the
+/// delivery (bump `fed_count`) if THIS call is the one that actually removed
+/// it. `claim`'s stale-`running` recovery (rows stuck over 5 minutes) can
+/// reclaim and redeliver a row whose original `remember_with` call is still
+/// genuinely in flight — if both calls eventually succeed, the second one's
+/// DELETE affects zero rows because the first already removed it, and must
+/// not double-count `brain_feed_status.fed_count` for what is really one
+/// fact. Returns whether this call won the delete.
+async fn finish_delivered(
+    pool: &Pool<Sqlite>,
+    id: i64,
+    revision: i64,
+    source: Option<FeedSource>,
+) -> anyhow::Result<bool> {
+    let result = sqlx::query("DELETE FROM brain_feed_outbox WHERE id = ? AND revision = ?")
+        .bind(id)
+        .bind(revision)
+        .execute(pool)
+        .await?;
+    let won = result.rows_affected() > 0;
+    if won {
+        if let Some(s) = source {
+            record_fed(pool, s).await;
+        }
+    }
+    Ok(won)
+}
+
 /// Deliver pending rows to the Brain. A row re-fed while in flight (revision
 /// bumped) survives its old delivery and is redelivered with the new content.
 pub async fn drain(
@@ -546,15 +610,9 @@ pub async fn drain(
             .await
         {
             Ok(_) => {
-                sqlx::query("DELETE FROM brain_feed_outbox WHERE id = ? AND revision = ?")
-                    .bind(job.id)
-                    .bind(job.revision)
-                    .execute(pool)
-                    .await?;
-                if let Some(s) = source {
-                    record_fed(pool, s).await;
+                if finish_delivered(pool, job.id, job.revision, source).await? {
+                    delivered += 1;
                 }
-                delivered += 1;
             }
             Err(e) => {
                 let message = e.to_string();
@@ -911,5 +969,97 @@ mod tests {
         let fin = status.iter().find(|s| s.source == "finance").unwrap();
         assert_eq!(fin.count, 1);
         assert!(fin.last_error.is_none());
+    }
+
+    /// #1: before `spawn_periodic_drain` existed, nothing but a fresh `feed()`
+    /// call ever triggered delivery — `state.rs` mounted the Brain and never
+    /// drained `brain_feed_outbox` at all (unlike the chat-memory outbox,
+    /// which gets an explicit startup drain right next to it). This backlog
+    /// row is inserted directly, the way a row lands when it is enqueued
+    /// before any Brain is mounted (see `feed_without_brain_queues_and_never_errors`),
+    /// and the test calls neither `feed`, `drain`, nor `spawn_drain` itself —
+    /// only the periodic loop may deliver it.
+    #[tokio::test]
+    #[serial_test::serial(brain_feed_permagent_path_root)]
+    async fn spawn_periodic_drain_delivers_a_backlog_with_no_feed_call() {
+        let root = tempfile::tempdir().unwrap();
+        let root_str = root.path().display().to_string();
+        // `remember_with`'s post-write entity linking reaches
+        // `Paths::brain_dir()`; without this, a background task would read
+        // and write the real ~/.permagent/brain instead of this tempdir.
+        let _env = env_lock::lock_env([("PERMAGENT_PATH_ROOT", Some(root_str.as_str()))]);
+
+        let pool = test_pool().await;
+        let key = feed_key("card", "c1", "status");
+        sqlx::query("INSERT INTO brain_feed_outbox (memory_key, source, content) VALUES (?, ?, ?)")
+            .bind(&key)
+            .bind(FeedSource::Card.as_str())
+            .bind("Card 'Ship it' moved to Done.")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let raw = spectral::Brain::open(root.path().join("brain")).unwrap();
+        let brain = crate::brain_handle::SafeBrain::new(raw);
+        spawn_periodic_drain(brain, pool.clone());
+
+        let mut delivered = false;
+        for _ in 0..150 {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            if outbox(&pool).await.is_empty() {
+                delivered = true;
+                break;
+            }
+        }
+        assert!(
+            delivered,
+            "a periodic drain must deliver a pre-existing backlog on its own, \
+             with no external feed() call ever made"
+        );
+        let status = feed_status(&pool, &[]).await.unwrap();
+        let card = status.iter().find(|s| s.source == "card").unwrap();
+        assert_eq!(card.count, 1);
+    }
+
+    /// #16: `claim()` can reclaim a row stuck in `status = 'running'` for over
+    /// five minutes even though the original `remember_with` call is still
+    /// genuinely in flight (e.g. slow embedding under load), not dead. If
+    /// both the original and the reclaiming delivery go on to succeed, only
+    /// the one that actually deletes the row may count as delivered — the
+    /// other's `DELETE ... WHERE id = ? AND revision = ?` affects zero rows
+    /// because the row is already gone, and must not still bump
+    /// `brain_feed_status.fed_count` for what is really one fact.
+    #[tokio::test]
+    async fn redundant_redelivery_of_an_already_completed_job_does_not_double_count() {
+        let pool = test_pool().await;
+        let key = feed_key("card", "c1", "status");
+        feed(&pool, FeedSource::Card, key.clone(), None, "v1".into()).await;
+
+        // `claim()` doesn't touch `revision`, so two deliveries of the same
+        // row in flight at once (the stalled-reclaim race) share it.
+        let job = claim(&pool).await.unwrap().unwrap();
+
+        let first_won = finish_delivered(&pool, job.id, job.revision, Some(FeedSource::Card))
+            .await
+            .unwrap();
+        assert!(
+            first_won,
+            "the first delivery to finish must win the delete"
+        );
+
+        let second_won = finish_delivered(&pool, job.id, job.revision, Some(FeedSource::Card))
+            .await
+            .unwrap();
+        assert!(
+            !second_won,
+            "a redundant redelivery of an already-completed job must not win"
+        );
+
+        let status = feed_status(&pool, &[]).await.unwrap();
+        let card = status.iter().find(|s| s.source == "card").unwrap();
+        assert_eq!(
+            card.count, 1,
+            "fed_count must reflect exactly one delivered fact, not two"
+        );
     }
 }

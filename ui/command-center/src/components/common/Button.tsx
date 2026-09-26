@@ -244,6 +244,10 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
         // user this failed. See the class doc for why the two are not the
         // same signal.
         if (onErrorFeedback === false) return;
+        // Clear any orphaned success flag from a prior outcome whose own
+        // reset timer this cancels below — otherwise it resurfaces (as a
+        // permanent tick) once THIS flash ends, since nothing else resets it.
+        setSelfSuccess(false);
         setSelfFailure(true);
         if (timer.current) clearTimeout(timer.current);
         timer.current = setTimeout(() => {
@@ -261,6 +265,9 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
       }
       // `false` is the caller's "it failed" signal — never tick on a failure.
       if (!flashSuccess || outcome.value === false) return;
+      // Symmetric with the failure branch above: clear any orphaned failure
+      // flag left behind by a prior outcome whose reset timer this cancels.
+      setSelfFailure(false);
       setSelfSuccess(true);
       if (timer.current) clearTimeout(timer.current);
       timer.current = setTimeout(() => {

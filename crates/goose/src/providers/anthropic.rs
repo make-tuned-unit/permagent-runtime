@@ -394,13 +394,23 @@ impl Provider for AnthropicProvider {
         }))
     }
 
-    /// 2026-09-25 DAG K cost fix (HARNESS_COST_TRACE.md fix 8): route
-    /// non-streaming `AccountedFastCompletion` calls through the SAME
-    /// stable/volatile split the interactive main loop already gets via
-    /// [`Self::stream_split`], instead of the trait default's
-    /// [`super::base::Provider::complete_split`] flattening everything back
-    /// into one blob before it reaches this provider — see that default
-    /// method's doc comment for the cache-read symptom this fixes.
+    /// 2026-09-25 DAG K cost fix (HARNESS_COST_TRACE.md fix 8): if a caller
+    /// invokes `complete_split` with an already-separated
+    /// [`SystemPromptParts`], route it through the SAME stable/volatile
+    /// split the interactive main loop already gets via [`Self::stream_split`],
+    /// instead of the trait default's [`super::base::Provider::complete_split`]
+    /// flattening everything back into one blob before it reaches this
+    /// provider — see that default method's doc comment for the cache-read
+    /// symptom this is meant to fix.
+    ///
+    /// NOT YET WIRED: as of this writing no production caller reaches this
+    /// override — `AccountedFastCompletion::complete_one` /
+    /// `complete_fast_inner` (`agents::reply_parts`), which back the
+    /// planner/reviewer/summarizer paths, still call
+    /// `Provider::complete` with a flat `system: &str`. See the TODO on
+    /// [`super::base::Provider::complete_split`] for the callers that need
+    /// wiring and why that wiring is deferred (ledger measurement, not a
+    /// pre-release behavior change to cost accounting).
     async fn complete_split(
         &self,
         model_config: &ModelConfig,

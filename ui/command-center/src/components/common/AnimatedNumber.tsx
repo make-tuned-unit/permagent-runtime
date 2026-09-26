@@ -39,21 +39,26 @@ export function AnimatedNumber({
 }: AnimatedNumberProps) {
   const { reduceMotion } = useTheme();
   const [display, setDisplay] = useState(value);
-  const prev = useRef(value);
+  // The actually-painted value, not the last-requested target — an
+  // interrupted animation (a new poll landing before the current count-up
+  // finishes) must continue from wherever it visually is, not snap to the
+  // target it was still travelling toward.
+  const displayed = useRef(value);
   const mounted = useRef(false);
   const raf = useRef<number | null>(null);
 
   useEffect(() => {
-    const from = prev.current;
+    const from = displayed.current;
     const to = value;
-    prev.current = value;
 
     if (!mounted.current) {
       mounted.current = true;
+      displayed.current = to;
       setDisplay(to);
       return;
     }
     if (reduceMotion || from === to) {
+      displayed.current = to;
       setDisplay(to);
       return;
     }
@@ -61,10 +66,13 @@ export function AnimatedNumber({
     const start = performance.now();
     const tick = (now: number) => {
       const t = Math.min(1, (now - start) / durationMs);
-      setDisplay(from + (to - from) * easeOutQuad(t));
+      const next = from + (to - from) * easeOutQuad(t);
+      displayed.current = next;
+      setDisplay(next);
       if (t < 1) {
         raf.current = requestAnimationFrame(tick);
       } else {
+        displayed.current = to;
         setDisplay(to);
       }
     };

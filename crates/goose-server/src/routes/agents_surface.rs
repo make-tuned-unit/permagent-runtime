@@ -89,8 +89,8 @@ struct BackgroundWorker {
     /// prose (crate names, config keys, guardrail internals) that used to be
     /// the ONLY text on this row; they now live behind the UI's "Details"
     /// disclosure. See `worker_summary` for the curated table this is drawn
-    /// from (dagK settings pass, ST1 round 2 — Jesse's 1440px review: "the
-    /// real daemon returns long engineering paragraphs").
+    /// from (dagK settings pass, ST1 round 2 — ruling 2026-09-25, 1440px
+    /// review: "the real daemon returns long engineering paragraphs").
     summary: String,
     what_it_does: String,
     why_it_matters: String,
@@ -1098,9 +1098,9 @@ mod tests {
     use super::*;
 
     /// Every worker gets a plain-language summary short enough to be a roster
-    /// row's ONE line — not the agent-facing `what_it_does` paragraph. Jesse's
-    /// 1440px review of the real daemon: the roster was still printing full
-    /// engineering paragraphs (Scheduler's guardrail internals, Git Steward's
+    /// row's ONE line — not the agent-facing `what_it_does` paragraph. Ruling
+    /// 2026-09-25's 1440px review of the real daemon: the roster was still
+    /// printing full engineering paragraphs (Scheduler's guardrail internals, Git Steward's
     /// `steward_scan_enabled`, ...) because nothing pinned a length or a
     /// presence guarantee on the summary shown by default.
     #[test]

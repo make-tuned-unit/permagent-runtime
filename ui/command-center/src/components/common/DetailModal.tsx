@@ -133,7 +133,13 @@ export function DetailModal({
     const observer = new ResizeObserver(measureTitle);
     observer.observe(el);
     return () => observer.disconnect();
-  }, [title]);
+    // `titleClamped` is a dep, not just `title`: it flips the rendered node at
+    // this ref from a bare `<span>` to a `<Tooltip>`-wrapped clone (below) —
+    // a type change at that JSX slot, so React unmounts the old span and
+    // mounts a new one. Without re-running here, the observer above keeps
+    // watching the now-detached original node forever, and a later resize
+    // that would un-clamp the title is never seen again.
+  }, [title, titleClamped]);
   const titleEl = (
     <span
       id={titleId}

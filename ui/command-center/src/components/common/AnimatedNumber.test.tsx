@@ -79,3 +79,36 @@ it('jumps straight to the target with no animation under reduced motion', () => 
   expect(container.textContent).toBe('500');
   expect(rafSpy).not.toHaveBeenCalled();
 });
+
+it('continues from the value actually on screen when interrupted mid-animation, instead of snapping to the previous target', () => {
+  // A dashboard tile polling frequently can retarget before a count-up
+  // finishes. The next animation's `from` must be wherever it visually
+  // stopped, not the target the interrupted animation was still chasing.
+  let pendingCb: FrameRequestCallback | null = null;
+  rafSpy.mockImplementation((cb: FrameRequestCallback) => {
+    pendingCb = cb;
+    return 1;
+  });
+
+  // Mount (no animation), then start an animation toward 100.
+  act(() => { root.render(<AnimatedNumber value={0} durationMs={10000} />); });
+  act(() => { root.render(<AnimatedNumber value={100} durationMs={10000} />); });
+  expect(pendingCb).not.toBeNull();
+
+  // Advance partway (~30%) through that animation.
+  act(() => { pendingCb!(performance.now() + 3000); });
+  const partial = parseFloat(container.textContent!);
+  expect(partial).toBeGreaterThan(0);
+  expect(partial).toBeLessThan(100);
+
+  // Interrupt with a new target before the first animation finishes.
+  act(() => { root.render(<AnimatedNumber value={200} durationMs={10000} />); });
+  expect(pendingCb).not.toBeNull();
+
+  // The very first frame of the new animation (t≈0) must read from wherever
+  // the display actually was (`partial`), not jump to the old target (100).
+  act(() => { pendingCb!(performance.now()); });
+  const resumed = parseFloat(container.textContent!);
+  expect(Math.abs(resumed - partial)).toBeLessThan(5);
+  expect(Math.abs(resumed - 100)).toBeGreaterThan(20);
+});

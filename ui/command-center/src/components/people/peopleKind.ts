@@ -3,8 +3,8 @@
  *
  * QA 2026-09-24: People → List mixed in "Harbourview Residents' Association",
  * "Halifax Water Customer Service", project names ("Personal", "Permagent
- * Runtime") and the user twice ("Jesse" + "Jesse Sharratt", flagged as a
- * possible duplicate of each other). The backend is adding `kind` to the
+ * Runtime") and the user's own record twice (their first name and their full
+ * name, flagged as a possible duplicate of each other). The backend is adding `kind` to the
  * directory response; until a daemon sends it every row reads as a person,
  * exactly as before — nothing here guesses from the name.
  */

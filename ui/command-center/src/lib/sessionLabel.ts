@@ -263,9 +263,14 @@ const CODING_HARNESS_RECIPE = 'permagent coding harness';
 
 /** Liveness probes and smoke checks: "Reply with exactly the word SHIPPED and
  *  nothing else. Do not call any tools." — a machine checking the pipe, not a
- *  person asking something. */
-const PROBE = /^(?:reply|respond|answer|say)\b[^\n]{0,40}\b(?:exactly|only)\b/i;
-const NO_TOOLS_PROBE = /\bdo not (?:call|use) any tools\b/i;
+ *  person asking something. Anchored to that exact template (a fixed
+ *  single-token word right after "exactly the word", then "and nothing
+ *  else") rather than any message that opens with a reply/say verb and
+ *  contains "exactly"/"only" somewhere nearby — the loose version filed real
+ *  conversations like "Answer only in JSON, no other commentary." or "Let's
+ *  just talk, do not use any tools for this one" under System (see
+ *  REVIEW_CONFIRMED #5). */
+const PROBE = /^(?:reply|respond|answer|say)\b[^\n]{0,20}\bexactly the word\s+\S+\s+and nothing else\b/i;
 
 /** The Grow → coding-agent directive (grow/codingAgentDirective.ts). */
 const CODING_DIRECTIVE = /^you are a coding agent\b/i;
@@ -274,7 +279,7 @@ const DIRECTIVE_PROJECT = /working in the repository for ["“]([^"”]+)["”]/
 function isProbe(text: string | null | undefined): boolean {
   const t = text?.trim();
   if (!t) return false;
-  return PROBE.test(t) || (t.length < 240 && NO_TOOLS_PROBE.test(t));
+  return PROBE.test(t);
 }
 
 /**

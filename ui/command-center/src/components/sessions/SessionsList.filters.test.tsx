@@ -259,4 +259,35 @@ describe('rename — 2026-09-25 coordinator finding: a single click must never s
     expect(container.querySelector('input:not([type="search"])')).toBeTruthy();
     expect(useCommandCenter.getState().switchToSession).not.toHaveBeenCalled();
   });
+
+  it('a concurrent label refresh (e.g. session_changed) while typing does not clobber the draft (REVIEW_CONFIRMED #12)', async () => {
+    render();
+    await act(async () => { await Promise.resolve(); });
+    const title = container.querySelector('[data-testid="session-row-title-text"]') as HTMLElement;
+    act(() => title.dispatchEvent(new MouseEvent('dblclick', { bubbles: true })));
+    const input = container.querySelector('input:not([type="search"])') as HTMLInputElement;
+    expect(input.value).toBe('How do I rotate the staging keys?');
+
+    // The user starts typing their own title...
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!;
+    act(() => {
+      setter.call(input, 'Staging key rotation runbook');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    expect(input.value).toBe('Staging key rotation runbook');
+
+    // ...and, mid-edit, the daemon's own auto-namer retitles the session
+    // (e.g. a `session_changed` SSE event drove loadSessions() to refresh the
+    // store) — the row's computed label changes while `editing` is still true.
+    act(() => {
+      useCommandCenter.setState({
+        sessions: [{ ...CHAT, first_user_text: 'Rotate all the staging credentials immediately.' }, AGENT, SCHEDULED],
+      });
+    });
+    await act(async () => { await Promise.resolve(); });
+
+    // The user's in-progress draft must survive the refresh untouched.
+    const inputAfter = container.querySelector('input:not([type="search"])') as HTMLInputElement;
+    expect(inputAfter.value).toBe('Staging key rotation runbook');
+  });
 });

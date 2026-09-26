@@ -83,13 +83,13 @@ describe('MessagingGatewaysSection', () => {
   it('shows a running gateway with its paired users and confirms unpair', async () => {
     allowed.getGatewayStatus.mockResolvedValue([{
       gateway_type: 'telegram', running: true, configured: true,
-      paired_users: [{ platform: 'telegram', user_id: 'u1', display_name: 'Jesse', session_id: 's1', paired_at: 0 }],
+      paired_users: [{ platform: 'telegram', user_id: 'u1', display_name: 'Alex Rivera', session_id: 's1', paired_at: 0 }],
       info: {},
     }]);
     allowed.unpairGatewayUser.mockResolvedValue(undefined);
     await mount();
     expect(container.textContent).toContain('Telegram');
-    expect(container.textContent).toContain('Jesse');
+    expect(container.textContent).toContain('Alex Rivera');
     const unpairBtn = Array.from(container.querySelectorAll('button')).find(b => b.textContent === 'Unpair') as HTMLButtonElement;
     await act(async () => { unpairBtn.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
     expect(allowed.unpairGatewayUser).not.toHaveBeenCalled();

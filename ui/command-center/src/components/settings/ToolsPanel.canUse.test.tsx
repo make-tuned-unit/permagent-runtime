@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom
  *
- * "What Henry can use" (dagK settings pass, ST1 round 2 — Jesse: add a Tools
- * capability section distinct from Models, using the persona's configured
+ * "What Henry can use" (dagK settings pass, ST1 round 2 — ruling 2026-09-25:
+ * add a Tools capability section distinct from Models, using the persona's configured
  * name). Covers the loading/empty/populated states and the name fallback.
  */
 

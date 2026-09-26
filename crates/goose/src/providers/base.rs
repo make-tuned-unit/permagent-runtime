@@ -855,20 +855,34 @@ pub trait Provider: Send + Sync {
     /// `AccountedFastCompletion` (`agents::reply_parts`) rather than the
     /// interactive turn loop.
     ///
-    /// 2026-09-25 DAG K cost fix (HARNESS_COST_TRACE.md fix 8): every
-    /// `AccountedFastCompletion` call (the planner, the independent reviewer,
-    /// the conversation summarizer, and other internal/background callers)
-    /// routes through [`Self::complete`], whose flat `system: &str` forces
-    /// [`SystemPromptParts::all_stable`] — the SAME `system` string every
-    /// time, wholesale, as "stable." A caller that (like the interactive
-    /// main loop) has actually separated live/volatile content out of its
-    /// system prompt gets NO benefit from that split here: the flat
-    /// `.complete()` path re-merges everything back into one blob before it
-    /// ever reaches the provider, so a single byte of volatile content
-    /// anywhere in that blob invalidates the cached read for everything
-    /// after it — measured as `cost_ledger.cache_read_tokens` staying flat at
-    /// the size of whatever earlier portion happens to still be
-    /// byte-identical, while `input_tokens` keeps growing turn over turn.
+    /// 2026-09-25 DAG K cost fix (HARNESS_COST_TRACE.md fix 8): this method
+    /// exists so a caller that has separated live/volatile content out of
+    /// its system prompt CAN get a real prompt-cache breakpoint on the
+    /// stable prefix instead of re-merging everything into one blob (a
+    /// single byte of volatile content anywhere in that blob invalidates the
+    /// cached read for everything after it — the pattern that would show up
+    /// as `cost_ledger.cache_read_tokens` staying flat while `input_tokens`
+    /// keeps growing turn over turn).
+    ///
+    /// NOT YET WIRED: no caller invokes `complete_split` (or the provider
+    /// override, e.g. `AnthropicProvider::complete_split`) today. Every
+    /// `AccountedFastCompletion` call (the planner, the independent
+    /// reviewer, the conversation summarizer) still goes through
+    /// `agents::reply_parts::AccountedFastCompletion::complete_one` /
+    /// `complete_fast_inner`, which call [`Self::complete`] directly with a
+    /// flat `system: &str`. So the cache-invalidation regression described
+    /// above is NOT fixed by this method's existence alone — it is
+    /// currently dead code from those callers' point of view, exercised
+    /// only by its own unit tests and by any provider override.
+    ///
+    /// TODO(DAG K): wire `AccountedFastCompletion::complete_one` /
+    /// `complete_fast_inner` (`crates/goose/src/agents/reply_parts.rs`) to
+    /// build a `SystemPromptParts` and call `complete_split` instead of
+    /// `complete`, so the planner/reviewer/summarizer callers above actually
+    /// benefit. Measure the effect on `cost_ledger.cache_read_tokens` before
+    /// and after wiring it — this is a behavior change to cost accounting,
+    /// not just plumbing, and should not land right before a release without
+    /// that measurement.
     ///
     /// Additive on purpose, exactly like [`Self::stream_split`]: the default
     /// flattens the split via [`SystemPromptParts::render`] and calls

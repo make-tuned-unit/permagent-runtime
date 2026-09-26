@@ -160,6 +160,28 @@ describe('classifySession', () => {
     expect(classifySession({ name: 'x', firstUserText: 'What should I say only to the board?' })).toBe('conversation');
     expect(classifySession({ name: 'x', sessionType: 'terminal' })).toBe('conversation');
   });
+
+  it('does not file real conversations under System just for opening with a reply verb (REVIEW_CONFIRMED #5)', () => {
+    // Opens with one of the probe verbs and has "exactly"/"only" nearby, but
+    // is not the fixed liveness-check template — must stay a conversation.
+    expect(classifySession({ name: 'x', firstUserText: 'Answer only in JSON, no other commentary.', sessionType: 'user' }))
+      .toBe('conversation');
+    expect(classifySession({ name: 'x', firstUserText: 'Say only what changed in this file.', sessionType: 'user' }))
+      .toBe('conversation');
+    // Contains the old NO_TOOLS_PROBE phrase, but is ordinary chat, not the probe template.
+    expect(classifySession({ name: 'x', firstUserText: "Let's just talk, do not use any tools for this one", sessionType: 'user' }))
+      .toBe('conversation');
+    // A "reply with exactly the word ... and nothing else" mention that isn't
+    // actually the harness's own liveness sentence — no fixed single-token
+    // word right after "the word", so it must not be mistaken for a probe.
+    expect(classifySession({
+      name: 'x',
+      firstUserText: 'What is exactly the word for the feeling of missing a place you have never been?',
+      sessionType: 'user',
+    })).toBe('conversation');
+    expect(classifySession({ name: 'x', firstUserText: 'reply with exactly the word count for this chapter', sessionType: 'user' }))
+      .toBe('conversation');
+  });
 });
 
 describe('sessionProjectName / sessionSearchText', () => {
