@@ -29,6 +29,7 @@ import { VoicePicker } from '../voice/VoicePicker';
 import { PronunciationSection } from '../voice/PronunciationSection';
 import { Section, Row, Block, TextInput, Chip, Slider, Kbd, SaveButton, ModelStateBadge, ListRow, selectStyle } from './atoms';
 import { Button } from '../common/Button';
+import { StateBlock } from '../common/StateBlock';
 import { H1 } from '../common/H1';
 import { Tooltip } from '../common/Tooltip';
 import { Toggle } from '../common/Toggle';
@@ -320,14 +321,14 @@ function PersonaPanel() {
  */
 export function OwnerSection() {
   const { colors } = useThemeHook();
-  const { data, loading, saving, error, save } = useOwner();
+  const { data, loading, saving, error, save, reload } = useOwner();
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [dirty, setDirty] = useState(false);
   const [linking, setLinking] = useState(false);
 
   useEffect(() => {
-    if (data) {
+    if (data && !dirty) {
       setName(data.display_name ?? '');
       setEmail(data.email ?? '');
       setDirty(false);
@@ -338,11 +339,12 @@ export function OwnerSection() {
   const changeEmail = (v: string) => { setEmail(v); setDirty(true); };
 
   const handleSave = async () => {
-    if (!dirty) return;
+    if (!dirty) return false;
     // #167's lesson, same as PersonaPanel: only clear dirty when the daemon
     // actually persisted the edit.
     const ok = await save({ display_name: name, email });
     if (ok) setDirty(false);
+    return ok;
   };
 
   const linkPerson = async (person: Person) => {
@@ -364,6 +366,7 @@ export function OwnerSection() {
   } as CSSProperties);
 
   if (loading) return <div style={{ color: colors.textDim, fontSize: textSize.small }}>Loading…</div>;
+  if (!data && error) return <StateBlock tone="error" title={error} onRetry={reload} compact />;
   return (
     <>
     <Section
@@ -373,7 +376,7 @@ export function OwnerSection() {
       <Row label="Name" hint="How the agent refers to you.">
         <TextInput value={name} onChange={changeName} placeholder="Your name" />
       </Row>
-      <Row label="Email" hint="Optional. Kept alongside your name; never shared anywhere.">
+      <Row label="Email" hint="Optional. Helps your agent know who you are.">
         <TextInput value={email} onChange={changeEmail} placeholder="you@example.com" />
       </Row>
       <Row

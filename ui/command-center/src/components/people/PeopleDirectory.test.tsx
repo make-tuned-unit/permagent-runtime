@@ -65,6 +65,26 @@ afterEach(() => {
 });
 
 describe('PeopleDirectory', () => {
+  it('filters fading contacts and sorts the measured strength, including zero honestly', async () => {
+    const signal = (score: number, bucket: 'strong' | 'fading' | 'no_signal') => ({ score, bucket,
+      last_interaction_at: null, signals: { meetings: { count: 0, most_recent: null },
+        decisions: { count: 0, most_recent: null }, memories: { count: 0, most_recent: null }, last_contact: { count: 0, most_recent: null } } });
+    apiFetch.mockResolvedValue([
+      person('a', 'Ada', { relationship_signal: signal(0, 'no_signal') }),
+      person('b', 'Blair', { relationship_signal: signal(20, 'fading') }),
+      person('c', 'Casey', { relationship_signal: signal(90, 'strong') }),
+    ]);
+    await act(async () => root.render(<PeopleDirectory />));
+    expect(container.querySelector('[aria-label="No interactions recorded yet"]')).toBeTruthy();
+    await act(async () => (container.querySelector('[data-testid="people-sort-strength"]') as HTMLButtonElement).click());
+    const body = container.textContent!;
+    expect(body.indexOf('Casey')).toBeLessThan(body.indexOf('Blair'));
+    await act(async () => (container.querySelector('[data-testid="people-cohort-fading"]') as HTMLButtonElement).click());
+    expect(container.textContent).toContain('Blair');
+    expect(container.textContent).not.toContain('Casey');
+    expect(container.textContent).not.toContain('Ada');
+  });
+
   it('surfaces people with no project — the cohort no other UI can reach', async () => {
     apiFetch.mockResolvedValue([
       person('a', 'Ashley Lecroy'),

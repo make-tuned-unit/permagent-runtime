@@ -6,7 +6,6 @@ import { registerDropZone } from '../../lib/native-drag-drop';
 import { resolvePtyInjection } from './terminalDrop';
 import { font, radius, textSize } from '../../styles/tokens';
 import { Button } from '../common/Button';
-import { pressable } from '../common/pressable';
 import { useGlass } from '../common/Glass';
 import { CycleTabsButton } from '../build/CycleTabsButton';
 import { nextPaneTabId, usePaneTabCycling } from '../build/paneTabCycling';
@@ -611,18 +610,10 @@ export const TerminalManager = forwardRef<TerminalManagerHandle, TerminalManager
           {tabs.map(tab => {
             const isActive = tab.id === activeTabId;
             return (
-              // A `<button>` cannot contain interactive content, so the tab
-              // is a `pressable` ROW (not a `<Button>`) plus a real sibling
-              // `<button>` for close. `.pa-btn` reproduces the exact look
-              // `Button` gave it (same `chromeBareVars` vars); `.pa-pressable`
-              // (from `pressable()`) layers the row's press/focus feedback.
-              <div
+            // Selection and removal are separate sibling buttons.
+            <div
                 key={tab.id}
-                {...pressable(() => setActiveTabId(tab.id), {
-                  label: `Switch to terminal tab: ${tab.label}`,
-                  // `group` stays: the close affordance reveals on group-hover.
-                  className: 'pa-btn group shrink-0',
-                })}
+                className="pa-btn group shrink-0"
                 style={{
                   ...chromeBareVars(colors, {
                     bg: isActive ? colors.fillSubtle : 'transparent',
@@ -649,16 +640,15 @@ export const TerminalManager = forwardRef<TerminalManagerHandle, TerminalManager
                   gap: CHROME_GEOM.tabGap,
                 } as CSSProperties}
               >
+                <Button colors={colors} variant="bare" aria-label={`Switch to terminal tab: ${tab.label}`} onClick={() => setActiveTabId(tab.id)} style={{ ...chromeBareVars(colors, { pad: '0', radiusPx: 0 }), gap: CHROME_GEOM.tabGap, minWidth: 0 }}>
                 <FiTerminal size={11} />
                 <span className="truncate max-w-[140px]">{tab.label}</span>
+                </Button>
                 <Button
                   colors={colors}
                   variant="bare"
                   type="button"
                   aria-label={`Close terminal tab: ${tab.label}`}
-                  // A real sibling now, not nested inside the tab's own
-                  // control — the click still must stop here or it also
-                  // selects the tab underneath it.
                   onClick={(e) => { e.stopPropagation(); handleCloseTab(tab.id); }}
                   className={`ml-1 ${closingTabId === tab.id ? '' : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100'}`}
                   style={{

@@ -665,7 +665,7 @@ pub struct DirectoryPerson {
     /// `relationship_strength` field `Person` already flattens onto this same
     /// object — see `crate::routes::relationship_strength` module docs for why
     /// this lives under a different wire key).
-    relationship_signal: crate::routes::relationship_strength::RelationshipStrength,
+    relationship_signal: Option<crate::routes::relationship_strength::RelationshipStrength>,
 }
 
 /// The whole directory in two queries — `list_people` plus one grouped pass over
@@ -718,14 +718,7 @@ async fn people_directory_handler(
             .map(|person| {
                 let next_follow_up_at = follow_ups.get(&person.entity_uuid).cloned();
                 let projects = refs.remove(&person.entity_uuid).unwrap_or_default();
-                let relationship_signal = relationship_signals
-                    .remove(&person.entity_uuid)
-                    .unwrap_or_else(|| {
-                        crate::routes::relationship_strength::compute_relationship_strength(
-                            &crate::routes::relationship_strength::RelationshipInputs::default(),
-                            chrono::Utc::now(),
-                        )
-                    });
+                let relationship_signal = relationship_signals.remove(&person.entity_uuid);
                 DirectoryPerson {
                     person,
                     projects,

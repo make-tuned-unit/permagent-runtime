@@ -12,7 +12,7 @@ import { AsOf } from '../common/AsOf';
 import { MEMORY_STRENGTH } from '../../lib/vocabulary';
 import { Chip } from '../common/Chip';
 import { humanizeMemorySource, isForgettableMemoryKey, SOURCE_FILTERS, UNKNOWN_SOURCE } from './brainMemorySource';
-import { scheduleForget } from './brainForget';
+import { scheduleForget, type PendingForget } from './brainForget';
 import { toast } from '../../lib/notifications';
 
 import { Tooltip } from '../common/Tooltip';
@@ -125,7 +125,7 @@ export function BrainList({
   // they came from browse or search — see `brainForget.ts` for why the actual
   // delete is scheduled outside React state/lifecycle.
   const [hiddenIds, setHiddenIds] = useState<Set<string>>(new Set());
-  const forgetCancels = useRef<Map<string, () => void>>(new Map());
+  const forgetCancels = useRef<Map<string, PendingForget>>(new Map());
 
   // Reset and load first page when query, time or the source filter changes
   // (browse mode only).
@@ -203,7 +203,8 @@ export function BrainList({
   // fires) or from a failed delete (the timer already fired; cancelling again
   // is a harmless no-op). Never touches the network itself.
   const restoreRow = useCallback((id: string) => {
-    forgetCancels.current.get(id)?.();
+    const pending = forgetCancels.current.get(id);
+    if (pending && !pending()) return;
     forgetCancels.current.delete(id);
     setHiddenIds(prev => {
       if (!prev.has(id)) return prev;
@@ -224,6 +225,7 @@ export function BrainList({
     setHiddenIds(prev => new Set(prev).add(mem.id));
     const cancel = scheduleForget(key, outcome => {
       if (outcome === 'restored') {
+        forgetCancels.current.delete(mem.id);
         restoreRow(mem.id);
         toast('Could not forget that memory', `"${title}" is back — try again.`, undefined, {
           tone: 'danger', force: true,
@@ -233,8 +235,9 @@ export function BrainList({
       }
     });
     forgetCancels.current.set(mem.id, cancel);
-    toast('Memory forgotten', `"${title}" will be removed from Henry's mind.`, undefined, {
+    toast('Memory forgotten', `"${title}" will be removed from memory.`, undefined, {
       action: { label: 'Undo', onAction: () => restoreRow(mem.id) },
+      expiresAt: cancel.expiresAt, onDismiss: cancel.commit,
       force: true,
     });
   }, [restoreRow]);
@@ -562,7 +565,7 @@ function MemoryRow({ memory, selected, highlightTerms, onClick, onForget }: {
         {/* Source (R5 "a memory shows its source") — humanized, never the raw
             RememberOpts tag; "quiet" per Chip's own density rule, since this
             renders on every row in the list. */}
-        <Chip kind="static" quiet title={sourceInfo.known ? 'Where this memory came from' : "Written before source tracking existed — Henry can't say where it came from"}>
+        <Chip kind="static" quiet title={sourceInfo.known ? 'Where this memory came from' : "No source was recorded for this memory."}>
           {sourceInfo.phrase}
         </Chip>
         {forgettable && (

@@ -953,8 +953,7 @@ async fn brain_memories(
                 params.after.as_deref(),
                 params.source.as_deref(),
                 limit,
-                now,
-                max_age_secs,
+                (now, max_age_secs),
             )
         }
     })
@@ -990,9 +989,9 @@ fn query_browse_memories(
     after: Option<&str>,
     source: Option<&str>,
     limit: usize,
-    now: DateTime<Utc>,
-    max_age_secs: f64,
+    age_context: (DateTime<Utc>, f64),
 ) -> Result<MemoriesResponse, String> {
+    let (now, max_age_secs) = age_context;
     // #92 — order the timeline by original event time when we have it, so
     // imported memories (Slack/browser history) sit at their event date rather
     // than the batch-import date. `event_at` is backfilled at boot; on an older
@@ -1152,7 +1151,7 @@ fn query_fts_memories(
         let base = "SELECT COUNT(*) FROM memories_fts fts JOIN memories m ON m.rowid = fts.rowid \
              WHERE memories_fts MATCH ?1";
         match source {
-            Some(s) if s == "unknown" => conn
+            Some("unknown") => conn
                 .query_row(&format!("{base} AND m.source IS NULL"), [&fts_query], |r| {
                     r.get(0)
                 })
@@ -1179,7 +1178,7 @@ fn query_fts_memories(
     // "unknown" filters IS NULL inline (no bindable param); a real tag binds
     // as ?4, after the three positional params every query already sends.
     let source_clause = match source {
-        Some(s) if s == "unknown" => " AND m.source IS NULL",
+        Some("unknown") => " AND m.source IS NULL",
         Some(_) => " AND m.source = ?4",
         None => "",
     };
@@ -1744,9 +1743,16 @@ mod tests {
     fn browse_orders_by_event_at_then_created_at() {
         let conn = seed_browse_db();
         let now = Utc::now();
-        let res =
-            query_browse_memories(&conn, None, None, None, None, 50, now, 90.0 * 24.0 * 3600.0)
-                .unwrap();
+        let res = query_browse_memories(
+            &conn,
+            None,
+            None,
+            None,
+            None,
+            50,
+            (now, 90.0 * 24.0 * 3600.0),
+        )
+        .unwrap();
         let ids: Vec<&str> = res.memories.iter().map(|m| m.id.as_str()).collect();
         // June (event 2026-06) sorts above March (event 2026-03), even though
         // March was *imported* (created_at) more recently in July.
@@ -1779,8 +1785,7 @@ mod tests {
             Some("2026-05-01T00:00:00+00:00"),
             None,
             50,
-            now,
-            90.0 * 24.0 * 3600.0,
+            (now, 90.0 * 24.0 * 3600.0),
         )
         .unwrap();
         let ids: Vec<&str> = res.memories.iter().map(|m| m.id.as_str()).collect();
@@ -1813,8 +1818,7 @@ mod tests {
             None,
             None,
             50,
-            Utc::now(),
-            90.0 * 24.0 * 3600.0,
+            (Utc::now(), 90.0 * 24.0 * 3600.0),
         )
         .unwrap();
         assert_eq!(res.memories.len(), 1);
@@ -1832,8 +1836,7 @@ mod tests {
             None,
             Some("permagent.card"),
             50,
-            now,
-            90.0 * 24.0 * 3600.0,
+            (now, 90.0 * 24.0 * 3600.0),
         )
         .unwrap();
         let ids: Vec<&str> = res.memories.iter().map(|m| m.id.as_str()).collect();
@@ -1854,8 +1857,7 @@ mod tests {
             None,
             Some("unknown"),
             50,
-            now,
-            90.0 * 24.0 * 3600.0,
+            (now, 90.0 * 24.0 * 3600.0),
         )
         .unwrap();
         let ids: Vec<&str> = res.memories.iter().map(|m| m.id.as_str()).collect();

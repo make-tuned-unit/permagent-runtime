@@ -94,10 +94,6 @@ const TOOL_RESULT_TYPE: &str = "tool_result";
 const THINKING_TYPE: &str = "thinking";
 const REDACTED_THINKING_TYPE: &str = "redacted_thinking";
 const CACHE_CONTROL_FIELD: &str = "cache_control";
-/// Anthropic's hard per-request ceiling on `cache_control` breakpoints. Used
-/// to size the rolling conversation breakpoint's budget against whatever the
-/// stable tools/system prefix already spent — see `create_request_split`.
-const MAX_ANTHROPIC_CACHE_BREAKPOINTS: usize = 4;
 const ID_FIELD: &str = "id";
 const NAME_FIELD: &str = "name";
 const INPUT_FIELD: &str = "input";
@@ -112,22 +108,8 @@ const EVENT_CONTENT_BLOCK_START: &str = "content_block_start";
 const EVENT_CONTENT_BLOCK_DELTA: &str = "content_block_delta";
 const EVENT_CONTENT_BLOCK_STOP: &str = "content_block_stop";
 
-/// Convert internal Message format to Anthropic's API message specification.
-///
-/// Places up to `max_breakpoints` rolling `cache_control` markers on the
-/// conversation tail, chosen by [`plan_breakpoints`] against
-/// `model_config`'s minimum cacheable prefix ([`min_cacheable_tokens`]) —
-/// model-aware, not a flat "always the last two user messages": on a model
-/// whose turns are consistently smaller than its cache minimum
-/// (Haiku-class scheduled jobs are the motivating case — see
-/// `dagK-reports/CACHE_MINIMUMS.md`), the old policy placed a breakpoint
-/// every turn that could never actually cache, which is why
-/// `cache_read_tokens` sat flat while `input_tokens` grew.
-pub fn format_messages(
-    messages: &[Message],
-    model_config: &ModelConfig,
-    max_breakpoints: usize,
-) -> Vec<Value> {
+/// Convert internal Message format to Anthropic's API message specification
+pub fn format_messages(messages: &[Message]) -> Vec<Value> {
     let mut anthropic_messages = Vec::new();
 
     // Diagnostic: count image blocks across all messages
@@ -284,85 +266,31 @@ pub fn format_messages(
         }));
     }
 
-    place_rolling_cache_breakpoints(&mut anthropic_messages, model_config, max_breakpoints);
-
-    anthropic_messages
-}
-
-/// Rough token estimate for a chunk of serialized content: chars/4, the same
-/// ratio used elsewhere in this crate for budgeting (e.g.
-/// `agents::large_response_handler::estimated_tokens`,
-/// `agents::platform_extensions::analyze::repo_map::estimate_tokens`). Coarse
-/// by design — it only has to distinguish "well under a model's cache
-/// minimum" from "well over it", not count exactly.
-fn estimated_tokens(chars: usize) -> usize {
-    chars / 4
-}
-
-/// Mark the rolling conversation breakpoints chosen by [`plan_breakpoints`]
-/// directly on the already-built Anthropic message array, mutating the last
-/// content block of each chosen `user`-role message in place — the same
-/// mechanism the old flat "last and second-to-last user message" policy
-/// used, just aimed at model-aware positions instead of fixed ones.
-///
-/// Candidates are `user`-role messages only: in this wire format a tool
-/// result is itself sent as a `user`-role message, so every turn boundary in
-/// a tool loop is a candidate — matching Anthropic's own incremental-caching
-/// guidance for where a rolling breakpoint belongs.
-fn place_rolling_cache_breakpoints(
-    anthropic_messages: &mut [Value],
-    model_config: &ModelConfig,
-    max_breakpoints: usize,
-) {
-    if max_breakpoints == 0 {
-        return;
-    }
-
-    let candidate_positions: Vec<usize> = anthropic_messages
-        .iter()
-        .enumerate()
-        .filter(|(_, m)| m.get(ROLE_FIELD) == Some(&json!(USER_ROLE)))
-        .map(|(i, _)| i)
-        .collect();
-
-    if candidate_positions.is_empty() {
-        return;
-    }
-
-    // Marginal size of the segment ending at each candidate: every message
-    // from just after the previous candidate (or the conversation start)
-    // through this one, inclusive — exactly the NEW content a breakpoint
-    // here would additionally cover versus the previous candidate.
-    let mut segments = Vec::with_capacity(candidate_positions.len());
-    let mut segment_start = 0usize;
-    for &pos in &candidate_positions {
-        let chars: usize = anthropic_messages[segment_start..=pos]
-            .iter()
-            .map(|m| {
-                m.get(CONTENT_FIELD)
-                    .map(|c| serde_json::to_string(c).unwrap_or_default().len())
-                    .unwrap_or(0)
-            })
-            .sum();
-        segments.push(estimated_tokens(chars));
-        segment_start = pos + 1;
-    }
-
-    let min_tokens = min_cacheable_tokens(&model_config.model_name);
-    for mark in plan_breakpoints(&segments, min_tokens, max_breakpoints) {
-        let pos = candidate_positions[mark];
-        if let Some(last_content) = anthropic_messages[pos]
-            .get_mut(CONTENT_FIELD)
-            .and_then(|c| c.as_array_mut())
-            .and_then(|arr| arr.last_mut())
-            .and_then(|v| v.as_object_mut())
-        {
-            last_content.insert(
-                CACHE_CONTROL_FIELD.to_string(),
-                json!({ TYPE_FIELD: "ephemeral" }),
-            );
+    // Add "cache_control" to the last and second-to-last "user" messages.
+    // During each turn, we mark the final message with cache_control so the conversation can be
+    // incrementally cached. The second-to-last user message is also marked for caching with the
+    // cache_control parameter, so that this checkpoint can read from the previous cache.
+    let mut user_count = 0;
+    for message in anthropic_messages.iter_mut().rev() {
+        if message.get(ROLE_FIELD) == Some(&json!(USER_ROLE)) {
+            if let Some(content) = message.get_mut(CONTENT_FIELD) {
+                if let Some(content_array) = content.as_array_mut() {
+                    if let Some(last_content) = content_array.last_mut() {
+                        last_content.as_object_mut().unwrap().insert(
+                            CACHE_CONTROL_FIELD.to_string(),
+                            json!({ TYPE_FIELD: "ephemeral" }),
+                        );
+                    }
+                }
+            }
+            user_count += 1;
+            if user_count >= 2 {
+                break;
+            }
         }
     }
+
+    anthropic_messages
 }
 
 fn anthropic_flavored_input_schema(input_schema: Arc<JsonObject>) -> Arc<JsonObject> {
@@ -741,139 +669,6 @@ pub fn thinking_effort(model_config: &ModelConfig) -> ThinkingEffort {
     }
 }
 
-/// Anthropic's per-model minimum cacheable prefix, in tokens — a
-/// `cache_control` breakpoint on a prefix SHORTER than this silently does
-/// nothing (no error; the API reports `cache_creation_input_tokens: 0` for
-/// it), so placing one below the floor doesn't cost anything extra, it just
-/// never caches. The minimum is **not monotonic** across model generations —
-/// Opus 4.6 (4096) is stricter than Opus 4.7 (2048), which is stricter than
-/// Opus 4.8 (1024) — so this has to be a real per-model lookup, never one
-/// constant shared by every Claude model.
-///
-/// Verified 2026-09-26 against the `claude-api` skill's prompt-caching
-/// reference (`dagK-reports/CACHE_MINIMUMS.md`); applies on every platform
-/// (no Bedrock exception any more):
-///
-/// | Model | Minimum cacheable prefix |
-/// |---|---:|
-/// | Opus 5, Fable 5, Mythos 5 (and their `.1` point releases) | 512 |
-/// | Opus 4.8, Sonnet 5, Sonnet 4.6, Sonnet 4.5, Opus 4.1, Opus 4, Sonnet 4 | 1024 |
-/// | Opus 4.7, Mythos Preview, Haiku 3.5 | 2048 |
-/// | Opus 4.6, Opus 4.5, Haiku 4.5 | 4096 |
-///
-/// Consequence for Permagent's scheduled jobs (health-review, git-steward,
-/// workspace-snapshot, all routed to `claude-haiku-4-5`): their tool-loop
-/// turns are typically a few hundred tokens, well under Haiku's 4096-token
-/// floor, so a breakpoint placed on every turn (the old, model-blind policy)
-/// never actually caches — `cache_read_tokens` stays flat at whatever the
-/// stable system+tools prefix cleared early on, while every turn's genuinely
-/// new content is billed as fresh input. See [`plan_breakpoints`] for the fix.
-///
-/// An id this cannot place (a future generation, or garbage) gets the most
-/// conservative floor (4096): understating a model's minimum risks a
-/// breakpoint that silently never caches — exactly today's bug — while
-/// overstating it only delays the first cache hit.
-pub fn min_cacheable_tokens(model_name: &str) -> u32 {
-    // Anthropic version components appear both dash- and dot-separated across
-    // this codebase's own model ids (e.g. "claude-opus-4-6" and
-    // "claude-opus-4.6" both occur) — normalize once so every pattern below
-    // only has to spell the dash form.
-    let m = model_name.to_ascii_lowercase().replace('.', "-");
-
-    // Most-specific families FIRST: several Opus generations share the bare
-    // "opus-4" prefix (e.g. "claude-opus-4-6-20260201" contains
-    // "claude-opus-4"), so 4.5/4.6/4.7 must be matched and returned here
-    // before the bare "opus-4" pattern in the 1024 bucket below ever sees
-    // them, or every dated Opus 4.5/4.6/4.7 id would misclassify as the
-    // 1024-token Opus 4/4.1 bucket.
-    const MIN_4096: &[&str] = &["opus-4-6", "opus-4-5", "haiku-4-5"];
-    if MIN_4096.iter().any(|p| m.contains(p)) {
-        return 4096;
-    }
-
-    const MIN_2048: &[&str] = &["opus-4-7", "mythos-preview", "haiku-3-5", "3-5-haiku"];
-    if MIN_2048.iter().any(|p| m.contains(p)) {
-        return 2048;
-    }
-
-    const MIN_512: &[&str] = &["opus-5", "fable-5", "mythos-5"];
-    if MIN_512.iter().any(|p| m.contains(p)) {
-        return 512;
-    }
-
-    const MIN_1024: &[&str] = &[
-        "opus-4-8",
-        "sonnet-5",
-        "sonnet-4-6",
-        "sonnet-4-5",
-        "opus-4-1",
-        "opus-4",
-        "sonnet-4",
-    ];
-    if MIN_1024.iter().any(|p| m.contains(p)) {
-        return 1024;
-    }
-
-    4096
-}
-
-/// Decide which of a rolling sequence of candidate cache-breakpoint positions
-/// should actually carry one, given each candidate's marginal token cost
-/// (`segments[i]` = the size of the content newly covered since the previous
-/// candidate) and the model's minimum cacheable prefix (`min_tokens`, from
-/// [`min_cacheable_tokens`]).
-///
-/// Walks the segments in order, accumulating until the running total since
-/// the last placed breakpoint clears `min_tokens`, places a breakpoint AT
-/// that candidate, and resets the accumulator — so a breakpoint only ever
-/// lands where enough NEW content has actually piled up to be worth caching.
-/// A tail that never reaches the floor gets no breakpoint at all: an
-/// under-minimum `cache_control` marker doesn't error, it just silently
-/// never caches (see [`min_cacheable_tokens`]), so placing one there would be
-/// pure waste — this is point (c) of the fix, "don't place a useless
-/// breakpoint."
-///
-/// This is why the same growing conversation, walked fresh on every turn,
-/// stays STABLE: appending new segments at the end can only add new
-/// breakpoints after the ones already found, never move or remove them (the
-/// accumulate-then-reset walk never revisits an earlier segment). That
-/// stability is what lets a later turn's earlier breakpoint land on the same
-/// candidate an earlier turn wrote — the read half of the incremental-cache
-/// contract.
-///
-/// `max_breakpoints` caps the OUTPUT to the caller's remaining share of
-/// Anthropic's [`MAX_ANTHROPIC_CACHE_BREAKPOINTS`]-per-request budget (the
-/// stable tools/system prefix already spends some of it — see
-/// `create_request_split`); when more natural crossings exist than that
-/// budget allows, only the LAST `max_breakpoints` are kept, so the emitted
-/// set always favors the freshest breakpoints (most useful for the next
-/// turn's read) over the oldest.
-///
-/// Pure and total: never panics, returns candidate INDICES (into `segments`)
-/// in ascending order.
-pub fn plan_breakpoints(segments: &[usize], min_tokens: u32, max_breakpoints: usize) -> Vec<usize> {
-    if max_breakpoints == 0 {
-        return Vec::new();
-    }
-
-    let min_tokens = u64::from(min_tokens);
-    let mut marks = Vec::new();
-    let mut acc: u64 = 0;
-    for (i, &seg) in segments.iter().enumerate() {
-        acc += seg as u64;
-        if acc >= min_tokens {
-            marks.push(i);
-            acc = 0;
-        }
-    }
-
-    if marks.len() > max_breakpoints {
-        marks.split_off(marks.len() - max_breakpoints)
-    } else {
-        marks
-    }
-}
-
 /// Select the prompt-cache TTL for this request. Defaults to the cheap 5-minute
 /// `ephemeral` TTL everywhere; opt into the 1-hour extended TTL via the
 /// `cache_ttl` config key or the `CLAUDE_CACHE_TTL` env var
@@ -1035,22 +830,9 @@ pub fn create_request_split(
     read_only_files: &[ReadOnlyFile],
     ttl: CacheTtl,
 ) -> Result<Value> {
+    let anthropic_messages = format_messages(messages);
     let tool_specs = format_tools(tools);
     let system_spec = format_system_parts(system, read_only_files);
-
-    // Anthropic caps a request at MAX_ANTHROPIC_CACHE_BREAKPOINTS breakpoints
-    // total. The stable prefix (tools, then system) spends up to 2 of them
-    // before the rolling conversation breakpoint gets a share — count what it
-    // ACTUALLY spent (a system-less or tool-less call is rare but real, e.g.
-    // the `Provider::complete` trait default) rather than assuming 2, so
-    // those calls give the conversation its full remaining budget instead of
-    // silently under-using the cap.
-    let tools_breakpoint = usize::from(!tool_specs.is_empty());
-    let system_breakpoint = usize::from(!system.is_empty() || !read_only_files.is_empty());
-    let max_message_breakpoints =
-        MAX_ANTHROPIC_CACHE_BREAKPOINTS.saturating_sub(tools_breakpoint + system_breakpoint);
-
-    let anthropic_messages = format_messages(messages, model_config, max_message_breakpoints);
 
     if anthropic_messages.is_empty() {
         return Err(anyhow!("No valid messages to send to Anthropic API"));
@@ -1497,7 +1279,7 @@ mod tests {
             Message::user().with_text("How are you?"),
         ];
 
-        let spec = format_messages(&messages, &cfg("claude-sonnet-5"), 2);
+        let spec = format_messages(&messages);
 
         assert_eq!(spec.len(), 3);
         assert_eq!(spec[0]["role"], "user");
@@ -1516,7 +1298,7 @@ mod tests {
             Message::assistant().with_text("Hi there"),
         ];
 
-        let spec = format_messages(&messages, &cfg("claude-sonnet-5"), 2);
+        let spec = format_messages(&messages);
 
         assert_eq!(spec.len(), 1);
         assert_eq!(spec[0]["role"], "assistant");
@@ -1762,7 +1544,7 @@ mod tests {
             ),
         ];
 
-        let spec = format_messages(&messages, &cfg("claude-sonnet-5"), 2);
+        let spec = format_messages(&messages);
 
         assert_eq!(spec.len(), 2);
 
@@ -1793,7 +1575,7 @@ mod tests {
                 .with_tool_response("tool_1", Ok(rmcp::model::CallToolResult::success(vec![]))),
         ];
 
-        let spec = format_messages(&messages, &cfg("claude-sonnet-5"), 2);
+        let spec = format_messages(&messages);
 
         assert_eq!(spec.len(), 3);
 
@@ -1823,7 +1605,7 @@ mod tests {
             ),
         ];
 
-        let spec = format_messages(&messages, &cfg("claude-sonnet-5"), 2);
+        let spec = format_messages(&messages);
 
         assert_eq!(spec.len(), 2);
         assert_eq!(spec[1]["role"], "user");
@@ -1857,7 +1639,7 @@ mod tests {
             ),
         ];
 
-        let spec = format_messages(&messages, &cfg("claude-sonnet-5"), 2);
+        let spec = format_messages(&messages);
 
         assert_eq!(spec[1]["content"][0]["type"], "tool_result");
         assert_eq!(
@@ -2127,128 +1909,6 @@ mod tests {
         assert_eq!(parts.tool_calls, vec!["search"]);
     }
 
-    // ── Per-model cache minimums (dagK-reports/CACHE_MINIMUMS.md) ────────────
-
-    /// Every family in the verified table, plus dated ids (the real-world
-    /// shape: a bare version string never ships, only `<family>-<date>`), the
-    /// dot-separated spelling this codebase also uses in places, case
-    /// variation, and an aggregator-style vendor prefix.
-    #[test]
-    fn min_cacheable_tokens_matches_the_verified_table() {
-        let cases: &[(&str, u32)] = &[
-            // 512: Opus 5 / Fable 5 / Mythos 5, including their .1 point
-            // releases.
-            ("claude-opus-5", 512),
-            ("claude-opus-5-20260615", 512),
-            ("claude-fable-5", 512),
-            ("claude-fable-5-1", 512),
-            ("claude-fable-5.1", 512),
-            ("claude-mythos-5", 512),
-            ("claude-mythos-5-1", 512),
-            // 1024: Opus 4.8, Sonnet 5, Sonnet 4.6/4.5/4, Opus 4.1, Opus 4.
-            ("claude-opus-4-8", 1024),
-            ("claude-sonnet-5", 1024),
-            ("claude-sonnet-4-6", 1024),
-            ("claude-sonnet-4-5-20250929", 1024),
-            ("claude-sonnet-4.5", 1024),
-            ("claude-opus-4-1-20250805", 1024),
-            ("claude-opus-4.1", 1024),
-            ("claude-opus-4-20250514", 1024),
-            ("claude-opus-4", 1024),
-            ("claude-sonnet-4-20250514", 1024),
-            ("claude-sonnet-4", 1024),
-            // 2048: Opus 4.7, Mythos Preview, Haiku 3.5 (both id spellings).
-            ("claude-opus-4-7", 2048),
-            ("claude-mythos-preview", 2048),
-            ("claude-haiku-3-5", 2048),
-            ("claude-haiku-3.5", 2048),
-            ("claude-3-5-haiku-20241022", 2048),
-            // 4096: Opus 4.6, Opus 4.5, Haiku 4.5 — the flat-cache scheduled
-            // job model.
-            ("claude-opus-4-6", 4096),
-            ("claude-opus-4-5-20251101", 4096),
-            ("claude-opus-4.5", 4096),
-            ("claude-haiku-4-5", 4096),
-            ("claude-haiku-4-5-20251001", 4096),
-            ("claude-haiku-4.5-20251001", 4096),
-            // Case-insensitive, and vendor-prefixed (aggregator) forms.
-            ("CLAUDE-HAIKU-4-5-20251001", 4096),
-            ("anthropic/claude-haiku-4-5-20251001", 4096),
-            // Unknown/unrecognised ids fall back to the conservative default.
-            ("claude-opus-99", 4096),
-            ("some-new-model-v1", 4096),
-            ("", 4096),
-        ];
-
-        for (model, want) in cases {
-            assert_eq!(
-                min_cacheable_tokens(model),
-                *want,
-                "model {model:?} expected minimum {want}"
-            );
-        }
-    }
-
-    // ── plan_breakpoints (pure) ───────────────────────────────────────────
-
-    #[test]
-    fn plan_breakpoints_reproduces_the_scheduled_job_flat_cache_bug_and_its_fix() {
-        // Haiku-class scheduled job: 12 turns of ~300 fresh tokens each.
-        // Total (12*300=3,600) never reaches Haiku's 4096-token floor, so —
-        // correctly — NO breakpoint fires. The old "mark every turn" policy
-        // placed one anyway, and it silently never cached (CACHE_MINIMUMS.md).
-        let haiku_segments = vec![300usize; 12];
-        assert_eq!(
-            plan_breakpoints(&haiku_segments, 4096, 2),
-            Vec::<usize>::new(),
-            "12 turns of ~300 tokens never clears Haiku's 4096 floor"
-        );
-
-        // The identical per-turn size, but on Sonnet 5's lower 1024 floor:
-        // natural crossings occur every ~4 turns (4*300=1,200), landing at
-        // turns 3, 7 and 11 (0-based) — three crossings from only 12 turns.
-        // Capped at the caller's 2-breakpoint budget, the OLDEST is dropped
-        // in favor of the freshest two.
-        let sonnet_marks = plan_breakpoints(&haiku_segments, 1024, 2);
-        assert_eq!(sonnet_marks, vec![7, 11]);
-
-        // Extend the SAME Haiku-shaped job well past two Haiku-sized chunks:
-        // the first breakpoint lands at the first turn where the running
-        // total clears 4096, the second lands ~4096 tokens later, and —
-        // capped at the 2-breakpoint budget — no further breakpoint follows
-        // even though the conversation keeps growing.
-        let long_haiku_segments = vec![300usize; 40]; // 40 * 300 = 12,000 tokens
-        let marks = plan_breakpoints(&long_haiku_segments, 4096, 2);
-        // ceil(4096/300) = 14 turns per chunk: first crossing at index 13
-        // (14th turn, 14*300=4,200), second at index 27 (14 more turns).
-        assert_eq!(marks, vec![13, 27]);
-    }
-
-    #[test]
-    fn plan_breakpoints_caps_at_max_breakpoints_keeping_the_freshest() {
-        // Every segment alone clears the floor: without a cap this would mark
-        // all 10 positions. The cap must keep the LAST 4 (Anthropic's
-        // per-request ceiling minus whatever tools/system already spent),
-        // not the first 4 — the freshest breakpoints are the useful ones for
-        // the next turn's read.
-        let segments = vec![600usize; 10];
-        assert_eq!(plan_breakpoints(&segments, 512, 4), vec![6, 7, 8, 9]);
-    }
-
-    #[test]
-    fn plan_breakpoints_places_nothing_below_the_minimum_or_with_no_budget() {
-        assert_eq!(
-            plan_breakpoints(&[10, 20, 30], 1024, 2),
-            Vec::<usize>::new()
-        );
-        assert_eq!(plan_breakpoints(&[], 1024, 2), Vec::<usize>::new());
-        assert_eq!(
-            plan_breakpoints(&[10_000, 10_000], 512, 0),
-            Vec::<usize>::new(),
-            "zero budget must place nothing even when every segment clears the floor"
-        );
-    }
-
     // ── Prompt-cache prefix guards (#717 cache discipline; a cost lever) ─────
     //
     // Provider prompt caches are model-scoped and prefix-exact: a hit needs the
@@ -2322,7 +1982,7 @@ mod tests {
             Message::assistant().with_text("reply"),
             Message::user().with_text("second"),
         ];
-        let formatted = format_messages(&messages, &cfg("claude-sonnet-5"), 2);
+        let formatted = format_messages(&messages);
         for msg in &formatted {
             if msg["role"] == json!("assistant") {
                 let has_cc = msg["content"]
@@ -2351,8 +2011,7 @@ mod tests {
             Message::assistant().with_text("On it."),
             Message::user().with_text("Now run verify"),
         ];
-        let tail =
-            serde_json::to_string(&format_messages(&messages, &cfg("claude-sonnet-5"), 2)).unwrap();
+        let tail = serde_json::to_string(&format_messages(&messages)).unwrap();
         assert!(
             !tail.contains(REPO_MAP_MARKER),
             "repo-map leaked into the volatile message tail"
@@ -2547,8 +2206,7 @@ mod tests {
             Message::assistant().with_text("On it."),
             Message::user().with_text("Now run verify"),
         ];
-        let tail =
-            serde_json::to_string(&format_messages(&messages, &cfg("claude-sonnet-5"), 2)).unwrap();
+        let tail = serde_json::to_string(&format_messages(&messages)).unwrap();
         assert!(
             !tail.contains(READ_ONLY_FILES_OPEN),
             "read-only marker leaked into the volatile message tail"
@@ -2759,16 +2417,12 @@ mod tests {
     #[test]
     fn breakpoint_count_never_exceeds_the_anthropic_cap() {
         let _env = no_thinking_env();
-        // Opus 4.8's minimum is 1024 tokens (see `min_cacheable_tokens`), so —
-        // unlike the old model-blind policy — each user turn here must carry
-        // enough NEW content on its own to actually clear that floor, or the
-        // model-aware placement correctly declines to mark it (see
-        // `breakpoint_count_reflects_the_models_minimum` below for that case).
         let config = cfg("claude-opus-4-8");
+        // Two user turns => the two rolling read breakpoints, plus tools + system.
         let messages = [
-            Message::user().with_text("first ".repeat(1200)),
+            Message::user().with_text("first"),
             Message::assistant().with_text("reply"),
-            Message::user().with_text("second ".repeat(1200)),
+            Message::user().with_text("second"),
         ];
         let tools = cache_guard_tools();
         let system = cache_guard_system();
@@ -2788,105 +2442,38 @@ mod tests {
                     read_only.len()
                 );
                 // Exactly the four canonical breakpoints: last tool, the system
-                // block, and the two rolling user-message reads — both user
-                // turns here are sized well past Opus 4.8's 1024-token floor.
+                // block, and the two rolling user-message reads.
                 assert_eq!(n, 4, "expected exactly 4 canonical breakpoints, got {n}");
             }
         }
     }
 
-    /// The exact bug this change fixes: a conversation whose turns never
-    /// individually (nor cumulatively) clear the model's minimum must get
-    /// FEWER than the old flat "last two user messages" breakpoints — never
-    /// more, since a breakpoint under the floor never caches anyway (see
-    /// `min_cacheable_tokens`), so placing one is pure waste, not a free
-    /// extra attempt.
+    // The minimum applies to the complete tools/system/messages prefix,
+    // not the incremental message chunk. Keep short tool turns cacheable
+    // once the stable prefix is large enough.
+    // https://platform.claude.com/docs/en/build-with-claude/prompt-caching
     #[test]
-    fn breakpoint_count_reflects_the_models_minimum() {
+    fn haiku_short_turns_keep_rolling_markers_after_a_large_stable_prefix() {
         let _env = no_thinking_env();
-        let tools = cache_guard_tools();
-        let system = cache_guard_system();
-        // Two tiny user turns — nowhere near Opus 4.8's 1024-token floor even
-        // combined.
+        let config = cfg("claude-haiku-4-5");
+        let system = "stable context ".repeat(6000);
         let messages = [
             Message::user().with_text("first"),
             Message::assistant().with_text("reply"),
             Message::user().with_text("second"),
         ];
-
-        let config = cfg("claude-opus-4-8");
         let payload = create_request_cached(
             &config,
             &system,
             &messages,
-            &tools,
+            &cache_guard_tools(),
             &[],
             CacheTtl::FiveMinute,
         )
         .unwrap();
-        let n = collect_cache_controls(&payload).len();
-        // Only the stable tools + system breakpoints remain — the old policy
-        // would have added 2 more here that could never actually cache.
-        assert_eq!(
-            n, 2,
-            "a conversation this small must get zero rolling breakpoints, not two guaranteed-to-miss ones"
-        );
-    }
-
-    /// Reproduces the flat-`cache_read_tokens` bug from
-    /// `dagK-reports/CACHE_MINIMUMS.md` end to end: a scheduled-job-shaped
-    /// tool loop (health-review / git-steward / workspace-snapshot are all
-    /// routed to `claude-haiku-4-5`) whose turns are individually far below
-    /// Haiku's 4096-token minimum. The old model-blind policy marked the last
-    /// two user messages every turn regardless of size, so on Haiku those
-    /// markers never actually cached anything; the fix correctly places NO
-    /// rolling breakpoint at all for a conversation this small, while the
-    /// identical conversation on Sonnet 5 (1024-token minimum) still gets
-    /// real, useful breakpoints.
-    #[test]
-    fn scheduled_session_breakpoint_is_model_aware_not_flat() {
-        use rmcp::model::{CallToolResult, Content};
-
-        // ~235 estimated tokens (chars/4, including the tool_use/tool_result
-        // JSON envelope) per turn, close to the "typically a few hundred
-        // tokens" scheduled-job turns described in CACHE_MINIMUMS.md. 12
-        // turns puts the WHOLE conversation's estimated size at ~2,800
-        // tokens: comfortably past Sonnet 5's 1024-token floor (crossed
-        // twice, at turns 5 and 10) but with a wide (~1,300-token) margin
-        // under Haiku 4.5's 4096-token floor, so the assertions hold even if
-        // the exact JSON serialization overhead is off by a bit.
-        let chars_per_turn = 800;
-        let mut messages = Vec::new();
-        for i in 0..12 {
-            messages.push(Message::assistant().with_tool_request(
-                format!("tool_{i}"),
-                Ok(CallToolRequestParams::new("run_check").with_arguments(object!({ "step": i }))),
-            ));
-            messages.push(Message::user().with_tool_response(
-                format!("tool_{i}"),
-                Ok(CallToolResult::success(vec![Content::text(
-                    "x".repeat(chars_per_turn),
-                )])),
-            ));
-        }
-
-        let haiku = cfg("claude-haiku-4-5");
-        let haiku_spec = format_messages(&messages, &haiku, 2);
-        assert_eq!(
-            collect_cache_controls(&Value::Array(haiku_spec)).len(),
-            0,
-            "a Haiku-scale scheduled job this small must get zero rolling breakpoints, \
-             not two that can never clear the 4096-token floor"
-        );
-
-        let sonnet = cfg("claude-sonnet-5");
-        let sonnet_spec = format_messages(&messages, &sonnet, 2);
-        assert_eq!(
-            collect_cache_controls(&Value::Array(sonnet_spec)).len(),
-            2,
-            "Sonnet 5's lower 1024-token floor should still get its full 2-breakpoint budget \
-             on the identical conversation"
-        );
+        assert_eq!(collect_cache_controls(&payload).len(), 4);
+        assert!(payload["messages"][0]["content"][0]["cache_control"].is_object());
+        assert!(payload["messages"][2]["content"][0]["cache_control"].is_object());
     }
 
     #[test]

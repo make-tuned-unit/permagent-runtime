@@ -840,13 +840,12 @@ async fn has_any_events(pool: &Pool<Sqlite>, project_id: &str) -> bool {
 /// month boundary still shifts by exactly the number of days it covers, rather
 /// than drifting by an hour or landing on the wrong day. `now` is a parameter
 /// so this is unit-tested without depending on the wall clock.
+type ComparisonWindow = (chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>);
+
 pub(crate) fn period_and_previous_window(
     now: chrono::DateTime<chrono::Utc>,
     days: u32,
-) -> (
-    (chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>),
-    (chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>),
-) {
+) -> (ComparisonWindow, ComparisonWindow) {
     let end = now;
     let start = end - chrono::Duration::days(days as i64);
     // The previous window ends exactly where the current one starts, so the

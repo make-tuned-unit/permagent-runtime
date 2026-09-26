@@ -93,7 +93,7 @@ pub enum FeedSource {
 
 impl FeedSource {
     /// Every source, in the order Settings → Memory lists them.
-    pub const ALL: [FeedSource; 18] = [
+    pub const ALL: [FeedSource; 19] = [
         FeedSource::Chat,
         FeedSource::Goal,
         FeedSource::DecisionAsked,

@@ -61,4 +61,32 @@ describe('scheduleForget', () => {
     expect(() => cancel()).not.toThrow();
     expect(api.forgetBrainMemory).toHaveBeenCalledTimes(1);
   });
+  it('does not let late Undo suppress an in-flight failure', async () => {
+    let reject!: (error: Error) => void;
+    vi.mocked(api.forgetBrainMemory).mockReturnValue(new Promise((_, no) => { reject = no; }));
+    const settled = vi.fn();
+    const cancel = scheduleForget('note:abc', settled);
+    await vi.advanceTimersByTimeAsync(FORGET_UNDO_MS);
+    expect(cancel()).toBe(false);
+    reject(new Error('failed'));
+    await vi.advanceTimersByTimeAsync(1);
+    expect(settled).toHaveBeenCalledWith('restored');
+  });
+
+  it('reports a partially verified deletion as failure', async () => {
+    vi.mocked(api.forgetBrainMemory).mockResolvedValue({ existed: true, verified: false });
+    const settled = vi.fn();
+    scheduleForget('note:abc', settled).commit();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(settled).toHaveBeenCalledWith('restored');
+  });
+
+  it('Undo followed by toast dismissal does not commit', async () => {
+    const cancel = scheduleForget('note:abc', vi.fn());
+    expect(cancel()).toBe(true);
+    cancel.commit();
+    await vi.advanceTimersByTimeAsync(FORGET_UNDO_MS);
+    expect(api.forgetBrainMemory).not.toHaveBeenCalled();
+  });
+
 });

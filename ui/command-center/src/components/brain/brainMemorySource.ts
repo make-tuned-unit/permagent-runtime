@@ -12,13 +12,16 @@
  * per-memory chip reads better as a short "from a …" phrase. Duplicating a
  * small, static string table here avoids a second network dependency for a
  * few-dozen-byte lookup, and both sides are typed against the same Rust enum
- * so a source Jesse adds later shows as "from <humanized tag>" (never a raw
+ * so a source added later shows as "from <humanized tag>" (never a raw
  * identifier, per R3) until this map is updated.
  */
 
 /** `RememberOpts.source` tag → the phrase a source Chip reads. */
 const SOURCE_PHRASES: Record<string, string> = {
   chat: 'from a conversation',
+  'permagent.owner': 'from your profile',
+  'permagent.person': 'from a relationship update',
+  'user.answer': 'from your answer',
   'permagent.goal': 'from a goal',
   'permagent.decision.asked': 'from a decision',
   'permagent.decision.auto': 'from a decision',
@@ -42,6 +45,9 @@ const SOURCE_PHRASES: Record<string, string> = {
  *  sentence fragment). Order matches `FeedSource::ALL` (Settings → Memory). */
 export const SOURCE_FILTERS: { tag: string; label: string }[] = [
   { tag: 'chat', label: 'conversations' },
+  { tag: 'permagent.owner', label: 'your profile' },
+  { tag: 'permagent.person', label: 'relationships' },
+  { tag: 'user.answer', label: 'your answers' },
   { tag: 'permagent.goal', label: 'goals' },
   { tag: 'permagent.decision.asked', label: 'decisions asked' },
   { tag: 'permagent.decision.auto', label: 'decisions (auto)' },

@@ -72,27 +72,28 @@ export function ToastCard({ notification, ttlMs, onDismiss, onActivate }: ToastC
     leavingRef.current = true;
     clearTimeout(timer.current);
     setLeaving(true);
+    notification.onDismiss?.();
     // Reduce Motion still gets an exit — just the fast, fade-only one — so
     // the toast is never yanked off screen with no transition at all.
     const exitMs = reduceMotion ? duration.fast : duration.snappy;
     setTimeout(() => onDismiss(notification.id), exitMs);
-  }, [notification.id, onDismiss, reduceMotion]);
+  }, [notification.id, notification.onDismiss, onDismiss, reduceMotion]);
 
   const arm = useCallback(() => {
     startedAt.current = Date.now();
-    timer.current = setTimeout(beginLeave, Math.max(0, remaining.current));
-  }, [beginLeave]);
+    timer.current = setTimeout(beginLeave, Math.max(0, notification.expiresAt !== undefined ? notification.expiresAt - Date.now() : remaining.current));
+  }, [beginLeave, notification.expiresAt]);
 
   const pause = useCallback(() => {
-    if (leavingRef.current) return;
+    if (leavingRef.current || notification.expiresAt !== undefined) return;
     clearTimeout(timer.current);
     remaining.current = Math.max(0, remaining.current - (Date.now() - startedAt.current));
-  }, []);
+  }, [notification.expiresAt]);
 
   const resume = useCallback(() => {
-    if (leavingRef.current) return;
+    if (leavingRef.current || notification.expiresAt !== undefined) return;
     arm();
-  }, [arm]);
+  }, [arm, notification.expiresAt]);
 
   // Spring-in: mount closed, flip open on the next frame. Reduce Motion opens
   // immediately (no frame to flip on, nothing to animate toward).
@@ -241,7 +242,7 @@ export function ToastCard({ notification, ttlMs, onDismiss, onActivate }: ToastC
             <Button
               colors={colors}
               variant="ghostOn"
-              onClick={(e) => { e.stopPropagation(); notification.action!.onAction(); beginLeave(); }}
+              onClick={(e) => { e.stopPropagation(); if (!leavingRef.current && (notification.expiresAt === undefined || Date.now() < notification.expiresAt)) notification.action!.onAction(); beginLeave(); }}
               style={{ '--pa-btn-pad': '3px 10px' } as CSSProperties}
             >
               {notification.action.label}

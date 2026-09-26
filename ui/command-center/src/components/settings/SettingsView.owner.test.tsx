@@ -34,6 +34,7 @@ vi.mock('../../lib/notifications', () => ({
 
 import { api, apiFetch } from '../../lib/api';
 import { PreferencesPanel } from './SettingsView';
+import { MIN_PENDING_MS } from '../common/Button';
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -107,7 +108,7 @@ describe('Preferences → You', () => {
     putOwner.mockResolvedValue({ ...emptyOwner, display_name: 'Ada Lovelace' });
     await render();
     const [nameInput] = textInputs();
-    setValue(nameInput, 'Ada Lovelace');
+    act(() => setValue(nameInput, 'Ada Lovelace'));
 
     const save = buttonMatching('Save');
     expect(save.disabled).toBe(false);
@@ -122,11 +123,14 @@ describe('Preferences → You', () => {
     putOwner.mockRejectedValue(new Error('network down'));
     await render();
     const [nameInput] = textInputs();
-    setValue(nameInput, 'Ada Lovelace');
+    act(() => setValue(nameInput, 'Ada Lovelace'));
     await click(buttonMatching('Save'));
 
-    expect(buttonMatching('Save').disabled).toBe(false);
+    // Button holds its pending feedback briefly even for an immediate error.
+    expect(buttonMatching('Save').getAttribute('data-disabled-reason')).toBeNull();
     expect(container.textContent).toContain('network down');
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, MIN_PENDING_MS + 20)); });
+    expect(buttonMatching('Save').disabled).toBe(false);
   });
 
   it('offers a person search once "Link a person" is clicked, and links on pick', async () => {

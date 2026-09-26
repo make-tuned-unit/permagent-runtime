@@ -283,7 +283,7 @@ pub struct GoalEvidence {
     /// `None` when no turn ever qualified; the UI then shows nothing rather
     /// than a guess.
     #[serde(skip)]
-    pub worker_plan: Option<String>,
+    pub worker_plan: Option<Box<str>>,
     /// Fix A (#505): `true` when the diff/diffstat git command itself FAILED
     /// (non-zero exit / could not run) while collecting evidence — e.g. the
     /// baseline was unreachable. Distinguishes a git ERROR from a genuine empty
@@ -695,15 +695,17 @@ impl GoalEngine for InternalSubagentEngine {
         // `on_message` is a synchronous `Fn` invoked from inside the agent's
         // own reply loop (`subagent_handler::get_agent_messages`), not from
         // an async task that could `.await` a lock.
-        let captured_plan: Arc<std::sync::Mutex<Option<String>>> =
-            Arc::new(std::sync::Mutex::new(None));
+        let captured_plan: Arc<std::sync::Mutex<(Option<String>, bool)>> =
+            Arc::new(std::sync::Mutex::new((None, false)));
         let captured_plan_for_hook = Arc::clone(&captured_plan);
         let on_message: OnMessageCallback = Arc::new(move |msg: &Message| {
             let mut slot = captured_plan_for_hook.lock().unwrap();
-            if slot.is_none() {
-                if let Some(text) = worker_plan_from_message(msg, MIN_PLAN_CHARS) {
-                    *slot = Some(text);
-                }
+            if slot.0.is_none() && !slot.1 {
+                slot.0 = worker_plan_from_message(msg, MIN_PLAN_CHARS);
+                slot.1 = msg
+                    .content
+                    .iter()
+                    .any(|c| matches!(c, MessageContent::ToolRequest(_)));
             }
         });
         let join = tokio::spawn(async move {
@@ -727,7 +729,7 @@ impl GoalEngine for InternalSubagentEngine {
             })
             .await
             .map_err(|e| e.to_string());
-            let worker_plan = captured_plan.lock().unwrap().clone();
+            let worker_plan = captured_plan.lock().unwrap().0.clone();
             finalize_internal_run(&worktree, &baseline, run, worker_plan).await
         });
 
@@ -790,7 +792,7 @@ async fn finalize_internal_run(
                 // dagK Q2: whatever `on_message` captured during the run (see
                 // `InternalSubagentEngine::spawn`), `None` when no turn ever
                 // qualified as a plan.
-                evidence.worker_plan = worker_plan;
+                evidence.worker_plan = worker_plan.map(String::into_boxed_str);
                 GoalOutcome::Success(Some(evidence))
             }
         }
@@ -2040,7 +2042,7 @@ async fn await_external_child(
                 // FIRST plan-shaped turn instead of its last one.
                 let worker_plan = worker_first_plan(&redacted_stdout, MIN_PLAN_CHARS, 4000);
                 let mut evidence = collect_evidence(&working_dir, &baseline, worker_summary).await;
-                evidence.worker_plan = worker_plan;
+                evidence.worker_plan = worker_plan.map(String::into_boxed_str);
                 GoalOutcome::Success(Some(evidence))
             } else {
                 // W4: failure must not destroy the work. Scan + push whatever
@@ -2603,9 +2605,8 @@ fn tail(s: &str, max: usize) -> String {
 /// nothing the tool call itself or a later turn's narration would add. A turn
 /// that comes back empty (pure `tool_use`, or too short to read as a plan
 /// rather than a bare acknowledgement like "Got it, starting now.") is
-/// skipped — scanning continues to the next assistant turn — rather than
-/// treated as "no plan" outright, since a real plan can arrive a turn or two
-/// in (e.g. after a first turn that only reads a file).
+/// skipped until the first tool call. Later prose may be a result, so it
+/// must never be relabelled as an initial plan.
 ///
 /// Returns `None` when nothing ever qualifies. This is not a fallback-to-tail
 /// function like `worker_closing_summary`: a closing summary always exists in
@@ -2648,6 +2649,12 @@ fn worker_first_plan(stdout: &str, min_chars: usize, max: usize) -> Option<Strin
         let trimmed = buf.trim();
         if trimmed.chars().count() >= min_chars {
             return Some(tail(trimmed, max));
+        }
+        if content
+            .iter()
+            .any(|item| item.get("type").and_then(serde_json::Value::as_str) == Some("tool_use"))
+        {
+            return None;
         }
     }
     None
@@ -3324,7 +3331,7 @@ mod tests {
     /// A bare acknowledgement is not a plan — scanning must continue to a
     /// later turn rather than latch onto the first thing the worker said.
     #[test]
-    fn worker_first_plan_skips_a_bare_acknowledgement_and_keeps_scanning() {
+    fn worker_first_plan_does_not_mislabel_later_prose_as_a_plan() {
         let stdout = concat!(
             r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Got it, starting now."}]}}"#,
             "\n",
@@ -3335,8 +3342,8 @@ mod tests {
         );
         let plan = worker_first_plan(stdout, MIN_PLAN_CHARS, 4000);
         assert_eq!(
-            plan.as_deref(),
-            Some("The crash is a null dereference in parse_header; I'll add a guard clause and a regression test for it.")
+            plan, None,
+            "prose after work starts is not the initial plan"
         );
     }
 

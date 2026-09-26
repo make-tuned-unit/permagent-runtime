@@ -126,13 +126,25 @@ pub struct EntityLedger {
 }
 
 fn ledger_path() -> Option<PathBuf> {
-    // Mirrors the Watcher's Budget persistence (proactive.rs): HOME-anchored
-    // dotdir file, tolerant of absence.
-    std::env::var_os("HOME").map(|h| {
-        PathBuf::from(h)
-            .join(".permagent")
-            .join("librarian-entity-state.json")
-    })
+    Some(crate::config::paths::Paths::in_state_dir(
+        "librarian-entity-state.json",
+    ))
+}
+
+// Serializes answers with the sweep's read/modify/write operation.
+static LEDGER_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+pub async fn lock_ledger() -> tokio::sync::MutexGuard<'static, ()> {
+    LEDGER_LOCK.lock().await
+}
+
+pub fn read_awaiting_ledger() -> std::io::Result<EntityLedger> {
+    let path = ledger_path().expect("state path is always available");
+    match std::fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(EntityLedger::default()),
+        Err(e) => Err(e),
+    }
 }
 
 fn load_ledger_from(path: &Path) -> EntityLedger {
@@ -878,6 +890,7 @@ pub async fn run_entity_sweep(brain: &SafeBrain, model: &str) -> Result<SweepSum
     }
 
     // 4. Plan against the ledger; fetch excerpts for the selected only.
+    let _ledger_guard = lock_ledger().await;
     let ledger_file = ledger_path();
     let mut ledger = ledger_file
         .as_deref()

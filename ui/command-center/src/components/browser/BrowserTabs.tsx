@@ -3,7 +3,6 @@ import { FiPlus, FiX, FiGlobe, FiExternalLink } from 'react-icons/fi';
 import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
-import { pressable } from '../common/pressable';
 import { CycleTabsButton } from '../build/CycleTabsButton';
 import { CHROME_GEOM, chromeBareVars, dangerWash } from './browserChrome';
 
@@ -56,17 +55,10 @@ export function BrowserTabs({
             // `borderRight` stays inline: it is the strip's divider, not the
             // row's own outline, and `--pa-btn-border` is transparent so the
             // other three edges paint nothing.
-            // A `<button>` cannot contain interactive content, so the tab is
-            // a `pressable` ROW (not a `<Button>`) plus a real sibling
-            // `<button>` for close. `.pa-btn` reproduces the exact look
-            // `Button` gave it (same `chromeBareVars` vars); `.pa-pressable`
-            // (from `pressable()`) layers the row's press/focus feedback.
+            // Selection and removal are separate sibling buttons.
             <div
               key={tab.id}
-              {...pressable(() => onSelectTab(tab.id), {
-                label: `Switch to tab: ${tab.label || 'New Tab'}`,
-                className: 'pa-btn group shrink-0',
-              })}
+              className="pa-btn group shrink-0"
               style={{
                 ...chromeBareVars(colors, {
                   bg: isActive ? colors.fillSubtle : 'transparent',
@@ -89,19 +81,18 @@ export function BrowserTabs({
                 borderRight: `1px solid ${colors.border}`,
               } as CSSProperties}
             >
+              <Button colors={colors} variant="bare" aria-label={`Switch to tab: ${tab.label || 'New Tab'}`} onClick={() => onSelectTab(tab.id)} style={{ ...chromeBareVars(colors, { pad: "0", radiusPx: 0 }), gap: CHROME_GEOM.bookmarksGap, minWidth: 0 }}>
               <FiGlobe size={11} className={tab.loading ? 'animate-spin' : ''} />
               <span className="truncate max-w-[120px]">
                 {tab.label || 'New Tab'}
               </span>
+              </Button>
               {tabs.length > 1 && (
                 <Button
                   colors={colors}
                   variant="bare"
                   type="button"
                   aria-label={`Close tab: ${tab.label || 'New Tab'}`}
-                  // A real sibling now, not nested inside the tab's own
-                  // control — the click still must stop here or it also
-                  // selects the tab underneath it.
                   onClick={(e) => { e.stopPropagation(); onCloseTab(tab.id); }}
                   className={`ml-1 ${closingTabId === tab.id ? '' : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100'}`}
                   style={{

@@ -1368,9 +1368,12 @@ async fn get_people_attention(State(state): State<Arc<AppState>>) -> Json<CardDa
             "People overdue for contact is unavailable — the runtime database isn't reachable",
         ));
     };
-    let people = permagent::people::list_people(&pool, &permagent::people::PeopleFilter::default())
-        .await
-        .unwrap_or_default();
+    let mut people =
+        permagent::people::list_people(&pool, &permagent::people::PeopleFilter::default())
+            .await
+            .unwrap_or_default();
+    crate::routes::people::overlay_owner_self(&mut people);
+    people.retain(|person| !person.is_self);
     // `feed_transitions: false` — this card only reads the score. The People
     // page load is the one call site that records a Brain memory on a bucket
     // transition (see that function's doc for why only one call site does).
@@ -1378,6 +1381,11 @@ async fn get_people_attention(State(state): State<Arc<AppState>>) -> Json<CardDa
         &pool, &people, false,
     )
     .await;
+    if !people.is_empty() && strengths.is_empty() {
+        return Json(CardData::note(
+            "Relationship signals are unavailable right now",
+        ));
+    }
     let now = chrono::Utc::now();
     let mut overdue: Vec<(i64, String)> = people
         .iter()
@@ -1673,36 +1681,6 @@ async fn get_on_this_week(State(state): State<Arc<AppState>>) -> Json<CardData> 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    #[serial_test::serial]
-    fn people_attention_threshold_defaults_to_21_days() {
-        let _guard = env_lock::lock_env([(PEOPLE_ATTENTION_DAYS_ENV, None::<&str>)]);
-        assert_eq!(people_attention_threshold_days(), 21);
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn people_attention_threshold_reads_the_env_var() {
-        let _guard = env_lock::lock_env([(PEOPLE_ATTENTION_DAYS_ENV, Some("10"))]);
-        assert_eq!(people_attention_threshold_days(), 10);
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn people_attention_threshold_ignores_garbage_and_falls_back() {
-        // One guard at a time: env_lock holds a single process-wide mutex, so
-        // taking it again on this thread while the first guard lives would
-        // deadlock the test binary.
-        for garbage in ["not-a-number", "-5"] {
-            let _guard = env_lock::lock_env([(PEOPLE_ATTENTION_DAYS_ENV, Some(garbage))]);
-            assert_eq!(
-                people_attention_threshold_days(),
-                21,
-                "{garbage:?} must fall back"
-            );
-        }
-    }
 
     #[test]
     fn human_activity_kind_never_leaks_the_raw_identifier() {

@@ -340,7 +340,9 @@ function PersonNode({
   const color = you || bridge || active ? accent : muted;
   const pillVisible = shouldShowLabel({ isYou: you, hovered, focused, selected });
   // Sphere size, in world units — named apart from the corner-radius token.
-  const nodeRadius = you ? 0.32 : bridge ? 0.22 : 0.16;
+  const nodeRadius = you ? 0.32 : node.relationshipScore !== undefined
+    ? 0.16 + 0.08 * Math.max(0, Math.min(100, node.relationshipScore)) / 100
+    : bridge ? 0.22 : 0.16;
   if (you) {
     return (
       <group position={[node.x, node.y, node.z]}>

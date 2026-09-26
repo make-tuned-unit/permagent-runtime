@@ -1,3 +1,4 @@
+import { RelationshipMeter, isFading } from './RelationshipSignal';
 /**
  * PeopleDirectory — the global people surface.
  *
@@ -114,7 +115,8 @@ export function PeopleDirectory() {
   const [newName, setNewName] = useState('');
   const [addError, setAddError] = useState<string | null>(null);
   const [addBusy, setAddBusy] = useState(false);
-  const [cohort, setCohort] = useState<'all' | 'quiet' | 'followup'>('all');
+  const [strengthSort, setStrengthSort] = useState(false);
+  const [cohort, setCohort] = useState<'all' | 'quiet' | 'followup' | 'fading'>('all');
   /**
    * True when rows came back but every attribute is null — the shape of a
    * Brain-down daemon, because the overlay clears the columns and then returns
@@ -182,11 +184,13 @@ export function PeopleDirectory() {
   const visible = useMemo(() => {
     const filtered = people.filter(p => {
       if (orgsOnly && !isOrganisation(p)) return false;
+      if (cohort === 'fading') return !isSelf(p) && isFading(p.relationship_signal);
       if (cohort === 'quiet') return isQuiet(p.last_contact_at);
       if (cohort === 'followup') return isFollowUpDue(p.next_follow_up_at);
       return true;
     });
     return [...filtered].sort((a, b) => {
+      if (strengthSort) return (b.relationship_signal?.score ?? -1) - (a.relationship_signal?.score ?? -1) || a.display_name.localeCompare(b.display_name);
       const aDue = isFollowUpDue(a.next_follow_up_at) ? 0 : 1;
       const bDue = isFollowUpDue(b.next_follow_up_at) ? 0 : 1;
       if (aDue !== bDue) return aDue - bDue;
@@ -195,7 +199,7 @@ export function PeopleDirectory() {
       if (aQ !== bQ) return aQ - bQ;
       return a.display_name.localeCompare(b.display_name);
     });
-  }, [people, cohort, orgsOnly]);
+  }, [people, cohort, orgsOnly, strengthSort]);
 
   /** Resolves false when nothing was added — the failure is swallowed into
    *  `addError` below, so the button must not tick over the top of it. */
@@ -349,6 +353,7 @@ export function PeopleDirectory() {
                 of announcing when they were hand-rolled. */}
             {([
               ['all', 'All'],
+              ['fading', 'Fading'],
               ['quiet', `Quiet${quietCount ? ` ${quietCount}` : ''}`],
               ['followup', `Follow-up${followUpCount ? ` ${followUpCount}` : ''}`],
             ] as const).map(([key, label]) => (
@@ -366,6 +371,7 @@ export function PeopleDirectory() {
             {/* P3: only appears once the backend actually sends a `kind` this
                 can filter on — an org chip that always shows everyone (or
                 always shows none) is worse than no chip. */}
+            <Chip kind="filter" tone="accent" pressed={strengthSort} onClick={() => setStrengthSort(v => !v)} data-testid="people-sort-strength">Strength</Chip>
             {orgCount > 0 && (
               <Chip
                 kind="filter"
@@ -451,6 +457,7 @@ export function PeopleDirectory() {
                   </Chip>
                 )}
                 <span style={{ flex: 1 }} />
+                {!isSelf(p) && <RelationshipMeter signal={p.relationship_signal} />}
                 {/* P2: the banner above already says nobody has a recorded
                     interaction — repeating "never" on every one of N rows
                     added nothing, so it is only drawn once something has one. */}

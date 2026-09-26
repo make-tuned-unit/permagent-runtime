@@ -15,12 +15,7 @@
 //! every time, the same tradeoff `load_agent_config` already makes.
 
 use crate::state::AppState;
-use axum::{
-    extract::State,
-    http::StatusCode,
-    routing::{get, put},
-    Json, Router,
-};
+use axum::{extract::State, http::StatusCode, routing::get, Json, Router};
 use permagent::config::agent_identity::{self, OwnerIdentity};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -39,14 +34,35 @@ struct OwnerResponse {
     linked_person_name: Option<String>,
 }
 
+// Missing fields preserve their values; explicit null clears them. The UI
+// saves profile fields and People links independently.
 #[derive(Debug, Deserialize)]
 struct OwnerUpdate {
-    #[serde(default)]
-    display_name: Option<String>,
-    #[serde(default)]
-    email: Option<String>,
-    #[serde(default)]
-    linked_person_id: Option<String>,
+    #[serde(default, deserialize_with = "owner_field")]
+    display_name: Option<Option<String>>,
+    #[serde(default, deserialize_with = "owner_field")]
+    email: Option<Option<String>>,
+    #[serde(default, deserialize_with = "owner_field")]
+    linked_person_id: Option<Option<String>>,
+}
+
+fn owner_field<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Option<String>>, D::Error> {
+    Option::<String>::deserialize(d).map(Some)
+}
+
+impl OwnerUpdate {
+    fn apply(self, mut owner: OwnerIdentity) -> OwnerIdentity {
+        if let Some(value) = self.display_name {
+            owner.display_name = normalize(value);
+        }
+        if let Some(value) = self.email {
+            owner.email = normalize(value);
+        }
+        if let Some(value) = self.linked_person_id {
+            owner.linked_person_id = normalize(value);
+        }
+        owner
+    }
 }
 
 /// Same shape the People routes use for a profile-link field — local@domain,
@@ -98,16 +114,15 @@ async fn put_owner(
     State(state): State<Arc<AppState>>,
     Json(update): Json<OwnerUpdate>,
 ) -> Result<Json<OwnerResponse>, (StatusCode, String)> {
-    let display_name = normalize(update.display_name);
-    let email = normalize(update.email);
-    if let Some(e) = &email {
+    let old_owner = agent_identity::load_owner_identity();
+    let new_owner = update.apply(old_owner.clone());
+    if let Some(e) = &new_owner.email {
         if !valid_email(e) {
             return Err((StatusCode::BAD_REQUEST, "Invalid email address".to_string()));
         }
     }
 
-    let linked_person_id = normalize(update.linked_person_id);
-    if let Some(id) = &linked_person_id {
+    if let Some(id) = &new_owner.linked_person_id {
         let pool = state
             .session_manager()
             .pool_clone()
@@ -125,11 +140,6 @@ async fn put_owner(
         }
     }
 
-    let new_owner = OwnerIdentity {
-        display_name,
-        email,
-        linked_person_id,
-    };
     agent_identity::save_owner_identity(&new_owner)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
@@ -211,6 +221,24 @@ mod tests {
     /// every AppState-building test still points it somewhere disposable.
     fn test_home() -> tempfile::TempDir {
         tempfile::tempdir().unwrap()
+    }
+
+    #[test]
+    fn partial_owner_updates_preserve_unrelated_fields_and_null_clears() {
+        let owner = OwnerIdentity {
+            display_name: Some("Ada".into()),
+            email: Some("ada@example.com".into()),
+            linked_person_id: Some("person-1".into()),
+        };
+        let update: OwnerUpdate = serde_json::from_str(r#"{"linked_person_id":null}"#).unwrap();
+        let unlinked = update.apply(owner.clone());
+        assert_eq!(unlinked.display_name, owner.display_name);
+        assert_eq!(unlinked.email, owner.email);
+        assert_eq!(unlinked.linked_person_id, None);
+        let update: OwnerUpdate = serde_json::from_str(r#"{"display_name":"Alex"}"#).unwrap();
+        let renamed = update.apply(owner);
+        assert_eq!(renamed.linked_person_id.as_deref(), Some("person-1"));
+        assert_eq!(renamed.email.as_deref(), Some("ada@example.com"));
     }
 
     #[test]

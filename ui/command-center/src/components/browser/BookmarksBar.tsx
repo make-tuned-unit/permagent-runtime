@@ -3,7 +3,6 @@ import { FiStar, FiX, FiLayers, FiTrash2, FiCornerUpLeft } from 'react-icons/fi'
 import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
-import { pressable } from '../common/pressable';
 import { api, type BrowserBookmark, type BrowserTabSet } from '../../lib/api';
 import {
   isBookmarked,
@@ -231,21 +230,11 @@ export function BookmarksBar({
           </span>
         ) : (
           bookmarks.map((b) => (
-            // A `<button>` cannot contain interactive content (HTML5 content
-            // model; screen readers also announce a nested control as one
-            // control, not two) — so the chip is a `pressable` ROW and the
-            // remove affordance is its own real sibling `<button>`, not a
-            // span nested inside the row's button. `.pa-btn` on the row
-            // reproduces the exact look `Button` gave it (same
-            // `chromeBareVars` vars); `.pa-pressable` (from `pressable()`)
-            // layers the row's new press/focus feedback on top.
-            <Tooltip content={b.url}>
+            // Selection and removal are separate sibling buttons.
+            <Tooltip key={b.url} content={b.url}>
               <div
                 key={b.url}
-                {...pressable(() => onNavigate(b.url), {
-                  label: `Open bookmark: ${b.title || b.url}`,
-                  className: 'pa-btn group shrink-0',
-                })}
+                className="pa-btn group shrink-0"
                 style={{
                   ...chromeBareVars(colors, {
                     pad: chipPad,
@@ -256,17 +245,15 @@ export function BookmarksBar({
                   gap: CHROME_GEOM.chipPadY * 2,
                 } as CSSProperties}
               >
+                <Button colors={colors} variant="bare" aria-label={`Open bookmark: ${b.title || b.url}`} onClick={() => onNavigate(b.url)} style={{ ...chromeBareVars(colors, { pad: '0', radiusPx: 0 }), minWidth: 0 }}>
                 <span className="truncate max-w-[140px]">{b.title || b.url}</span>
+                </Button>
                 <Tooltip content="Remove bookmark">
                   <Button
                     colors={colors}
                     variant="bare"
                     type="button"
                     aria-label={`Remove bookmark: ${b.title || b.url}`}
-                    // Nested visually inside the row, but a real SIBLING
-                    // element now (not inside another button) — the click
-                    // still must stop here or it also fires the row's
-                    // onNavigate underneath it.
                     onClick={(e) => { e.stopPropagation(); handleRemoveBookmark(b.url); }}
                     className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
                     style={{
@@ -392,17 +379,11 @@ export function BookmarksBar({
               </div>
             ) : (
               tabSets.map((set) => (
-                // Same restructure as the bookmark chips above: a `pressable`
-                // row (not a `<Button>`) plus a real sibling `<button>` for
-                // delete, so the two controls are never nested inside one
-                // another.
-                <Tooltip content={`Restore ${set.tabs.length} tab${set.tabs.length !== 1 ? 's' : ''}`}>
+                // Selection and removal are separate sibling buttons.
+                <Tooltip key={set.name} content={`Restore ${set.tabs.length} tab${set.tabs.length !== 1 ? 's' : ''}`}>
                   <div
                     key={set.name}
-                    {...pressable(() => handleRestore(set), {
-                      label: `Restore tab set: ${set.name} (${set.tabs.length} tab${set.tabs.length !== 1 ? 's' : ''})`,
-                      className: 'pa-btn group w-full',
-                    })}
+                    className="pa-btn group w-full"
                     style={{
                       ...chromeBareVars(colors, {
                         pad: `${CHROME_GEOM.tabPadY}px ${CHROME_GEOM.tabPadX}px`,
@@ -414,11 +395,13 @@ export function BookmarksBar({
                       textAlign: 'left',
                     } as CSSProperties}
                   >
+                    <Button colors={colors} variant="bare" aria-label={`Restore tab set: ${set.name} (${set.tabs.length} tab${set.tabs.length !== 1 ? 's' : ''})`} onClick={() => handleRestore(set)} style={{ ...chromeBareVars(colors, { pad: '0', radiusPx: 0 }), gap: CHROME_GEOM.bookmarksGap, flex: 1, minWidth: 0 }}>
                     <FiCornerUpLeft size={10} style={{ color: colors.cyan }} />
                     <span className="flex-1 truncate">{set.name}</span>
                     <span className="shrink-0" style={{ opacity: 0.7 }}>
                       {set.tabs.length} tab{set.tabs.length !== 1 ? 's' : ''}
                     </span>
+                    </Button>
                     <Tooltip content={armedDelete === set.name ? 'Click again to delete' : 'Delete set'}>
                       <Button
                         colors={colors}

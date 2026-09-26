@@ -105,7 +105,15 @@ export interface ProjectPerson {
 }
 
 /** A bare CRM person (#530 `GET /api/people`), used by the associate picker. */
-export type Person = Omit<ProjectPerson, 'project_role' | 'associated_at'>;
+export interface RelationshipSignal {
+  score: number;
+  bucket: 'strong' | 'steady' | 'fading' | 'dormant' | 'no_signal';
+  last_interaction_at: string | null;
+  signals: Record<'meetings' | 'decisions' | 'memories' | 'last_contact', { count: number; most_recent: string | null }>;
+}
+export type Person = Omit<ProjectPerson, 'project_role' | 'associated_at'> & {
+  relationship_signal?: RelationshipSignal | null;
+};
 
 /** The project-association fields, carried separately now that a person can be
  *  viewed outside any project (the directory). Null there, set by PeoplePanel. */

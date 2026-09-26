@@ -22,7 +22,7 @@ import {
 } from './brainSearch';
 import { readViewMode, rememberViewMode, type BrainViewMode as ViewMode } from './viewMode';
 import { humanizeMemorySource, isForgettableMemoryKey } from './brainMemorySource';
-import { scheduleForget } from './brainForget';
+import { scheduleForget, type PendingForget } from './brainForget';
 import { toast } from '../../lib/notifications';
 
 import { Tooltip } from '../common/Tooltip';
@@ -149,7 +149,7 @@ export function BrainView() {
   // panel IS the immediate feedback (R8) — the toast that follows offers ~8s
   // to undo, which reopens exactly what was showing; only once that window
   // lapses unactioned does the DELETE actually fire (`brainForget.ts`).
-  const forgetCancelRef = useRef<(() => void) | null>(null);
+  const forgetCancelRef = useRef<PendingForget | null>(null);
   const handleForgetSelected = useCallback((mem: GraphMemory) => {
     if (!isForgettableMemoryKey(mem.key)) return;
     const key = mem.key;
@@ -158,7 +158,9 @@ export function BrainView() {
     setSelected(null);
     const cancel = scheduleForget(key, outcome => {
       forgetCancelRef.current = null;
-      if (outcome === 'restored') {
+      if (outcome === 'deleted') {
+        void refresh();
+      } else if (outcome === 'restored') {
         setSelected(reopen);
         toast('Could not forget that memory', `"${title}" is back — try again.`, undefined, {
           tone: 'danger', force: true,
@@ -166,14 +168,14 @@ export function BrainView() {
       }
     });
     forgetCancelRef.current = cancel;
-    toast('Memory forgotten', `"${title}" will be removed from Henry's mind.`, undefined, {
+    toast('Memory forgotten', `"${title}" will be removed from memory.`, undefined, {
       action: {
         label: 'Undo',
-        onAction: () => { forgetCancelRef.current?.(); forgetCancelRef.current = null; setSelected(reopen); },
+        onAction: () => { if (cancel()) { forgetCancelRef.current = null; setSelected(reopen); } },
       },
-      force: true,
+      force: true, expiresAt: cancel.expiresAt, onDismiss: cancel.commit,
     });
-  }, [selected]);
+  }, [selected, refresh]);
 
   // Brain-loop deep-link (#587-adjacent): focus the memory a product surface
   // asked to surface. Graph-preferred (real recency/chips); the caller's preview
@@ -765,7 +767,7 @@ export function BrainView() {
                   <Chip
                     kind="static"
                     quiet
-                    title={sourceInfo.known ? 'Where this memory came from' : "Written before source tracking existed — Henry can't say where it came from"}
+                    title={sourceInfo.known ? 'Where this memory came from' : "No source was recorded for this memory"}
                   >
                     {sourceInfo.phrase}
                   </Chip>

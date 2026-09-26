@@ -289,10 +289,13 @@ function CalendarPostRow({
   const approve = async () => {
     setBusy(true);
     try {
-      await apiFetch(`/api/projects/${encodeURIComponent(projectId)}/cards/${encodeURIComponent(post.id)}/approve`, {
+      const updated = await apiFetch<{ metadataJson?: Record<string, unknown> }>(`/api/projects/${encodeURIComponent(projectId)}/cards/${encodeURIComponent(post.id)}/approve`, {
         method: 'POST',
       });
       onReload();
+      if (updated?.metadataJson?.postStatus === 'publish_failed') {
+        throw new Error(String(updated.metadataJson.lastPublishError || 'Publishing failed. Please retry.'));
+      }
     } finally { setBusy(false); }
   };
 
@@ -303,13 +306,15 @@ function CalendarPostRow({
   const retryPublish = async () => {
     setBusy(true);
     try {
-      await apiFetch(`/api/projects/${encodeURIComponent(projectId)}/cards/${encodeURIComponent(post.id)}/publish/retry`, {
+      const updated = await apiFetch<{ metadataJson?: Record<string, unknown> }>(`/api/projects/${encodeURIComponent(projectId)}/cards/${encodeURIComponent(post.id)}/publish/retry`, {
         method: 'POST',
       });
       onReload();
+      if (updated?.metadataJson?.postStatus === 'publish_failed') {
+        throw new Error(String(updated.metadataJson.lastPublishError || 'Publishing failed. Please retry.'));
+      }
       return true;
-    } catch { /* surfaced by the reloaded card's own lastPublishError */ return false; }
-    finally { setBusy(false); }
+    } finally { setBusy(false); }
   };
 
   const retryMedia = async () => {

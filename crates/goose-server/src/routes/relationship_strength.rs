@@ -42,7 +42,7 @@
 //! PATCH-able field several other components read/write); this module's
 //! output is therefore wired onto the wire as **`relationship_signal`**, a
 //! sibling field, never reusing that key. See the DAG K lane report for the
-//! open question this leaves for Jesse (whether the manual field should be
+//! open question this leaves for the product owner (whether the manual field should be
 //! renamed/retired now that a real signal exists).
 //!
 //! ## Normalisation
@@ -52,7 +52,7 @@
 //! the score past what "fully present this window" means for that channel.
 //! The capped per-channel scores are then combined as a weighted average and
 //! scaled to 0-100. Thresholds and weights below are first-cut defaults
-//! (flagged for Jesse in the lane report) — there is no usage data yet to
+//! (flagged for the product owner in the lane report) — there is no usage data yet to
 //! calibrate against.
 
 use chrono::{DateTime, Utc};
@@ -245,34 +245,38 @@ pub fn compute_relationship_strength(
     }
 }
 
-/// True the moment a person's bucket newly crosses from an engaged bucket
-/// (`Strong`/`Steady`) into a needs-attention one (`Fading`/`Dormant`) —
-/// found by comparing `now` against `now - 1 day` on the SAME fixed
-/// timestamps, rather than a persisted "last known bucket" table (there is
-/// no schema-migration path available to this edit-only lane; see the lane
-/// report). Returns the current (crossing) score on a transition.
-///
-/// Caveat, flagged for Jesse: this only catches a transition if it is
-/// checked within roughly a day of the actual crossing instant (it runs from
-/// a page-load hook, not a guaranteed daily sweep) — a person whose profile
-/// isn't opened for a week after they go quiet will not get a memory. A
-/// proper nightly sweep beside the Librarian's other sweeps would close this
-/// gap; out of scope for an edit-only, no-cargo lane.
-pub fn crossed_into_attention(
-    inputs: &RelationshipInputs,
-    now: DateTime<Utc>,
-) -> Option<RelationshipStrength> {
-    let today = compute_relationship_strength(inputs, now);
-    let yesterday = compute_relationship_strength(inputs, now - chrono::Duration::days(1));
-    let needs_attention_now = matches!(
-        today.bucket,
-        RelationshipBucket::Fading | RelationshipBucket::Dormant
-    );
-    let was_engaged = matches!(
-        yesterday.bucket,
-        RelationshipBucket::Strong | RelationshipBucket::Steady
-    );
-    (needs_attention_now && was_engaged).then_some(today)
+/// Persist the last observed bucket atomically. Comparing with yesterday's
+/// inferred score misses transitions whenever the directory is closed for
+/// several days, and repeats them on every refresh during the crossing day.
+async fn record_bucket(
+    pool: &Pool<Sqlite>,
+    id: &str,
+    bucket: RelationshipBucket,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS person_relationship_state (
+        person_id TEXT PRIMARY KEY, bucket TEXT NOT NULL, previous_bucket TEXT)",
+    )
+    .execute(pool)
+    .await?;
+    let current = match bucket {
+        RelationshipBucket::Strong => "strong",
+        RelationshipBucket::Steady => "steady",
+        RelationshipBucket::Fading => "fading",
+        RelationshipBucket::Dormant => "dormant",
+        RelationshipBucket::NoSignal => "no_signal",
+    };
+    let previous: Option<String> = sqlx::query_scalar(
+        "INSERT INTO person_relationship_state (person_id, bucket) VALUES (?, ?)
+         ON CONFLICT(person_id) DO UPDATE SET previous_bucket = bucket, bucket = excluded.bucket
+         RETURNING previous_bucket",
+    )
+    .bind(id)
+    .bind(current)
+    .fetch_one(pool)
+    .await?;
+    Ok(matches!(previous.as_deref(), Some("strong" | "steady"))
+        && matches!(current, "fading" | "dormant"))
 }
 
 fn transition_content(display_name: &str, strength: &RelationshipStrength) -> String {
@@ -304,7 +308,7 @@ fn transition_content(display_name: &str, strength: &RelationshipStrength) -> St
 async fn display_names_by_person(
     pool: &Pool<Sqlite>,
     people: &[Person],
-) -> HashMap<String, Vec<String>> {
+) -> Result<HashMap<String, Vec<String>>, sqlx::Error> {
     let mut names: HashMap<String, Vec<String>> = HashMap::new();
     for p in people {
         if !p.display_name.trim().is_empty() {
@@ -318,8 +322,7 @@ async fn display_names_by_person(
         "SELECT entity_uuid, alias_value FROM person_aliases WHERE alias_kind = 'display_name'",
     )
     .fetch_all(pool)
-    .await
-    .unwrap_or_default();
+    .await?;
     for r in rows {
         let uuid: String = r.get("entity_uuid");
         let Some(list) = names.get_mut(&uuid) else {
@@ -333,7 +336,7 @@ async fn display_names_by_person(
             list.push(alias);
         }
     }
-    names
+    Ok(names)
 }
 
 /// Lowercased name → every person who answers to it. A name can map to more
@@ -355,11 +358,12 @@ fn reverse_name_index(
     index
 }
 
-async fn meeting_starts_by_person(pool: &Pool<Sqlite>) -> HashMap<String, Vec<DateTime<Utc>>> {
+async fn meeting_starts_by_person(
+    pool: &Pool<Sqlite>,
+) -> Result<HashMap<String, Vec<DateTime<Utc>>>, sqlx::Error> {
     let rows = sqlx::query("SELECT entity_uuid, starts_at FROM person_meetings")
         .fetch_all(pool)
-        .await
-        .unwrap_or_default();
+        .await?;
     let mut out: HashMap<String, Vec<DateTime<Utc>>> = HashMap::new();
     for r in rows {
         let uuid: String = r.get("entity_uuid");
@@ -368,17 +372,18 @@ async fn meeting_starts_by_person(pool: &Pool<Sqlite>) -> HashMap<String, Vec<Da
             out.entry(uuid).or_default().push(ts);
         }
     }
-    out
+    Ok(out)
 }
 
-async fn last_contact_by_person(pool: &Pool<Sqlite>) -> HashMap<String, DateTime<Utc>> {
+async fn last_contact_by_person(
+    pool: &Pool<Sqlite>,
+) -> Result<HashMap<String, DateTime<Utc>>, sqlx::Error> {
     let rows = sqlx::query(
         "SELECT entity_uuid, last_contact_at FROM people \
          WHERE last_contact_at IS NOT NULL AND last_contact_at != ''",
     )
     .fetch_all(pool)
-    .await
-    .unwrap_or_default();
+    .await?;
     let mut out = HashMap::new();
     for r in rows {
         let uuid: String = r.get("entity_uuid");
@@ -387,7 +392,7 @@ async fn last_contact_by_person(pool: &Pool<Sqlite>) -> HashMap<String, DateTime
             out.insert(uuid, ts);
         }
     }
-    out
+    Ok(out)
 }
 
 /// The `people` field of every `file_to_project` decision payload, paired
@@ -399,13 +404,14 @@ struct FileToProjectPeopleOnly {
     people: Vec<String>,
 }
 
-async fn file_to_project_hits(pool: &Pool<Sqlite>) -> Vec<(String, DateTime<Utc>)> {
+async fn file_to_project_hits(
+    pool: &Pool<Sqlite>,
+) -> Result<Vec<(String, DateTime<Utc>)>, sqlx::Error> {
     let rows = sqlx::query(
         "SELECT payload_json, created_at FROM decisions WHERE kind = 'file_to_project'",
     )
     .fetch_all(pool)
-    .await
-    .unwrap_or_default();
+    .await?;
     let mut out = Vec::new();
     for r in rows {
         let created_at: String = r.get("created_at");
@@ -422,7 +428,7 @@ async fn file_to_project_hits(pool: &Pool<Sqlite>) -> Vec<(String, DateTime<Utc>
             }
         }
     }
-    out
+    Ok(out)
 }
 
 /// Every `(display_name, created_at)` pair a Brain memory's `who` annotation
@@ -475,7 +481,7 @@ fn memory_hits_by_name(
 /// source of truth).
 ///
 /// `feed_transitions`: when true, a person whose bucket newly crosses into
-/// `Fading`/`Dormant` (see [`crossed_into_attention`]) gets one upserted
+/// `Fading`/`Dormant` (see [`record_bucket`]) gets one upserted
 /// Brain memory keyed `person:{id}:relationship`. Only the directory-page
 /// call site sets this — the dashboard card call reads the same scores
 /// without re-triggering the feed, so a transition is recorded once per
@@ -491,20 +497,28 @@ pub async fn relationship_strength_by_person(
     }
     let now = Utc::now();
 
-    let names_by_person = display_names_by_person(pool, people).await;
+    // Missing sources are unavailable data, never evidence of fading contact.
+    let Ok((names_by_person, meetings_map, last_contact_map, decision_hits)) = tokio::try_join!(
+        display_names_by_person(pool, people),
+        meeting_starts_by_person(pool),
+        last_contact_by_person(pool),
+        file_to_project_hits(pool),
+    ) else {
+        tracing::warn!("Relationship signals unavailable: runtime source query failed");
+        return out;
+    };
     let name_index = reverse_name_index(&names_by_person);
-
-    let meetings_map = meeting_starts_by_person(pool).await;
-    let last_contact_map = last_contact_by_person(pool).await;
-    let decision_hits = file_to_project_hits(pool).await;
     let memory_hits = tokio::task::spawn_blocking(|| {
         crate::brain_ops::read_only_brain_conn()
             .map_err(|e| e.to_string())
             .and_then(|conn| memory_hits_by_name(&conn))
     })
     .await
-    .unwrap_or_else(|e| Err(e.to_string()))
-    .unwrap_or_default();
+    .unwrap_or_else(|e| Err(e.to_string()));
+    let Ok(memory_hits) = memory_hits else {
+        tracing::warn!("Relationship signals unavailable: memory source query failed");
+        return out;
+    };
 
     let mut decisions_by_person: HashMap<String, Vec<DateTime<Utc>>> = HashMap::new();
     for (name, ts) in &decision_hits {
@@ -530,6 +544,9 @@ pub async fn relationship_strength_by_person(
     }
 
     for person in people {
+        if person.is_self {
+            continue;
+        }
         let uuid = &person.entity_uuid;
         let inputs = RelationshipInputs {
             meetings: meetings_map.get(uuid).cloned().unwrap_or_default(),
@@ -538,18 +555,20 @@ pub async fn relationship_strength_by_person(
             last_contact: last_contact_map.get(uuid).cloned().into_iter().collect(),
         };
         let strength = compute_relationship_strength(&inputs, now);
-        if feed_transitions {
-            if let Some(current) = crossed_into_attention(&inputs, now) {
-                let content = transition_content(&person.display_name, &current);
-                permagent::brain_feed::feed(
-                    pool,
-                    permagent::brain_feed::FeedSource::Person,
-                    permagent::brain_feed::feed_key("person", uuid, "relationship"),
-                    None,
-                    content,
-                )
-                .await;
-            }
+        if feed_transitions
+            && record_bucket(pool, uuid, strength.bucket)
+                .await
+                .unwrap_or(false)
+        {
+            let content = transition_content(&person.display_name, &strength);
+            permagent::brain_feed::feed(
+                pool,
+                permagent::brain_feed::FeedSource::Person,
+                permagent::brain_feed::feed_key("person", uuid, "relationship"),
+                None,
+                content,
+            )
+            .await;
         }
         out.insert(uuid.clone(), strength);
     }
@@ -690,42 +709,31 @@ mod tests {
         );
     }
 
-    #[test]
-    fn crossed_into_attention_fires_only_on_the_transition_day() {
-        let now = Utc::now();
-        // A single meeting 3 days old: at `now - 1 day` it was only 2 days
-        // old (score ≈33, steady); at `now` it is 3 days old (score ≈25,
-        // fading) — the exact boundary crossing this function exists to
-        // catch.
-        let inputs = RelationshipInputs {
-            meetings: vec![days_ago(now, 3)],
-            ..Default::default()
-        };
-        let today = compute_relationship_strength(&inputs, now);
-        assert_eq!(
-            today.bucket,
-            RelationshipBucket::Fading,
-            "score={} (fixture no longer straddles the boundary)",
-            today.score
-        );
-        assert!(crossed_into_attention(&inputs, now).is_some());
-
-        // No transition once already fading/dormant yesterday too.
-        let stale_inputs = RelationshipInputs {
-            meetings: vec![days_ago(now, STRENGTH_WINDOW_DAYS + 10)],
-            ..Default::default()
-        };
-        assert!(crossed_into_attention(&stale_inputs, now).is_none());
-    }
-
-    #[test]
-    fn crossed_into_attention_none_when_still_engaged() {
-        let now = Utc::now();
-        let inputs = RelationshipInputs {
-            meetings: vec![days_ago(now, 2)],
-            ..Default::default()
-        };
-        assert!(crossed_into_attention(&inputs, now).is_none());
+    #[tokio::test]
+    async fn persisted_transition_fires_once_even_after_a_long_gap() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        assert!(!record_bucket(&pool, "ada", RelationshipBucket::Strong)
+            .await
+            .unwrap());
+        assert!(record_bucket(&pool, "ada", RelationshipBucket::Dormant)
+            .await
+            .unwrap());
+        assert!(!record_bucket(&pool, "ada", RelationshipBucket::Dormant)
+            .await
+            .unwrap());
+        assert!(!record_bucket(&pool, "ada", RelationshipBucket::Steady)
+            .await
+            .unwrap());
+        assert!(record_bucket(&pool, "ada", RelationshipBucket::Fading)
+            .await
+            .unwrap());
+        assert!(!record_bucket(&pool, "new", RelationshipBucket::NoSignal)
+            .await
+            .unwrap());
     }
 
     #[test]

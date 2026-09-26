@@ -58,7 +58,7 @@ export function NotificationHost() {
   // forever with no way to dismiss it.
   const newestId = items[0]?.id;
   useEffect(() => {
-    if (!newestId || open) return;
+    if (!newestId || (open && !items[0]?.action)) return;
     setToastIds((prev) => (prev.includes(newestId) ? prev : [newestId, ...prev].slice(0, MAX_TOASTS)));
   }, [newestId, open]);
 
