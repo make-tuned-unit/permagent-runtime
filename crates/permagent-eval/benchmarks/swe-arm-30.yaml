@@ -496,12 +496,13 @@ validation:
   gold_and_empty_on_m1:
     date: '2026-09-25'
     tool: tools/validate_swe_arm.py --remote m1
-    result: not_run
-    reason: >-
-      Disk floor. The M1 had 14.9 GiB free at the start (already under the 15 GiB
-      floor); fstrim of the Colima data disk raised it to 16.7 GiB, but one image
-      needs ~2.8-4 GiB on the containerd snapshotter (compressed content plus the
-      unpacked snapshot), so every pull would breach the floor. The validator
-      refused the first instance (pylint-dev__pylint-4970: 16.7 GiB free, ~2.8 GiB
-      needed). Until the M1 has >= ~20 GiB free, no instance here is gold/empty
-      validated; spares replace any that fail.
+    result: valid
+    validated: 36/36
+    detail: >-
+      Every instance (30 core, 6 spare) validated on its pinned arm64 Epoch
+      image: the gold patch passes every FAIL_TO_PASS and PASS_TO_PASS test on
+      both runs, and the empty patch fails FAIL_TO_PASS (PASS_TO_PASS still
+      passes), all graded by swebench's own grader. Median gold run 4.7 s
+      (slowest astropy__astropy-13453 at 42.5 s); median pull 32 s. The M1
+      had 31.6 GiB free at the start and never under 29.0 GiB.
+    results: permagent-worktrees/dagJ-reports/hf/swe-arm-validation.jsonl

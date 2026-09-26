@@ -779,6 +779,7 @@ impl SweHostArgs {
                 m => Some(m.to_string()),
             },
             verdict_dir: self.verdict_dir.clone(),
+            ledger: permagent_eval::swebench::LedgerTiming::default(),
         }
     }
 }
@@ -813,7 +814,9 @@ struct SweMaterializeArgs {
     #[arg(long, default_value_t = 1800)]
     harness_timeout_secs: u64,
 
-    /// Oracle (judge) ceiling; default: --run-timeout-secs plus 30 min for the pull.
+    /// Oracle (judge) ceiling; default: just past the judge's own worst case
+    /// (pull cap + --run-timeout-secs + its two host-ledger steps). A smaller
+    /// value is refused: the runner would kill the judge before its cleanup.
     #[arg(long)]
     oracle_timeout_secs: Option<u64>,
 
@@ -877,10 +880,22 @@ struct SweSummaryArgs {
 fn cmd_swe_materialize(args: SweMaterializeArgs) -> Result<()> {
     use permagent_eval::swebench::{materialize, LoadedSlice, MaterializeOptions, TaskLimits};
     let slice = LoadedSlice::load(&args.slice)?;
+    let mut judge = args.host.to_config();
+    // The runner can only SIGTERM/SIGKILL swe-judge, so its ceiling must
+    // outlast every cap the judge gives itself, cleanup included.
+    let oracle_timeout_secs = match args.oracle_timeout_secs {
+        Some(secs) => {
+            judge.check_oracle_timeout(secs)?;
+            secs
+        }
+        None => judge.default_oracle_timeout_secs(),
+    };
     let entries = slice.manifest.select(args.spares, &args.instances)?;
     fs::create_dir_all(&args.out).with_context(|| format!("creating {}", args.out.display()))?;
     let out_dir = fs::canonicalize(&args.out)?;
-    let mut judge = args.host.to_config();
+    // Each judge runs inside its run's scratch workspace (deleted after the
+    // task), so a relative --verdict-dir is anchored here, not there.
+    judge.anchor_verdict_dir(&std::env::current_dir().context("resolving the current directory")?);
     if judge.verdict_dir.is_none() {
         judge.verdict_dir = Some(out_dir.join("verdicts"));
     }
@@ -895,9 +910,6 @@ fn cmd_swe_materialize(args: SweMaterializeArgs) -> Result<()> {
         Some(p) => fs::canonicalize(&p).with_context(|| format!("resolving {}", p.display()))?,
         None => std::env::current_exe().context("resolving this executable")?,
     };
-    let oracle_timeout_secs = args
-        .oracle_timeout_secs
-        .unwrap_or(judge.run_timeout_secs + 1800);
     let opts = MaterializeOptions {
         out_dir: out_dir.clone(),
         repo_cache,
@@ -927,40 +939,11 @@ fn cmd_swe_materialize(args: SweMaterializeArgs) -> Result<()> {
 }
 
 fn cmd_swe_judge(args: SweJudgeArgs) -> Result<()> {
-    use permagent_eval::swebench::{
-        judge_instance, write_verdict, JudgeOutcome, JudgeRunOptions, SshExec,
-    };
-    // Every failure before a verdict exists is the judge's, not the agent's:
-    // exit 2 so it is never mistaken for a graded "not resolved" (exit 1).
-    let prepared = prepare_swe_judge(&args);
-    let PreparedJudge {
-        entry,
-        inst,
-        patch,
-        run_dir,
-    } = match prepared {
-        Ok(p) => p,
-        Err(e) => {
-            println!("swe-judge: {}: judge error: {e:#}", args.instance);
-            std::process::exit(JudgeOutcome::InfraError.exit_code());
-        }
-    };
     let cfg = args.host.to_config();
-    let exec = SshExec {
+    let exec = permagent_eval::swebench::SshExec {
         target: cfg.ssh_target.clone(),
     };
-    let mut verdict = judge_instance(
-        &inst,
-        &entry,
-        &patch,
-        &cfg,
-        JudgeRunOptions {
-            run_empty_patch: args.empty,
-        },
-        &exec,
-        entry.image_compressed_bytes,
-    );
-    verdict.run_dir = run_dir;
+    let (verdict, patch) = swe_judge_verdict(&args, &cfg, &exec);
     println!(
         "swe-judge: {} {:?}{} (F2P {}/{}, P2P {}/{}, patch {} bytes, test {}s)",
         verdict.instance_id,
@@ -979,25 +962,84 @@ fn cmd_swe_judge(args: SweJudgeArgs) -> Result<()> {
             .test_secs
             .map_or("-".to_string(), |s| format!("{s:.0}")),
     );
-    println!("{}", serde_json::to_string(&verdict)?);
+    // No `?` from here on: an error return exits 1, which the runner would
+    // read as a graded "not resolved".
+    match serde_json::to_string(&verdict) {
+        Ok(json) => println!("{json}"),
+        Err(e) => eprintln!("swe-judge: could not serialize the verdict: {e}"),
+    }
     if let Some(dir) = &cfg.verdict_dir {
-        match write_verdict(dir, &verdict) {
-            Ok(path) => {
-                let _ = fs::write(path.with_extension("patch"), &patch);
-            }
-            Err(e) => eprintln!("swe-judge: could not write verdict: {e:#}"),
+        if let Err(e) = record_swe_verdict(dir, &verdict, patch.as_deref()) {
+            eprintln!("swe-judge: could not write verdict: {e:#}");
         }
     }
     std::process::exit(verdict.outcome.exit_code());
+}
+
+/// Judge `args` on `exec`: the verdict, plus the patch it judged (None when
+/// the judge failed before it had one).
+fn swe_judge_verdict(
+    args: &SweJudgeArgs,
+    cfg: &permagent_eval::swebench::JudgeConfig,
+    exec: &dyn permagent_eval::swebench::RemoteExec,
+) -> (permagent_eval::swebench::JudgeVerdict, Option<Vec<u8>>) {
+    use permagent_eval::swebench::{judge_instance, JudgeRunOptions, JudgeVerdict};
+    // Every failure before a verdict exists is the judge's, not the agent's:
+    // it still gets an InfraError verdict (exit 2, written like any other and
+    // keyed to the run when judging a workspace), so neither the runner nor
+    // swe-summary mistakes it for a graded "not resolved" (exit 1).
+    let prepared = match prepare_swe_judge(args) {
+        Ok(p) => p,
+        Err(e) => {
+            let why = format!("judge error: {e:#}");
+            let verdict = if args.empty || args.patch_file.is_some() {
+                JudgeVerdict::infra_error(&args.instance, why)
+            } else {
+                JudgeVerdict::infra_error_for_workspace(&args.instance, why, &args.workspace)
+            };
+            return (verdict, None);
+        }
+    };
+    let mut verdict = judge_instance(
+        &prepared.inst,
+        &prepared.entry,
+        &prepared.patch,
+        cfg,
+        JudgeRunOptions {
+            run_empty_patch: args.empty,
+        },
+        exec,
+        prepared.entry.image_compressed_bytes,
+    );
+    verdict.run_dir = prepared.run_dir;
+    verdict.seed_commit = prepared.seed_commit;
+    (verdict, Some(prepared.patch))
+}
+
+/// Write `verdict` into the verdict dir, with the judged patch beside it.
+fn record_swe_verdict(
+    dir: &Path,
+    verdict: &permagent_eval::swebench::JudgeVerdict,
+    patch: Option<&[u8]>,
+) -> Result<PathBuf> {
+    let path = permagent_eval::swebench::write_verdict(dir, verdict)?;
+    if let Some(patch) = patch {
+        let _ = fs::write(path.with_extension("patch"), patch);
+    }
+    Ok(path)
 }
 
 /// What `swe-judge` needs before it talks to the Docker host.
 struct PreparedJudge {
     entry: permagent_eval::swebench::SliceEntry,
     inst: permagent_eval::swebench::SweInstance,
-    patch: String,
+    /// Raw bytes: a patch may touch a file that is not UTF-8.
+    patch: Vec<u8>,
     /// The runner's scratch-dir name, when judging a workspace.
     run_dir: Option<String>,
+    /// The runner's seed commit (the run's key in its report), when judging
+    /// a workspace.
+    seed_commit: Option<String>,
 }
 
 /// Load the instance and produce the patch to judge: the workspace diff, a
@@ -1010,32 +1052,31 @@ fn prepare_swe_judge(args: &SweJudgeArgs) -> Result<PreparedJudge> {
         return Ok(PreparedJudge {
             entry,
             inst,
-            patch: String::new(),
+            patch: Vec::new(),
             run_dir: None,
+            seed_commit: None,
         });
     }
     if let Some(file) = &args.patch_file {
-        let text =
-            fs::read_to_string(file).with_context(|| format!("reading {}", file.display()))?;
+        let patch = fs::read(file).with_context(|| format!("reading {}", file.display()))?;
         return Ok(PreparedJudge {
             entry,
             inst,
-            patch: text,
+            patch,
             run_dir: None,
+            seed_commit: None,
         });
     }
     let ws = fs::canonicalize(&args.workspace)
         .with_context(|| format!("resolving {}", args.workspace.display()))?;
-    let run_dir = ws
-        .parent()
-        .and_then(|p| p.file_name())
-        .map(|n| n.to_string_lossy().into_owned());
+    let run_dir = permagent_eval::swebench::workspace_run_dir(&ws);
     let patch = permagent_eval::swebench::workspace_patch(&ws)?;
     Ok(PreparedJudge {
         entry,
         inst,
-        patch,
+        patch: patch.bytes,
         run_dir,
+        seed_commit: Some(patch.seed_commit),
     })
 }
 
@@ -4451,5 +4492,114 @@ nodes:
         assert!(!task.errored);
         assert!(task.provider_error.is_none());
         assert!(!records[0].provider_unavailable);
+    }
+
+    /// A Docker host the judge must never reach in these tests.
+    struct NoDockerHost;
+    impl permagent_eval::swebench::RemoteExec for NoDockerHost {
+        fn run(
+            &self,
+            command: &str,
+            _stdin: Option<&str>,
+            _timeout: std::time::Duration,
+        ) -> Result<permagent_eval::swebench::RemoteOutput> {
+            panic!("the judge reached the Docker host: {command}")
+        }
+    }
+
+    /// `swe-judge` failing before it has a patch (the harness was killed mid
+    /// auto-land and left `.git/index.lock`, so `git add` fails) used to
+    /// print and exit 2 with no verdict, so swe-summary read the run as the
+    /// agent's failure. It now writes an InfraError verdict keyed to the run.
+    #[test]
+    fn swe_judge_failing_before_a_patch_still_writes_a_keyed_infra_error_verdict() {
+        use permagent_eval::swebench::{load_verdicts, JudgeOutcome};
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = tmp
+            .path()
+            .join("cheap-django__django-11880-1-0")
+            .join("workspace");
+        fs::create_dir_all(&ws).unwrap();
+        fs::write(ws.join("a.py"), "x = 1\n").unwrap();
+        let seed = permagent_eval::runner::seed_git_repo(&ws, "django__django-11880").unwrap();
+        fs::write(ws.join("a.py"), "x = 2\n").unwrap();
+        fs::write(ws.join(".git").join("index.lock"), "").unwrap();
+        let verdicts = tmp.path().join("verdicts");
+        let slice = Path::new(env!("CARGO_MANIFEST_DIR")).join("benchmarks/swe-arm-30.yaml");
+        let cli = Cli::try_parse_from([
+            "permagent-eval",
+            "swe-judge",
+            "--slice",
+            slice.to_str().unwrap(),
+            "--instance",
+            "django__django-11880",
+            "--workspace",
+            ws.to_str().unwrap(),
+            "--verdict-dir",
+            verdicts.to_str().unwrap(),
+        ])
+        .unwrap();
+        let Command::SweJudge(args) = cli.command else {
+            panic!("not parsed as swe-judge");
+        };
+        let cfg = args.host.to_config();
+        let (verdict, patch) = swe_judge_verdict(&args, &cfg, &NoDockerHost);
+        assert_eq!(
+            verdict.outcome,
+            JudgeOutcome::InfraError,
+            "{:?}",
+            verdict.reason
+        );
+        assert_eq!(verdict.outcome.exit_code(), 2);
+        assert!(
+            verdict
+                .reason
+                .as_deref()
+                .unwrap_or("")
+                .contains("index.lock"),
+            "{:?}",
+            verdict.reason
+        );
+        assert!(patch.is_none());
+        assert_eq!(
+            verdict.run_dir.as_deref(),
+            Some("cheap-django__django-11880-1-0")
+        );
+        assert_eq!(verdict.seed_commit.as_deref(), Some(seed.as_str()));
+
+        record_swe_verdict(&verdicts, &verdict, patch.as_deref()).unwrap();
+        assert_eq!(load_verdicts(&verdicts), vec![verdict]);
+    }
+
+    /// The oracle ceiling baked into task.yaml outlasts the judge's own worst
+    /// case, and a smaller explicit one is refused: the runner could only
+    /// kill swe-judge, which would then never reach its cleanup.
+    #[test]
+    fn swe_materialize_oracle_ceiling_outlasts_the_judge() {
+        let tmp = tempfile::tempdir().unwrap();
+        let slice = Path::new(env!("CARGO_MANIFEST_DIR")).join("benchmarks/swe-arm-30.yaml");
+        let parse = |extra: &[&str]| {
+            let mut argv = vec![
+                "permagent-eval".to_string(),
+                "swe-materialize".to_string(),
+                "--slice".to_string(),
+                slice.to_string_lossy().into_owned(),
+                "--out".to_string(),
+                tmp.path().join("tasks").to_string_lossy().into_owned(),
+                "--instance".to_string(),
+                "nonexistent__instance-1".to_string(),
+            ];
+            argv.extend(extra.iter().map(|a| a.to_string()));
+            match Cli::try_parse_from(argv).unwrap().command {
+                Command::SweMaterialize(args) => args,
+                _ => panic!("not parsed as swe-materialize"),
+            }
+        };
+        // The old default (run cap + 30 min) is below the judge's worst case.
+        let err = cmd_swe_materialize(parse(&["--oracle-timeout-secs", "3600"])).unwrap_err();
+        assert!(format!("{err:#}").contains("worst case"), "{err:#}");
+        let judge = parse(&[]).host.to_config();
+        assert!(judge.default_oracle_timeout_secs() > judge.worst_case_secs());
+        assert!(judge.worst_case_secs() > judge.run_timeout_secs + 1800);
     }
 }
