@@ -447,18 +447,33 @@ fn roadmap_task_contract(
     objective: &str,
     headless_launch: bool,
 ) -> Result<serde_json::Value, String> {
-    // Harness policy, not SessionType, identifies an unattended launch: Grow
-    // uses a User session. Its first user message is the original task; later
-    // user-role messages can be synthetic worker-resume notifications.
+    // Harness policy, not SessionType, identifies Grow's coordinator. Only
+    // an unambiguous launch can supply original text: a reused interactive
+    // harness can have a new task, while synthetic resume messages carry the
+    // SAME user metadata. Never guess which later text is a real new request.
+    // Identical copies introduced by compaction are harmless; distinct user
+    // text falls back to this call's objective. Already-minted card contracts
+    // remain immutable regardless of later conversation changes.
     let launch_text = (headless_launch && session.parent_session_id.is_none())
         .then(|| {
             session.conversation.as_ref().and_then(|conversation| {
-                conversation
+                let mut launch: Option<String> = None;
+                for text in conversation
                     .messages()
                     .iter()
                     .filter(|message| message.role == rmcp::model::Role::User)
                     .map(|message| message.as_concat_text())
-                    .find(|text| !text.trim().is_empty())
+                    .filter(|text| !text.trim().is_empty())
+                {
+                    if let Some(first) = &launch {
+                        if first != &text {
+                            return None;
+                        }
+                    } else {
+                        launch = Some(text);
+                    }
+                }
+                launch
             })
         })
         .flatten();
@@ -55192,7 +55207,9 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             Message::assistant().with_text("bootstrap, not the task"),
             Message::user().with_text(original),
             Message::assistant().with_text("model paraphrase missing enum"),
-            Message::user().with_text("(Resuming — a worker finished.)"),
+            // Normal compaction retains the old message and can append an
+            // identical copy; this is still one unambiguous original task.
+            Message::user().with_text(original),
         ]));
         let contract = roadmap_task_contract(&session, "instrument CTA visibility", true).unwrap();
         assert_eq!(contract["text"], original);
@@ -55203,6 +55220,19 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         assert!(prompt.contains("above_fold|below_fold"));
         assert!(!prompt.contains("bootstrap"));
         assert!(!prompt.contains("Resuming"));
+        for later in ["new unrelated task", "(Resuming — a worker finished.)"] {
+            session
+                .conversation
+                .as_mut()
+                .unwrap()
+                .push(Message::user().with_text(later));
+            assert_eq!(
+                roadmap_task_contract(&session, "current task slice", true).unwrap()["text"],
+                "current task slice",
+                "ambiguous user history must never attach an old task to a new roadmap"
+            );
+            session.conversation.as_mut().unwrap().pop();
+        }
         // Reusable interactive chats must not inherit an unrelated old launch.
         assert_eq!(
             roadmap_task_contract(&session, "current objective", false).unwrap()["text"],
