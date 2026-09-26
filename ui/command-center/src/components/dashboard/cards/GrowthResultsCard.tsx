@@ -89,8 +89,15 @@ export const GrowthResultsCard = memo(function GrowthResultsCard() {
       ) : (
         <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
           <div style={{
+            // Capped (R3, coordinator 2560px round 2): an unbounded 4-column
+            // `1fr` grid stretched to the card's full width spread Helped /
+            // Hindered / No change / Inconclusive ~2,000px apart on a wide
+            // card — four numbers that belong to one summary read as four
+            // unrelated ones. Same 720px ceiling as the by-project row below
+            // (GrowthProjectRow), so every label/value cluster in this card
+            // stays a readable width no matter how wide the card is drawn.
             display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
-            gap: `${space.lg}px ${space.xl}px`,
+            gap: `${space.lg}px ${space.xl}px`, maxWidth: 720,
           }}>
             <StatCompact label="Helped" value={fleet.helped} cyan={fleet.helped > 0} />
             <StatCompact label="Hindered" value={fleet.hindered} />

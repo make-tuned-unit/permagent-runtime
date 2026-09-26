@@ -22,6 +22,15 @@ import { Tooltip } from '../../common/Tooltip';
 const STATIC_CARD_STALE_AFTER_MS = 5 * 60_000;
 
 /**
+ * Widest a `list`/`key-value` label/value row is ever drawn, regardless of
+ * how wide the card itself is (R3 "status near label"; coordinator, 2560px
+ * round 2). Within the 560–720px range the coordinator gave, matching the
+ * 720 already used for Growth's per-project row (GrowthResultsCard.tsx) so
+ * the two label/value treatments in this app read the same width.
+ */
+const KV_ROW_MAX_WIDTH = 640;
+
+/**
  * The normalized payload every manifest-card data endpoint returns. Layout is
  * decided by the manifest (not the payload) so a single generic renderer can
  * draw any registered card. See `docs/architecture/DASHBOARD_CARD_EXTENSIBILITY.md`.
@@ -495,7 +504,14 @@ export function ManifestCard({ manifest }: Props) {
         )}
 
         {manifest.layout === 'key-value' && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: space.lg }}>
+          // Capped (R3, coordinator 2560px round 2): a card stretched to the
+          // full grid width used to put `justifyContent: 'space-between'`'s
+          // two ends ~1,900px apart — a label at the left edge and its own
+          // value at the right, read as two unrelated lines instead of one
+          // row. `KV_ROW_MAX_WIDTH` keeps every row the width of its content
+          // regardless of how wide the card is drawn, same fix already
+          // applied to Growth's per-project row (GrowthResultsCard.tsx).
+          <div style={{ display: 'flex', flexDirection: 'column', gap: space.lg, maxWidth: KV_ROW_MAX_WIDTH }}>
             {cells.map((c, i) => (
               <div key={i} data-card-row="" style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: space.xl }}>
                 <span style={{ fontFamily: font.body, fontSize: textSize.caption, color: colors.textDim }}>{c.label}</span>
@@ -506,7 +522,11 @@ export function ManifestCard({ manifest }: Props) {
         )}
 
         {manifest.layout === 'list' && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: space.xs }}>
+          // Same cap as `key-value` above, and for the same reason: this is
+          // the layout Cost vs outcome and the Finance board actually use, so
+          // it is the one the coordinator's 2560px reading caught label and
+          // value stretched apart on.
+          <div style={{ display: 'flex', flexDirection: 'column', gap: space.xs, maxWidth: KV_ROW_MAX_WIDTH }}>
             {cells.map((c, i) => (
               <div key={i} data-card-row="" style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: space.xl, padding: `${space.sm}px 0`, borderBottom: i < cells.length - 1 ? `1px solid ${colors.border}` : 'none' }}>
                 <div style={{ minWidth: 0 }}>

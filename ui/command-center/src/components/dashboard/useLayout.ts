@@ -299,6 +299,95 @@ export function layoutForDisplay(
 }
 
 /**
+ * Row unit (px) the masonry grid uses outside Customize mode — see
+ * `spanForContent`'s doc and Dashboard.tsx.
+ */
+export const MASONRY_ROW_UNIT = 8;
+
+/**
+ * How many `rowUnit`-tall grid rows a card needs, and may use at most.
+ *
+ * Coordinator, 2560px round 2: `alignSelf: 'start'` + `maxHeight` (round 1 of
+ * this fix) shrank each card's own BOX to its content, but the grid's ROW
+ * TRACK still reserved the full `h` height underneath it — the empty space
+ * just moved from inside the card to a band between rows (~80px under a slim
+ * status strip, ~110px between Growth/Finance/Cost-vs-outcome). A CSS grid
+ * row track is only as tall as the items placed in it; ours was `h` tracks of
+ * a fixed `oldRowHeightPx`, one per card, so a short card's unused tracks
+ * stayed reserved for nothing. The fix (the standard "masonry via CSS grid"
+ * technique) is a much finer row unit — `rowUnitPx`, e.g. 8 — so a card's
+ * `grid-row: span N` can track its actual content within one row unit
+ * instead of one whole (60px+) row, and `grid-auto-flow: dense` lets a
+ * shorter neighbour's leftover tracks be reused by a later card instead of
+ * sitting empty underneath the first.
+ *
+ * `N` is `ceil((measuredContentPx + gap) / (rowUnitPx + gap))` — the same
+ * "how many tracks of this size, plus the gaps between them, does it take to
+ * reach at least this many pixels" arithmetic `minSpanForWidth` already does
+ * for columns. It is capped at what `configuredH` (the size the resize grip
+ * in Customize actually edits) would have reserved under the OLD fixed-row
+ * grid, converted into the same rowUnit terms — a card already at or past
+ * that ceiling still stops there, same as the old `maxHeight`; the difference
+ * is what happens to the space UNDER it. `measuredContentPx <= 0` (nothing
+ * measured yet, e.g. first paint before any ResizeObserver has reported) or
+ * bad units return the ceiling itself, so a card never flashes at 1 row tall
+ * before its first real measurement lands.
+ */
+export function spanForContent(
+  measuredContentPx: number,
+  configuredH: number,
+  rowUnitPx: number = MASONRY_ROW_UNIT,
+  gapPx: number = 0,
+  oldRowHeightPx: number = 60,
+): number {
+  const unit = rowUnitPx + gapPx;
+  const ceilSpan = (px: number) => Math.max(1, Math.ceil((px + gapPx) / unit));
+  if (!(unit > 0) || !(oldRowHeightPx > 0)) return Math.max(1, configuredH);
+  const capPx = Math.max(oldRowHeightPx, configuredH * oldRowHeightPx + (Math.max(1, configuredH) - 1) * gapPx);
+  const cap = ceilSpan(capPx);
+  if (!(measuredContentPx > 0)) return cap;
+  return Math.min(ceilSpan(measuredContentPx), cap);
+}
+
+/** The state {@link settleSpan} tracks per card between measurements. */
+export interface SpanSettleState {
+  span: number;
+  /** Consecutive rAF flushes in a row whose measurement changed the span. */
+  attempts: number;
+  /** Once true, `settleSpan` stops accepting new measurements for this card. */
+  frozen: boolean;
+}
+
+/**
+ * Guards the measure → resize → re-measure cycle a `ResizeObserver`-driven
+ * span can enter (coordinator, 2560px round 2: required alongside the span
+ * math itself). A card whose own content adapts to whatever height it is
+ * given (e.g. "how many whole rows fit in the space I have") can in
+ * principle report a different natural height every time its box is resized
+ * to its own last-reported height, flapping between two spans forever —
+ * applying every new measurement unconditionally would re-render on every
+ * animation frame with no card ever settling.
+ *
+ * A change is accepted and `attempts` increases; a repeat of the current span
+ * resets `attempts` to 0 (the card has settled). Once the same card's span
+ * has changed on `maxAttempts` consecutive flushes, it freezes at the latest
+ * value instead of continuing to chase a moving target — a card that cannot
+ * converge stops at whatever it last measured rather than oscillating
+ * visibly or burning a render every frame.
+ */
+export function settleSpan(
+  prev: SpanSettleState | undefined,
+  nextSpan: number,
+  maxAttempts: number = 6,
+): SpanSettleState {
+  if (!prev) return { span: nextSpan, attempts: 1, frozen: false };
+  if (prev.frozen) return prev;
+  if (nextSpan === prev.span) return { span: prev.span, attempts: 0, frozen: false };
+  const attempts = prev.attempts + 1;
+  return { span: nextSpan, attempts, frozen: attempts >= maxAttempts };
+}
+
+/**
  * Recompute grid positions from array order with the dense packer, so the
  * persisted positions agree with what {@link layoutForDisplay} draws.
  * Lives here rather than in Dashboard because {@link compactLayoutPass}

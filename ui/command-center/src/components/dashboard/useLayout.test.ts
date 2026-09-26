@@ -15,8 +15,12 @@ import {
   minSpanForWidth,
   stripRetiredCards,
   NO_STRETCH_CARD_TYPES,
+  MASONRY_ROW_UNIT,
+  spanForContent,
+  settleSpan,
   type PackedCell,
   type DashboardLayoutData,
+  type SpanSettleState,
 } from './useLayout';
 
 function card(type: string, w: number, h: number) {
@@ -343,5 +347,104 @@ describe('dense dashboard packing (QA 2026-09-24: holes at 1456px)', () => {
   it('reflow persists the dense positions', () => {
     const out = reflow([card('a', 7, 4), card('b', 12, 2), card('c', 5, 2)]);
     expect(out[2].position).toEqual({ x: 7, y: 0 });
+  });
+});
+
+// Content-driven row spans (masonry via CSS grid; coordinator, 2560px round
+// 2). `spanForContent` is the arithmetic Dashboard.tsx feeds into each card's
+// `grid-row: span N` outside Customize; `settleSpan` is the guard that stops
+// a ResizeObserver-driven measurement from re-rendering forever if a card's
+// own content never settles on one height. GAP below is `space.xxl` (16),
+// matching Dashboard.tsx's own constant.
+describe('spanForContent', () => {
+  const GAP = 16;
+
+  it('exports the row unit Dashboard.tsx uses for its masonry grid', () => {
+    expect(MASONRY_ROW_UNIT).toBe(8);
+  });
+
+  it('starts at the configured ceiling before anything has been measured', () => {
+    // A card just added, or one whose ResizeObserver has not reported yet —
+    // must render at the SAME size the old fixed-row grid gave it, never a
+    // one-row flash before its first real measurement lands.
+    expect(spanForContent(0, 1, 8, GAP)).toBe(4);
+    expect(spanForContent(0, 3, 8, GAP)).toBe(10);
+    expect(spanForContent(-5, 3, 8, GAP)).toBe(10);
+  });
+
+  it('tracks measured content within one row unit, rounding up', () => {
+    // ceil((100 + 16) / (8 + 16)) = ceil(4.833) = 5, well under the h=3
+    // ceiling (10) — the row track shrinks to the content, not the old
+    // fixed h*60px.
+    expect(spanForContent(100, 3, 8, GAP)).toBe(5);
+  });
+
+  it('never grows past the ceiling the configured h would have reserved', () => {
+    // Content asking for far more than h=3 ever allowed (the old maxHeight
+    // cap) still stops at the same ceiling as the unmeasured case.
+    expect(spanForContent(10_000, 3, 8, GAP)).toBe(10);
+  });
+
+  it('never returns less than one row', () => {
+    expect(spanForContent(1, 1, 8, GAP)).toBeGreaterThanOrEqual(1);
+  });
+
+  it('falls back to the configured h when the row unit is degenerate', () => {
+    expect(spanForContent(100, 5, 0, 0, 60)).toBe(5);
+  });
+});
+
+describe('settleSpan (the no-loop guard)', () => {
+  it('accepts the first measurement outright', () => {
+    const next = settleSpan(undefined, 7);
+    expect(next).toEqual({ span: 7, attempts: 1, frozen: false });
+  });
+
+  it('a repeated measurement settles: attempts resets to 0', () => {
+    const first = settleSpan(undefined, 7);
+    const second = settleSpan(first, 7);
+    expect(second).toEqual({ span: 7, attempts: 0, frozen: false });
+  });
+
+  it('a single change is accepted, not frozen', () => {
+    const settled: SpanSettleState = { span: 7, attempts: 0, frozen: false };
+    const next = settleSpan(settled, 9);
+    expect(next).toEqual({ span: 9, attempts: 1, frozen: false });
+  });
+
+  it('freezes after maxAttempts consecutive changes, breaking a flap forever', () => {
+    // A card whose content adapts to whatever height it is given can flap
+    // between two spans (5, 6, 5, 6, ...) if every measurement were applied
+    // unconditionally. Six flushes in a row that all change the span (the
+    // default maxAttempts) must stop it rather than let it re-render on
+    // every animation frame indefinitely.
+    let state: SpanSettleState | undefined;
+    const flapSequence = [5, 6, 5, 6, 5, 6];
+    for (const measured of flapSequence) {
+      state = settleSpan(state, measured);
+    }
+    expect(state).toEqual({ span: 6, attempts: 6, frozen: true });
+
+    // Once frozen, further measurements — even wildly different ones — are
+    // ignored: the card stops chasing a moving target.
+    const afterFreeze = settleSpan(state, 1);
+    expect(afterFreeze).toBe(state);
+  });
+
+  it('honors a smaller maxAttempts', () => {
+    let state = settleSpan(undefined, 5);
+    state = settleSpan(state, 6, 2); // attempts=2, hits the custom ceiling
+    expect(state).toEqual({ span: 6, attempts: 2, frozen: true });
+    const ignored = settleSpan(state, 100, 2);
+    expect(ignored).toBe(state);
+  });
+
+  it('a stable run resets the attempt counter, so a brief flap does not freeze a card', () => {
+    let state = settleSpan(undefined, 5);
+    state = settleSpan(state, 6); // attempts: 1
+    state = settleSpan(state, 6); // repeat — settles, attempts resets to 0
+    expect(state).toEqual({ span: 6, attempts: 0, frozen: false });
+    state = settleSpan(state, 7); // a later, unrelated change starts counting fresh
+    expect(state).toEqual({ span: 7, attempts: 1, frozen: false });
   });
 });

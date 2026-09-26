@@ -6,7 +6,11 @@ import { Mobius } from '../mobius/Mobius';
 import { useDashboard } from './useDashboard';
 import { useLiveGoals } from '../../lib/useLiveGoals';
 import { useDueTodos } from '../../lib/useDueTodos';
-import { useLayout, reflow, layoutForDisplay, minSpanForWidth, DEFAULT_LAYOUT, type DashboardLayoutData, type DashboardCardLayout } from './useLayout';
+import {
+  useLayout, reflow, layoutForDisplay, minSpanForWidth, DEFAULT_LAYOUT,
+  MASONRY_ROW_UNIT, spanForContent, settleSpan,
+  type DashboardLayoutData, type DashboardCardLayout, type SpanSettleState,
+} from './useLayout';
 import { useCardRegistry } from './cards/useCardRegistry';
 import { AddCardPicker } from './AddCardPicker';
 import { DashboardOverflowMenu } from './DashboardOverflowMenu';
@@ -79,6 +83,85 @@ export function Dashboard() {
   const dragGhostSize = useRef<{ w: number; h: number }>({ w: 0, h: 0 });
   const cardRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const gridRef = useRef<HTMLDivElement>(null);
+  // Content-driven row spans (masonry via CSS grid; coordinator, 2560px round
+  // 2). Each card's rendered span (in MASONRY_ROW_UNIT-tall tracks) tracks its
+  // OWN measured height, capped at what its configured `h` would reserve
+  // under the old fixed-row grid — see `spanForContent`'s doc. `spans` is
+  // what render reads; `spanSettle`/`pendingHeights`/`flushHandle` are the
+  // measurement pipeline behind it, kept in refs so a ResizeObserver firing
+  // mid-frame never triggers more than one state update per animation frame.
+  const [spans, setSpans] = useState<Record<string, number>>({});
+  const spanSettle = useRef<Map<string, SpanSettleState>>(new Map());
+  const pendingHeights = useRef<Map<string, number>>(new Map());
+  const flushHandle = useRef<number | null>(null);
+  // Each visible card's CURRENT configured `h`, refreshed every render — read
+  // by `measureCard` (stable identity; never re-created) instead of being
+  // captured in a closure, so a resize in Customize is reflected the next
+  // time a measurement lands without giving the callback a changing identity
+  // (which would otherwise mean tearing down and rebuilding every card's
+  // ResizeObserver on every render).
+  const configuredHeights = useRef<Map<string, number>>(new Map());
+  const cellObservers = useRef<Map<string, ResizeObserver>>(new Map());
+  const cellRefFns = useRef<Map<string, (el: HTMLDivElement | null) => void>>(new Map());
+
+  const measureCard = useCallback((id: string, heightPx: number) => {
+    pendingHeights.current.set(id, heightPx);
+    if (flushHandle.current != null) return;
+    flushHandle.current = requestAnimationFrame(() => {
+      flushHandle.current = null;
+      const updates: Record<string, number> = {};
+      let changed = false;
+      pendingHeights.current.forEach((h, cardId) => {
+        const configuredH = configuredHeights.current.get(cardId) ?? 1;
+        const raw = spanForContent(h, configuredH, MASONRY_ROW_UNIT, GAP, ROW_HEIGHT);
+        const prevSettle = spanSettle.current.get(cardId);
+        const next = settleSpan(prevSettle, raw);
+        spanSettle.current.set(cardId, next);
+        if (!prevSettle || prevSettle.span !== next.span) { updates[cardId] = next.span; changed = true; }
+      });
+      pendingHeights.current.clear();
+      if (changed) setSpans(s => ({ ...s, ...updates }));
+    });
+  }, []);
+
+  // Stable per-card ref callback: caches one function per id so the DOM node
+  // is never torn down and re-observed just because a re-render passed a new
+  // inline arrow function (the pitfall with callback refs). `measureCard`
+  // above is itself stable, so a cached function keeps working forever.
+  const getCellRef = useCallback((id: string) => {
+    let fn = cellRefFns.current.get(id);
+    if (fn) return fn;
+    fn = (el: HTMLDivElement | null) => {
+      if (el) {
+        cardRefs.current.set(id, el);
+        if (typeof ResizeObserver !== 'undefined') {
+          let ro = cellObservers.current.get(id);
+          if (!ro) {
+            ro = new ResizeObserver(entries => {
+              const h = entries[0]?.contentRect.height;
+              if (h != null) measureCard(id, h);
+            });
+            cellObservers.current.set(id, ro);
+          }
+          ro.observe(el);
+        }
+      } else {
+        cardRefs.current.delete(id);
+        const ro = cellObservers.current.get(id);
+        if (ro) { ro.disconnect(); cellObservers.current.delete(id); }
+      }
+    };
+    cellRefFns.current.set(id, fn);
+    return fn;
+  }, [measureCard]);
+
+  useEffect(() => {
+    return () => {
+      cellObservers.current.forEach(ro => ro.disconnect());
+      cellObservers.current.clear();
+      if (flushHandle.current != null) cancelAnimationFrame(flushHandle.current);
+    };
+  }, []);
   // Resize state
   const [resizeId, setResizeId] = useState<string | null>(null);
   const resizeStart = useRef<{ pointerId: number; startX: number; startY: number; origW: number; origH: number; colPx: number }>({ pointerId: 0, startX: 0, startY: 0, origW: 0, origH: 0, colPx: 0 });
@@ -264,6 +347,10 @@ export function Dashboard() {
   );
   const canRemove = visibleCards.length > 1;
   const currentTypes = layout.cards.map(c => c.type);
+  // Refreshed every render (not an effect) so `measureCard` — stable, never
+  // re-created — always reads the CURRENT configured `h` for a card, even one
+  // just resized in Customize, without needing `h` in its own dependencies.
+  visibleCards.forEach(c => configuredHeights.current.set(c.id, c.size.h));
 
   return (
     <div
@@ -399,7 +486,15 @@ export function Dashboard() {
         style={{
           display: 'grid',
           gridTemplateColumns: 'repeat(12, 1fr)',
-          gridAutoRows: ROW_HEIGHT,
+          // Customize keeps the original fixed-row grid — the resize grip
+          // drags in whole `h` units of exactly this height. Outside it, a
+          // fine row unit plus dense auto-flow is the masonry technique
+          // (coordinator, 2560px round 2): each card below sets only a row
+          // SPAN (no explicit start), so the browser's own dense packing
+          // decides where it lands, backfilling a shorter neighbour's leftover
+          // tracks instead of leaving them reserved underneath it.
+          gridAutoRows: isEditMode ? ROW_HEIGHT : MASONRY_ROW_UNIT,
+          gridAutoFlow: isEditMode ? 'row' : 'row dense',
           gap: GAP,
           touchAction: isEditMode ? 'none' : 'auto',
           userSelect: (dragSrcId || resizeId) ? 'none' : 'auto',
@@ -420,15 +515,29 @@ export function Dashboard() {
           const isResizing = resizeId === card.id;
           const isDragging = dragSrcId === card.id;
           const isDragTarget = dragOverId === card.id && !isDragging;
+          // The row span this card is actually drawn at, outside Customize:
+          // whatever `measureCard` last settled on, or — before any
+          // measurement has landed (first paint, or a card just added/resized)
+          // — the same ceiling `spanForContent` would cap it at, so a card
+          // never flashes at a single row before its first real measurement.
+          const contentSpan = spans[card.id] ?? spanForContent(0, h, MASONRY_ROW_UNIT, GAP, ROW_HEIGHT);
           return (
             <div
               key={card.id}
               data-testid={`dashboard-cell-${card.id}`}
-              ref={el => { if (el) cardRefs.current.set(card.id, el); else cardRefs.current.delete(card.id); }}
+              ref={getCellRef(card.id)}
               onPointerDown={isEditMode && !resizeId ? (e) => handlePointerDown(card.id, e) : undefined}
               style={{
                 gridColumn: `${x + 1} / span ${w}`,
-                gridRow: `${y + 1} / span ${h}`,
+                // Customize: explicit start AND span, on the fixed ROW_HEIGHT
+                // grid above — the resize grip drags `h` directly, so this
+                // must be exactly what it edits. Outside Customize: span
+                // ONLY, no explicit start, on the fine masonry grid above —
+                // that is what lets `grid-auto-flow: dense` place this card
+                // wherever its column range is free for `contentSpan` tracks,
+                // backfilling a shorter neighbour's leftover space instead of
+                // stacking strictly under whichever card came before it.
+                gridRow: isEditMode ? `${y + 1} / span ${h}` : `span ${contentSpan}`,
                 // Rows size to content, with the configured `h` as a MAX, not
                 // a fixed height (coordinator, 2560px pass: In Flight/Needs
                 // You/To-dos sat 50%+ empty; ambient status strips left a
@@ -441,7 +550,10 @@ export function Dashboard() {
                 // DEFINITE height to fill-then-scroll against, unchanged from
                 // before. Customize keeps the true stretched box so the
                 // resize grip still edits what you see (layoutForDisplay's
-                // `fill: false` does the matching thing for width).
+                // `fill: false` does the matching thing for width). This box
+                // cap is independent of (and unchanged by) the row-TRACK fix
+                // above: that fix is what stops the now-shrunk box from
+                // leaving a reserved-but-empty band in the grid underneath it.
                 alignSelf: isEditMode ? undefined : 'start',
                 maxHeight: isEditMode ? undefined : h * ROW_HEIGHT + (h - 1) * GAP,
                 cursor: isEditMode ? (isDragging ? 'grabbing' : 'grab') : 'default',
