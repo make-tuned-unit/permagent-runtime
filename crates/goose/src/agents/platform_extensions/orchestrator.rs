@@ -5950,11 +5950,12 @@ pub(crate) enum ZeroProgressBreaker {
 
 /// QA 2026-09-25: the zero-progress circuit breaker's decision. Pure.
 ///
-/// - `zero_progress_streak`: consecutive completed attempts with no commit,
-///   no file change and no successful verify (a teardown checkpoint commit
-///   counts as progress).
+/// - `zero_progress_streak`: consecutive attempts — finished, failed or
+///   timed out — with no commit, no file change and no successful verify (a
+///   teardown checkpoint commit counts as progress). A human's answer to the
+///   goal's `unblock` clears it.
 /// - `prior_tier`: the tier the previous attempt ran on
-///   (`capability_snapshot.cost_routing.routing_choice`), `None` when unknown.
+///   ([`prior_attempt_tier`]), `None` when unknown.
 /// - `escalation_used`: the one escalation per goal is already spent.
 /// - `can_escalate`: this dispatch is routed through the cost router at all
 ///   (an external CLI worker owns its own model flag).
@@ -5979,11 +5980,45 @@ pub(crate) fn zero_progress_breaker_verdict(
     ZeroProgressBreaker::Escalate
 }
 
+/// QA 2026-09-26: the tier the previous attempt that actually STARTED ran
+/// on, for [`zero_progress_breaker_verdict`]'s `prior_tier`. Pure.
+///
+/// Read from that attempt's execution receipt first — written only once a
+/// worker spawned — so a claim whose spawn failed (its `capability_snapshot`
+/// already names the tier it was escalated to) cannot pass for an attempt
+/// that ran there; the card's own snapshot is the fallback for a card with
+/// no receipt. Within a snapshot: the explicit `routing_choice`, else the
+/// role the dispatch resolved to (`worker_role`). An ordinary redispatch
+/// records no `routing_choice`, so reading only that made a worker whose
+/// own persona role is `Orchestrate` look like it still had a stronger tier
+/// to escalate to.
+fn prior_attempt_tier(meta: &serde_json::Value) -> Option<crate::cost_router::WorkflowRole> {
+    fn tier_in(snapshot: &serde_json::Value) -> Option<crate::cost_router::WorkflowRole> {
+        let routing = snapshot.get("cost_routing")?;
+        routing
+            .get("routing_choice")
+            .or_else(|| routing.get("worker_role"))
+            .and_then(serde_json::Value::as_str)
+            .and_then(crate::cost_router::WorkflowRole::from_tag)
+    }
+    meta.pointer("/execution_receipt/capability_snapshot")
+        .and_then(tier_in)
+        .or_else(|| meta.get("capability_snapshot").and_then(tier_in))
+}
+
 /// Park a goal the zero-progress circuit breaker refused to redispatch: an
 /// `unblock` decision (`Stuck`, deduplicated per goal like every other park)
 /// plus the ordinary park, whose `last_error` also carries the streak
 /// (`park_goal_with_meta`). Returns the dispatch refusal text; a failure to
-/// park is folded into it rather than dispatching anyway.
+/// park is folded into it rather than dispatching anyway. A human's answer
+/// to that decision clears the breaker's state
+/// (`goal_transition::clear_zero_progress_on_human_unblock`), so the goal
+/// really does run again once it is answered.
+///
+/// QA 2026-09-26: the cause is `NoProgress`, not `Stalled` — `Stalled` is
+/// the headless spend-gate watchdog's cause, and the inbox rendered it as
+/// "stopped making progress after a spending check" for a park that never
+/// involved one.
 async fn park_for_zero_progress(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     card: &cards::Card,
@@ -6003,7 +6038,7 @@ async fn park_for_zero_progress(
                 reason: decisions::UnblockReason::Stuck,
                 spent: None,
                 cap: None,
-                cause: Some(decisions::UnblockCause::Stalled),
+                cause: Some(decisions::UnblockCause::NoProgress),
                 ..Default::default()
             }) {
                 Ok(payload) => create_decision_with_retry(
@@ -7990,15 +8025,13 @@ pub(crate) async fn dispatch_goal_fn(
     // goal — escalate this one attempt to the coordinator tier, once per
     // goal, or park it for a human. Checked before the claim below, so a
     // park here leaves no half-dispatched card behind.
+    let zero_progress_prior_tier = prior_attempt_tier(&card.metadata_json);
     let zero_progress_breaker = zero_progress_breaker_verdict(
         card.metadata_json
             .get(goal_transition::ZERO_PROGRESS_STREAK_METADATA_KEY)
             .and_then(|v| v.as_u64())
             .unwrap_or(0),
-        card.metadata_json
-            .pointer("/capability_snapshot/cost_routing/routing_choice")
-            .and_then(serde_json::Value::as_str)
-            .and_then(crate::cost_router::WorkflowRole::from_tag),
+        zero_progress_prior_tier,
         card.metadata_json
             .get(goal_transition::ZERO_PROGRESS_ESCALATION_USED_METADATA_KEY)
             .and_then(serde_json::Value::as_bool)
@@ -8260,42 +8293,71 @@ pub(crate) async fn dispatch_goal_fn(
         // QA 2026-09-25: the zero-progress breaker's escalation (decided
         // above, before the claim). Applied after every other routing rule,
         // explicit per-goal tier included — that tier is the shape that just
-        // produced two empty attempts. An attempt already on the coordinator
-        // tier (R48b's fallback, just above) needs nothing more. No baked
-        // default: an unresolvable coordinator tier parks instead of
-        // repeating the identical dispatch.
-        if zero_progress_breaker == ZeroProgressBreaker::Escalate
-            && role != Some(crate::cost_router::WorkflowRole::Orchestrate)
-        {
-            match resolve_dispatch_role_model(
-                crate::cost_router::WorkflowRole::Orchestrate,
-                &derived,
-                policy,
-            ) {
-                Some(hit) => {
-                    tracing::info!(
-                        target: "permagentd::brain",
-                        card_id,
-                        from = role.map(|r| r.as_str()).unwrap_or("unrouted"),
-                        to = crate::cost_router::WorkflowRole::Orchestrate.as_str(),
-                        "zero_progress_breaker escalated a redispatch after consecutive \
-                         zero-progress attempts",
-                    );
-                    role = Some(crate::cost_router::WorkflowRole::Orchestrate);
-                    resolved = Some(hit);
-                    routing_choice = Some(RoutingChoice {
-                        tier: crate::cost_router::WorkflowRole::Orchestrate,
-                        reason: "zero_progress_breaker: consecutive zero-progress attempts"
-                            .to_string(),
-                    });
-                }
-                None => {
+        // produced two empty attempts. No baked default: an unresolvable
+        // coordinator tier parks instead of repeating the identical dispatch.
+        //
+        // QA 2026-09-26: an escalation that changes nothing is a Park. A
+        // dispatch an earlier rule already put on the coordinator tier (R48b's
+        // fallback, a verify-loop climb, an explicit tier, the worker's own
+        // persona role) is the escalation only when the previous attempt is
+        // known to have run on another tier; otherwise it is the same shape
+        // again. Likewise a coordinator tier that resolves to the very model
+        // this dispatch already had.
+        if zero_progress_breaker == ZeroProgressBreaker::Escalate {
+            if role == Some(crate::cost_router::WorkflowRole::Orchestrate) {
+                if zero_progress_prior_tier.is_none() {
                     return Err(park_for_zero_progress(
                         &pool,
                         &card,
-                        "the coordinator tier has no configured or derived model",
+                        "this attempt would run on the same coordinator tier again",
                     )
                     .await);
+                }
+            } else {
+                let escalated = resolve_dispatch_role_model(
+                    crate::cost_router::WorkflowRole::Orchestrate,
+                    &derived,
+                    policy,
+                );
+                let same_model = matches!(
+                    (escalated.as_ref(), resolved.as_ref()),
+                    (Some((to, _)), Some((from, _)))
+                        if to.provider == from.provider && to.model == from.model
+                );
+                if same_model {
+                    return Err(park_for_zero_progress(
+                        &pool,
+                        &card,
+                        "the coordinator tier resolves to the same model this attempt already had",
+                    )
+                    .await);
+                }
+                match escalated {
+                    Some(hit) => {
+                        tracing::info!(
+                            target: "permagentd::brain",
+                            card_id,
+                            from = role.map(|r| r.as_str()).unwrap_or("unrouted"),
+                            to = crate::cost_router::WorkflowRole::Orchestrate.as_str(),
+                            "zero_progress_breaker escalated a redispatch after consecutive \
+                             zero-progress attempts",
+                        );
+                        role = Some(crate::cost_router::WorkflowRole::Orchestrate);
+                        resolved = Some(hit);
+                        routing_choice = Some(RoutingChoice {
+                            tier: crate::cost_router::WorkflowRole::Orchestrate,
+                            reason: "zero_progress_breaker: consecutive zero-progress attempts"
+                                .to_string(),
+                        });
+                    }
+                    None => {
+                        return Err(park_for_zero_progress(
+                            &pool,
+                            &card,
+                            "the coordinator tier has no configured or derived model",
+                        )
+                        .await);
+                    }
                 }
             }
         }
@@ -8965,6 +9027,14 @@ pub(crate) async fn dispatch_goal_fn(
         cost_routing_snapshot["routing_choice"] = serde_json::json!(rc.tier.as_str());
         cost_routing_snapshot["routing_reason"] = serde_json::json!(rc.reason);
     }
+    // QA 2026-09-26: the role this dispatch actually resolved to, recorded
+    // even when no `routing_choice` was (an ordinary redispatch records
+    // none), so the zero-progress breaker can tell which tier an attempt ran
+    // on (`prior_attempt_tier`). InternalSubagent routes only: `role` is
+    // never set for an external/supervised CLI worker.
+    if let Some(worker_role) = role {
+        cost_routing_snapshot["worker_role"] = serde_json::json!(worker_role.as_str());
+    }
     capability_snapshot["cost_routing"] = cost_routing_snapshot;
 
     // Atomically claim this Ready goal before starting any worker. The claim
@@ -9031,13 +9101,6 @@ pub(crate) async fn dispatch_goal_fn(
     // local tier a further time on this or any later re-dispatch.
     if worker_fallback_applied.is_some() {
         claim_patch.insert("worker_fallback_used".to_string(), serde_json::json!(true));
-    }
-    // QA 2026-09-25: spend the breaker's one escalation for this goal.
-    if zero_progress_breaker == ZeroProgressBreaker::Escalate {
-        claim_patch.insert(
-            goal_transition::ZERO_PROGRESS_ESCALATION_USED_METADATA_KEY.to_string(),
-            serde_json::json!(true),
-        );
     }
     claim_patch.insert(
         "dispatched_lifecycle".to_string(),
@@ -9350,6 +9413,15 @@ pub(crate) async fn dispatch_goal_fn(
                 .await
             }
             goal_engine::GoalOutcome::Failed(error) => {
+                // QA 2026-09-26: a failed attempt moves the zero-progress
+                // streak too, before the handler (which may park) reads it.
+                record_unfinished_attempt_streak(
+                    &tracker_pool,
+                    &tracker_card_id,
+                    &tracker_session_id,
+                    &checkpoint,
+                )
+                .await;
                 handle_goal_completion(
                     &tracker_pool,
                     &tracker_card_id,
@@ -9360,6 +9432,16 @@ pub(crate) async fn dispatch_goal_fn(
                 .await
             }
             goal_engine::GoalOutcome::TimedOut { secs } => {
+                // QA 2026-09-26: same for a timed-out attempt, before
+                // `handle_goal_timeout` parks it (its park detail folds the
+                // streak in).
+                record_unfinished_attempt_streak(
+                    &tracker_pool,
+                    &tracker_card_id,
+                    &tracker_session_id,
+                    &checkpoint,
+                )
+                .await;
                 // R37a (A34 analysis, finding 1): same derivation
                 // `handle_goal_completion`'s own Ok/Err arms use for their
                 // `coordinator_session_id` — read fresh from the installed
@@ -9490,6 +9572,17 @@ pub(crate) async fn dispatch_goal_fn(
             serde_json::json!(checks_source),
         );
     }
+    // QA 2026-09-25: spend the breaker's one escalation for this goal.
+    // QA 2026-09-26: here, once the escalated worker has actually started —
+    // not in the claim patch, which a failed spawn releases back to Ready
+    // with every key it wrote, spending the escalation on a run that never
+    // happened.
+    if zero_progress_breaker == ZeroProgressBreaker::Escalate {
+        patch.insert(
+            goal_transition::ZERO_PROGRESS_ESCALATION_USED_METADATA_KEY.to_string(),
+            serde_json::json!(true),
+        );
+    }
 
     if let Err(error) =
         goal_transition::finalize_dispatch_claim(&pool, card_id, &dispatch_claim_id, patch).await
@@ -9522,6 +9615,81 @@ pub(crate) async fn dispatch_goal_fn(
     );
 
     Ok(session_id)
+}
+
+/// QA 2026-09-26: whether an attempt that ended `Failed` or `TimedOut` made
+/// any progress — the signals the tracker's `Success` arm reads off the
+/// attempt's `GoalEvidence` (a commit, including the teardown checkpoint's,
+/// a file change, or a successful verify), read here from live state because
+/// an unfinished attempt carries no evidence. A checkpoint the credential
+/// guard quarantined is a file change too: the work is real, only left
+/// uncommitted. Commits are counted in this attempt's OWN worktree only
+/// ([`resolve_own_attempt_worktree`]), never the project's checkout, so the
+/// user's own commits can never pass for the worker's. `None` when the git
+/// inspection itself failed: never read as zero progress, the same rule as
+/// `GoalEvidence::diff_errored`.
+async fn unfinished_attempt_made_progress(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card_id: &str,
+    attempt_session_id: &str,
+    checkpoint: &WorkerCheckpoint,
+) -> Option<bool> {
+    if matches!(
+        checkpoint,
+        WorkerCheckpoint::Committed | WorkerCheckpoint::Quarantined { .. }
+    ) || session_had_successful_verify(pool, Some(attempt_session_id)).await
+    {
+        return Some(true);
+    }
+    let card = cards::get_card(pool, card_id).await.ok().flatten()?;
+    match resolve_own_attempt_worktree(pool, &card, Some(attempt_session_id)).await {
+        Ok(Some((baseline, worktree))) => {
+            commits_ahead_of_baseline(std::path::Path::new(&worktree), &baseline)
+                .await
+                .ok()
+                .map(|commits| commits > 0)
+        }
+        // No worktree of this attempt's own, or no commit to look for at
+        // all: nothing it made could be on a branch.
+        Ok(None) => Some(false),
+        Err(_) => None,
+    }
+}
+
+/// QA 2026-09-26: record a `Failed`/`TimedOut` attempt on the zero-progress
+/// streak (`goal_transition::record_unfinished_attempt_progress`): progress
+/// resets it, none counts toward it. Before this only a finished attempt
+/// moved it, so a failed attempt that committed real work left a stale
+/// streak the breaker then parked the goal on. Best-effort, like the
+/// `Success` arm's forgiveness: a failure only warns, and an attempt whose
+/// progress cannot be told leaves the streak as it was.
+async fn record_unfinished_attempt_streak(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card_id: &str,
+    attempt_session_id: &str,
+    checkpoint: &WorkerCheckpoint,
+) {
+    let Some(progress) =
+        unfinished_attempt_made_progress(pool, card_id, attempt_session_id, checkpoint).await
+    else {
+        tracing::debug!(
+            target: "permagentd::brain",
+            goal_id = %card_id,
+            "zero-progress streak left as it was: could not tell whether the unfinished attempt \
+             made progress"
+        );
+        return;
+    };
+    if let Err(e) =
+        goal_transition::record_unfinished_attempt_progress(pool, card_id, !progress).await
+    {
+        tracing::warn!(
+            target: "permagentd::brain",
+            "could not record the zero-progress streak for card {}: {}",
+            card_id,
+            e
+        );
+    }
 }
 
 /// One worker's probe + graduation view, as `handle_check_worker` computes
@@ -19369,6 +19537,58 @@ pub(crate) fn cap_expiry_action(
     }
 }
 
+/// Where a goal still awaited when a [`DrainCapPolicy::ReturnOnExpiry`] wait
+/// hits its cap stands (QA 2026-09-26).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LeftoverGoal {
+    /// Its worker is still working: [`DrainSummary::still_running`].
+    Running,
+    /// It reached a terminal state after the poll that last saw it (e.g. the
+    /// sweep's re-dispatch was refused and the goal parked):
+    /// [`DrainSummary::finished`].
+    Ended,
+    /// Nothing is running it — Ready awaiting a re-dispatch, a Review a human
+    /// owns, an attempt already over whose completion handler is settling
+    /// it, or a worker this drain itself stopped. Counted in neither.
+    Idle,
+}
+
+/// Pure: classify one leftover goal. `attempt_running`: its current
+/// execution receipt is not terminal (no receipt at all reads as running,
+/// the same default the poll loop uses). `stopped_by_drain`: this drain
+/// stopped its worker, whose receipt has not caught up yet.
+pub(crate) fn classify_leftover_goal(
+    state: GoalState,
+    attempt_running: bool,
+    stopped_by_drain: bool,
+) -> LeftoverGoal {
+    match state {
+        GoalState::Complete | GoalState::Cancelled | GoalState::Failed => LeftoverGoal::Ended,
+        GoalState::InProgress if attempt_running && !stopped_by_drain => LeftoverGoal::Running,
+        _ => LeftoverGoal::Idle,
+    }
+}
+
+/// [`classify_leftover_goal`] for a card, read fresh. A card that cannot be
+/// read is not claimed as running.
+async fn leftover_goal_at_cap(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card_id: &str,
+    stopped_by_drain: bool,
+) -> LeftoverGoal {
+    let Ok(state) = goal_state_for_card(pool, card_id).await else {
+        return LeftoverGoal::Idle;
+    };
+    let attempt_running = match cards::get_goal_execution_receipt(pool, card_id).await {
+        Ok(Some(value)) => match serde_json::from_value::<ExecutionReceipt>(value) {
+            Ok(receipt) => !receipt.state.is_terminal(),
+            Err(_) => true,
+        },
+        _ => true,
+    };
+    classify_leftover_goal(state, attempt_running, stopped_by_drain)
+}
+
 /// How recently a worker session must have written a message to count as
 /// actively progressing (see [`local_stall_parks`]).
 const WORKER_ACTIVITY_WINDOW: std::time::Duration = std::time::Duration::from_secs(120);
@@ -20307,6 +20527,12 @@ async fn drain_dispatched_goals_with(
     // Requiring one confirming pass gives that committed child session a
     // chance to become visible instead of exiting with it untracked.
     let mut consecutive_idle_passes = 0u8;
+    // QA 2026-09-26: cards whose worker THIS drain stopped (R55a's local
+    // stall, retried on the cloud tier). Their execution receipt still reads
+    // running until the tracker settles the card, so a `ReturnOnExpiry` cap
+    // must not report them as still running. A card leaves the set the
+    // moment a re-dispatch gives it a new worker session.
+    let mut stopped_by_drain: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     let start = std::time::Instant::now();
     loop {
@@ -20353,6 +20579,7 @@ async fn drain_dispatched_goals_with(
                     .or_insert_with(std::time::Instant::now);
                 // It is running again — it is no longer awaiting a restart.
                 requeued.remove(&card_id);
+                stopped_by_drain.remove(&card_id);
                 pending.insert(session_id, (card_id, project_id));
             }
         }
@@ -20382,6 +20609,11 @@ async fn drain_dispatched_goals_with(
             // never-reaches-review).
             let receipt_terminal =
                 worker_session_execution_receipt_is_terminal(pool, &card_id, &session_id).await;
+            if receipt_terminal {
+                // A worker this drain stopped has settled: its receipt now
+                // says so on its own.
+                stopped_by_drain.remove(&card_id);
+            }
             tracing::debug!(
                 target: "permagentd::brain",
                 "{}",
@@ -20553,6 +20785,7 @@ async fn drain_dispatched_goals_with(
                     } else if stalled_locally
                         && stop_stalled_local_worker_for_cloud_retry(pool, &card_id).await
                     {
+                        stopped_by_drain.insert(card_id.clone());
                         // QA 2026-09-25 (goal `01a0d8d8`, 14:01:23): the
                         // fallback used to be stamped and then PARKED in the
                         // same step (`handle_goal_timeout` always parks, and
@@ -20714,10 +20947,34 @@ async fn drain_dispatched_goals_with(
     // QA 2026-09-25: only `ParkOnExpiry` (the caller about to exit) parks
     // what is still pending here; `ReturnOnExpiry` counts it and leaves it
     // running — see `DrainCapPolicy`.
+    // QA 2026-09-26: and counts as still running only a goal whose worker
+    // really is (`leftover_goal_at_cap`) — not one back in Ready awaiting a
+    // re-dispatch, not one the sweep's re-dispatch parked (the zero-progress
+    // breaker), not one whose worker this drain stopped. A goal that reached
+    // a terminal state since it was last polled is finished.
     let leftover = pending.len() + requeued.len();
     let (timed_out, still_running) = match cap_policy {
         DrainCapPolicy::ParkOnExpiry => (leftover + stalled, 0),
-        DrainCapPolicy::ReturnOnExpiry => (stalled, leftover),
+        DrainCapPolicy::ReturnOnExpiry => {
+            let mut running = 0usize;
+            let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+            for card_id in pending
+                .values()
+                .map(|(card_id, _)| card_id.as_str())
+                .chain(requeued.keys().map(String::as_str))
+            {
+                if !seen.insert(card_id) {
+                    continue;
+                }
+                match leftover_goal_at_cap(pool, card_id, stopped_by_drain.contains(card_id)).await
+                {
+                    LeftoverGoal::Running => running += 1,
+                    LeftoverGoal::Ended => finished += 1,
+                    LeftoverGoal::Idle => {}
+                }
+            }
+            (stalled, running)
+        }
     };
     for (card_id, project_id) in pending.into_values().chain(requeued) {
         // R31b-b (G28 review, MEDIUM-1): the same "a handler owns this card"
@@ -22742,14 +22999,27 @@ async fn resolve_goal_baseline_and_worktree(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     meta: &serde_json::Value,
 ) -> Result<Option<(String, String)>, String> {
-    resolve_attempt_baseline_and_worktree(pool, meta, None).await
+    resolve_attempt_baseline_and_worktree(pool, meta, None, AttemptWorktreeUse::Inspect).await
+}
+
+/// What a resolved attempt worktree is for — see [`pick_attempt_worktree`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AttemptWorktreeUse {
+    /// Reading git state. When nothing for this attempt is on disk, the
+    /// pre-fix answers still apply, the session's own `working_dir` included.
+    Inspect,
+    /// Committing in it (the teardown checkpoint) or crediting its commits to
+    /// this attempt. Never the session's `working_dir` unless that is a goal
+    /// worktree: an external worker's session row keeps the project's own
+    /// checkout there, and a checkpoint must never commit the user's work.
+    OwnOnly,
 }
 
 /// [`resolve_goal_baseline_and_worktree`] for one specific attempt:
 /// `attempt_session_id` names the worker session whose worktree is wanted
 /// (the completion tracker passes its own, so a teardown can never reach a
 /// LATER attempt's worktree); `None` means the card's current
-/// `worker_session_id`.
+/// `worker_session_id`. `purpose` is [`AttemptWorktreeUse`].
 ///
 /// QA 2026-09-25 (goal `01a0d5ea`, worker `20260925_9`): this used to take
 /// `dispatch_evidence.worktree_path` whenever it existed — but that key is
@@ -22764,6 +23034,7 @@ async fn resolve_attempt_baseline_and_worktree(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     meta: &serde_json::Value,
     attempt_session_id: Option<&str>,
+    purpose: AttemptWorktreeUse,
 ) -> Result<Option<(String, String)>, String> {
     if meta.pointer("/program/delivery").and_then(|v| v.as_str()) == Some("no_write") {
         return Ok(None);
@@ -22791,11 +23062,20 @@ async fn resolve_attempt_baseline_and_worktree(
         None => None,
     };
     let worktree = pick_attempt_worktree(
+        purpose,
         evidence_path,
         session_id,
         session_working_dir.as_deref(),
         |path| std::path::Path::new(path).is_dir(),
     );
+    if worktree.is_none() && purpose == AttemptWorktreeUse::OwnOnly {
+        tracing::info!(
+            target: "permagentd::brain",
+            session_id = session_id.unwrap_or("unknown"),
+            "no worktree of this attempt is on disk — nothing is checkpointed or credited to \
+             it; the project's own checkout is never committed on a worker's behalf"
+        );
+    }
     Ok(worktree.map(|worktree| (baseline.to_string(), worktree)))
 }
 
@@ -22809,13 +23089,22 @@ async fn resolve_attempt_baseline_and_worktree(
 ///      — the common case once an attempt has finished, unchanged;
 ///   2. the session's own `working_dir` when it is an existing goal worktree
 ///      (internal workers are repointed there at spawn, Y3);
-///   3. `evidence_path`'s sibling named after this attempt, when it exists
-///      (same project, same worktrees dir — covers an external worker whose
-///      session row keeps the project root);
-///   4. `evidence_path` as-is, then the session's `working_dir` — exactly
-///      the pre-fix answers, used only when nothing for this attempt exists
-///      on disk.
+///   3. when that `working_dir` is not a goal worktree (an external worker's
+///      session row keeps the project root, and nothing repoints it), the
+///      attempt's worktree beside it —
+///      `<working_dir's parent>/.permagent-goal-worktrees/<session_id>`,
+///      where `create_goal_worktree` put it — when it exists. QA 2026-09-26:
+///      without this an external worker's FIRST attempt (no evidence yet to
+///      take a sibling from) fell through to the project root;
+///   4. `evidence_path`'s sibling named after this attempt, when it exists
+///      (same project, same worktrees dir);
+///   5. only when nothing for this attempt exists on disk: `evidence_path`
+///      as-is, then — for [`AttemptWorktreeUse::Inspect`] only — the
+///      session's `working_dir`, exactly the pre-fix answers.
+///      [`AttemptWorktreeUse::OwnOnly`] never falls back to a `working_dir`
+///      that is not a goal worktree: that is the project's own checkout.
 pub(crate) fn pick_attempt_worktree(
+    purpose: AttemptWorktreeUse,
     evidence_path: Option<&str>,
     session_id: Option<&str>,
     session_working_dir: Option<&str>,
@@ -22826,6 +23115,11 @@ pub(crate) fn pick_attempt_worktree(
             .file_name()
             .is_some_and(|name| name == id)
     };
+    let in_goal_worktrees = |path: &str| {
+        std::path::Path::new(path)
+            .components()
+            .any(|c| c.as_os_str() == goal_engine::GOAL_WORKTREES_DIR)
+    };
     if let Some(path) = evidence_path {
         if session_id.is_none_or(|id| names_attempt(path, id)) {
             return Some(path.to_string());
@@ -22833,12 +23127,22 @@ pub(crate) fn pick_attempt_worktree(
     }
     if let Some(id) = session_id {
         if let Some(dir) = session_working_dir {
-            let is_goal_worktree = std::path::Path::new(dir)
-                .components()
-                .any(|c| c.as_os_str() == goal_engine::GOAL_WORKTREES_DIR)
-                && names_attempt(dir, id);
-            if is_goal_worktree && exists(dir) {
-                return Some(dir.to_string());
+            if in_goal_worktrees(dir) {
+                if names_attempt(dir, id) && exists(dir) {
+                    return Some(dir.to_string());
+                }
+            } else {
+                let repo = std::path::Path::new(dir);
+                let beside = repo
+                    .parent()
+                    .unwrap_or(repo)
+                    .join(goal_engine::GOAL_WORKTREES_DIR)
+                    .join(id)
+                    .to_string_lossy()
+                    .into_owned();
+                if exists(&beside) {
+                    return Some(beside);
+                }
             }
         }
         if let Some(sibling) = evidence_path
@@ -22850,9 +23154,12 @@ pub(crate) fn pick_attempt_worktree(
             }
         }
     }
-    evidence_path
-        .map(str::to_string)
-        .or_else(|| session_working_dir.map(str::to_string))
+    match purpose {
+        AttemptWorktreeUse::Inspect => evidence_path
+            .map(str::to_string)
+            .or_else(|| session_working_dir.map(str::to_string)),
+        AttemptWorktreeUse::OwnOnly => evidence_path.map(str::to_string),
+    }
 }
 
 /// Inspect live git state, not the evidence snapshot collected at worker exit.
@@ -23106,6 +23413,61 @@ enum WorkerCheckpoint {
     Quarantined { reason: String, worktree: String },
 }
 
+/// The `(baseline, worktree)` of the attempt run by `attempt_session_id`
+/// for a caller that commits in it or credits its commits to that attempt
+/// ([`AttemptWorktreeUse::OwnOnly`]).
+///
+/// QA 2026-09-26: never the project's own checkout. Beyond what
+/// [`pick_attempt_worktree`] already refuses, a path that IS the project's
+/// root (a recovered `dispatch_evidence` can name it) is refused here too:
+/// committing there sweeps the user's own uncommitted edits into a
+/// "checkpoint" on their checked-out branch. `Ok(None)` then, logged.
+async fn resolve_own_attempt_worktree(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card: &cards::Card,
+    attempt_session_id: Option<&str>,
+) -> Result<Option<(String, String)>, String> {
+    let Some((baseline, worktree)) = resolve_attempt_baseline_and_worktree(
+        pool,
+        &card.metadata_json,
+        attempt_session_id,
+        AttemptWorktreeUse::OwnOnly,
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+    let project_root = crate::projects::get_project(pool, &card.project_id)
+        .await?
+        .and_then(|project| project.root_path);
+    if project_root
+        .as_deref()
+        .is_some_and(|root| same_directory(root, &worktree))
+    {
+        tracing::warn!(
+            target: "permagentd::brain",
+            goal_id = %card.id,
+            worktree = %worktree,
+            "the only worktree on record for this attempt is the project's own checkout — \
+             skipped: a worker's changes are never committed there on its behalf"
+        );
+        return Ok(None);
+    }
+    Ok(Some((baseline, worktree)))
+}
+
+/// Whether two paths name the same directory: compared canonically when both
+/// resolve on disk, else as written (ignoring a trailing separator).
+fn same_directory(a: &str, b: &str) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => {
+            a.trim_end_matches(std::path::MAIN_SEPARATOR)
+                == b.trim_end_matches(std::path::MAIN_SEPARATOR)
+        }
+    }
+}
+
 /// DB-aware wrapper: resolve the worktree of the attempt run by
 /// `attempt_session_id` (`None`: the card's current `worker_session_id`; see
 /// [`resolve_attempt_baseline_and_worktree`]), delegate the git work to
@@ -23146,21 +23508,18 @@ async fn checkpoint_uncommitted_worker_changes(
             return WorkerCheckpoint::Nothing;
         }
     };
-    let worktree =
-        match resolve_attempt_baseline_and_worktree(pool, &card.metadata_json, attempt_session_id)
-            .await
-        {
-            Ok(Some((_baseline, worktree))) => worktree,
-            Ok(None) => return WorkerCheckpoint::Nothing,
-            Err(e) => {
-                tracing::warn!(
-                    target: "permagentd::brain",
-                    goal_id = %card_id,
-                    "worker checkpoint: could not resolve the goal's worktree: {e}"
-                );
-                return WorkerCheckpoint::Nothing;
-            }
-        };
+    let worktree = match resolve_own_attempt_worktree(pool, &card, attempt_session_id).await {
+        Ok(Some((_baseline, worktree))) => worktree,
+        Ok(None) => return WorkerCheckpoint::Nothing,
+        Err(e) => {
+            tracing::warn!(
+                target: "permagentd::brain",
+                goal_id = %card_id,
+                "worker checkpoint: could not resolve the goal's worktree: {e}"
+            );
+            return WorkerCheckpoint::Nothing;
+        }
+    };
     let commit =
         match checkpoint_uncommitted_changes_in(std::path::Path::new(&worktree), reason).await {
             Ok(Some(commit)) => commit,
@@ -41635,6 +41994,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
     /// worktree must win whenever it exists; otherwise nothing changes.
     #[test]
     fn pick_attempt_worktree_prefers_the_current_attempt_over_stale_evidence() {
+        use super::AttemptWorktreeUse::Inspect;
         let root = "/dev/.permagent-goal-worktrees";
         let stale = format!("{root}/20260925_4");
         let current = format!("{root}/20260925_9");
@@ -41644,6 +42004,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         // worktree.
         assert_eq!(
             pick_attempt_worktree(
+                Inspect,
                 Some(stale.as_str()),
                 Some("20260925_9"),
                 Some(current.as_str()),
@@ -41653,9 +42014,10 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             Some(current.as_str())
         );
         // Stale evidence, session row keeps the project root (external
-        // worker): the sibling named after the attempt.
+        // worker): the attempt's own worktree beside it.
         assert_eq!(
             pick_attempt_worktree(
+                Inspect,
                 Some(stale.as_str()),
                 Some("20260925_9"),
                 Some("/dev/CityCircle"),
@@ -41666,22 +42028,161 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         );
         // Evidence already names this attempt: unchanged.
         assert_eq!(
-            pick_attempt_worktree(Some(current.as_str()), Some("20260925_9"), None, |_| false)
-                .as_deref(),
+            pick_attempt_worktree(
+                Inspect,
+                Some(current.as_str()),
+                Some("20260925_9"),
+                None,
+                |_| false
+            )
+            .as_deref(),
             Some(current.as_str())
         );
         // Nothing for this attempt on disk: the pre-fix answer.
         assert_eq!(
-            pick_attempt_worktree(Some(stale.as_str()), Some("20260925_9"), None, |_| false)
-                .as_deref(),
+            pick_attempt_worktree(
+                Inspect,
+                Some(stale.as_str()),
+                Some("20260925_9"),
+                None,
+                |_| false
+            )
+            .as_deref(),
             Some(stale.as_str())
         );
-        // No evidence at all: the session's working_dir, as before.
+        // No evidence at all: the session's working_dir, as before — for a
+        // read-only inspection.
         assert_eq!(
-            pick_attempt_worktree(None, Some("20260925_9"), Some("/w"), |_| false).as_deref(),
+            pick_attempt_worktree(Inspect, None, Some("20260925_9"), Some("/w"), |_| false)
+                .as_deref(),
             Some("/w")
         );
-        assert_eq!(pick_attempt_worktree(None, None, None, |_| true), None);
+        assert_eq!(
+            pick_attempt_worktree(Inspect, None, None, None, |_| true),
+            None
+        );
+    }
+
+    /// QA 2026-09-26: an external worker's FIRST attempt has no evidence yet
+    /// and its session row keeps the project's own checkout, so the resolver
+    /// used to hand the teardown checkpoint the project root — which then ran
+    /// `git add -A` and a "checkpoint" commit over the user's own edits on
+    /// their checked-out branch. The attempt's own worktree beside the root is
+    /// found when it exists; when it does not, a checkpoint gets nothing.
+    #[test]
+    fn a_checkpoint_never_resolves_to_the_project_checkout() {
+        let project_root = "/dev/CityCircle";
+        let attempt = "/dev/.permagent-goal-worktrees/20260926_1";
+
+        // The attempt's worktree exists beside the project: that, never the
+        // root — for either use.
+        for purpose in [AttemptWorktreeUse::Inspect, AttemptWorktreeUse::OwnOnly] {
+            assert_eq!(
+                pick_attempt_worktree(purpose, None, Some("20260926_1"), Some(project_root), |p| p
+                    == attempt)
+                .as_deref(),
+                Some(attempt),
+                "{purpose:?}"
+            );
+        }
+        // Nothing of this attempt's on disk (only the project checkout
+        // exists): a checkpoint gets nothing at all, where a read-only
+        // inspection still gets the pre-fix answer.
+        let only_the_checkout = |p: &str| p == project_root;
+        assert_eq!(
+            pick_attempt_worktree(
+                AttemptWorktreeUse::OwnOnly,
+                None,
+                Some("20260926_1"),
+                Some(project_root),
+                only_the_checkout
+            ),
+            None
+        );
+        assert_eq!(
+            pick_attempt_worktree(
+                AttemptWorktreeUse::Inspect,
+                None,
+                Some("20260926_1"),
+                Some(project_root),
+                only_the_checkout
+            )
+            .as_deref(),
+            Some(project_root)
+        );
+        // A goal worktree on record from an earlier attempt is still a goal
+        // worktree, never the user's checkout: kept as the fallback.
+        let earlier = "/dev/.permagent-goal-worktrees/20260925_4";
+        assert_eq!(
+            pick_attempt_worktree(
+                AttemptWorktreeUse::OwnOnly,
+                Some(earlier),
+                Some("20260926_1"),
+                Some(project_root),
+                |_| false
+            )
+            .as_deref(),
+            Some(earlier)
+        );
+    }
+
+    /// QA 2026-09-26: end to end through the DB-aware checkpoint — an
+    /// external worker's first attempt (session row on the project's own
+    /// checkout, no evidence yet, no worktree of its own on disk) commits
+    /// nothing, and the user's uncommitted edit in the checkout is left
+    /// exactly as it was.
+    #[tokio::test]
+    async fn checkpoint_leaves_the_project_checkout_alone_for_an_external_first_attempt() {
+        let pool = test_pool().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let checkout = tmp.path().join("project");
+        std::fs::create_dir_all(&checkout).unwrap();
+        r20b_git(&checkout, &["init", "-q", "-b", "main"]);
+        r20b_git(&checkout, &["config", "user.email", "test@example.com"]);
+        r20b_git(&checkout, &["config", "user.name", "Test"]);
+        r20b_git(&checkout, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(checkout.join("a.txt"), "one\n").unwrap();
+        r20b_git(&checkout, &["add", "-A"]);
+        r20b_git(&checkout, &["commit", "-q", "-m", "seed"]);
+        let baseline = r20b_git(&checkout, &["rev-parse", "HEAD"]);
+        // The user's own work in progress, uncommitted.
+        std::fs::write(checkout.join("a.txt"), "one\nmy own edit\n").unwrap();
+
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        let session_id = format!("qa0926-external-{}", uuid::Uuid::new_v4());
+        sqlx::query("INSERT INTO sessions (id, working_dir) VALUES (?, ?)")
+            .bind(&session_id)
+            .bind(checkout.to_string_lossy().as_ref())
+            .execute(&pool)
+            .await
+            .unwrap();
+        persist_card_meta(&pool, &card.id, |m| {
+            m.insert(
+                "worker_session_id".to_string(),
+                serde_json::json!(session_id),
+            );
+            m.insert("baseline_commit".to_string(), serde_json::json!(baseline));
+        })
+        .await
+        .unwrap();
+
+        let result = checkpoint_uncommitted_worker_changes(
+            &pool,
+            &card.id,
+            Some(session_id.as_str()),
+            TIMEOUT_HANDLER_CHECKPOINT_REASON,
+        )
+        .await;
+        assert_eq!(result, WorkerCheckpoint::Nothing);
+        assert_eq!(
+            r20b_git(&checkout, &["log", "--oneline"]).lines().count(),
+            1,
+            "no checkpoint commit may land on the user's checked-out branch"
+        );
+        assert!(
+            !r20b_git(&checkout, &["status", "--porcelain"]).is_empty(),
+            "the user's own edit stays uncommitted"
+        );
     }
 
     /// QA 2026-09-25 (goal `01a0d5ea`: `_2`/`_3`/`_4` each made zero edits
@@ -41722,6 +42223,743 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         assert_eq!(
             zero_progress_breaker_verdict(2, Some(WorkflowRole::Edit), false, false),
             ZeroProgressBreaker::Park
+        );
+    }
+
+    /// QA 2026-09-26: the breaker's `prior_tier` is the tier of the last
+    /// attempt that actually STARTED, and it is known for an ordinary
+    /// redispatch too.
+    #[test]
+    fn prior_attempt_tier_reads_the_attempt_that_actually_ran() {
+        use crate::cost_router::WorkflowRole;
+        // A claim whose spawn failed left the escalated tier in the card's
+        // snapshot; the receipt still names the attempt that ran.
+        let failed_spawn = serde_json::json!({
+            "capability_snapshot": {"cost_routing": {"routing_choice": "orchestrate"}},
+            "execution_receipt": {
+                "capability_snapshot": {"cost_routing": {"routing_choice": "edit"}}
+            },
+        });
+        assert_eq!(prior_attempt_tier(&failed_spawn), Some(WorkflowRole::Edit));
+        assert_eq!(
+            zero_progress_breaker_verdict(2, prior_attempt_tier(&failed_spawn), false, true),
+            ZeroProgressBreaker::Escalate,
+            "an escalation whose worker never started is still there to spend"
+        );
+        // An ordinary redispatch records no routing_choice, only the role
+        // it resolved to: a persona-Orchestrate worker is already on the top
+        // tier, so two empty attempts park it rather than run a third.
+        let persona_orchestrate = serde_json::json!({
+            "capability_snapshot": {"cost_routing": {"worker_role": "orchestrate"}},
+        });
+        assert_eq!(
+            prior_attempt_tier(&persona_orchestrate),
+            Some(WorkflowRole::Orchestrate)
+        );
+        assert_eq!(
+            zero_progress_breaker_verdict(2, prior_attempt_tier(&persona_orchestrate), false, true),
+            ZeroProgressBreaker::Park
+        );
+        // An explicit routing choice outranks the resolved role.
+        assert_eq!(
+            prior_attempt_tier(&serde_json::json!({
+                "capability_snapshot": {"cost_routing": {
+                    "routing_choice": "local",
+                    "worker_role": "edit",
+                }},
+            })),
+            Some(WorkflowRole::Local)
+        );
+        assert_eq!(prior_attempt_tier(&serde_json::json!({})), None);
+    }
+
+    /// QA 2026-09-26, end to end: the breaker parks a goal with an honest
+    /// cause, and a human's approve really gets it going again. Before the
+    /// fix the inbox said it stopped "after a spending check", and the
+    /// approved goal was parked again by the breaker on its very next
+    /// dispatch, forever — the streak and spent escalation were protected
+    /// keys nothing cleared.
+    #[tokio::test]
+    async fn approving_a_zero_progress_park_lets_the_next_dispatch_through() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+        // Two empty attempts in a row and the one escalation already spent:
+        // whatever worker is selected, the breaker's verdict is Park.
+        let card = setup_goal_in_state(&pool, "ready", 2).await;
+        persist_card_meta(&pool, &card.id, |m| {
+            m.insert(
+                goal_transition::ZERO_PROGRESS_STREAK_METADATA_KEY.to_string(),
+                serde_json::json!(2),
+            );
+            m.insert("zero_progress".to_string(), serde_json::json!(true));
+            m.insert(
+                goal_transition::ZERO_PROGRESS_ESCALATION_USED_METADATA_KEY.to_string(),
+                serde_json::json!(true),
+            );
+        })
+        .await
+        .unwrap();
+        let context = PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: sm.clone(),
+            session: None,
+        };
+        let probe_cache = ProbeCache::new();
+
+        let err = dispatch_goal_fn(&context, &probe_cache, &card.id, None, None)
+            .await
+            .expect_err("two empty attempts with the escalation spent must not dispatch");
+        assert!(err.contains("zero-progress circuit breaker"), "{err}");
+        let decision = decisions::find_open_decision_for_goal(&pool, &card.id, "unblock")
+            .await
+            .unwrap()
+            .expect("the park files an unblock decision");
+        assert_eq!(
+            decision.payload.get("cause").and_then(|v| v.as_str()),
+            Some("no_progress")
+        );
+        let summary = decisions::summarize_decision(
+            &decision.kind,
+            &decision.payload,
+            true,
+            &decision.headline,
+            &decision.detail,
+        )
+        .expect("a plain-language cause");
+        assert!(
+            summary.contains("changed nothing") && !summary.contains("spending check"),
+            "the inbox must name the real cause: {summary}"
+        );
+
+        let (answered, proof) = decisions::answer_decision(
+            &pool,
+            &decision.id,
+            &decisions::DecisionAnswer {
+                answer: "approve".to_string(),
+                ..Default::default()
+            },
+            decisions::ACTOR_JESSE,
+        )
+        .await
+        .unwrap();
+        crate::decisions_effects::apply_decision_effect(&pool, &answered, proof, "unblock")
+            .await
+            .unwrap();
+        let unparked = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        for key in [
+            goal_transition::ZERO_PROGRESS_STREAK_METADATA_KEY,
+            "zero_progress",
+            goal_transition::ZERO_PROGRESS_ESCALATION_USED_METADATA_KEY,
+        ] {
+            assert!(
+                unparked.metadata_json.get(key).is_none(),
+                "{key} must be cleared by the approve: {:?}",
+                unparked.metadata_json
+            );
+        }
+
+        // The next dispatch gets past the breaker: this fixture's project has
+        // no root, so it stops at the working-directory refusal instead —
+        // never at another zero-progress park.
+        let err = dispatch_goal_fn(&context, &probe_cache, &card.id, None, None)
+            .await
+            .expect_err("the fixture project has no working directory");
+        assert!(
+            !err.contains("zero-progress circuit breaker"),
+            "an approved goal must not be parked by the breaker again: {err}"
+        );
+        assert!(err.contains("no working directory is known"), "{err}");
+        assert!(
+            decisions::find_open_decision_for_goal(&pool, &card.id, "unblock")
+                .await
+                .unwrap()
+                .is_none(),
+            "no fresh unblock decision is filed"
+        );
+    }
+
+    /// QA 2026-09-26: the approve effect on its own, with no dispatch around
+    /// it — a human's approve of a zero-progress park clears the streak and
+    /// the spent escalation inside the same guarded unpark, and the inbox
+    /// names the real cause rather than a spending check.
+    #[tokio::test]
+    async fn a_human_approve_clears_the_zero_progress_breaker_in_the_unpark() {
+        let pool = test_pool().await;
+        let card = setup_goal_in_state(&pool, "failed", 3).await;
+        persist_card_meta(&pool, &card.id, |m| {
+            m.insert("needs_human_attention".to_string(), serde_json::json!(true));
+            m.insert(
+                goal_transition::ZERO_PROGRESS_STREAK_METADATA_KEY.to_string(),
+                serde_json::json!(2),
+            );
+            m.insert("zero_progress".to_string(), serde_json::json!(true));
+            m.insert(
+                goal_transition::ZERO_PROGRESS_ESCALATION_USED_METADATA_KEY.to_string(),
+                serde_json::json!(true),
+            );
+        })
+        .await
+        .unwrap();
+        let decision = decisions::create_decision(
+            &pool,
+            decisions::NewDecision {
+                kind: "unblock".to_string(),
+                goal_id: Some(card.id.clone()),
+                project_id: Some(card.project_id.clone()),
+                headline: Some(
+                    "Goal keeps making no progress and needs your direction".to_string(),
+                ),
+                detail: Some(format!(
+                    "Goal {} parked: zero-progress circuit breaker",
+                    card.id
+                )),
+                payload: serde_json::to_value(decisions::UnblockPayload {
+                    reason: decisions::UnblockReason::Stuck,
+                    cause: Some(decisions::UnblockCause::NoProgress),
+                    ..Default::default()
+                })
+                .unwrap(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let summary = decisions::summarize_decision(
+            &decision.kind,
+            &decision.payload,
+            true,
+            &decision.headline,
+            &decision.detail,
+        )
+        .expect("a plain-language cause");
+        assert!(
+            summary.contains("Two attempts in a row changed nothing")
+                && !summary.contains("spending check"),
+            "{summary}"
+        );
+
+        let (answered, proof) = decisions::answer_decision(
+            &pool,
+            &decision.id,
+            &decisions::DecisionAnswer {
+                answer: "approve".to_string(),
+                ..Default::default()
+            },
+            decisions::ACTOR_JESSE,
+        )
+        .await
+        .unwrap();
+        crate::decisions_effects::apply_decision_effect(&pool, &answered, proof, "unblock")
+            .await
+            .unwrap();
+
+        let unparked = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &unparked.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(col.state_binding.as_deref(), Some("ready"));
+        for key in [
+            goal_transition::ZERO_PROGRESS_STREAK_METADATA_KEY,
+            "zero_progress",
+            goal_transition::ZERO_PROGRESS_ESCALATION_USED_METADATA_KEY,
+        ] {
+            assert!(
+                unparked.metadata_json.get(key).is_none(),
+                "{key} must be cleared by the approve: {:?}",
+                unparked.metadata_json
+            );
+        }
+    }
+
+    /// QA 2026-09-26 (an Escalate verdict that changes nothing): a dispatch
+    /// already on the coordinator tier — here an explicit per-goal
+    /// `worker_tier` — with no record that the previous attempt ran anywhere
+    /// else has no stronger tier to escalate to. The breaker used to leave
+    /// such a dispatch as it was, stamp the escalation spent and run the
+    /// identical shape a third time; it now parks, before any claim.
+    #[tokio::test]
+    async fn an_escalation_that_would_not_change_the_tier_parks_instead() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+        let card = setup_goal_in_state(&pool, "ready", 2).await;
+        persist_card_meta(&pool, &card.id, |m| {
+            m.insert(
+                goal_transition::ZERO_PROGRESS_STREAK_METADATA_KEY.to_string(),
+                serde_json::json!(2),
+            );
+            m.insert(
+                "dispatch_worker_tier".to_string(),
+                serde_json::json!("orchestrate"),
+            );
+        })
+        .await
+        .unwrap();
+        let context = PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: sm.clone(),
+            session: None,
+        };
+        let probe_cache = ProbeCache::new();
+
+        // The internal worker, pinned, so the dispatch is routed through the
+        // cost router at all (an external CLI worker parks for another
+        // reason: it has no tier to escalate through).
+        let err = dispatch_goal_fn(&context, &probe_cache, &card.id, Some("permagent"), None)
+            .await
+            .expect_err("the same coordinator-tier shape must not run a third time");
+        assert!(
+            err.contains("zero-progress circuit breaker") && err.contains("same coordinator tier"),
+            "{err}"
+        );
+        let parked = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &parked.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(col.state_binding.as_deref(), Some("failed"));
+        assert!(
+            parked
+                .metadata_json
+                .get(goal_transition::ZERO_PROGRESS_ESCALATION_USED_METADATA_KEY)
+                .is_none(),
+            "nothing ran, so no escalation was spent: {:?}",
+            parked.metadata_json
+        );
+        assert_eq!(
+            parked
+                .metadata_json
+                .get("attempt_count")
+                .and_then(|v| v.as_u64()),
+            Some(2),
+            "refused before the claim: no attempt was spent"
+        );
+    }
+
+    /// QA 2026-09-26 (the escalation was spent before spawn): the breaker's
+    /// one escalation used to be written by the claim patch, which a failed
+    /// spawn releases back to Ready with every key it wrote — so the stronger
+    /// tier read as used although it never ran, and the next dispatch parked
+    /// the goal. It is now spent only once the escalated worker has started.
+    #[tokio::test]
+    #[serial_test::serial(receipts_global_registry, routing_env)]
+    async fn the_zero_progress_escalation_is_spent_only_once_its_worker_starts() {
+        // Distinct edit and coordinator models, so the escalation really
+        // changes what runs. Taken once, here, and held to the end (restored
+        // on drop, a failed assertion included); nothing below takes it again.
+        let _routing_env = env_lock::lock_env([
+            ("PERMAGENT_ROLE_EDIT_PROVIDER", Some("ollama")),
+            ("PERMAGENT_ROLE_EDIT_MODEL", Some("qwen3")),
+            ("PERMAGENT_ROLE_ORCHESTRATE_PROVIDER", Some("ollama")),
+            ("PERMAGENT_ROLE_ORCHESTRATE_MODEL", Some("qwen3-coder")),
+            ("PERMAGENT_PACK_EDIT_PROVIDER", None),
+            ("PERMAGENT_PACK_EDIT_MODEL", None),
+            ("PERMAGENT_PACK_HARD_PROVIDER", None),
+            ("PERMAGENT_PACK_HARD_MODEL", None),
+        ]);
+
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+        let repo = tmp.path().join("proj");
+        init_git_repo_for_dispatch_test(&repo);
+        sqlx::query("UPDATE projects SET root_path = ? WHERE id = ?")
+            .bind(repo.to_str().unwrap())
+            .bind(crate::projects::PERSONAL_PROJECT_ID)
+            .execute(&pool)
+            .await
+            .unwrap();
+        // A plain file where the goal worktrees directory belongs: `git
+        // worktree add` cannot create the attempt's worktree, so the spawn
+        // fails AFTER the claim.
+        let worktrees = tmp.path().join(goal_engine::GOAL_WORKTREES_DIR);
+        std::fs::write(&worktrees, "not a directory").unwrap();
+
+        // Two empty attempts in a row; the last one that ran was on the edit
+        // tier, so the breaker escalates this one to the coordinator tier.
+        let card = setup_goal_in_state(&pool, "ready", 1).await;
+        let mut prior_receipt = ExecutionReceipt::new(
+            "permagent",
+            "qa0926-prior-attempt",
+            serde_json::json!({"cost_routing": {"routing_choice": "edit"}}),
+            "life-1",
+            chrono::Utc::now().to_rfc3339(),
+            1,
+        );
+        prior_receipt.finalize(ReceiptState::Completed, chrono::Utc::now().to_rfc3339());
+        let prior_receipt = serde_json::to_value(&prior_receipt).unwrap();
+        persist_card_meta(&pool, &card.id, |m| {
+            m.insert(
+                goal_transition::ZERO_PROGRESS_STREAK_METADATA_KEY.to_string(),
+                serde_json::json!(2),
+            );
+            m.insert("zero_progress".to_string(), serde_json::json!(true));
+            m.insert("execution_receipt".to_string(), prior_receipt.clone());
+        })
+        .await
+        .unwrap();
+
+        let session = crate::session::Session {
+            provider_name: Some("ollama".to_string()),
+            model_config: Some(crate::model::ModelConfig::new("qwen3").unwrap()),
+            ..crate::session::Session::default()
+        };
+        let context = PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: sm.clone(),
+            session: None,
+        };
+        let probe_cache = ProbeCache::new();
+        let policy = HeadlessDispatchPolicy {
+            session_for_provider_fallback: Some(Arc::new(session)),
+            restrict_ranked_selection_to_internal_engine: true,
+            auto_land: false,
+        };
+
+        let failed = dispatch_goal_fn(
+            &context,
+            &probe_cache,
+            &card.id,
+            Some("permagent"),
+            Some(&policy),
+        )
+        .await;
+        let after_failure = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        // The worktree can be created now: the next dispatch spawns.
+        std::fs::remove_file(&worktrees).unwrap();
+        let started = dispatch_goal_fn(
+            &context,
+            &probe_cache,
+            &card.id,
+            Some("permagent"),
+            Some(&policy),
+        )
+        .await;
+        let after_start = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+
+        let spawn_error = failed.expect_err("the spawn cannot create its worktree");
+        assert!(spawn_error.contains("worktree"), "{spawn_error}");
+        assert_eq!(
+            after_failure
+                .metadata_json
+                .pointer("/capability_snapshot/cost_routing/routing_choice")
+                .and_then(|v| v.as_str()),
+            Some("orchestrate"),
+            "the claim was taken on the escalated tier: {:?}",
+            after_failure.metadata_json
+        );
+        let col = cards::get_column(&pool, &after_failure.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(col.state_binding.as_deref(), Some("ready"));
+        let escalation_used = after_failure
+            .metadata_json
+            .get(goal_transition::ZERO_PROGRESS_ESCALATION_USED_METADATA_KEY)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        assert!(
+            !escalation_used,
+            "a spawn that failed must not spend the escalation: {:?}",
+            after_failure.metadata_json
+        );
+        assert_eq!(
+            zero_progress_breaker_verdict(
+                2,
+                prior_attempt_tier(&after_failure.metadata_json),
+                escalation_used,
+                true
+            ),
+            ZeroProgressBreaker::Escalate,
+            "the escalation is still there for the next dispatch"
+        );
+
+        let worker_session =
+            started.expect("with its worktree creatable the escalated worker starts");
+        assert!(!worker_session.is_empty());
+        assert_eq!(
+            after_start
+                .metadata_json
+                .get(goal_transition::ZERO_PROGRESS_ESCALATION_USED_METADATA_KEY)
+                .and_then(|v| v.as_bool()),
+            Some(true),
+            "a worker that started spends the escalation: {:?}",
+            after_start.metadata_json
+        );
+        assert_eq!(
+            prior_attempt_tier(&after_start.metadata_json),
+            Some(crate::cost_router::WorkflowRole::Orchestrate)
+        );
+    }
+
+    /// QA 2026-09-26: an unfinished (`Failed`/`TimedOut`) attempt's progress
+    /// is read from its OWN worktree's commits, and moves the streak: a
+    /// commit clears a stale `2`, nothing counts.
+    #[tokio::test]
+    async fn an_unfinished_attempt_that_committed_clears_the_zero_progress_streak() {
+        let pool = test_pool().await;
+        let (card, _tmp, _prior, current) = qa0925_stale_evidence_goal(&pool).await;
+        let attempt = current.file_name().unwrap().to_string_lossy().into_owned();
+        persist_card_meta(&pool, &card.id, |m| {
+            m.insert(
+                goal_transition::ZERO_PROGRESS_STREAK_METADATA_KEY.to_string(),
+                serde_json::json!(2),
+            );
+        })
+        .await
+        .unwrap();
+
+        // Nothing committed yet: no progress, and the streak stays at 2.
+        assert_eq!(
+            unfinished_attempt_made_progress(&pool, &card.id, &attempt, &WorkerCheckpoint::Nothing)
+                .await,
+            Some(false)
+        );
+        record_unfinished_attempt_streak(&pool, &card.id, &attempt, &WorkerCheckpoint::Nothing)
+            .await;
+        let still = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        assert_eq!(
+            still
+                .metadata_json
+                .get(goal_transition::ZERO_PROGRESS_STREAK_METADATA_KEY)
+                .and_then(|v| v.as_u64()),
+            Some(2)
+        );
+        // Work its teardown checkpoint committed, or found and quarantined
+        // uncommitted, is progress even with no commit of its own.
+        for checkpoint in [
+            WorkerCheckpoint::Committed,
+            WorkerCheckpoint::Quarantined {
+                reason: "looks like a key".to_string(),
+                worktree: current.to_string_lossy().into_owned(),
+            },
+        ] {
+            assert_eq!(
+                unfinished_attempt_made_progress(&pool, &card.id, &attempt, &checkpoint).await,
+                Some(true),
+                "{checkpoint:?}"
+            );
+        }
+
+        // The attempt commits, then fails (a provider error, a context
+        // overflow): that is progress, and the stale streak goes.
+        std::fs::write(current.join("a.txt"), "one\ntwo\n").unwrap();
+        r20b_git(&current, &["commit", "-q", "-am", "real work"]);
+        assert_eq!(
+            unfinished_attempt_made_progress(&pool, &card.id, &attempt, &WorkerCheckpoint::Nothing)
+                .await,
+            Some(true)
+        );
+        record_unfinished_attempt_streak(&pool, &card.id, &attempt, &WorkerCheckpoint::Nothing)
+            .await;
+        let cleared = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        assert!(
+            cleared
+                .metadata_json
+                .get(goal_transition::ZERO_PROGRESS_STREAK_METADATA_KEY)
+                .is_none(),
+            "a failed attempt that committed must not leave the breaker armed: {:?}",
+            cleared.metadata_json
+        );
+        let streak = cleared
+            .metadata_json
+            .get(goal_transition::ZERO_PROGRESS_STREAK_METADATA_KEY)
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        assert_eq!(
+            zero_progress_breaker_verdict(streak, None, true, false),
+            ZeroProgressBreaker::Proceed,
+            "the next dispatch runs, even with the escalation spent"
+        );
+    }
+
+    /// QA 2026-09-26: what a `ReturnOnExpiry` cap reports for a goal it is
+    /// still holding. Only a live attempt of an InProgress goal is running.
+    #[test]
+    fn only_a_live_attempt_counts_as_still_running_at_the_cap() {
+        assert_eq!(
+            classify_leftover_goal(GoalState::InProgress, true, false),
+            LeftoverGoal::Running
+        );
+        assert_eq!(
+            classify_leftover_goal(GoalState::InProgress, true, true),
+            LeftoverGoal::Idle,
+            "a worker this drain stopped is not still running, whatever its receipt says yet"
+        );
+        assert_eq!(
+            classify_leftover_goal(GoalState::InProgress, false, false),
+            LeftoverGoal::Idle,
+            "an attempt that is over, its completion handler still settling it"
+        );
+        assert_eq!(
+            classify_leftover_goal(GoalState::Ready, true, false),
+            LeftoverGoal::Idle,
+            "back in Ready, awaiting a re-dispatch nobody has started"
+        );
+        assert_eq!(
+            classify_leftover_goal(GoalState::Review, false, false),
+            LeftoverGoal::Idle
+        );
+        for terminal in [GoalState::Failed, GoalState::Complete, GoalState::Cancelled] {
+            assert_eq!(
+                classify_leftover_goal(terminal, true, false),
+                LeftoverGoal::Ended
+            );
+        }
+    }
+
+    /// A coordinator with one dispatched worker whose attempt is over and
+    /// whose card is back in Ready — the drain's `Requeued` shape.
+    async fn qa0926_requeued_goal() -> (
+        tempfile::TempDir,
+        Arc<crate::session::SessionManager>,
+        sqlx::Pool<sqlx::Sqlite>,
+        String,
+        cards::Card,
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+        let coordinator = sm
+            .create_session(
+                tmp.path().to_path_buf(),
+                "coordinator".to_string(),
+                SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let child = sm
+            .create_session_with_parent(
+                Some(&coordinator.id),
+                tmp.path().to_path_buf(),
+                "Goal: requeued".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let card = setup_goal_in_state(&pool, "ready", 1).await;
+        attach_worker_session_to_card(&pool, &card.id, &child.id).await;
+        let mut receipt = ExecutionReceipt::new(
+            "permagent",
+            child.id.clone(),
+            serde_json::json!({}),
+            "life-1",
+            chrono::Utc::now().to_rfc3339(),
+            1,
+        );
+        receipt.finalize(ReceiptState::Completed, chrono::Utc::now().to_rfc3339());
+        cards::set_goal_execution_receipt(&pool, &card.id, serde_json::to_value(&receipt).unwrap())
+            .await
+            .unwrap();
+        (tmp, sm, pool, coordinator.id, card)
+    }
+
+    /// QA 2026-09-26: a goal requeued to Ready and never re-dispatched within
+    /// the wait is not "still running" — nobody is running it. The resume
+    /// notice used to tell the coordinator it was.
+    #[tokio::test]
+    async fn return_on_expiry_never_counts_a_requeued_ready_goal_as_still_running() {
+        let (_tmp, _sm, pool, coordinator_id, card) = qa0926_requeued_goal().await;
+
+        let summary = drain_dispatched_goals_with(
+            &pool,
+            &coordinator_id,
+            std::time::Duration::from_millis(400),
+            std::time::Duration::from_millis(10),
+            DrainCapPolicy::ReturnOnExpiry,
+            |_, _| {},
+            None,
+            DrainRedispatch {
+                dispatch: None,
+                max_redispatch: 1,
+                sweep_headroom: std::time::Duration::ZERO,
+                auto_land: false,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            summary,
+            DrainSummary {
+                finished: 0,
+                timed_out: 0,
+                still_running: 0,
+            }
+        );
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            col.state_binding.as_deref(),
+            Some("ready"),
+            "the mid-turn wait parks nothing"
+        );
+    }
+
+    /// QA 2026-09-26: a requeued goal that was parked before the wait ended
+    /// (the sweep's re-dispatch refused by the zero-progress breaker) is
+    /// finished for this wait — it is waiting on a human, not running.
+    #[tokio::test]
+    async fn return_on_expiry_counts_a_requeued_goal_parked_meanwhile_as_finished() {
+        let (_tmp, _sm, pool, coordinator_id, card) = qa0926_requeued_goal().await;
+        // After the first pass has requeued it, the goal is parked (what
+        // `park_for_zero_progress` does to a refused re-dispatch).
+        let pool_hook = pool.clone();
+        let card_id_hook = card.id.clone();
+        let mut iteration = 0u32;
+        let hook: DrainIterationHook = Box::new(move || {
+            iteration += 1;
+            let fire = iteration == 2;
+            let pool_hook = pool_hook.clone();
+            let card_id_hook = card_id_hook.clone();
+            Box::pin(async move {
+                if fire {
+                    move_card_to_goal_state(&pool_hook, &card_id_hook, "failed").await;
+                }
+            })
+        });
+
+        let summary = drain_dispatched_goals_with(
+            &pool,
+            &coordinator_id,
+            std::time::Duration::from_millis(400),
+            std::time::Duration::from_millis(10),
+            DrainCapPolicy::ReturnOnExpiry,
+            |_, _| {},
+            Some(hook),
+            DrainRedispatch {
+                dispatch: None,
+                max_redispatch: 1,
+                sweep_headroom: std::time::Duration::ZERO,
+                auto_land: false,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            summary,
+            DrainSummary {
+                finished: 1,
+                timed_out: 0,
+                still_running: 0,
+            },
+            "a parked goal is never reported as still running"
         );
     }
 

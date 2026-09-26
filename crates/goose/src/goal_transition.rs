@@ -140,18 +140,24 @@ pub const UNVERIFIED_REVIEWER_APPROVAL_METADATA_KEY: &str = "unverified_reviewer
 /// Lane R21d (A23 Q2 #2): card metadata key tracking CONSECUTIVE
 /// zero-progress attempts. Absent/`0`: no streak (either no zero-progress
 /// attempt yet, or the last one was followed by a productive attempt, which
-/// resets it). `1`: the goal has spent its one forgiven zero-progress
-/// attempt (`attempt_count` was decremented back for it). `2`: a SECOND
-/// consecutive zero-progress attempt, which counted normally against
-/// `attempt_count` — [`park_goal_with_meta`] folds this into the park
-/// detail (`last_error`) so a human sees the goal spent a real attempt on
-/// nothing, not just the ordinary park reason.
+/// resets it). `1`: one zero-progress attempt — a finished one spent the
+/// goal's one forgiveness (`attempt_count` was decremented back for it); an
+/// attempt that ended `Failed`/`TimedOut` counts without being forgiven
+/// ([`record_unfinished_attempt_progress`]). `2`: a SECOND consecutive
+/// zero-progress attempt, which counted normally against `attempt_count` —
+/// [`park_goal_with_meta`] folds this into the park detail (`last_error`) so
+/// a human sees the goal spent a real attempt on nothing, not just the
+/// ordinary park reason. A human's answer to the goal's `unblock` clears it
+/// ([`clear_zero_progress_on_human_unblock`]).
 pub const ZERO_PROGRESS_STREAK_METADATA_KEY: &str = "zero_progress_streak";
 
 /// QA 2026-09-25: stamped on the dispatch the zero-progress circuit breaker
 /// (`orchestrator::zero_progress_breaker_verdict`) moved to a stronger worker
-/// tier. At most one such escalation per goal: a goal that stays at zero
-/// progress after it is parked, never escalated again.
+/// tier, once that worker has actually started (a failed spawn spends
+/// nothing). At most one such escalation per goal: a goal that stays at zero
+/// progress after it is parked, never escalated again — until a human's
+/// answer to its `unblock` clears it
+/// ([`clear_zero_progress_on_human_unblock`]).
 pub const ZERO_PROGRESS_ESCALATION_USED_METADATA_KEY: &str = "zero_progress_escalation_used";
 
 // ── Errors ──────────────────────────────────────────────────────────────────
@@ -2030,6 +2036,36 @@ pub async fn maybe_forgive_zero_progress_attempt(
     card_id: &str,
     zero_progress: bool,
 ) -> Result<(), String> {
+    update_zero_progress_streak(pool, card_id, zero_progress, true).await
+}
+
+/// QA 2026-09-26: the zero-progress streak for an attempt that ended
+/// `Failed` or `TimedOut` rather than finishing. The streak used to move
+/// only on a finished attempt, so a failed attempt that committed real work
+/// left a stale `2` behind and the circuit breaker parked the goal on its
+/// next dispatch ("consecutive attempts made no progress"), while a failed
+/// attempt that did nothing never counted at all. Now progress resets the
+/// streak and no progress counts toward it, exactly as for a finished
+/// attempt — but never forgives `attempt_count`: a failed attempt's count is
+/// the failure path's own business (its retry and park decisions read it),
+/// and forgiveness stays reserved for a finished attempt.
+pub async fn record_unfinished_attempt_progress(
+    pool: &Pool<Sqlite>,
+    card_id: &str,
+    zero_progress: bool,
+) -> Result<(), String> {
+    update_zero_progress_streak(pool, card_id, zero_progress, false).await
+}
+
+/// The shared body of [`maybe_forgive_zero_progress_attempt`] and
+/// [`record_unfinished_attempt_progress`]. `forgive_first`: whether the first
+/// zero-progress attempt of a streak gets its `attempt_count` back.
+async fn update_zero_progress_streak(
+    pool: &Pool<Sqlite>,
+    card_id: &str,
+    zero_progress: bool,
+    forgive_first: bool,
+) -> Result<(), String> {
     let mut tx = pool
         .begin_with("BEGIN IMMEDIATE")
         .await
@@ -2079,6 +2115,14 @@ pub async fn maybe_forgive_zero_progress_attempt(
             serde_json::json!(2),
         );
         meta.insert("zero_progress".to_string(), serde_json::json!(true));
+    } else if !forgive_first {
+        // First zero-progress attempt this streak, but one that did not
+        // finish: it counts toward the streak and is not forgiven.
+        meta.insert(
+            ZERO_PROGRESS_STREAK_METADATA_KEY.to_string(),
+            serde_json::json!(1),
+        );
+        meta.insert("zero_progress".to_string(), serde_json::json!(true));
     } else {
         // First zero-progress attempt this streak: forgive it — undo the
         // dispatch-time increment for THIS attempt.
@@ -2107,6 +2151,36 @@ pub async fn maybe_forgive_zero_progress_attempt(
         .map_err(|e| e.to_string())?;
     tx.commit().await.map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// QA 2026-09-26: a human's answer to a goal's `unblock` decision (approve,
+/// or an `input` answer) clears the zero-progress circuit breaker's state —
+/// the streak ([`ZERO_PROGRESS_STREAK_METADATA_KEY`] and `zero_progress`)
+/// and the one escalation ([`ZERO_PROGRESS_ESCALATION_USED_METADATA_KEY`]) —
+/// by nulling them in `patch`, the guarded metadata patch that unparks the
+/// goal. All three are protected keys, so this is the only way they can go:
+/// before this the breaker read the same streak on the very next dispatch
+/// and parked the goal again before any worker ran, however often the human
+/// answered. Returns whether anything was added.
+///
+/// Human answers only, the same rule as D7's wall-clock reset
+/// (`decisions_effects::wall_budget_reset_patch`): an automated actor must
+/// not be able to buy a goal more zero-progress runs.
+pub fn clear_zero_progress_on_human_unblock(
+    patch: &mut serde_json::Map<String, serde_json::Value>,
+    acted_by: &str,
+) -> bool {
+    if acted_by != decisions::ACTOR_JESSE {
+        return false;
+    }
+    for key in [
+        ZERO_PROGRESS_STREAK_METADATA_KEY,
+        "zero_progress",
+        ZERO_PROGRESS_ESCALATION_USED_METADATA_KEY,
+    ] {
+        patch.insert(key.to_string(), serde_json::Value::Null);
+    }
+    true
 }
 
 // ── Dependency promotion (pool-only, no orchestrator needed) ────────────────
@@ -3977,6 +4051,130 @@ mod tests {
             "a productive attempt resets the zero-progress streak"
         );
         assert!(card.metadata_json.get("zero_progress").is_none());
+    }
+
+    /// QA 2026-09-26: an attempt that ended `Failed`/`TimedOut` moves the
+    /// streak too. With nothing to show it counts toward the breaker, but its
+    /// `attempt_count` is never forgiven — that stays the failure path's own.
+    #[tokio::test]
+    async fn an_unfinished_zero_progress_attempt_counts_toward_the_streak_unforgiven() {
+        let pool = test_pool().await;
+        let goal = goal_in_state(&pool, "in_progress", 3).await;
+
+        record_unfinished_attempt_progress(&pool, &goal.id, true)
+            .await
+            .unwrap();
+        let card = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            card.metadata_json
+                .get("attempt_count")
+                .and_then(|v| v.as_u64()),
+            Some(3),
+            "a failed attempt is never forgiven"
+        );
+        assert_eq!(
+            card.metadata_json
+                .get(ZERO_PROGRESS_STREAK_METADATA_KEY)
+                .and_then(|v| v.as_u64()),
+            Some(1)
+        );
+
+        record_unfinished_attempt_progress(&pool, &goal.id, true)
+            .await
+            .unwrap();
+        let card = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            card.metadata_json
+                .get(ZERO_PROGRESS_STREAK_METADATA_KEY)
+                .and_then(|v| v.as_u64()),
+            Some(2),
+            "two failed attempts in a row that changed nothing trip the breaker"
+        );
+        assert_eq!(
+            card.metadata_json
+                .get("attempt_count")
+                .and_then(|v| v.as_u64()),
+            Some(3)
+        );
+    }
+
+    /// QA 2026-09-26: a failed attempt that DID make progress (it committed
+    /// before a provider error or a context overflow ended it) clears a
+    /// streak left by earlier empty attempts, so the breaker does not park
+    /// the goal on its next dispatch for "no progress".
+    #[tokio::test]
+    async fn an_unfinished_attempt_that_made_progress_clears_a_stale_streak() {
+        let pool = test_pool().await;
+        let goal = goal_in_state(&pool, "in_progress", 3).await;
+        sqlx::query(
+            "UPDATE cards SET metadata_json = json_set(metadata_json, \
+             '$.zero_progress_streak', 2, '$.zero_progress', json('true')) WHERE id = ?",
+        )
+        .bind(&goal.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        record_unfinished_attempt_progress(&pool, &goal.id, false)
+            .await
+            .unwrap();
+
+        let card = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            card.metadata_json
+                .get(ZERO_PROGRESS_STREAK_METADATA_KEY)
+                .is_none(),
+            "progress in a failed attempt resets the streak: {:?}",
+            card.metadata_json
+        );
+        assert!(card.metadata_json.get("zero_progress").is_none());
+        assert_eq!(
+            card.metadata_json
+                .get("attempt_count")
+                .and_then(|v| v.as_u64()),
+            Some(3)
+        );
+    }
+
+    /// QA 2026-09-26: only a human's `unblock` answer clears the breaker's
+    /// state; an automated actor's never does.
+    #[test]
+    fn only_a_human_unblock_answer_clears_the_zero_progress_breaker() {
+        let mut patch = serde_json::Map::new();
+        assert!(clear_zero_progress_on_human_unblock(
+            &mut patch,
+            crate::decisions::ACTOR_JESSE
+        ));
+        for key in [
+            ZERO_PROGRESS_STREAK_METADATA_KEY,
+            "zero_progress",
+            ZERO_PROGRESS_ESCALATION_USED_METADATA_KEY,
+        ] {
+            assert_eq!(
+                patch.get(key),
+                Some(&serde_json::Value::Null),
+                "{key} must be removed by the unpark patch"
+            );
+        }
+        for actor in [
+            crate::decisions::ACTOR_SYSTEM,
+            crate::decisions::ACTOR_HEADLESS_POLICY,
+            crate::decisions::ACTOR_AUTO_LAUNCH,
+            crate::decisions::ACTOR_SALVAGE_POLICY,
+        ] {
+            let mut patch = serde_json::Map::new();
+            assert!(!clear_zero_progress_on_human_unblock(&mut patch, actor));
+            assert!(patch.is_empty(), "{actor} must not clear the breaker");
+        }
     }
 
     /// Lane R21d (A23 Q2 #2): every park path converges on

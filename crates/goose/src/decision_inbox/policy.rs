@@ -262,6 +262,14 @@ pub async fn resume_answered_decision(
     {
         patch.insert(key, value);
     }
+    // QA 2026-09-26: a human's `input` answer to an `unblock` clears the
+    // zero-progress circuit breaker's streak and spent escalation too, or the
+    // next dispatch parks the goal again before any worker runs. Unblocks
+    // only: an answered `choice` or capability gate is not a human saying
+    // "try this goal again".
+    if decision.kind == "unblock" {
+        goal_transition::clear_zero_progress_on_human_unblock(&mut patch, &actor);
+    }
     goal_transition::advance_goal_checked(
         pool,
         goal_id,
@@ -794,6 +802,167 @@ mod tests {
                 .and_then(|b| b.get("attempt_cap"))
                 .and_then(|v| v.as_u64()),
             Some(3 + goal_transition::DEFAULT_ATTEMPT_CAP)
+        );
+    }
+
+    /// A parked goal carrying the zero-progress circuit breaker's full state:
+    /// two empty attempts in a row and its one escalation already spent.
+    async fn goal_parked_by_the_zero_progress_breaker(pool: &Pool<Sqlite>) -> crate::cards::Card {
+        goal_in_state(
+            pool,
+            "failed",
+            serde_json::json!({
+                "needs_human_attention": true,
+                "attempt_count": 3,
+                (goal_transition::ZERO_PROGRESS_STREAK_METADATA_KEY): 2,
+                "zero_progress": true,
+                (goal_transition::ZERO_PROGRESS_ESCALATION_USED_METADATA_KEY): true,
+            }),
+        )
+        .await
+    }
+
+    /// QA 2026-09-26: answering the breaker's `unblock` with guidance used to
+    /// unpark the goal with its streak and spent escalation intact, so the
+    /// next dispatch read them and parked it again before any worker ran — the
+    /// answer could never get the goal going. A human's `input` answer now
+    /// clears both, and the breaker lets the next dispatch through.
+    #[tokio::test]
+    async fn human_input_on_an_unblock_clears_the_zero_progress_breaker() {
+        use crate::agents::platform_extensions::orchestrator::{
+            zero_progress_breaker_verdict, ZeroProgressBreaker,
+        };
+        let pool = test_pool().await;
+        let goal = goal_parked_by_the_zero_progress_breaker(&pool).await;
+        let d = decisions::create_decision(
+            &pool,
+            decisions::NewDecision {
+                kind: "unblock".to_string(),
+                goal_id: Some(goal.id.clone()),
+                project_id: Some(PERSONAL_PROJECT_ID.to_string()),
+                headline: Some(
+                    "Goal keeps making no progress and needs your direction".to_string(),
+                ),
+                detail: Some("zero-progress circuit breaker".to_string()),
+                payload: serde_json::json!({"reason": "stuck", "cause": "no_progress"}),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            d.kind, "unblock",
+            "a well-formed unblock, not a malformed row"
+        );
+
+        let (answered, proof) = decisions::answer_decision(
+            &pool,
+            &d.id,
+            &DecisionAnswer {
+                answer: "input".to_string(),
+                input_text: Some("split it into smaller steps".to_string()),
+                ..Default::default()
+            },
+            decisions::ACTOR_JESSE,
+        )
+        .await
+        .unwrap();
+        let effect = resume_answered_decision(&pool, &answered, proof)
+            .await
+            .unwrap();
+        assert!(effect.is_some(), "the parked goal must resume");
+        assert_eq!(state_of(&pool, &goal.id).await, "ready");
+
+        let card = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap();
+        for key in [
+            goal_transition::ZERO_PROGRESS_STREAK_METADATA_KEY,
+            "zero_progress",
+            goal_transition::ZERO_PROGRESS_ESCALATION_USED_METADATA_KEY,
+        ] {
+            assert!(
+                card.metadata_json.get(key).is_none(),
+                "{key} must be cleared by the answer: {:?}",
+                card.metadata_json
+            );
+        }
+        let streak = card
+            .metadata_json
+            .get(goal_transition::ZERO_PROGRESS_STREAK_METADATA_KEY)
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let escalation_used = card
+            .metadata_json
+            .get(goal_transition::ZERO_PROGRESS_ESCALATION_USED_METADATA_KEY)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        assert_eq!(
+            zero_progress_breaker_verdict(streak, None, escalation_used, false),
+            ZeroProgressBreaker::Proceed,
+            "the next dispatch must run a worker, even an external one"
+        );
+    }
+
+    /// QA 2026-09-26: only an `unblock` answer is a human saying "try this goal
+    /// again" — an answered `choice` resumes the goal with the breaker's state
+    /// untouched.
+    #[tokio::test]
+    async fn an_answered_choice_leaves_the_zero_progress_breaker_alone() {
+        let pool = test_pool().await;
+        let goal = goal_parked_by_the_zero_progress_breaker(&pool).await;
+        let d = decisions::create_decision(
+            &pool,
+            decisions::NewDecision {
+                kind: "choice".to_string(),
+                goal_id: Some(goal.id.clone()),
+                project_id: Some(PERSONAL_PROJECT_ID.to_string()),
+                headline: Some("Choose which storage backend to build on".to_string()),
+                detail: Some("two viable backends".to_string()),
+                payload: serde_json::json!({
+                    "question": "Which backend?",
+                    "options": [
+                        {"id": "sqlite", "label": "SQLite"},
+                        {"id": "postgres", "label": "Postgres"}
+                    ]
+                }),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let (answered, proof) = decisions::answer_decision(
+            &pool,
+            &d.id,
+            &DecisionAnswer {
+                answer: "choice".to_string(),
+                choice_id: Some("postgres".to_string()),
+                ..Default::default()
+            },
+            decisions::ACTOR_JESSE,
+        )
+        .await
+        .unwrap();
+        resume_answered_decision(&pool, &answered, proof)
+            .await
+            .unwrap();
+
+        let card = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            card.metadata_json
+                .get(goal_transition::ZERO_PROGRESS_STREAK_METADATA_KEY)
+                .and_then(|v| v.as_u64()),
+            Some(2)
+        );
+        assert_eq!(
+            card.metadata_json
+                .get(goal_transition::ZERO_PROGRESS_ESCALATION_USED_METADATA_KEY)
+                .and_then(|v| v.as_bool()),
+            Some(true)
         );
     }
 
