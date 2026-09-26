@@ -17,29 +17,25 @@
 //! says "this is extremely complex, use the best model" is still ROUTINE when
 //! its structure is routine. Only STRUCTURE promotes:
 //!
-//! 1. **Prior plan history** on the project — a roadmap proposal still pending
-//!    when a new decomposition starts (the previous plan was rejected or revised:
-//!    a redecompose), a parked goal (Failed, or `needs_human_attention`), or a
-//!    premature-done hold on a goal that never completed.
-//! 2. **Named files** — the objective names at least
+//! 1. **Named files** — the objective names at least
 //!    [`PLANNING_MULTI_FILE_THRESHOLD`] distinct non-test file paths (a token with
 //!    a known source/config extension), i.e. a multi-file change with cross-goal
 //!    ordering. When the repo's file list is known, a named path counts only if
 //!    it resolves to a real file: a path the objective merely asserts (a glob, a
 //!    file that does not exist) is a claim, not a fact.
-//! 3. **Cross-language** — the named files span at least
+//! 2. **Cross-language** — the named files span at least
 //!    [`PLANNING_CROSS_LANGUAGE_THRESHOLD`] programming languages (an interface
 //!    change on both sides of a boundary).
-//! 4. **Enumerated requirements** — more than [`super::assess::MANY_CRITERIA`]
+//! 3. **Enumerated requirements** — more than [`super::assess::MANY_CRITERIA`]
 //!    bulleted/numbered requirement lines (the same "multi-part" line
 //!    `assess_goal` draws for acceptance criteria).
-//! 5. **Unscoped in a large repo** — the objective names no file and the repo has
+//! 4. **Unscoped in a large repo** — the objective names no file and the repo has
 //!    at least [`LARGE_REPO_FILE_THRESHOLD`] files, so the planner must locate the
 //!    change from a tree alone. This one is the only signal prose can DEFUSE, and
 //!    only downward: when the objective reads as mechanical work
 //!    ([`super::assess::MECHANICAL_SIGNALS`] — typo, rename, bump, …) it stays
 //!    ROUTINE.
-//! 6. **Signature change with a fan-out** — the objective asks to add, remove or
+//! 5. **Signature change with a fan-out** — the objective asks to add, remove or
 //!    reorder a parameter ([`requests_parameter_change`]) and names a code
 //!    identifier that the repo defines in exactly one non-test source file and
 //!    references from at least [`SIGNATURE_CHANGE_CALLER_FILES_THRESHOLD`] OTHER
@@ -186,14 +182,10 @@ impl PlanningComplexity {
 
 /// What the harness already knows about earlier plans for this project.
 ///
-/// 2026-09-25 DAG K cost fix: `parked_goals`/`held_goals` alone used to force
-/// `Complex` for every future `decompose_roadmap` call on a project after any
-/// one goal parked or held, regardless of whether the NEW objective has
-/// anything to do with the stuck one (see `assess_planning_complexity`'s
-/// `history_overlap` gate below). `parked_titles`/`held_titles` carry the
-/// stuck goals' titles so the assessment can require the new objective to
-/// actually overlap one of them before history escalates the plan — a
-/// project-wide "we've had trouble" signal is not "this new plan is hard."
+/// History remains available for diagnostic receipts. A failed worker or an
+/// unapproved proposal does not establish a planning defect: throttling and
+/// missing dependencies can produce either state. Only current-task facts
+/// may select expert planning.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct PriorPlanHistory {
     /// A roadmap proposal is still pending on the project as a new decomposition
@@ -677,44 +669,10 @@ pub fn assess_planning_complexity(facts: &PlanningFacts<'_>) -> PlanningComplexi
         .count();
 
     let mut complex: Vec<String> = Vec::new();
-    let h = &facts.history;
-    if h.unapproved_proposal {
-        complex.push(
-            "a previous roadmap proposal for this project was never approved into cards \
-             (rejected or revised) — this is a redecompose"
-                .to_string(),
-        );
-    }
-    // 2026-09-25 DAG K cost fix: a parked/held goal only escalates THIS plan
-    // when its title overlaps the new objective — otherwise a project with
-    // one unrelated stuck goal would force every future decompose_roadmap
-    // call onto the expert planner forever, independent of the new
-    // objective's own size (the actual complexity signal below).
-    let overlapping_parked = h
-        .parked_titles
-        .iter()
-        .filter(|title| objectives_overlap(facts.objective, title))
-        .count();
-    if overlapping_parked > 0 {
-        complex.push(format!(
-            "{overlapping_parked} of {} goal(s) on this project parked (failed or needs human \
-             attention) share this objective's wording — likely a redispatch of the same stuck \
-             work",
-            h.parked_goals
-        ));
-    }
-    let overlapping_held = h
-        .held_titles
-        .iter()
-        .filter(|title| objectives_overlap(facts.objective, title))
-        .count();
-    if overlapping_held > 0 {
-        complex.push(format!(
-            "{overlapping_held} of {} goal(s) on this project were held for a premature done \
-             and share this objective's wording — likely a redispatch of the same stuck work",
-            h.held_goals
-        ));
-    }
+    // A failed/held worker or an unapproved proposal is not evidence of a
+    // planning problem. Environment failures, throttling, and turn exhaustion
+    // also produce these states. Expert planning requires current-task
+    // complexity; retry history alone must never purchase an expert call.
     if named_files.len() >= PLANNING_MULTI_FILE_THRESHOLD {
         complex.push(format!(
             "names {} distinct files (>= {PLANNING_MULTI_FILE_THRESHOLD}): a multi-file change",
@@ -811,7 +769,7 @@ pub fn assess_planning_complexity(facts: &PlanningFacts<'_>) -> PlanningComplexi
                     " (no parameter change asked for)"
                 }
             ),
-            "no pending, parked or held plan history on this project".to_string(),
+            "prior plan history does not establish current-task planning complexity".to_string(),
         ];
         if !unresolved_named_files.is_empty() {
             reasons.push(format!(
@@ -946,10 +904,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unapproved_proposal_is_complex_without_needing_overlap() {
-        // A pending, never-approved roadmap proposal is about THIS decompose
-        // call directly (it's a redecompose of the very objective in flight),
-        // so unlike parked/held goals it does not need a title-overlap check.
+    fn an_unapproved_proposal_does_not_establish_planning_complexity() {
         let v = assess_planning_complexity(&PlanningFacts {
             objective: "Fix the off-by-one in src/pagination.rs",
             repo_file_count: 12,
@@ -960,7 +915,7 @@ mod tests {
                 ..Default::default()
             },
         });
-        assert_eq!(v.complexity, PlanningComplexity::Complex);
+        assert_eq!(v.complexity, PlanningComplexity::Routine);
     }
 
     /// 2026-09-25 DAG K cost fix (root cause behind goal 01a0d5ea's
@@ -995,12 +950,9 @@ mod tests {
         }
     }
 
-    /// The 01a0d5ea case from HARNESS_COST_TRACE.md: the goal was redispatched
-    /// under reworded text after holding. A parked/held goal whose title
-    /// clearly overlaps the new objective's wording IS the same stuck work,
-    /// so it should still escalate.
+    /// Repeating the same failed task does not prove its plan was difficult.
     #[test]
-    fn a_parked_goal_overlapping_the_new_objective_is_complex() {
+    fn a_parked_goal_overlapping_the_new_objective_is_still_routine() {
         let v = assess_planning_complexity(&PlanningFacts {
             objective: "Instrument event detail pages with cta_visible, scroll_depth analytics \
                         and event_id on event_cta_click.",
@@ -1017,11 +969,7 @@ mod tests {
                 ..Default::default()
             },
         });
-        assert_eq!(v.complexity, PlanningComplexity::Complex, "{:?}", v.reasons);
-        assert!(v
-            .reasons
-            .iter()
-            .any(|r| r.contains("share this objective's wording")));
+        assert_eq!(v.complexity, PlanningComplexity::Routine, "{:?}", v.reasons);
     }
 
     #[test]
