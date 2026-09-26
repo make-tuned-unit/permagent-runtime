@@ -1281,14 +1281,17 @@ pub fn answer_effects(
             }
             "choice" if proposal == decisions::PROPOSAL_ROADMAP_CREATE => {
                 vec![
-            (
-                "choice",
-                "Records the option you pick. The roadmap is created only if you approve \
+                    (
+                        "choice",
+                        "Records the option you pick. The roadmap is created only if you approve \
                  it."
-                    .into(),
-            ),
-            ("reject", "Records that none fit. No roadmap is created.".into()),
-        ]
+                        .into(),
+                    ),
+                    (
+                        "reject",
+                        "Records that none fit. No roadmap is created.".into(),
+                    ),
+                ]
             }
             "choice" if has_goal => {
                 vec![
