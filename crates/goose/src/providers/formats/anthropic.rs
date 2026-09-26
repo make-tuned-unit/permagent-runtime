@@ -277,9 +277,15 @@ pub fn format_messages(messages: &[Message]) -> Vec<Value> {
     // a relocated volatile suffix). Those blocks ride only on the newest user
     // message and are gone when the next turn replays it as history, so a
     // breakpoint on one would cache a prefix no later request can ever repeat.
+    //
+    // A user message that is ONLY such context (MOIM riding as its own message
+    // after the tool results) has no anchor and does not use up a breakpoint,
+    // so both still land on the last two user messages that the next turn
+    // replays.
     let mut user_count = 0;
     for message in anthropic_messages.iter_mut().rev() {
         if message.get(ROLE_FIELD) == Some(&json!(USER_ROLE)) {
+            let mut anchored = false;
             if let Some(content) = message.get_mut(CONTENT_FIELD) {
                 if let Some(content_array) = content.as_array_mut() {
                     if let Some(anchor) = content_array
@@ -292,9 +298,13 @@ pub fn format_messages(messages: &[Message]) -> Vec<Value> {
                                 CACHE_CONTROL_FIELD.to_string(),
                                 json!({ TYPE_FIELD: "ephemeral" }),
                             );
+                            anchored = true;
                         }
                     }
                 }
+            }
+            if !anchored {
+                continue;
             }
             user_count += 1;
             if user_count >= 2 {
@@ -2659,6 +2669,75 @@ mod tests {
                     }
                 }
             }
+            assert_eq!(collect_cache_controls(payload).len(), 4);
+        }
+    }
+
+    /// The agent loop's tool-round shape: MOIM rides as its OWN user message
+    /// after the tool results (inside the result message it broke the OpenAI
+    /// chat format). The API folds the two user messages into one turn with the
+    /// `tool_result` first; the MOIM-only message has no anchor and must not use
+    /// up one of the two rolling breakpoints, or turn N+1 stops marking turn
+    /// N's last cached block.
+    #[test]
+    fn a_moim_only_tail_message_does_not_use_up_a_rolling_breakpoint() {
+        let _env = no_thinking_env();
+        let config = cfg("claude-haiku-4-5");
+        let tools = cache_guard_tools();
+        let stable = cache_guard_system();
+
+        let mut history = vec![Message::user().with_text("fix the bug")];
+        history.extend(tool_turn("t1"));
+        let mut turn_n = history.clone();
+        turn_n.push(Message::user().with_text(moim(1)));
+        history.extend(tool_turn("t2"));
+        let mut turn_n1 = history.clone();
+        turn_n1.push(Message::user().with_text(moim(2)));
+
+        let req = |messages: &[Message], status: &str| {
+            create_request_split(
+                &config,
+                &SystemPromptParts::new(stable.clone(), status.to_string()),
+                messages,
+                &tools,
+                &[],
+                CacheTtl::FiveMinute,
+            )
+            .unwrap()
+        };
+        let a = req(&turn_n, "\n# Live Status (this turn)\n- worker running\n");
+        let b = req(&turn_n1, "\n# Live Status (this turn)\n- worker finished\n");
+
+        // The tool results keep their own message, tool_result first; the tail
+        // message is per-turn context only (MOIM plus the relocated status).
+        let messages = a["messages"].as_array().unwrap();
+        let tail = messages.last().unwrap();
+        assert_eq!(tail["role"], "user");
+        assert!(tail["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(is_turn_context_block));
+        assert_eq!(
+            messages[messages.len() - 2]["content"][0]["type"],
+            "tool_result"
+        );
+
+        let bp = last_message_breakpoint(&a);
+        let block = &a["messages"][bp.0]["content"][bp.1];
+        assert_eq!(block["type"], "tool_result", "breakpoint landed on {block}");
+        assert_eq!(
+            cached_prefix_at(&a, bp),
+            cached_prefix_at(&b, bp),
+            "turn N+1 must replay turn N's cached prefix byte-for-byte"
+        );
+        assert!(
+            b["messages"][bp.0]["content"][bp.1]
+                .get("cache_control")
+                .is_some(),
+            "turn N+1 must carry a breakpoint on turn N's last cached block"
+        );
+        for payload in [&a, &b] {
             assert_eq!(collect_cache_controls(payload).len(), 4);
         }
     }

@@ -1356,10 +1356,21 @@ impl Agent {
         // window are swapped for a placeholder in what the MODEL sees (the
         // stored transcript keeps them). Block-quantized so the masked prefix
         // changes only once every window's worth of turns — see
-        // `observation_mask` for the measured cache trade-off.
+        // `observation_mask` for the measured cache trade-off. Only results of
+        // tools declared read-only are ever masked, since the model can call
+        // those again for free. Under toolshim the provider gets no tools, so
+        // the shimmed list counts too.
         let keep_turns = crate::agents::observation_mask::configured_keep_turns();
-        let filtered_messages =
-            crate::agents::observation_mask::mask_old_observations(&filtered_messages, keep_turns);
+        let filtered_messages = {
+            let repeatable = crate::agents::observation_mask::repeatable_tools(
+                tools.iter().chain(toolshim_tools.iter()),
+            );
+            crate::agents::observation_mask::mask_old_observations(
+                &filtered_messages,
+                keep_turns,
+                &repeatable,
+            )
+        };
 
         // Convert tool messages to text if toolshim is enabled
         let messages_for_provider = if config.toolshim {

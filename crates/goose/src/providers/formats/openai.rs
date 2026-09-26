@@ -1,5 +1,5 @@
 use crate::conversation::message::{Message, MessageContent, ProviderMetadata};
-use crate::cost_router::cache::SystemPromptParts;
+use crate::cost_router::cache::{is_turn_context_only_text, SystemPromptParts};
 use crate::mcp_utils::extract_text_from_resource;
 use crate::model::ModelConfig;
 use crate::providers::base::{ProviderUsage, Usage};
@@ -210,12 +210,24 @@ impl ReasoningEcho {
 ///
 /// Runs after [`merge_split_tool_call_messages`], which needs the field intact
 /// to recognise messages the agent split out of one assistant turn.
+///
+/// The boundary is the last user message that is the user speaking. Two kinds
+/// of `user` message are not: the image carriers this formatter adds after a
+/// tool result, and per-turn host context (MOIM) that rides as its own message
+/// after the tool results at the tail of every tool-loop request. Counting the
+/// MOIM message as a user turn put the boundary AFTER every assistant message
+/// of the loop still in flight, so a GLM model lost the reasoning behind the
+/// tool call it was waiting on.
 fn strip_stale_reasoning(messages: &mut [Value], echo: ReasoningEcho) {
     let strip_before = match echo {
         ReasoningEcho::Always => return,
         ReasoningEcho::CurrentTurnOnly => messages
             .iter()
-            .rposition(|m| m.get("role") == Some(&json!("user")) && !is_image_only_user_message(m))
+            .rposition(|m| {
+                m.get("role") == Some(&json!("user"))
+                    && !is_image_only_user_message(m)
+                    && !is_host_context_only_user_message(m)
+            })
             .map(|i| i + 1)
             .unwrap_or(0),
     };
@@ -465,11 +477,33 @@ pub fn format_messages_with_echo(
             converted["reasoning_content"] = json!(reasoning_text);
         }
 
-        if converted.get("content").is_some() || converted.get("tool_calls").is_some() {
-            output.insert(0, converted);
+        let has_body = converted.get("content").is_some() || converted.get("tool_calls").is_some();
+        if message.role == Role::Assistant {
+            // The assistant message (with its tool_calls) first, then any
+            // `role: tool` error items that answer those calls.
+            if has_body {
+                messages_spec.push(converted);
+            }
+            messages_spec.extend(output);
+        } else {
+            // A user-role Message can carry tool results AND its own content
+            // (text such as per-turn host context, images). The wire contract is
+            // that an assistant message with `tool_calls` is followed at once by
+            // the `role: tool` messages answering it, so every tool item goes
+            // first, in order; the image carriers the results produced follow,
+            // then the message's own user content. Emitting the user content
+            // first (the old `insert(0, ..)`) put a `user` message between the
+            // tool call and its result, which OpenAI, DeepSeek, Azure and xAI
+            // reject with a 400.
+            let (tool_items, result_carriers): (Vec<Value>, Vec<Value>) = output
+                .into_iter()
+                .partition(|item| item.get("role") == Some(&json!("tool")));
+            messages_spec.extend(tool_items);
+            messages_spec.extend(result_carriers);
+            if has_body {
+                messages_spec.push(converted);
+            }
         }
-
-        messages_spec.extend(output);
     }
 
     merge_split_tool_call_messages(&mut messages_spec);
@@ -567,6 +601,29 @@ fn merge_split_tool_call_messages(messages: &mut Vec<Value>) {
         }
 
         i = insert_at + num_collected;
+    }
+}
+
+/// True if `msg` is a `user` message holding per-turn host context and nothing
+/// else (see [`is_turn_context_only_text`]) — MOIM riding as its own message
+/// after the tool results, not the user speaking.
+fn is_host_context_only_user_message(msg: &Value) -> bool {
+    if msg.get("role") != Some(&json!("user")) {
+        return false;
+    }
+    match msg.get("content") {
+        Some(Value::String(text)) => is_turn_context_only_text(text),
+        Some(Value::Array(items)) => {
+            !items.is_empty()
+                && items.iter().all(|item| {
+                    item.get("type") == Some(&json!("text"))
+                        && item
+                            .get("text")
+                            .and_then(Value::as_str)
+                            .is_some_and(is_turn_context_only_text)
+                })
+        }
+        _ => false,
     }
 }
 
@@ -2711,6 +2768,226 @@ data: [DONE]"#;
             false,
         )?)?;
         assert!(payload.contains("OLD REASONING"), "{payload}");
+        Ok(())
+    }
+
+    // ── Tool loops that end on per-turn host context (MOIM) ─────────────────
+    //
+    // Every tool-loop request ends on the results just returned plus the MOIM
+    // block (clock, working directory, context fill). The agent sends MOIM as
+    // its own user message after the results; for a while it rode INSIDE the
+    // tool-result message, and this formatter emitted it AHEAD of the
+    // `role: tool` item, so every chat/completions provider got a 400 on every
+    // tool-loop turn. Both shapes must reach the wire in a legal order.
+
+    const MOIM_TEXT: &str =
+        "<info-msg>\nIt is currently 2026-09-26 10:00:00\nWorking directory: /w\n</info-msg>";
+
+    /// The chat/completions contract: an assistant message with `tool_calls` is
+    /// followed at once by one `tool` message per call id, before any other
+    /// role.
+    fn assert_tool_calls_answered_in_place(messages: &[Value]) {
+        for (i, message) in messages.iter().enumerate() {
+            let Some(calls) = message.get("tool_calls").and_then(Value::as_array) else {
+                continue;
+            };
+            let mut wanted: Vec<&str> = calls.iter().filter_map(|c| c["id"].as_str()).collect();
+            let mut answered: Vec<&str> = messages[i + 1..]
+                .iter()
+                .take_while(|next| next["role"] == "tool")
+                .filter_map(|next| next["tool_call_id"].as_str())
+                .collect();
+            wanted.sort_unstable();
+            answered.sort_unstable();
+            assert_eq!(
+                answered, wanted,
+                "tool_calls at {i} are not answered in place: {messages:#?}"
+            );
+        }
+    }
+
+    fn wire_roles(payload: &Value) -> Vec<String> {
+        payload["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["role"].as_str().unwrap_or_default().to_string())
+            .collect()
+    }
+
+    /// The shape that shipped the 400: MOIM as a trailing text block of the
+    /// tool-result message. The tool item goes first, the text after it.
+    #[test]
+    fn a_tool_result_message_carrying_text_emits_the_tool_item_first() -> anyhow::Result<()> {
+        let messages = vec![
+            Message::user().with_text("list the files"),
+            Message::assistant().with_tool_request(
+                "call_1",
+                Ok(CallToolRequestParams::new("shell").with_arguments(object!({"command": "ls"}))),
+            ),
+            Message::user()
+                .with_tool_response(
+                    "call_1",
+                    Ok(CallToolResult::success(vec![Content::text("a.py")])),
+                )
+                .with_text(MOIM_TEXT),
+        ];
+        let payload = create_request(
+            &ModelConfig::new_or_fail("gpt-4o"),
+            "system",
+            &messages,
+            &bench_tools(),
+            &ImageFormat::OpenAi,
+            false,
+        )?;
+        assert_eq!(
+            wire_roles(&payload),
+            ["system", "user", "assistant", "tool", "user"]
+        );
+        let wire = payload["messages"].as_array().unwrap();
+        assert_eq!(wire[3]["tool_call_id"], "call_1");
+        assert_eq!(wire[4]["content"], MOIM_TEXT);
+        assert_tool_calls_answered_in_place(wire);
+        Ok(())
+    }
+
+    /// Several results in one message, one of them carrying an image, plus
+    /// text: every `tool` item first (in order), then the image carrier, then
+    /// the text. Interleaving the image carrier between the tool items breaks
+    /// the same contract as the text did.
+    #[test]
+    fn every_tool_item_precedes_the_user_content_of_a_mixed_message() -> anyhow::Result<()> {
+        let messages = vec![
+            Message::user().with_text("screenshot and list"),
+            Message::assistant()
+                .with_tool_request("call_a", Ok(CallToolRequestParams::new("screenshot")))
+                .with_tool_request("call_b", Ok(CallToolRequestParams::new("shell"))),
+            Message::user()
+                .with_tool_response(
+                    "call_a",
+                    Ok(CallToolResult::success(vec![Content::image(
+                        "aGk=",
+                        "image/png",
+                    )])),
+                )
+                .with_tool_response(
+                    "call_b",
+                    Ok(CallToolResult::success(vec![Content::text("a.py")])),
+                )
+                .with_text(MOIM_TEXT),
+        ];
+        let spec = format_messages(&messages, &ImageFormat::OpenAi);
+        let roles: Vec<&str> = spec.iter().map(|m| m["role"].as_str().unwrap()).collect();
+        assert_eq!(roles, ["user", "assistant", "tool", "tool", "user", "user"]);
+        assert_eq!(spec[2]["tool_call_id"], "call_a");
+        assert_eq!(spec[3]["tool_call_id"], "call_b");
+        assert!(is_image_only_user_message(&spec[4]), "{:#?}", spec[4]);
+        assert_eq!(spec[5]["content"], MOIM_TEXT);
+        assert_tool_calls_answered_in_place(&spec);
+        Ok(())
+    }
+
+    /// Two shapes of the same tool-loop tail: MOIM as its own message after the
+    /// results (what the agent sends) and MOIM inside the result message (what
+    /// it sent before). Both must format identically.
+    fn with_moim_at_the_tail(mut messages: Vec<Message>) -> [(&'static str, Vec<Message>); 2] {
+        let own_message = {
+            let mut m = messages.clone();
+            m.push(Message::user().with_text(MOIM_TEXT));
+            m
+        };
+        let last = messages.pop().expect("a tool-loop tail");
+        messages.push(last.with_text(MOIM_TEXT));
+        [
+            ("MOIM as its own message", own_message),
+            ("MOIM inside the result message", messages),
+        ]
+    }
+
+    /// GLM (CurrentTurnOnly) mid tool loop: the MOIM message at the tail is not
+    /// the user speaking, so it must not become the turn boundary. Before the
+    /// fix it did, and the in-flight call lost the reasoning behind it.
+    #[test]
+    fn moim_at_the_tail_of_a_tool_loop_does_not_end_the_in_flight_turn() -> anyhow::Result<()> {
+        for (shape, messages) in with_moim_at_the_tail(two_turns_then_one_in_flight()) {
+            let payload = create_request(
+                &ModelConfig::new_or_fail("glm-5.3"),
+                "system",
+                &messages,
+                &[],
+                &ImageFormat::OpenAi,
+                false,
+            )?;
+            let wire = payload["messages"].as_array().unwrap();
+            assert_tool_calls_answered_in_place(wire);
+            let rendered = serde_json::to_string(wire)?;
+            assert!(!rendered.contains("OLD REASONING"), "{shape}: {rendered}");
+            assert!(rendered.contains("LIVE REASONING"), "{shape}: {rendered}");
+            let in_flight = &wire[wire.len() - 3];
+            assert_eq!(in_flight["tool_calls"][0]["id"], "call-2", "{shape}");
+            assert_eq!(in_flight["reasoning_content"], "LIVE REASONING", "{shape}");
+            let last = wire.last().unwrap();
+            assert_eq!(last["role"], "user", "{shape}");
+            assert_eq!(last["content"], MOIM_TEXT, "{shape}");
+        }
+        Ok(())
+    }
+
+    /// A real user message that happens to end with MOIM (the user's words plus
+    /// the trailing block) IS the user speaking, and still ends the prior turn.
+    #[test]
+    fn a_user_message_with_moim_appended_still_ends_the_prior_turn() -> anyhow::Result<()> {
+        let mut messages = two_turns_then_one_in_flight();
+        messages.push(Message::assistant().with_text("done"));
+        messages.push(
+            Message::user()
+                .with_text("third question")
+                .with_text(MOIM_TEXT),
+        );
+        let rendered = serde_json::to_string(&format_messages_with_echo(
+            &messages,
+            &ImageFormat::OpenAi,
+            ReasoningEcho::CurrentTurnOnly,
+        ))?;
+        assert!(!rendered.contains("OLD REASONING"), "{rendered}");
+        assert!(!rendered.contains("LIVE REASONING"), "{rendered}");
+        Ok(())
+    }
+
+    /// DeepSeek re-merges one response's split tool calls. MOIM at the tail, in
+    /// either shape, must not cut the merge short or sit between a call and its
+    /// result.
+    #[test]
+    fn split_parallel_calls_stay_answered_in_place_with_moim_at_the_tail() -> anyhow::Result<()> {
+        let loop_tail = vec![
+            Message::user().with_text("read both files"),
+            thinking_tool_call("call-a", "PLAN"),
+            tool_answer("call-a"),
+            thinking_tool_call("call-b", "PLAN"),
+            tool_answer("call-b"),
+        ];
+        for (shape, messages) in with_moim_at_the_tail(loop_tail) {
+            let payload = create_request(
+                &ModelConfig::new_or_fail("deepseek-reasoner"),
+                "system",
+                &messages,
+                &[],
+                &ImageFormat::OpenAi,
+                false,
+            )?;
+            assert_eq!(
+                wire_roles(&payload),
+                ["system", "user", "assistant", "tool", "tool", "user"],
+                "{shape}"
+            );
+            let wire = payload["messages"].as_array().unwrap();
+            assert_eq!(
+                wire[2]["tool_calls"].as_array().map(Vec::len),
+                Some(2),
+                "{shape}: the split calls merge back into one message"
+            );
+            assert_tool_calls_answered_in_place(wire);
+        }
         Ok(())
     }
 

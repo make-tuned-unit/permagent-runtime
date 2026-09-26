@@ -19,8 +19,7 @@ use rmcp::model::Tool;
 use serde_json::Value;
 
 use super::formats::bedrock::{
-    from_bedrock_message, from_bedrock_usage, to_bedrock_message_with_caching,
-    to_bedrock_tool_config,
+    from_bedrock_message, from_bedrock_usage, to_bedrock_messages, to_bedrock_tool_config,
 };
 use crate::session_context::SESSION_ID_HEADER;
 
@@ -247,13 +246,7 @@ impl BedrockProvider {
             .converse()
             .set_system(Some(system_blocks))
             .model_id(model_name.to_string())
-            .set_messages(Some(
-                visible_messages
-                    .iter()
-                    .enumerate()
-                    .map(|(idx, m)| to_bedrock_message_with_caching(m, idx < cache_count))
-                    .collect::<Result<_>>()?,
-            ));
+            .set_messages(Some(to_bedrock_messages(&visible_messages, cache_count)?));
 
         if !tools.is_empty() {
             request = request.tool_config(to_bedrock_tool_config(tools)?);

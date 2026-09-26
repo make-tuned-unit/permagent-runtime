@@ -228,6 +228,8 @@ impl SystemPromptParts {
 /// Opening tag of the MOIM block (`ExtensionManager::collect_moim`): the clock,
 /// working directory and context-fill line the harness adds to every turn.
 pub const MOIM_OPEN: &str = "<info-msg>";
+/// Closing tag of the MOIM block; `collect_moim` always ends on it.
+pub const MOIM_CLOSE: &str = "</info-msg>";
 
 /// Opening/closing tags wrapping the system prompt's volatile suffix when a
 /// request builder relocates it from the system block to the tail of the last
@@ -249,6 +251,20 @@ pub const TURN_CONTEXT_CLOSE: &str = "</turn-context>";
 pub fn is_turn_context_text(text: &str) -> bool {
     let t = text.trim_start();
     t.starts_with(MOIM_OPEN) || t.starts_with(TURN_CONTEXT_OPEN)
+}
+
+/// True when `text` is per-turn host context and NOTHING else: it opens with a
+/// MOIM or turn-context tag and closes with one, so no conversation text rides
+/// before or after it. A formatter that joins a message's text blocks into one
+/// string uses this to tell a message the harness added (MOIM riding on its own
+/// after a tool result) from the user's words with MOIM appended.
+///
+/// Why it matters: a request builder that looks for "the last real user
+/// message" (the OpenAI formatter's reasoning echo policy) must skip a message
+/// like this, or the tool loop still in flight reads as a finished turn.
+pub fn is_turn_context_only_text(text: &str) -> bool {
+    let t = text.trim();
+    is_turn_context_text(t) && (t.ends_with(MOIM_CLOSE) || t.ends_with(TURN_CONTEXT_CLOSE))
 }
 
 /// Wrap a system prompt's volatile suffix for delivery as a trailing text block
@@ -514,6 +530,25 @@ mod tests {
         assert!(wrapped.starts_with(TURN_CONTEXT_OPEN));
         assert!(wrapped.ends_with(TURN_CONTEXT_CLOSE));
         assert!(wrapped.contains("# Live Status\n- 1"));
+    }
+
+    /// A message the harness added is recognised; the user's own words with
+    /// MOIM appended (or prepended) are not, because they are still the user
+    /// speaking.
+    #[test]
+    fn turn_context_only_text_rejects_conversation_on_either_side() {
+        let moim = "<info-msg>\nIt is currently 2026-09-25 11:02:00\n</info-msg>";
+        assert!(is_turn_context_only_text(moim));
+        assert!(is_turn_context_only_text(&format!("\n{moim}\n")));
+        assert!(is_turn_context_only_text(&wrap_turn_context("- 3 unread")));
+        assert!(is_turn_context_only_text(&format!(
+            "{moim}\n{}",
+            wrap_turn_context("- 3 unread")
+        )));
+        assert!(!is_turn_context_only_text(&format!("fix the bug\n{moim}")));
+        assert!(!is_turn_context_only_text(&format!("{moim}\nfix the bug")));
+        assert!(!is_turn_context_only_text("please fix <info-msg> parsing"));
+        assert!(!is_turn_context_only_text(""));
     }
 
     #[test]
