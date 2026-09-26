@@ -272,9 +272,14 @@ async fn decisions_section(pool: &Pool<Sqlite>) -> String {
     }
     let mut lines = vec!["## Open Decision Inbox".to_string()];
     for item in open.iter().take(20) {
+        // Goal headlines are title-free (D1); the digest names the goal.
         lines.push(format!(
             "- [{}] {}",
-            item.decision.kind, item.decision.headline
+            item.decision.kind,
+            crate::decisions::headline_with_goal(
+                &item.decision.headline,
+                item.goal_title.as_deref()
+            )
         ));
     }
     cap_section(lines.join("\n"))
@@ -485,6 +490,50 @@ mod tests {
         );
         assert!(brief.markdown.contains("Rewrite the homepage"));
         assert!(brief.markdown.contains("we already tried this in June"));
+    }
+
+    /// Inbox fix group: goal park headlines are title-free (D1), so the
+    /// brief's open-decisions digest must name each goal — three wall-budget
+    /// parks used to read as three identical lines.
+    #[tokio::test]
+    async fn the_open_decisions_digest_names_each_goal() {
+        let pool = pool().await;
+        let card = crate::cards::create_card(
+            &pool,
+            crate::cards::CreateCard {
+                project_id: crate::projects::PERSONAL_PROJECT_ID.to_string(),
+                title: "Fix login retry".to_string(),
+                description: None,
+                card_type: None,
+                column_id: None,
+                created_by: None,
+                metadata_json: None,
+            },
+        )
+        .await
+        .unwrap();
+        crate::decisions::create_decision(
+            &pool,
+            crate::decisions::NewDecision {
+                kind: "unblock".to_string(),
+                goal_id: Some(card.id.clone()),
+                project_id: Some(crate::projects::PERSONAL_PROJECT_ID.to_string()),
+                headline: Some("Goal ran out of time and needs your direction".to_string()),
+                detail: Some("Goal parked: wallclock cap exhausted".to_string()),
+                payload: serde_json::json!({"reason": "wallclock_cap"}),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let section = decisions_section(&pool).await;
+        assert!(
+            section.contains(
+                "- [unblock] Goal ran out of time and needs your direction (goal: Fix login retry)"
+            ),
+            "{section}"
+        );
     }
 
     #[tokio::test]

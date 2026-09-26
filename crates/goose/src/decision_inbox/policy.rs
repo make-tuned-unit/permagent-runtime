@@ -256,12 +256,16 @@ pub async fn resume_answered_decision(
     patch.insert("budget".to_string(), serde_json::Value::Object(budget_obj));
 
     let actor = proof.acted_by().to_string();
-    // D7: an answered wall-clock park restarts the goal's wall budget too, or
-    // the next dispatch re-parks it on the same spent clock.
-    if let Some((key, value)) = crate::decisions_effects::wall_budget_reset_patch(decision, &actor)
-    {
-        patch.insert(key, value);
-    }
+    // D7: an answered wall-clock (or token-budget) park restarts that budget
+    // too, or the next dispatch re-parks it on the same spent budget.
+    crate::decisions_effects::unpark_budget_resets(
+        pool,
+        decision,
+        &card.metadata_json,
+        &actor,
+        &mut patch,
+    )
+    .await?;
     // QA 2026-09-26: a human's `input` answer to an `unblock` clears the
     // zero-progress circuit breaker's streak and spent escalation too, or the
     // next dispatch parks the goal again before any worker runs. Unblocks

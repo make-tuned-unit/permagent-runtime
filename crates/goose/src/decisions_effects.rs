@@ -11,21 +11,51 @@ const RUNNING_LEASE_SECONDS: i64 = 300;
 /// The result displayed by the inline answer path.
 pub type EffectResult = (Option<String>, Option<String>);
 
-/// Where approved regressions are materialised, relative to the repo root.
-const EVAL_TASKS_DIR: &str = "crates/permagent-eval/tasks";
+/// Where approved regressions are materialised: the `permagent-eval` crate's
+/// own `tasks/` directory in the checkout this daemon was built from, which is
+/// exactly the directory the eval runner reads by default (its
+/// `DEFAULT_TASKS_DIR` is anchored on the same `CARGO_MANIFEST_DIR`).
+///
+/// Never relative to the process's working directory: launchd starts the
+/// daemon with cwd `/` (the plist sets no `WorkingDirectory`, and the app's
+/// sidecar inherits `/` too), which on macOS is the read-only system volume —
+/// every approval failed with os error 30 and the outbox retried it to death.
+/// A daemon whose build checkout is gone writes under its data directory
+/// instead, so an approval always lands somewhere writable.
+fn eval_tasks_dir() -> std::path::PathBuf {
+    let checkout = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../permagent-eval/tasks");
+    if checkout.is_dir() {
+        checkout
+    } else {
+        crate::config::paths::Paths::data_dir().join("eval-tasks")
+    }
+}
 
-/// Write an approved regression as a `permagent-eval` task directory.
+/// Write an approved regression as a `permagent-eval` task directory under
+/// [`eval_tasks_dir`].
+fn write_regression_task(
+    payload: &crate::decisions::RegressionProposalPayload,
+) -> Result<String, GuardError> {
+    write_regression_task_in(&eval_tasks_dir(), payload)
+}
+
+/// [`write_regression_task`] into an explicit tasks directory.
 ///
 /// Re-validates the slug and filename rather than trusting the payload: these
 /// values reach the filesystem, and the approval gate authorises WHAT is
 /// written, not WHERE. Refuses to overwrite an existing task — a proposal that
 /// silently replaced a passing regression would be a way to delete coverage
 /// through the approval path.
-fn write_regression_task(
+///
+/// Safe to retry, which the effect outbox does: the task is written into a
+/// `.{task_id}.partial` directory and renamed into place, so a write that
+/// fails halfway never leaves a half-task every retry then refuses to
+/// overwrite, and a retry that finds exactly the files it would write (the
+/// write landed but the outbox row was not marked applied) reports success.
+fn write_regression_task_in(
+    tasks_dir: &std::path::Path,
     payload: &crate::decisions::RegressionProposalPayload,
 ) -> Result<String, GuardError> {
-    use std::io::Write;
-
     if !crate::decisions::is_safe_task_id(&payload.task_id) {
         return Err(GuardError::Invalid(format!(
             "unsafe regression task_id '{}'",
@@ -38,17 +68,6 @@ fn write_regression_task(
             payload.oracle_filename
         )));
     }
-
-    let root = std::path::Path::new(EVAL_TASKS_DIR).join(&payload.task_id);
-    if root.exists() {
-        return Err(GuardError::Invalid(format!(
-            "regression task '{}' already exists — refusing to overwrite existing coverage",
-            payload.task_id
-        )));
-    }
-    let oracle_dir = root.join("oracle");
-    std::fs::create_dir_all(&oracle_dir)
-        .map_err(|e| GuardError::Invalid(format!("could not create task dir: {e}")))?;
 
     let spec = serde_yaml::to_string(
         &serde_yaml::from_str::<serde_yaml::Value>(&format!(
@@ -76,17 +95,68 @@ fn write_regression_task(
     )
     .map_err(|e| GuardError::Invalid(format!("could not serialize task.yaml: {e}")))?;
 
-    let mut f = std::fs::File::create(root.join("task.yaml"))
+    let root = tasks_dir.join(&payload.task_id);
+    if root.exists() {
+        let oracle = root.join("oracle").join(&payload.oracle_filename);
+        let already_written = std::fs::read_to_string(root.join("task.yaml"))
+            .is_ok_and(|written| written == spec)
+            && std::fs::read_to_string(oracle)
+                .is_ok_and(|written| written == payload.oracle_source);
+        if already_written {
+            return Ok(root.display().to_string());
+        }
+        return Err(GuardError::Invalid(format!(
+            "regression task '{}' already exists — refusing to overwrite existing coverage",
+            payload.task_id
+        )));
+    }
+
+    // The slug check above keeps this name inside `tasks_dir`. A leftover
+    // from a crashed earlier attempt is this approval's own, so it goes.
+    let partial = tasks_dir.join(format!(".{}.partial", payload.task_id));
+    if partial.exists() {
+        std::fs::remove_dir_all(&partial).map_err(|e| {
+            GuardError::Invalid(format!("could not clear an earlier partial write: {e}"))
+        })?;
+    }
+    let written = write_task_files(&partial, &root, &spec, payload);
+    if let Err(e) = written {
+        if let Err(cleanup) = std::fs::remove_dir_all(&partial) {
+            if cleanup.kind() != std::io::ErrorKind::NotFound {
+                tracing::warn!(
+                    task_id = %payload.task_id,
+                    "could not remove a partial regression task write: {cleanup}"
+                );
+            }
+        }
+        return Err(e);
+    }
+
+    Ok(root.display().to_string())
+}
+
+/// Write a regression task's files into `partial`, then rename it to `root`.
+fn write_task_files(
+    partial: &std::path::Path,
+    root: &std::path::Path,
+    spec: &str,
+    payload: &crate::decisions::RegressionProposalPayload,
+) -> Result<(), GuardError> {
+    use std::io::Write;
+
+    let oracle_dir = partial.join("oracle");
+    std::fs::create_dir_all(&oracle_dir)
+        .map_err(|e| GuardError::Invalid(format!("could not create task dir: {e}")))?;
+    let mut f = std::fs::File::create(partial.join("task.yaml"))
         .map_err(|e| GuardError::Invalid(format!("could not write task.yaml: {e}")))?;
     f.write_all(spec.as_bytes())
         .map_err(|e| GuardError::Invalid(format!("could not write task.yaml: {e}")))?;
-
     let mut o = std::fs::File::create(oracle_dir.join(&payload.oracle_filename))
         .map_err(|e| GuardError::Invalid(format!("could not write oracle: {e}")))?;
     o.write_all(payload.oracle_source.as_bytes())
         .map_err(|e| GuardError::Invalid(format!("could not write oracle: {e}")))?;
-
-    Ok(root.display().to_string())
+    std::fs::rename(partial, root)
+        .map_err(|e| GuardError::Invalid(format!("could not move the task into place: {e}")))
 }
 
 async fn goal_state(pool: &Pool<Sqlite>, goal_id: &str) -> Result<Option<String>, GuardError> {
@@ -674,8 +744,13 @@ async fn land_approved_goal(
         );
         let outcome = crate::goal_landing::LandOutcome::Skipped(note.clone());
         persist_landing_outcome(pool, goal_id, &card, &outcome, Some(refusal_reason)).await;
-        crate::agents::platform_extensions::orchestrator::park_refused_goal(pool, &card, &note)
-            .await;
+        crate::agents::platform_extensions::orchestrator::park_refused_goal(
+            pool,
+            &card,
+            &note,
+            Some(decisions::UnblockCause::AutoLandRefused),
+        )
+        .await;
         return (Some((project_id, outcome)), Some(note));
     }
 
@@ -766,8 +841,13 @@ async fn land_approved_goal(
         tracing::warn!(goal_id, "{note}");
         let outcome = crate::goal_landing::LandOutcome::Skipped(note.clone());
         persist_landing_outcome(pool, goal_id, &card, &outcome, None).await;
-        crate::agents::platform_extensions::orchestrator::park_refused_goal(pool, &card, &note)
-            .await;
+        crate::agents::platform_extensions::orchestrator::park_refused_goal(
+            pool,
+            &card,
+            &note,
+            Some(decisions::UnblockCause::AutoLandRefused),
+        )
+        .await;
         return (Some((project_id, outcome)), Some(note));
     };
 
@@ -877,8 +957,13 @@ async fn land_approved_goal(
         tracing::warn!(goal_id, "{note}");
         let outcome = crate::goal_landing::LandOutcome::Skipped(note.clone());
         persist_landing_outcome(pool, goal_id, &card, &outcome, None).await;
-        crate::agents::platform_extensions::orchestrator::park_refused_goal(pool, &card, &note)
-            .await;
+        crate::agents::platform_extensions::orchestrator::park_refused_goal(
+            pool,
+            &card,
+            &note,
+            Some(decisions::UnblockCause::AutoLandRefused),
+        )
+        .await;
         return (Some((project_id, outcome)), Some(note));
     };
     let mut req = req;
@@ -952,7 +1037,7 @@ async fn land_approved_goal(
                     )
                     .await;
                     crate::agents::platform_extensions::orchestrator::park_refused_goal(
-                        pool, &card, &note,
+                        pool, &card, &note, Some(decisions::UnblockCause::AutoLandRefused),
                     )
                     .await;
                     // Feed the Brain here too (fix-as-found, 2026-09-25): this
@@ -1186,16 +1271,40 @@ async fn ensure_needs_merge_decision(
 /// Keyed on exactly [`decisions::allowed_answers`] for the kind — a unit test
 /// pins that — so the UI never offers an answer with no sentence, or a
 /// sentence for an answer the route would refuse.
+///
+/// Without the goal's state, a goal-bound unblock is read as the one its goal
+/// is paused on — true of every park — except a merge-conflict unblock, which
+/// is filed after the goal completed. A caller that read the goal's state
+/// uses [`answer_effects_for_goal`].
 pub fn answer_effects(
     kind: &str,
     payload: &serde_json::Value,
     has_goal: bool,
 ) -> std::collections::BTreeMap<String, String> {
+    let merge_conflict = payload.get("cause").and_then(|v| v.as_str()) == Some("merge_conflict");
+    answer_effects_for_goal(kind, payload, has_goal.then_some(!merge_conflict))
+}
+
+/// [`answer_effects`] for a known goal state. `goal_parked` is `None` when the
+/// decision has no goal, else whether its goal is paused on this decision
+/// right now ([`goal_state_is_parked`]). An unblock's answers only move a
+/// paused goal: the approve arm leaves a running goal alone ("already
+/// unparked"), the reject arm cancels only a paused one (D8), and
+/// `resume_answered_decision` resumes only a paused one — so a running goal's
+/// unblock (a worker's question, a stalled-gate check) gets record-only copy.
+pub fn answer_effects_for_goal(
+    kind: &str,
+    payload: &serde_json::Value,
+    goal_parked: Option<bool>,
+) -> std::collections::BTreeMap<String, String> {
     fn str_of<'a>(payload: &'a serde_json::Value, key: &str) -> &'a str {
         payload.get(key).and_then(|v| v.as_str()).unwrap_or("")
     }
+    let has_goal = goal_parked.is_some();
+    let goal_parked = goal_parked.unwrap_or(false);
     let proposal = str_of(payload, "proposal");
     let reason = str_of(payload, "reason");
+    let cause = str_of(payload, "cause");
     let action_class = str_of(payload, "action_class");
     let pairs: Vec<(&str, String)> =
         match kind {
@@ -1238,17 +1347,59 @@ pub fn answer_effects(
                     "Saves your reply on this decision. Nothing else changes.".into(),
                 ),
             ],
+            // A merge-conflict unblock is filed after Review -> Complete: the
+            // approve arm finds the goal "already unparked" and the reject arm
+            // finds it "already complete". Neither merges anything.
+            "unblock" if !goal_parked && cause == "merge_conflict" => vec![
+                (
+                    "approve",
+                    "Closes this. Nothing is merged for you: the branch still needs the merge or \
+                     rebase shown in the details."
+                        .into(),
+                ),
+                (
+                    "reject",
+                    "Closes this. Nothing is merged or cancelled: the branch keeps its work."
+                        .into(),
+                ),
+                (
+                    "input",
+                    "Saves your reply on this decision. Nothing is merged for you.".into(),
+                ),
+            ],
+            "unblock" if !goal_parked => vec![
+                (
+                    "approve",
+                    "Records your answer. The goal isn't paused on this, so nothing else changes."
+                        .into(),
+                ),
+                (
+                    "reject",
+                    "Records your answer. The goal isn't paused on this, so it is not cancelled."
+                        .into(),
+                ),
+                (
+                    "input",
+                    "Saves your reply on this decision. The goal isn't paused on this, so nothing \
+                     else changes."
+                        .into(),
+                ),
+            ],
             "unblock" => vec![
                 (
                     "approve",
                     if reason == "wallclock_cap" {
                         // D7: the approve arm also clears the wall-budget anchor.
                         "Wakes the goal with a fresh time budget and more attempts.".into()
+                    } else if reason == "token_budget" {
+                        // The approve arm also grants a fresh token allowance,
+                        // or the next dispatch re-parks on the spent budget.
+                        "Wakes the goal with a fresh token allowance and more attempts.".into()
                     } else {
                         "Wakes the goal and gives it more attempts.".into()
                     },
                 ),
-                // D8: the goal-unblock reject arm cancels the goal.
+                // D8: the goal-unblock reject arm cancels a goal paused on it.
                 (
                     "reject",
                     "Cancels this goal for good. It will not run again.".into(),
@@ -1441,24 +1592,181 @@ pub fn answer_effects(
         .collect()
 }
 
-/// D7: an approved or answered wall-clock park must also restart the goal's
-/// wall budget, or the very next dispatch trips `check_budget`'s
-/// `BudgetExhaustion::Wallclock` again (that cap is measured from
-/// `first_dispatched_at`, the goal's FIRST dispatch, never per attempt).
-/// Removing the key (a JSON null in a guarded metadata patch) lets the next
-/// dispatch stamp a fresh anchor, exactly as a first dispatch does.
+/// Audit principal the chat `answer_decisions` tool records on every answer
+/// it relays. That tool answers as [`decisions::ACTOR_HENRY`] — chat can never
+/// stand in for the Tier-2 human — so this principal is what marks the answer
+/// as the user's own words rather than a policy's.
+pub const CHAT_RELAY_PRINCIPAL: &str = "henry-chat";
+
+/// Whether an answered decision carries the USER's verdict: their tap in the
+/// inbox ([`decisions::ACTOR_JESSE`]), or their words relayed by the chat
+/// agent ([`decisions::ACTOR_HENRY`] audited under [`CHAT_RELAY_PRINCIPAL`]),
+/// as opposed to a policy's, a timer's or the harness's. Only the user's
+/// verdict may restart a goal's wall clock, grant it more tokens, or cancel it
+/// from its unblock — and it gets those effects whichever channel carried it.
 ///
-/// Human answers only: an automated actor restarting a goal's clock would
-/// defeat the wall budget's whole purpose (the headless harness sets it to
-/// fit inside its own kill deadline).
-pub(crate) fn wall_budget_reset_patch(
+/// Read from the answer's durable audit row, so the inline run and an outbox
+/// retry of the same answer always agree.
+pub(crate) async fn is_users_verdict(
+    pool: &Pool<Sqlite>,
     decision: &Decision,
     acted_by: &str,
-) -> Option<(String, serde_json::Value)> {
-    (decision.kind == "unblock"
-        && decision.payload.get("reason").and_then(|v| v.as_str()) == Some("wallclock_cap")
-        && acted_by == decisions::ACTOR_JESSE)
-        .then(|| ("first_dispatched_at".to_string(), serde_json::Value::Null))
+) -> Result<bool, GuardError> {
+    if acted_by == decisions::ACTOR_JESSE {
+        return Ok(true);
+    }
+    if acted_by != decisions::ACTOR_HENRY {
+        return Ok(false);
+    }
+    let principal: Option<Option<String>> = sqlx::query_scalar(
+        "SELECT principal FROM decision_audit \
+         WHERE decision_id = ? AND acted_by = ? AND outcome = ? \
+         ORDER BY seq DESC LIMIT 1",
+    )
+    .bind(&decision.id)
+    .bind(acted_by)
+    .bind(decision.answer.as_deref().unwrap_or_default())
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| GuardError::Db(format!("read the answer's audit principal: {e}")))?;
+    Ok(principal.flatten().as_deref() == Some(CHAT_RELAY_PRINCIPAL))
+}
+
+/// Whether a goal in `state` is parked: the Failed column every park moves it
+/// to, or the legacy Triage parks. The same reading the unblock approve arm
+/// uses ("already unparked" for everything else).
+pub fn goal_state_is_parked(state: Option<&str>) -> bool {
+    matches!(state, Some("failed" | "triage"))
+}
+
+/// Whether the goal's wall clock is what would re-park it (D7). Keyed on the
+/// goal's own park, not only on the answered decision's reason:
+/// `exhaust_and_park` dedupes a new park onto any open unblock and keeps THAT
+/// decision's original payload, so a wall-clock park that reused an earlier
+/// worker question (reason `stuck`) was approved without the reset and
+/// re-parked on the very next dispatch. True when the answered decision is a
+/// wall-clock park, when the goal's last park was one, or when its wall
+/// budget is spent right now.
+fn wall_clock_blocks_goal(decision: &Decision, metadata: &serde_json::Value) -> bool {
+    if decision.payload.get("reason").and_then(|v| v.as_str()) == Some("wallclock_cap") {
+        return true;
+    }
+    let last_park_was_wall_clock = metadata
+        .get("last_error")
+        .and_then(|v| v.as_str())
+        .is_some_and(|e| {
+            e.starts_with("wallclock cap exhausted") || e.contains("wall budget exhausted")
+        });
+    if last_park_was_wall_clock {
+        return true;
+    }
+    // `check_budget`'s wall-clock test, read without the pool.
+    let Some(cap_secs) = goal_transition::goal_budget(metadata).wallclock_cap_secs else {
+        return false;
+    };
+    metadata
+        .get("first_dispatched_at")
+        .and_then(|v| v.as_str())
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .is_some_and(|first| {
+            let elapsed = (chrono::Utc::now() - first.with_timezone(&chrono::Utc)).num_seconds();
+            elapsed >= 0 && elapsed as u64 >= cap_secs
+        })
+}
+
+/// Whether the goal's last park was on its token budget, by the answered
+/// decision's reason or the goal's own last park (the same dedupe as above).
+fn token_budget_park(decision: &Decision, metadata: &serde_json::Value) -> bool {
+    decision.payload.get("reason").and_then(|v| v.as_str()) == Some("token_budget")
+        || metadata
+            .get("last_error")
+            .and_then(|v| v.as_str())
+            .is_some_and(|e| e.starts_with("token budget exhausted"))
+}
+
+/// Goal metadata key holding the token allowance a goal was first given, so a
+/// token-budget park's approve grants that same allowance again on top of
+/// what is spent (see [`unpark_budget_resets`]).
+const TOKEN_ALLOWANCE_KEY: &str = "token_budget_allowance";
+
+/// What a user's "wake this goal" answer to an unblock (approve, or an
+/// `input` reply to a paused goal) must reset besides the attempt cap, or the
+/// very next dispatch re-parks the goal on the same spent budget before any
+/// attempt runs. Adds the resets to `patch` — extending, never replacing, a
+/// `budget` entry the caller already put there — and returns the clause for
+/// the effect message ("" when nothing was reset).
+///
+/// - Wall clock (D7): that cap is measured from `first_dispatched_at`, the
+///   goal's FIRST dispatch, never per attempt. Removing the key (a JSON null
+///   in a guarded metadata patch) lets the next dispatch stamp a fresh anchor,
+///   exactly as a first dispatch does. See [`wall_clock_blocks_goal`].
+/// - Token budget: `check_budget` sums every worker session the goal has
+///   used, so the spent total never drops. A token-budget park's approve
+///   raises `budget.token_budget` to what is spent plus the original
+///   allowance: a fresh allowance of the same size, as the answer's effect
+///   sentence says. Only for a token-budget park, so no other answer ever
+///   raises spend without saying so.
+///
+/// The user's verdict only ([`is_users_verdict`]): an automated actor
+/// restarting a goal's clock or raising its spend would defeat both budgets'
+/// purpose (the headless harness sizes the wall budget to fit inside its own
+/// kill deadline).
+pub(crate) async fn unpark_budget_resets(
+    pool: &Pool<Sqlite>,
+    decision: &Decision,
+    metadata: &serde_json::Value,
+    acted_by: &str,
+    patch: &mut serde_json::Map<String, serde_json::Value>,
+) -> Result<String, GuardError> {
+    if decision.kind != "unblock" || !is_users_verdict(pool, decision, acted_by).await? {
+        return Ok(String::new());
+    }
+    let mut clauses: Vec<String> = Vec::new();
+    if wall_clock_blocks_goal(decision, metadata) {
+        patch.insert("first_dispatched_at".to_string(), serde_json::Value::Null);
+        clauses.push("its wall-clock budget restarted".to_string());
+    }
+    if token_budget_park(decision, metadata) {
+        if let Some(cap) = goal_transition::goal_budget(metadata).token_budget {
+            // Unknown accounting (a missing worker total) is not "spent":
+            // nothing is raised, and dispatch reports the accounting error.
+            if let Ok(spent) = goal_transition::goal_spent_tokens(pool, metadata).await {
+                if spent >= cap {
+                    // The allowance the goal was first given, remembered at
+                    // the first raise, so every raise grants the same size
+                    // rather than compounding the previous raise.
+                    let allowance = metadata
+                        .get(TOKEN_ALLOWANCE_KEY)
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(cap);
+                    let raised = spent.saturating_add(allowance);
+                    let budget = patch.entry("budget".to_string()).or_insert_with(|| {
+                        metadata
+                            .get("budget")
+                            .cloned()
+                            .unwrap_or_else(|| serde_json::json!({}))
+                    });
+                    let lifted = match budget.as_object_mut() {
+                        Some(budget) => {
+                            budget.insert("token_budget".to_string(), serde_json::json!(raised));
+                            true
+                        }
+                        None => false,
+                    };
+                    if lifted {
+                        patch.insert(
+                            TOKEN_ALLOWANCE_KEY.to_string(),
+                            serde_json::json!(allowance),
+                        );
+                        clauses.push(format!(
+                            "a fresh allowance of {allowance} tokens (budget now {raised})"
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    Ok(clauses.iter().map(|c| format!(" and {c}")).collect())
 }
 
 /// Apply an outbox-eligible decision effect without daemon `AppState`.
@@ -1477,6 +1785,89 @@ pub async fn apply_decision_effect(
     kind: &str,
 ) -> Result<EffectResult, GuardError> {
     apply_decision_effect_with_auto_land(pool, decision, proof, kind, false, None).await
+}
+
+/// What [`apply_answered_effect_now`] did with a freshly answered decision.
+pub enum AnsweredEffect {
+    /// The durable effect ran here. `Ok` is `(effect, warning)`; an `Err` is
+    /// already marked failed on the outbox row (the drain retries it), and
+    /// both an error and a warning are already audit-recorded.
+    Ran(Result<EffectResult, GuardError>),
+    /// The outbox drain claimed the effect first and applies it itself.
+    ClaimedByDrain,
+    /// Not an outbox kind: nothing ran, and the proof goes back to the caller
+    /// for the channel's own inline effect (tool approvals, session gates).
+    NotDurable(DecisionProof),
+}
+
+/// Run the durable effect of an answer a watching user just gave, now rather
+/// than on the outbox's next tick: claim the answer's outbox row, apply the
+/// effect, settle the row. The one path both user channels take — the inbox's
+/// HTTP answer route and the chat `answer_decisions` tool — so a verdict the
+/// user states in chat has exactly the effect of the same tap in the inbox:
+/// the wall-clock reset (D7) and the reject-cancel (D8) key on
+/// [`is_users_verdict`], never on which channel carried the answer.
+pub async fn apply_answered_effect_now(
+    pool: &Pool<Sqlite>,
+    decision: &Decision,
+    proof: DecisionProof,
+) -> Result<AnsweredEffect, String> {
+    let Some(claim_key) = decisions::effect_outbox_claim_key(&decision.id, &decision.kind) else {
+        return Ok(AnsweredEffect::NotDurable(proof));
+    };
+    if !decisions::claim_effect_outbox(pool, &claim_key).await? {
+        return Ok(AnsweredEffect::ClaimedByDrain);
+    }
+    let result = apply_decision_effect(pool, decision, proof, &decision.kind).await;
+    match &result {
+        Ok((_, warning)) => {
+            if let Err(e) = decisions::mark_effect_outbox_applied(pool, &claim_key).await {
+                tracing::error!(
+                    "Decision {} effect outbox could not be marked applied: {}",
+                    decision.id,
+                    e
+                );
+            }
+            if let Some(warning) = warning {
+                record_answered_effect_failure(pool, decision, warning).await;
+            }
+        }
+        Err(e) => {
+            let msg = e.to_string();
+            if let Err(mark_err) =
+                decisions::mark_effect_outbox_failed(pool, &claim_key, &msg).await
+            {
+                tracing::error!(
+                    "Decision {} effect outbox could not be marked failed: {}",
+                    decision.id,
+                    mark_err
+                );
+            }
+            record_answered_effect_failure(pool, decision, &msg).await;
+        }
+    }
+    Ok(AnsweredEffect::Ran(result))
+}
+
+/// Log and audit-record an answered decision's effect failure (or a warning
+/// from a follow-on step after the effect committed). If the audit write
+/// itself fails, that is logged rather than discarded.
+async fn record_answered_effect_failure(pool: &Pool<Sqlite>, decision: &Decision, error: &str) {
+    tracing::error!(
+        "Decision {} answered but effect failed: {}",
+        decision.id,
+        error
+    );
+    if let Err(audit_err) =
+        decisions::record_effect_outcome(pool, decision, &format!("effect_error: {}", error)).await
+    {
+        tracing::error!(
+            "Decision {} effect failure could not be audit-recorded: {} (original effect error: {})",
+            decision.id,
+            audit_err,
+            error
+        );
+    }
 }
 
 /// [`apply_decision_effect`], plus the two arguments its `approve_review`
@@ -1517,10 +1908,10 @@ pub async fn apply_decision_effect_with_auto_land(
                 serde_json::from_value(decision.payload.clone()).map_err(|e| {
                     GuardError::Invalid(format!("regression_proposal payload unreadable: {e}"))
                 })?;
-            match write_regression_task(&payload) {
-                Ok(path) => Ok((None, Some(format!("Regression written to {path}")))),
-                Err(e) => Err(e),
-            }
+            // The written path is the effect itself, not a warning: a
+            // warning is audit-recorded as an effect error.
+            let path = write_regression_task(&payload)?;
+            already_applied(format!("regression task written to {path}"))
         }
         // D5: a declined regression writes nothing.
         ("regression_proposal", Some("reject")) => {
@@ -1907,10 +2298,9 @@ pub async fn apply_decision_effect_with_auto_land(
                 serde_json::json!(false),
             );
             patch.insert("budget".to_string(), serde_json::Value::Object(budget));
-            let wall_reset = wall_budget_reset_patch(decision, &acted_by);
-            if let Some((key, value)) = wall_reset.clone() {
-                patch.insert(key, value);
-            }
+            let resets =
+                unpark_budget_resets(pool, decision, &card.metadata_json, &acted_by, &mut patch)
+                    .await?;
             // QA 2026-09-26: a human's approve also clears the zero-progress
             // circuit breaker's streak and spent escalation, or the very next
             // dispatch reads them and parks the goal again before any worker
@@ -1929,32 +2319,51 @@ pub async fn apply_decision_effect_with_auto_land(
             )
             .await?;
             already_applied(format!(
-                "goal unparked to Ready with attempt_cap raised to {attempt_cap}{}",
-                if wall_reset.is_some() {
-                    " and its wall-clock budget restarted"
-                } else {
-                    ""
-                }
+                "goal unparked to Ready with attempt_cap raised to {attempt_cap}{resets}"
             ))
         }
-        // D8: rejecting a goal's unblock cancels the goal. Before this arm the
-        // answer fell through to `resume_answered_decision`, which ignores a
-        // reject, leaving a parked goal with no open question at all. Same
-        // path as the board's Cancel (`orchestrator::cancel_goal`): terminal
-        // transition, stop any worker, supersede its other open decisions.
-        // Human answers only — no automated actor may cancel a goal this way.
+        // D8: rejecting the unblock a goal is parked on cancels the goal.
+        // Before this arm the answer fell through to
+        // `resume_answered_decision`, which ignores a reject, leaving a parked
+        // goal with no open question at all. Same path as the board's Cancel
+        // (`orchestrator::cancel_goal`): terminal transition, stop any worker,
+        // supersede its other open decisions.
+        //
+        // Only a goal actually paused on THIS decision is cancelled. A
+        // goal-bound unblock is also filed while the goal keeps running (an
+        // interactive worker's `escalate` question, a stalled-gate check), and
+        // one can outlive an unpark done by another path; rejecting those is
+        // an answer to record — "no" to the worker's question — never a reason
+        // to kill a live worker. And only the user's own verdict cancels: the
+        // inbox tap or their words relayed by chat, never an automated actor.
         ("unblock", Some("reject")) if decision.goal_id.is_some() => {
             let goal_id = decision.goal_id.as_deref().expect("checked above");
-            if acted_by != decisions::ACTOR_JESSE {
-                return already_applied(format!(
-                    "unblock declined by {acted_by}; the goal stays parked"
-                ));
-            }
-            match goal_state(pool, goal_id).await?.as_deref() {
+            let state = goal_state(pool, goal_id).await?;
+            match state.as_deref() {
                 None => return already_applied("goal was already gone"),
                 Some("cancelled") => return already_applied("goal was already cancelled"),
                 Some("complete") => return already_applied("goal was already complete"),
                 _ => {}
+            }
+            // The one-open-unblock-per-goal dedupe means a parked goal with
+            // another unblock still open is paused on that one, not this.
+            let parked_on_this = goal_state_is_parked(state.as_deref())
+                && decisions::find_open_decision_for_goal(pool, goal_id, "unblock")
+                    .await
+                    .map_err(GuardError::Db)?
+                    .is_none_or(|open| open.id == decision.id);
+            if !is_users_verdict(pool, decision, &acted_by).await? {
+                return already_applied(if parked_on_this {
+                    format!("unblock declined by {acted_by}; the goal stays parked")
+                } else {
+                    format!("unblock declined by {acted_by}; recorded only")
+                });
+            }
+            if !parked_on_this {
+                return already_applied(
+                    "answer recorded; the goal was not paused on this decision, so it was left \
+                     as it is",
+                );
             }
             crate::agents::platform_extensions::orchestrator::cancel_goal(pool, goal_id)
                 .await
@@ -6548,5 +6957,65 @@ mod tests {
             "the first batch's item must still be recallable: {fed}"
         );
         assert!(fed.contains("Globex"), "{fed}");
+    }
+
+    fn regression_payload(task_id: &str) -> crate::decisions::RegressionProposalPayload {
+        serde_json::from_value(serde_json::json!({
+            "task_id": task_id,
+            "title": "Parked goal summary stays honest",
+            "prompt": "Make the summary honest.",
+            "test": ["python3", "oracle/check.py"],
+            "oracle_filename": "check.py",
+            "oracle_source": "import sys\nsys.exit(0)\n",
+            "incident_id": "incident-1",
+        }))
+        .unwrap()
+    }
+
+    /// Inbox fix group: the approve arm wrote to a path relative to the
+    /// process's working directory — `/` under launchd, the read-only system
+    /// volume — so every approval failed with os error 30. The tasks directory
+    /// is absolute and never depends on the cwd.
+    #[test]
+    fn approved_regressions_never_resolve_against_the_working_directory() {
+        let dir = eval_tasks_dir();
+        assert!(dir.is_absolute(), "{}", dir.display());
+        assert!(
+            dir.ends_with("permagent-eval/tasks") || dir.ends_with("eval-tasks"),
+            "{}",
+            dir.display()
+        );
+    }
+
+    /// Inbox fix group: the outbox retries a failed effect, so the write must
+    /// be safe to repeat: a retry that finds exactly its own files succeeds,
+    /// a half-written earlier attempt never blocks it, and a different task
+    /// under the same id is still never overwritten.
+    #[test]
+    fn a_regression_task_write_is_safe_to_retry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tasks = tmp.path().join("tasks");
+        let payload = regression_payload("honest-park-summary");
+
+        // A crashed earlier attempt left a partial write behind.
+        std::fs::create_dir_all(tasks.join(".honest-park-summary.partial/oracle")).unwrap();
+        let path = write_regression_task_in(&tasks, &payload).unwrap();
+        let root = tasks.join("honest-park-summary");
+        assert_eq!(path, root.display().to_string());
+        assert!(root.join("task.yaml").is_file());
+        assert_eq!(
+            std::fs::read_to_string(root.join("oracle/check.py")).unwrap(),
+            payload.oracle_source
+        );
+        assert!(!tasks.join(".honest-park-summary.partial").exists());
+
+        // The outbox retries after the write landed: the same files, success.
+        assert_eq!(write_regression_task_in(&tasks, &payload).unwrap(), path);
+
+        // Different content under the same id is existing coverage: refused.
+        let mut other = regression_payload("honest-park-summary");
+        other.oracle_source = "import sys\nsys.exit(1)\n".to_string();
+        let err = write_regression_task_in(&tasks, &other).unwrap_err();
+        assert!(format!("{err:?}").contains("already exists"), "{err:?}");
     }
 }

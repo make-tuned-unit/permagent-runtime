@@ -10,15 +10,19 @@
 //!     never on the agent's own initiative. The tool-approval trust layer
 //!     provides the real click for supervised modes.
 //!
-//! Effects: answering enqueues durable effects into the effect outbox, which
-//! this module drains immediately after answering (the same worker path the
-//! notification router uses). Kinds that need a live delivery channel
-//! (tool approvals, session gates) are refused here and stay Inbox-only.
+//! Effects: each answer's durable effect runs at once through
+//! `decisions_effects::apply_answered_effect_now` — the same function the
+//! inbox's HTTP answer route calls — so a verdict the user states in chat has
+//! exactly the effect of the same tap in the Inbox (a paused goal's reject
+//! cancels it; a timed-out goal's approve restarts its clock). Kinds that
+//! need a live delivery channel (tool approvals, session gates) are refused
+//! here and stay Inbox-only.
 
 use crate::agents::extension::PlatformExtensionContext;
 use crate::agents::mcp_client::{Error, McpClientTrait};
 use crate::agents::tool_execution::ToolCallContext;
 use crate::decisions;
+use crate::decisions_effects::AnsweredEffect;
 use crate::session::SessionType;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -34,8 +38,10 @@ use tokio_util::sync::CancellationToken;
 pub static EXTENSION_NAME: &str = "inbox";
 
 /// Audit principal recorded when an answer arrives through chat, so the
-/// append-only audit can distinguish a chat-relayed answer from the Inbox UI.
-const CHAT_PRINCIPAL: &str = "henry-chat";
+/// append-only audit can distinguish a chat-relayed answer from the Inbox UI —
+/// and so the effect path can tell the user's relayed verdict from a policy's
+/// (`decisions_effects::is_users_verdict`). One constant, shared with it.
+const CHAT_PRINCIPAL: &str = crate::decisions_effects::CHAT_RELAY_PRINCIPAL;
 
 /// The highest tier answerable from chat. Tier 2 is the human-only tier —
 /// irreversible or high-blast-radius actions (goal deletion, merge/push to
@@ -144,7 +150,10 @@ impl InboxClient {
                 `answer_decisions` ONLY to carry out a verdict the user just gave in
                 this conversation. Never answer on your own judgment, never infer
                 approval from silence, and read back what you are about to apply
-                ("approving these 5: …") before calling.
+                ("approving these 5: …") before calling. Each listed decision says
+                what approve and reject do; read that back too. Rejecting the
+                unblock a goal is paused on CANCELS that goal for good — it is not
+                "leave it parked".
 
                 Prefer settling decisions HERE. Do not send the user to the Decision
                 Inbox when they can say yes/no in this conversation or tap Approve
@@ -179,8 +188,21 @@ impl InboxClient {
         for item in &items {
             let d = &item.decision;
             let bulkable = decisions::effect_outbox_claim_key(&d.id, &d.kind).is_some();
+            // What approve and reject really do for THIS decision (the same
+            // sentences the Inbox shows), so what the agent reads back before
+            // answering is the effect, not a guess.
+            let effects = ["approve", "reject"]
+                .iter()
+                .filter_map(|answer| {
+                    item.presentation
+                        .effects
+                        .get(*answer)
+                        .map(|sentence| format!("{answer}: {sentence}"))
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
             lines.push(format!(
-                "- id: {} · kind: {} · tier {} · {}{}{}\n  {}",
+                "- id: {} · kind: {} · tier {} · {}{}{}\n  {}{}",
                 d.id,
                 d.kind,
                 d.tier,
@@ -195,6 +217,11 @@ impl InboxClient {
                     " · [tap Approve in this chat or say yes — cannot be answered by this tool]"
                 },
                 d.detail.chars().take(200).collect::<String>(),
+                if effects.is_empty() {
+                    String::new()
+                } else {
+                    format!("\n  effects — {effects}")
+                },
             ));
         }
         Ok(vec![Content::text(lines.join("\n"))])
@@ -290,7 +317,7 @@ impl InboxClient {
                 choice_id: None,
                 input_text: None,
             };
-            match decisions::answer_decision_as_session(
+            let (d, proof) = match decisions::answer_decision_as_session(
                 &pool,
                 id,
                 &answer,
@@ -304,18 +331,50 @@ impl InboxClient {
             )
             .await
             {
-                Ok((d, _proof)) => {
-                    applied.push(format!("{id}: {} — {}", params.answer, d.headline))
+                Ok(answered) => answered,
+                Err(e) => {
+                    refused.push(format!("{id}: {e}"));
+                    continue;
                 }
-                Err(e) => refused.push(format!("{id}: {e}")),
-            }
-        }
-
-        // Apply the enqueued effects now rather than waiting for the router's
-        // next drain tick — the user is watching.
-        if !applied.is_empty() {
-            if let Err(e) = crate::decisions_effects::drain_effect_outbox(&pool).await {
-                refused.push(format!("effect drain reported: {e}"));
+            };
+            // D1 headlines are title-free; the line names the goal itself.
+            let subject = decisions::decision_subject(&pool, &d).await;
+            // Apply the effect now rather than waiting for the router's next
+            // drain tick — the user is watching — through the same function
+            // the Inbox's answer route uses.
+            match crate::decisions_effects::apply_answered_effect_now(&pool, &d, proof).await {
+                Ok(AnsweredEffect::Ran(Ok((effect, warning)))) => {
+                    applied.push(format!(
+                        "{id}: {} — {subject}{}",
+                        params.answer,
+                        effect.map(|e| format!(" ({e})")).unwrap_or_default()
+                    ));
+                    if let Some(warning) = warning {
+                        refused.push(format!(
+                            "{id}: answered, but a follow-on step failed: {warning}"
+                        ));
+                    }
+                }
+                Ok(AnsweredEffect::Ran(Err(e))) => {
+                    applied.push(format!("{id}: {} — {subject}", params.answer));
+                    refused.push(format!(
+                        "{id}: answered, but its effect failed and will be retried: {e}"
+                    ));
+                }
+                Ok(AnsweredEffect::ClaimedByDrain) => applied.push(format!(
+                    "{id}: {} — {subject} (being applied in the background)",
+                    params.answer
+                )),
+                // Refused above before answering; a record-only answer.
+                Ok(AnsweredEffect::NotDurable(_)) => {
+                    applied.push(format!("{id}: {} — {subject}", params.answer))
+                }
+                Err(e) => {
+                    applied.push(format!("{id}: {} — {subject}", params.answer));
+                    refused.push(format!(
+                        "{id}: answered, but its effect could not start and will be retried: {e}"
+                    ));
+                }
             }
         }
 
@@ -367,11 +426,13 @@ impl InboxClient {
                 ANSWER_TOOL.to_string(),
                 "Apply the user's explicit approve/reject — stated in THIS conversation — to one \
                  or more decisions by id. Bundle what they approved together into one call, and \
-                 read the list back to them first. NEVER call this on your own judgment; the \
-                 verdict must be the user's words. High-tier decisions (deletions, merges, \
-                 spend, secrets) and live-channel kinds (tool approvals, session gates) are \
-                 refused here — tell them to tap Approve in this chat (or say yes on voice), \
-                 not to leave for the Inbox."
+                 read the list back to them first, with what each answer does (the listing's \
+                 effects line). Rejecting the unblock a goal is paused on cancels that goal for \
+                 good. NEVER call this on your own judgment; the verdict must be the user's \
+                 words. High-tier decisions (deletions, merges, spend, secrets) and \
+                 live-channel kinds (tool approvals, session gates) are refused here — tell \
+                 them to tap Approve in this chat (or say yes on voice), not to leave for the \
+                 Inbox."
                     .to_string(),
                 answer_schema,
             ),
