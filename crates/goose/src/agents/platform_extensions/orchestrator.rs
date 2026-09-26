@@ -437,6 +437,82 @@ fn dispatch_budget_task_id(
         })
 }
 
+// Immutable task text is bounded independently of chat history. Oversized contracts
+// fail explicitly rather than silently dropping schemas/acceptance at the tail.
+const TASK_CONTRACT_METADATA_KEY: &str = "original_task_contract";
+const MAX_TASK_CONTRACT_BYTES: usize = 32 * 1024;
+
+fn roadmap_task_contract(
+    session: &crate::session::Session,
+    objective: &str,
+    headless_launch: bool,
+) -> Result<serde_json::Value, String> {
+    // Harness policy, not SessionType, identifies an unattended launch: Grow
+    // uses a User session. Its first user message is the original task; later
+    // user-role messages can be synthetic worker-resume notifications.
+    let launch_text = (headless_launch && session.parent_session_id.is_none())
+        .then(|| {
+            session.conversation.as_ref().and_then(|conversation| {
+                conversation
+                    .messages()
+                    .iter()
+                    .filter(|message| message.role == rmcp::model::Role::User)
+                    .map(|message| message.as_concat_text())
+                    .find(|text| !text.trim().is_empty())
+            })
+        })
+        .flatten();
+    let source = if launch_text.is_some() {
+        "headless_launch"
+    } else {
+        "objective"
+    };
+    let text = launch_text.as_deref().unwrap_or(objective);
+    if text.len() > MAX_TASK_CONTRACT_BYTES {
+        return Err(format!("Original task contract exceeds {MAX_TASK_CONTRACT_BYTES} bytes; narrow the launch brief before planning. Requirements were not truncated."));
+    }
+    Ok(serde_json::json!({
+        "text": text,
+        "source": source,
+        "session_id": session.id,
+        "budget_task_id": crate::session::budget_task_id(&session.extension_data),
+    }))
+}
+
+fn task_contract_block(metadata: &serde_json::Value) -> Option<String> {
+    let contract = metadata.get(TASK_CONTRACT_METADATA_KEY)?;
+    let text = contract.get("text")?.as_str()?;
+    Some(format!(
+        "\n\nOriginal task contract (verbatim JSON-quoted task data):\n{}\nPreserve exact schemas, enum values and acceptance requirements applicable to this goal. The goal remains the assigned slice; this contract does not expand its write scope or permissions.",
+        serde_json::to_string(text).ok()?
+    ))
+}
+
+async fn durable_dispatch_budget_task_id(
+    manager: &crate::session::SessionManager,
+    metadata: &serde_json::Value,
+    caller_session_id: Option<&str>,
+) -> Result<Option<String>, String> {
+    if let Some(task) = dispatch_budget_task_id(metadata, None) {
+        return Ok(Some(task));
+    }
+    // Legacy cards without a pinned budget belong to their creating session,
+    // not whichever unrelated coordinator happens to dispatch them today.
+    let session_id = metadata
+        .get("created_by_session_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|id| !id.trim().is_empty())
+        .or(caller_session_id);
+    let Some(session_id) = session_id else {
+        return Ok(None);
+    };
+    let session = manager
+        .get_session(session_id, false)
+        .await
+        .map_err(|error| format!("Could not load durable task identity: {error}"))?;
+    Ok(crate::session::budget_task_id(&session.extension_data))
+}
+
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct SteerGoalParams {
     /// The goal card ID (UUID) whose running worker should receive the message.
@@ -4641,6 +4717,12 @@ async fn materialize_roadmap_transaction_with_budget(
                 serde_json::json!(budget_task_id),
             );
         }
+        if let Some(contract) = proof
+            .get(TASK_CONTRACT_METADATA_KEY)
+            .filter(|v| !v.is_null())
+        {
+            meta.insert(TASK_CONTRACT_METADATA_KEY.to_string(), contract.clone());
+        }
         if let Some(record) = &planning_record {
             meta.insert(ROADMAP_PLANNING_METADATA_KEY.to_string(), record.clone());
         }
@@ -6329,6 +6411,9 @@ async fn build_goal_worker_brief(
         "Goal: {}\n\nDescription: {}\nProject: {}\nProject root: {}",
         card.title, card.description, project.name, root_path
     );
+    if let Some(contract) = task_contract_block(&card.metadata_json) {
+        instructions.push_str(&contract);
+    }
     // Specialist role brief (metadata_json.dispatch_role, set by goal_advance's
     // `role` argument or a decision effect such as review-fail → debugger).
     // Prepended so the worker reads mandate-then-task; unknown/absent roles
@@ -9027,6 +9112,12 @@ pub(crate) async fn dispatch_goal_fn(
         .and_then(|w| w.timeout_secs)
         .unwrap_or(goal_engine::DEFAULT_EXTERNAL_CLI_TIMEOUT_SECS);
     let (output_tx, mut output_rx) = tokio::sync::mpsc::unbounded_channel();
+    let durable_task_id = durable_dispatch_budget_task_id(
+        &context.session_manager,
+        &card.metadata_json,
+        context.session.as_ref().map(|session| session.id.as_str()),
+    )
+    .await?;
     let task = goal_engine::GoalTask {
         card_title: card.title.clone(),
         instructions,
@@ -9036,7 +9127,7 @@ pub(crate) async fn dispatch_goal_fn(
         output_tx: Some(output_tx),
         parent_session_id: context.session.as_ref().map(|s| s.id.clone()),
         goal_id: Some(card_id.to_string()),
-        budget_task_id: dispatch_budget_task_id(&card.metadata_json, context.session.as_deref()),
+        budget_task_id: durable_task_id,
         billing_class: worker_cfg
             .map(|worker| worker.configured_billing_class())
             .transpose()?,
@@ -12304,6 +12395,15 @@ impl OrchestratorClient {
         let args = arguments.ok_or("Missing arguments")?;
         let objective = extract_string(&args, "objective")?;
         let requested_id_or_slug = args.get("project_id_or_slug").and_then(|v| v.as_str());
+        let session = self
+            .context
+            .session_manager
+            .get_session(session_id, true)
+            .await
+            .map_err(|error| format!("Could not load decomposition session: {error}"))?;
+        let headless_launch = headless_dispatch_policy_config()
+            .is_some_and(|policy| policy.coordinator_session_id == session_id);
+        let task_contract = roadmap_task_contract(&session, &objective, headless_launch)?;
 
         let pool = self
             .context
@@ -12431,6 +12531,11 @@ impl OrchestratorClient {
             "Objective: {}\nProject: {}\nProject root: {}",
             objective, project.name, root_path
         );
+        if let Some(block) = task_contract_block(&serde_json::json!({
+            TASK_CONTRACT_METADATA_KEY: task_contract.clone(),
+        })) {
+            user_text.push_str(&block);
+        }
         user_text.push_str(&facts.prompt_block());
         user_text.push_str(&format!(
             "\n\nAvailable capability tags (only these are ever dispatchable): {}",
@@ -12556,12 +12661,6 @@ impl OrchestratorClient {
         // Lane R65a: the request's size bounds a paid planner's reservation.
         let request_bytes = system.len() + user_text.len();
         let user_message = crate::conversation::message::Message::user().with_text(user_text);
-        let session = self
-            .context
-            .session_manager
-            .get_session(session_id, false)
-            .await
-            .map_err(|e| format!("Could not load decomposition session: {e}"))?;
         let manager = Arc::clone(&self.context.session_manager);
 
         // Planner routing (#249, re-ruled 2026-09-09 — see the module comment
@@ -12821,6 +12920,7 @@ impl OrchestratorClient {
         // by hash, never by re-trusting the tag on model-controlled text.
         let derived_ac_hashes = harness_derived_ac_hashes(&goals);
         let proof_json = serde_json::json!({
+            TASK_CONTRACT_METADATA_KEY: task_contract,
             "hash": proposal_hash,
             "goal_count": goals.len(),
             "approval_decision_id": approval.id.clone(),
@@ -13126,11 +13226,15 @@ impl OrchestratorClient {
             )
         });
 
-        let budget_task_id = self
-            .context
-            .session
-            .as_ref()
-            .and_then(|session| crate::session::budget_task_id(&session.extension_data));
+        let budget_task_id = durable_dispatch_budget_task_id(
+            &self.context.session_manager,
+            &serde_json::json!({}),
+            self.context
+                .session
+                .as_ref()
+                .map(|session| session.id.as_str()),
+        )
+        .await?;
         // `None` (no genuine session bound to this extension instance, R2-1)
         // must never be treated as Auto: collapse it to a mode the
         // ACTOR_AUTO_LAUNCH check below can never match.
@@ -50764,6 +50868,10 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         let (hash, decision_id) =
             install_answered_roadmap_proof(&pool, crate::projects::PERSONAL_PROJECT_ID, &goals)
                 .await;
+        let contract = serde_json::json!({"text": "viewport_position: above_fold|below_fold; preserve event_id", "source": "headless_launch", "session_id": "grow-session"});
+        sqlx::query("UPDATE projects SET metadata_json = json_set(metadata_json, '$.roadmap_proposal.original_task_contract', json(?)) WHERE id = ?")
+            .bind(contract.to_string()).bind(crate::projects::PERSONAL_PROJECT_ID)
+            .execute(&pool).await.unwrap();
         let order = goal_state::topological_order(&goals).unwrap();
         let materialized = materialize_roadmap_transaction_with_budget(
             &pool,
@@ -50788,6 +50896,22 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             .unwrap();
         let metadata: serde_json::Value = serde_json::from_str(&metadata).unwrap();
         assert_eq!(metadata["budget_task_id"], "approving-task");
+        assert_eq!(metadata[TASK_CONTRACT_METADATA_KEY], contract);
+        let card = cards::get_card(&pool, &materialized.created_ids[0])
+            .await
+            .unwrap()
+            .unwrap();
+        let project =
+            crate::projects::get_project_by_id_or_slug(&pool, crate::projects::PERSONAL_PROJECT_ID)
+                .await
+                .unwrap()
+                .unwrap();
+        for compact in [false, true] {
+            let brief =
+                build_goal_worker_brief(&pool, &card, &project, "/tmp", None, compact, false).await;
+            assert!(brief.contains("above_fold|below_fold"));
+            assert!(brief.contains("preserve event_id"));
+        }
     }
 
     /// R56a, durable. The derived scope must actually land on the card
@@ -55047,6 +55171,111 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             spend_snapshot(&pool, "missing").await,
             Err(SpendSnapshotError::Database(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn grow_task_contract_preserves_launch_schema_and_excludes_resume_history() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = SessionManager::new(temp.path().to_path_buf());
+        // Actual Grow launches are User sessions, not Hidden sessions.
+        let mut session = manager
+            .create_session(
+                temp.path().to_path_buf(),
+                "grow".to_string(),
+                SessionType::User,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let original = "viewport_position: above_fold|below_fold\nAccept: event_id must match the viewed event.";
+        session.conversation = Some(crate::conversation::Conversation::new_unvalidated([
+            Message::assistant().with_text("bootstrap, not the task"),
+            Message::user().with_text(original),
+            Message::assistant().with_text("model paraphrase missing enum"),
+            Message::user().with_text("(Resuming — a worker finished.)"),
+        ]));
+        let contract = roadmap_task_contract(&session, "instrument CTA visibility", true).unwrap();
+        assert_eq!(contract["text"], original);
+        assert_eq!(contract["source"], "headless_launch");
+        assert_eq!(contract["session_id"], session.id);
+        let metadata = serde_json::json!({TASK_CONTRACT_METADATA_KEY: contract});
+        let prompt = task_contract_block(&metadata).unwrap();
+        assert!(prompt.contains("above_fold|below_fold"));
+        assert!(!prompt.contains("bootstrap"));
+        assert!(!prompt.contains("Resuming"));
+        // Reusable interactive chats must not inherit an unrelated old launch.
+        assert_eq!(
+            roadmap_task_contract(&session, "current objective", false).unwrap()["text"],
+            "current objective"
+        );
+        session.parent_session_id = Some("parent".to_string());
+        assert_eq!(
+            roadmap_task_contract(&session, "child slice", true).unwrap()["text"],
+            "child slice"
+        );
+        session.parent_session_id = None;
+        session.conversation = Some(crate::conversation::Conversation::new_unvalidated([
+            Message::user().with_text("x".repeat(MAX_TASK_CONTRACT_BYTES + 1)),
+        ]));
+        assert!(roadmap_task_contract(&session, "short summary", true)
+            .unwrap_err()
+            .contains("not truncated"));
+    }
+
+    #[tokio::test]
+    async fn durable_dispatch_identity_refreshes_stale_context_and_preserves_card_pin() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = SessionManager::new(temp.path().to_path_buf());
+        let cached_session = manager
+            .create_session(
+                temp.path().to_path_buf(),
+                "grow".to_string(),
+                SessionType::User,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        assert!(crate::session::budget_task_id(&cached_session.extension_data).is_none());
+        let first = manager.begin_budget_task(&cached_session.id).await.unwrap();
+        assert_eq!(
+            durable_dispatch_budget_task_id(
+                &manager,
+                &serde_json::json!({}),
+                Some(&cached_session.id)
+            )
+            .await
+            .unwrap(),
+            Some(first.clone())
+        );
+        let second = manager.begin_budget_task(&cached_session.id).await.unwrap();
+        assert_ne!(first, second);
+        assert_eq!(
+            durable_dispatch_budget_task_id(
+                &manager,
+                &serde_json::json!({"budget_task_id": first}),
+                Some(&cached_session.id)
+            )
+            .await
+            .unwrap(),
+            Some(first)
+        );
+        assert_eq!(
+            durable_dispatch_budget_task_id(
+                &manager,
+                &serde_json::json!({"created_by_session_id": cached_session.id}),
+                Some("unrelated-caller")
+            )
+            .await
+            .unwrap(),
+            Some(second)
+        );
+        assert!(durable_dispatch_budget_task_id(
+            &manager,
+            &serde_json::json!({}),
+            Some("missing-session")
+        )
+        .await
+        .is_err());
     }
 
     #[tokio::test]
