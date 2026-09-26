@@ -28,6 +28,18 @@ pub const DEFAULT_USER_ID: &str = "default";
 /// making the identity survive compaction, retries, resume, and daemon restart.
 pub const BUDGET_TASK_EXTENSION_NAME: &str = "budget_task";
 pub const BUDGET_TASK_EXTENSION_VERSION: &str = "v1";
+const BUDGET_TASK_CONTRACT_EXTENSION_NAME: &str = "budget_task_contract";
+pub const MAX_BUDGET_TASK_CONTRACT_BYTES: usize = 32 * 1024;
+
+/// Only the origin captured with the CURRENT budget identity is authoritative.
+/// A legacy task or a changed identity must never reuse another task's brief.
+pub fn budget_task_contract(extension_data: &ExtensionData) -> Option<&serde_json::Value> {
+    let task_id = extension_data
+        .get_extension_state(BUDGET_TASK_EXTENSION_NAME, BUDGET_TASK_EXTENSION_VERSION)?
+        .as_str()?;
+    let contract = extension_data.get_extension_state(BUDGET_TASK_CONTRACT_EXTENSION_NAME, "v1")?;
+    (contract.get("task_id")?.as_str()? == task_id).then_some(contract)
+}
 
 /// Extension-data key for the goal card whose worker owns this session.
 /// Keeping this separate from the budget identity lets ledger writers recover
@@ -1168,6 +1180,21 @@ impl SessionManager {
     /// other session extension state, so internal Agent-loop continuations do
     /// not accidentally create a new budget boundary.
     pub async fn begin_budget_task(&self, id: &str) -> Result<String> {
+        self.begin_budget_task_inner(id, None).await
+    }
+
+    /// Capture user-task origin in the same write as its new budget ID. Oversized
+    /// input still starts ordinary chat normally; planners can refuse the marker
+    /// explicitly without storing/truncating a misleading partial contract.
+    pub async fn begin_budget_task_with_contract(
+        &self,
+        id: &str,
+        message: &Message,
+    ) -> Result<String> {
+        self.begin_budget_task_inner(id, Some(message)).await
+    }
+
+    async fn begin_budget_task_inner(&self, id: &str, message: Option<&Message>) -> Result<String> {
         let session = self.get_session(id, false).await?;
         let task_id = uuid::Uuid::now_v7().to_string();
         let mut extension_data = session.extension_data;
@@ -1176,6 +1203,15 @@ impl SessionManager {
             BUDGET_TASK_EXTENSION_VERSION,
             serde_json::Value::String(task_id.clone()),
         );
+        let contract = message.map(|message| {
+            let text = message.as_concat_text();
+            if text.len() > MAX_BUDGET_TASK_CONTRACT_BYTES {
+                serde_json::json!({"task_id": task_id, "source_message_id": message.id, "oversized_bytes": text.len()})
+            } else {
+                serde_json::json!({"task_id": task_id, "source_message_id": message.id, "text": text})
+            }
+        }).unwrap_or(serde_json::Value::Null);
+        extension_data.set_extension_state(BUDGET_TASK_CONTRACT_EXTENSION_NAME, "v1", contract);
         self.update(id)
             .extension_data(extension_data)
             .apply()
@@ -6413,6 +6449,73 @@ mod tests {
         let after_restart = resumed.get_session(&session.id, false).await.unwrap();
         assert_eq!(after_restart.accumulated_total_tokens, Some(15));
         assert_eq!(after_restart.accumulated_cost_usd, Some(0.0));
+    }
+
+    #[tokio::test]
+    async fn budget_task_contract_tracks_task_boundary_and_survives_history_replacement() {
+        let temp = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp.path().to_path_buf());
+        let session = sm
+            .create_session(
+                temp.path().to_path_buf(),
+                "contract".to_string(),
+                SessionType::User,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let original = Message::user().with_text("viewport_position: above_fold|below_fold");
+        let first = sm
+            .begin_budget_task_with_contract(&session.id, &original)
+            .await
+            .unwrap();
+        sm.replace_conversation(&session.id, &Conversation::default())
+            .await
+            .unwrap();
+        drop(sm);
+        let sm = SessionManager::new(temp.path().to_path_buf());
+        let loaded = sm.get_session(&session.id, false).await.unwrap();
+        assert_eq!(budget_task_id(&loaded.extension_data), Some(first));
+        assert_eq!(
+            budget_task_contract(&loaded.extension_data).unwrap()["text"],
+            original.as_concat_text()
+        );
+        sm.begin_budget_task_with_contract(
+            &session.id,
+            &Message::user().with_text("second unrelated task"),
+        )
+        .await
+        .unwrap();
+        let second = sm.get_session(&session.id, false).await.unwrap();
+        assert_eq!(
+            budget_task_contract(&second.extension_data).unwrap()["text"],
+            "second unrelated task"
+        );
+        // No impact to ordinary large-message chat; planning sees explicit marker.
+        sm.begin_budget_task_with_contract(
+            &session.id,
+            &Message::user().with_text("x".repeat(MAX_BUDGET_TASK_CONTRACT_BYTES + 1)),
+        )
+        .await
+        .unwrap();
+        let oversized = sm.get_session(&session.id, false).await.unwrap();
+        let contract = budget_task_contract(&oversized.extension_data).unwrap();
+        assert!(contract.get("text").is_none());
+        assert_eq!(
+            contract["oversized_bytes"],
+            MAX_BUDGET_TASK_CONTRACT_BYTES + 1
+        );
+        sm.begin_budget_task(&session.id).await.unwrap();
+        let legacy = sm.get_session(&session.id, false).await.unwrap();
+        assert!(budget_task_contract(&legacy.extension_data).is_none());
+        // A stale record cannot cross a changed task even if another writer left it.
+        let mut stale = second.extension_data;
+        stale.set_extension_state(
+            BUDGET_TASK_EXTENSION_NAME,
+            BUDGET_TASK_EXTENSION_VERSION,
+            serde_json::json!("new-task"),
+        );
+        assert!(budget_task_contract(&stale).is_none());
     }
 
     #[tokio::test]

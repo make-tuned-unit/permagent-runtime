@@ -440,13 +440,30 @@ fn dispatch_budget_task_id(
 // Immutable task text is bounded independently of chat history. Oversized contracts
 // fail explicitly rather than silently dropping schemas/acceptance at the tail.
 const TASK_CONTRACT_METADATA_KEY: &str = "original_task_contract";
-const MAX_TASK_CONTRACT_BYTES: usize = 32 * 1024;
+const MAX_TASK_CONTRACT_BYTES: usize =
+    crate::session::session_manager::MAX_BUDGET_TASK_CONTRACT_BYTES;
 
 fn roadmap_task_contract(
     session: &crate::session::Session,
     objective: &str,
     headless_launch: bool,
 ) -> Result<serde_json::Value, String> {
+    if let Some(origin) =
+        crate::session::session_manager::budget_task_contract(&session.extension_data)
+    {
+        if origin.get("oversized_bytes").is_some() {
+            return Err(format!("Original task contract exceeds {MAX_TASK_CONTRACT_BYTES} bytes; narrow the task brief before planning. Requirements were not truncated."));
+        }
+        if let Some(text) = origin.get("text").and_then(serde_json::Value::as_str) {
+            return Ok(serde_json::json!({
+                "text": text,
+                "source": "budget_task_origin",
+                "source_message_id": origin.get("source_message_id"),
+                "session_id": session.id,
+                "budget_task_id": crate::session::budget_task_id(&session.extension_data),
+            }));
+        }
+    }
     // Harness policy, not SessionType, identifies Grow's coordinator. Only
     // an unambiguous launch can supply original text: a reused interactive
     // harness can have a new task, while synthetic resume messages carry the
@@ -55250,6 +55267,23 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         assert!(roadmap_task_contract(&session, "short summary", true)
             .unwrap_err()
             .contains("not truncated"));
+        manager
+            .begin_budget_task_with_contract(
+                &session.id,
+                &Message::user().with_text("new task: exact_enum=a|b"),
+            )
+            .await
+            .unwrap();
+        let mut persisted = manager.get_session(&session.id, false).await.unwrap();
+        persisted.conversation = session.conversation;
+        let contract = roadmap_task_contract(&persisted, "lossy summary", true).unwrap();
+        assert_eq!(contract["text"], "new task: exact_enum=a|b");
+        assert_eq!(contract["source"], "budget_task_origin");
+        // Durable origin also works for daemon and interactive planning.
+        assert_eq!(
+            roadmap_task_contract(&persisted, "lossy summary", false).unwrap(),
+            contract
+        );
     }
 
     #[tokio::test]

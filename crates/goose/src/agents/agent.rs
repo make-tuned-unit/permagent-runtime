@@ -2523,7 +2523,7 @@ impl Agent {
             .session_type;
         if starts_new_budget_task(session_type, &message_text) {
             session_manager
-                .begin_budget_task(&session_config.id)
+                .begin_budget_task_with_contract(&session_config.id, &user_message)
                 .await?;
         }
 
