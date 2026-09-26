@@ -1664,9 +1664,16 @@ fn cargo_target_selector(path: &Path, manifest: &Path) -> Option<Vec<String>> {
 fn node_checks(dir: &Path) -> Result<DetectOutcome, String> {
     let pm = detect_node_package_manager(dir);
     let scripts = read_package_scripts(dir);
+    let run_script = |script| {
+        if node_manager_uses_corepack(pm) {
+            Check::direct("corepack", &[pm, "run", script])
+        } else {
+            Check::direct(pm, &["run", script])
+        }
+    };
     let mut checks = Vec::new();
     if scripts.contains_key("build") {
-        checks.push(Check::direct(pm, &["run", "build"]));
+        checks.push(run_script("build"));
     }
     // A real `test` script is a check; the `npm init` placeholder ("no test
     // specified" && exit 1) is not — running it always FAILs, which on a fresh
@@ -1675,7 +1682,7 @@ fn node_checks(dir: &Path) -> Result<DetectOutcome, String> {
         .get("test")
         .is_some_and(|cmd| is_placeholder_test(cmd));
     if scripts.contains_key("test") && !placeholder_test {
-        checks.push(Check::direct(pm, &["run", "test"]));
+        checks.push(run_script("test"));
     }
     if !checks.is_empty() {
         return Ok(DetectOutcome::Checks(checks));
@@ -1722,8 +1729,11 @@ fn is_no_test_files_found(check: &Check, exit_code: Option<i32>, output: &str) -
     let is_node_test = matches!(
         &check.exec,
         Exec::Direct { program, args }
-            if matches!(program.as_str(), "npm" | "pnpm" | "yarn" | "bun")
-                && args.as_slice() == ["run", "test"]
+            if (matches!(program.as_str(), "npm" | "pnpm" | "yarn" | "bun")
+                && args.as_slice() == ["run", "test"])
+                || (program == "corepack" && args.len() == 3
+                    && matches!(args[0].as_str(), "pnpm" | "yarn")
+                    && args[1..] == ["run", "test"])
     );
     if !is_node_test {
         return false;
@@ -1771,6 +1781,12 @@ fn missing_import_dependency(output: &str) -> Option<String> {
         .flatten()
         .next()
         .map(|m| m.as_str().to_string())
+}
+
+pub(crate) fn node_manager_uses_corepack(manager: &str) -> bool {
+    matches!(manager, "pnpm" | "yarn")
+        && which::which(manager).is_err()
+        && which::which("corepack").is_ok()
 }
 
 /// Prefer an explicit packageManager. An extra stale lock must not force a
@@ -4569,7 +4585,11 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
         std::fs::write(dir.path().join("pnpm-lock.yaml"), "").unwrap();
         assert_eq!(
             checks_of(dir.path()),
-            vec![Check::direct("pnpm", &["run", "test"])]
+            if node_manager_uses_corepack("pnpm") {
+                vec![Check::direct("corepack", &["pnpm", "run", "test"])]
+            } else {
+                vec![Check::direct("pnpm", &["run", "test"])]
+            }
         );
     }
 

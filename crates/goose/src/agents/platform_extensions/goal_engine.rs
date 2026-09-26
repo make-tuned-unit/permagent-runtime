@@ -89,7 +89,7 @@ fn dependency_setup_brief(worktree: &Path) -> String {
     let installed = which::which(manager).is_ok();
     let runner = if installed {
         manager.to_string()
-    } else if matches!(manager, "pnpm" | "yarn") && which::which("corepack").is_ok() {
+    } else if super::developer::verify::node_manager_uses_corepack(manager) {
         format!("corepack {manager}")
     } else {
         return format!("\n\nDEPENDENCY PREFLIGHT: This Node worktree uses {manager}, but its executable is missing from PATH. Repair the package-manager setup before running checks or editing application code. This is an environment blocker, not a coding failure; do not repeat failing commands or escalate the model.");
@@ -3611,11 +3611,6 @@ mod tests {
         );
     }
 
-    /// Lane Y9: the internal worker's prompt must NAME its worktree as the
-    /// only writable root, so the boundary the write jail enforces is stated
-    /// before it is hit. Pins the path interpolation and the "only" wording —
-    /// a brief that says "this worktree" without saying WHICH is exactly what
-    /// the workers that edited the trunk by absolute path already had.
     #[test]
     fn dependency_preflight_reports_isolated_setup_before_code_work() {
         let dir = tempfile::tempdir().unwrap();
@@ -3637,6 +3632,11 @@ mod tests {
         }
     }
 
+    /// Lane Y9: the internal worker's prompt must NAME its worktree as the
+    /// only writable root, so the boundary the write jail enforces is stated
+    /// before it is hit. Pins the path interpolation and the "only" wording —
+    /// a brief that says "this worktree" without saying WHICH is exactly what
+    /// the workers that edited the trunk by absolute path already had.
     #[test]
     fn worktree_scope_brief_names_the_worktree_as_the_only_writable_root() {
         let brief = worktree_scope_brief(Path::new("/repos/.permagent-goal-worktrees/run-1"));
