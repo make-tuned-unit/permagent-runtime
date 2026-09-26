@@ -275,6 +275,101 @@ impl Default for PrimaryPersona {
     }
 }
 
+/// The OWNER identity — the human operating this Permagent instance, as
+/// distinct from [`PrimaryPersona`] (the agent's own name/voice/tone).
+///
+/// Before this existed there was NO concept of who the user is anywhere in the
+/// codebase: `people::Person::is_self` was hardcoded `false` with a comment
+/// saying no owner/self source existed, and People → List showed the
+/// operator's own directory record twice (their first name and their full
+/// name), flagged as a possible duplicate of itself. This struct is that
+/// source.
+///
+/// Stored at `~/.permagent/owner.yaml` — a SEPARATE file from `agent.yaml`
+/// rather than a new field on [`AgentConfig`], deliberately: `AgentConfig`
+/// derives `Default` but has at least one non-test construction site elsewhere
+/// in this codebase that lists every field by name with no `..Default::default()`
+/// spread (`platform_extensions::orchestrator`'s test fixture), so a new
+/// mandatory field there is a silent breakage waiting to happen the next time
+/// someone forgets that call site exists. A standalone file with its own
+/// load/save pair (mirroring [`load_agent_config`] / [`save_agent_config`]
+/// exactly, one file lower) carries the same "durable, hot-editable, additive"
+/// contract without widening a struct other code already constructs by hand.
+///
+/// Every field is optional: an owner record that has never been filled in is
+/// simply `OwnerIdentity::default()` (the file need not even exist yet — see
+/// [`load_owner_identity`]), and every field name is neutral (no hardcoded
+/// person's name anywhere in this module).
+///
+/// `linked_person_id` is the opaque `people.entity_uuid` of the directory row
+/// that IS this owner (set via the People picker in Settings → Preferences, or
+/// `PUT /api/owner`). See [`crate::people::is_owner_self`] for how this record
+/// decides `Person::is_self` when no link is set.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OwnerIdentity {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    /// Opaque `people.entity_uuid` link. `None` means unlinked — the owner may
+    /// still resolve to a person row by name match (see [`crate::people::is_owner_self`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linked_person_id: Option<String>,
+}
+
+/// Load the owner identity from `~/.permagent/owner.yaml`.
+///
+/// Mirrors [`load_agent_config`]'s degradation contract: a missing file (never
+/// configured yet) is the ordinary, silent case and yields
+/// `OwnerIdentity::default()`; a file that exists but fails to parse falls
+/// back to the same default but is LOUD about it via `tracing::warn`, for the
+/// same reason #167 made `parse_agent_config` loud — a silent revert to
+/// defaults looks exactly like "my saved owner info didn't persist".
+pub fn load_owner_identity() -> OwnerIdentity {
+    let path = owner_yaml_path();
+    if !path.exists() {
+        return OwnerIdentity::default();
+    }
+    match std::fs::read_to_string(&path) {
+        Ok(content) => match serde_yaml::from_str(&content) {
+            Ok(owner) => owner,
+            Err(e) => {
+                tracing::warn!(
+                    "{} did not parse ({}); the saved owner identity is being \
+                     IGNORED and an empty one used instead. Fix or delete the \
+                     file to clear this.",
+                    path.display(),
+                    e
+                );
+                OwnerIdentity::default()
+            }
+        },
+        Err(e) => {
+            tracing::warn!(
+                "Could not read {} ({}); falling back to an empty owner identity",
+                path.display(),
+                e
+            );
+            OwnerIdentity::default()
+        }
+    }
+}
+
+/// Save the owner identity to `~/.permagent/owner.yaml`.
+pub fn save_owner_identity(owner: &OwnerIdentity) -> Result<()> {
+    let path = owner_yaml_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let yaml = serde_yaml::to_string(owner)?;
+    std::fs::write(&path, yaml)?;
+    Ok(())
+}
+
+pub fn owner_yaml_path() -> std::path::PathBuf {
+    Paths::config_dir().join("owner.yaml")
+}
+
 /// Compute display name: nickname > first+last > first alone.
 fn compute_display_name(
     first_name: &str,
@@ -1147,6 +1242,82 @@ pub fn load_shared_persona() -> SharedPersona {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── Owner identity (dagK owner-identity, 2026-09-26) ────────────────
+
+    #[test]
+    fn owner_identity_defaults_to_every_field_absent() {
+        let owner = OwnerIdentity::default();
+        assert_eq!(owner.display_name, None);
+        assert_eq!(owner.email, None);
+        assert_eq!(owner.linked_person_id, None);
+    }
+
+    /// Round-trips through the exact yaml bytes `save_owner_identity` writes —
+    /// the same "save not persisting" class of bug #167 pinned for the persona.
+    #[test]
+    fn owner_identity_yaml_round_trips() {
+        let owner = OwnerIdentity {
+            display_name: Some("Jane Doe".into()),
+            email: Some("jane@example.com".into()),
+            linked_person_id: Some("11111111-1111-1111-1111-111111111111".into()),
+        };
+        let yaml = serde_yaml::to_string(&owner).unwrap();
+        let back: OwnerIdentity = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(back, owner);
+    }
+
+    /// An absent field must not round-trip into a spurious empty string — a
+    /// caller checking `.is_none()` should never see `Some("")` from a field
+    /// nobody set.
+    #[test]
+    fn owner_identity_absent_fields_stay_absent_across_serde() {
+        let owner = OwnerIdentity::default();
+        let yaml = serde_yaml::to_string(&owner).unwrap();
+        assert!(!yaml.contains("display_name"));
+        assert!(!yaml.contains("email"));
+        assert!(!yaml.contains("linked_person_id"));
+        let back: OwnerIdentity = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(back, owner);
+    }
+
+    /// `load_owner_identity` on a machine that has never configured one (no
+    /// `owner.yaml` written yet) is the ordinary case, not an error.
+    #[test]
+    fn load_owner_identity_defaults_when_file_absent() {
+        let root = tempfile::tempdir().unwrap();
+        let _guard =
+            env_lock::lock_env([("PERMAGENT_PATH_ROOT", Some(root.path().to_str().unwrap()))]);
+        assert_eq!(load_owner_identity(), OwnerIdentity::default());
+    }
+
+    /// The write/read pair a daemon restart depends on: what `save_owner_identity`
+    /// writes, `load_owner_identity` must read back unchanged.
+    #[test]
+    fn save_then_load_owner_identity_round_trips() {
+        let root = tempfile::tempdir().unwrap();
+        let _guard =
+            env_lock::lock_env([("PERMAGENT_PATH_ROOT", Some(root.path().to_str().unwrap()))]);
+        let owner = OwnerIdentity {
+            display_name: Some("Ada Lovelace".into()),
+            email: Some("ada@example.com".into()),
+            linked_person_id: None,
+        };
+        save_owner_identity(&owner).unwrap();
+        assert_eq!(load_owner_identity(), owner);
+    }
+
+    /// Corrupt yaml degrades to an empty owner (loudly, via tracing) rather
+    /// than panicking the daemon on boot — mirrors `corrupt_agent_yaml_falls_back_to_default`.
+    #[test]
+    fn corrupt_owner_yaml_falls_back_to_default() {
+        let root = tempfile::tempdir().unwrap();
+        let _guard =
+            env_lock::lock_env([("PERMAGENT_PATH_ROOT", Some(root.path().to_str().unwrap()))]);
+        std::fs::create_dir_all(root.path()).unwrap();
+        std::fs::write(owner_yaml_path(), "display_name: [this is: not, valid").unwrap();
+        assert_eq!(load_owner_identity(), OwnerIdentity::default());
+    }
 
     /// The Steward is `steward` in agent.yaml and `git_steward` in the worker
     /// registry, so a surface that wants the descriptor behind a persona key has

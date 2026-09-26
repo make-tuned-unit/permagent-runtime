@@ -339,6 +339,12 @@ export function SaveButton({ onClick, disabled, saving }: {
       onClick={onClick}
       disabled={disabled}
       pending={saving}
+      // An ordinary "nothing to save yet" disabled state, not a dead preview
+      // control — the settings-surface fitness scan (settingsPalette /
+      // SettingsView.preview-controls.test.tsx) only allows a disabled
+      // control that says why, so every `SaveButton` caller gets that for
+      // free instead of re-deriving it per panel.
+      data-disabled-reason={disabled ? (saving ? 'saving' : 'no changes to save') : undefined}
       style={{
         '--pa-btn-bg': disabled ? colors.cyanSoft : colors.cyan,
         // `textOnCyan`, not `textOnAccent`: the fill here is flat `colors.cyan`,

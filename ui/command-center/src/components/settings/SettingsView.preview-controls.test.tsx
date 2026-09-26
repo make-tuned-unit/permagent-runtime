@@ -25,6 +25,13 @@ vi.mock('../../lib/api', () => ({
     // 2026-09-25) fetches this on mount; left pending so it stays in its
     // loading state rather than resolving mid-assertion.
     getBrainFeedStatus: vi.fn(() => new Promise(() => {})),
+    // Preferences → "You" (dagK owner-identity, 2026-09-26): resolved (not
+    // left pending) so its Save button — disabled until an edit is made —
+    // actually renders here, exercising the `data-disabled-reason` contract
+    // this suite checks rather than dodging it by never loading.
+    getOwner: vi.fn(() => Promise.resolve({
+      display_name: null, email: null, linked_person_id: null, linked_person_name: null,
+    })),
   },
   apiFetch: vi.fn(),
 }));

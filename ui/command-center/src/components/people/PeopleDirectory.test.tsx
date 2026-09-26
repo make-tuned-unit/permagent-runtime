@@ -15,6 +15,7 @@ const { apiFetch } = vi.hoisted(() => ({ apiFetch: vi.fn() }));
 vi.mock('../../lib/api', () => ({ apiFetch }));
 
 import { PeopleDirectory } from './PeopleDirectory';
+import { useCommandCenter } from '../../lib/store';
 import type { DirectoryPerson } from '../projects/types';
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
@@ -287,5 +288,24 @@ describe('PeopleDirectory', () => {
     expect(container.textContent).toContain('You');
     expect(container.textContent).not.toContain('Sam Okafor');
     expect(container.textContent).not.toContain('possible duplicate');
+  });
+
+  it('gives only the "You" row an Edit-in-Settings affordance, which opens Settings → Preferences', async () => {
+    apiFetch.mockResolvedValue([
+      person('me', 'Sam Okafor', { kind: 'self' }),
+      person('b', 'Priya Shah', {}),
+    ]);
+    await act(async () => root.render(<PeopleDirectory />));
+
+    const editButtons = container.querySelectorAll('[data-testid="people-row-self-edit-in-settings"]');
+    expect(editButtons.length).toBe(1);
+
+    useCommandCenter.setState({ activePanel: 'chat', pendingSettingsSection: null });
+    await act(async () => {
+      editButtons[0].dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    const state = useCommandCenter.getState();
+    expect(state.activePanel).toBe('settings');
+    expect(state.pendingSettingsSection).toBe('preferences');
   });
 });

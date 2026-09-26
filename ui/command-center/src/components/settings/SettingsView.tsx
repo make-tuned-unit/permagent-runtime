@@ -20,6 +20,9 @@ import { DataSourcesSection } from './DataSourcesSection';
 import { PolybotKeys } from '../finance/PolybotKeys';
 import { FundamentalsKey } from '../finance/FundamentalsKey';
 import { usePersona } from './useSettings';
+import { useOwner } from './useOwner';
+import { PersonSearchPicker } from '../people/PersonSearchPicker';
+import type { Person } from '../projects/types';
 import { resolveSettingsSection } from './sections';
 import { trustEnvOverrideNotice } from './autonomy';
 import { VoicePicker } from '../voice/VoicePicker';
@@ -307,6 +310,110 @@ function PersonaPanel() {
 // 2026-08 finish-the-settings ruling: nothing read any of it and no account
 // subsystem exists. It returns when there is a real account to show.
 
+/**
+ * "You" — the owner identity (dagK owner-identity, 2026-09-26). Distinct from
+ * `PersonaPanel` above, which is the AGENT's own name/voice/tone: this is who
+ * is running Permagent. Before this existed there was no such record anywhere,
+ * and People → List showed the operator's own directory entry twice (their
+ * name entered once here and once as a contact), flagged as a possible
+ * duplicate of itself.
+ */
+export function OwnerSection() {
+  const { colors } = useThemeHook();
+  const { data, loading, saving, error, save } = useOwner();
+  const [name, setName] = useState('');
+  const [email, setEmail] = useState('');
+  const [dirty, setDirty] = useState(false);
+  const [linking, setLinking] = useState(false);
+
+  useEffect(() => {
+    if (data) {
+      setName(data.display_name ?? '');
+      setEmail(data.email ?? '');
+      setDirty(false);
+    }
+  }, [data]);
+
+  const changeName = (v: string) => { setName(v); setDirty(true); };
+  const changeEmail = (v: string) => { setEmail(v); setDirty(true); };
+
+  const handleSave = async () => {
+    if (!dirty) return;
+    // #167's lesson, same as PersonaPanel: only clear dirty when the daemon
+    // actually persisted the edit.
+    const ok = await save({ display_name: name, email });
+    if (ok) setDirty(false);
+  };
+
+  const linkPerson = async (person: Person) => {
+    const ok = await save({ linked_person_id: person.entity_uuid });
+    if (ok) setLinking(false);
+    return ok;
+  };
+
+  const unlink = () => save({ linked_person_id: null });
+
+  const ghostBtn = (): CSSProperties => ({
+    '--pa-btn-fg': colors.cyan,
+    '--pa-btn-bg-hover': 'transparent',
+    '--pa-btn-border': 'transparent',
+    '--pa-btn-pad': '4px 0',
+    '--pa-btn-weight': 500,
+    fontFamily: font.body,
+    fontSize: textSize.caption,
+  } as CSSProperties);
+
+  if (loading) return <div style={{ color: colors.textDim, fontSize: textSize.small }}>Loading…</div>;
+  return (
+    <>
+    <Section
+      title="You"
+      sub="Who's using Permagent. Linking your own record in People shows it as “You” there instead of a separate contact, and keeps it out of duplicate flagging."
+    >
+      <Row label="Name" hint="How the agent refers to you.">
+        <TextInput value={name} onChange={changeName} placeholder="Your name" />
+      </Row>
+      <Row label="Email" hint="Optional. Kept alongside your name; never shared anywhere.">
+        <TextInput value={email} onChange={changeEmail} placeholder="you@example.com" />
+      </Row>
+      <Row
+        label="This is me in People"
+        hint="Search the directory for your own record. Once linked, People shows it as “You” and stops flagging it as a possible duplicate."
+      >
+        {data?.linked_person_id ? (
+          <ListRow
+            testId="owner-linked-person"
+            title={data.linked_person_name ?? 'Linked person'}
+            detail={data.linked_person_name ? undefined : 'This linked record no longer exists — unlink and pick again.'}
+            tone={data.linked_person_name ? 'default' : 'problem'}
+            trailing={
+              <Button colors={colors} variant="ghost" onClick={unlink} style={ghostBtn()} data-testid="owner-unlink">
+                Unlink
+              </Button>
+            }
+          />
+        ) : linking ? (
+          <div>
+            <PersonSearchPicker onPick={linkPerson} placeholder="Search for your own record…" />
+            <Button colors={colors} variant="ghost" onClick={() => setLinking(false)} style={ghostBtn()}>
+              Cancel
+            </Button>
+          </div>
+        ) : (
+          <Button colors={colors} variant="ghost" onClick={() => setLinking(true)} style={ghostBtn()} data-testid="owner-link-start">
+            Link a person
+          </Button>
+        )}
+      </Row>
+    </Section>
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: space.xl, marginBottom: space.huge }}>
+      {error && <span style={{ fontSize: textSize.caption, color: colors.danger }}>{error}</span>}
+      <SaveButton onClick={handleSave} disabled={!dirty || saving} saving={saving} />
+    </div>
+    </>
+  );
+}
+
 export function PreferencesPanel() {
   const { colors } = useThemeHook();
   // "Open on launch" is LIVE: persisted locally and consumed once by App.tsx
@@ -316,6 +423,7 @@ export function PreferencesPanel() {
   return (
     <div>
       <H1 sub="Defaults that follow you across sessions. Changes saved locally.">Preferences</H1>
+      <OwnerSection />
       <Section title="Defaults">
         <Row label="Open on launch" hint="Where Permagent lands when you open the app. Applied on the next launch.">
           <select

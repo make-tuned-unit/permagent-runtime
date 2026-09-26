@@ -79,11 +79,15 @@ pub enum FeedSource {
     Lesson,
     Incident,
     ModelReview,
+    /// The owner identity record (dagK owner-identity, 2026-09-26): fed once
+    /// per real edit from `PUT /api/owner` so the agent has a durable memory
+    /// of who its user is, instead of that fact living only in `owner.yaml`.
+    Owner,
 }
 
 impl FeedSource {
     /// Every source, in the order Settings → Memory lists them.
-    pub const ALL: [FeedSource; 17] = [
+    pub const ALL: [FeedSource; 18] = [
         FeedSource::Chat,
         FeedSource::Goal,
         FeedSource::DecisionAsked,
@@ -101,6 +105,7 @@ impl FeedSource {
         FeedSource::Lesson,
         FeedSource::Incident,
         FeedSource::ModelReview,
+        FeedSource::Owner,
     ];
 
     /// The `RememberOpts.source` tag. `Chat` keeps the tag chat persistence
@@ -124,6 +129,7 @@ impl FeedSource {
             FeedSource::Lesson => "permagent.lesson",
             FeedSource::Incident => "permagent.incident",
             FeedSource::ModelReview => "permagent.model_review",
+            FeedSource::Owner => "permagent.owner",
         }
     }
 
@@ -147,6 +153,7 @@ impl FeedSource {
             FeedSource::Lesson => "lesson",
             FeedSource::Incident => "incident",
             FeedSource::ModelReview => "model_review",
+            FeedSource::Owner => "owner",
         }
     }
 
@@ -170,6 +177,7 @@ impl FeedSource {
             FeedSource::Lesson => "Lessons",
             FeedSource::Incident => "Incidents",
             FeedSource::ModelReview => "Model reviews",
+            FeedSource::Owner => "Who you are, to the agent",
         }
     }
 
@@ -757,6 +765,25 @@ mod tests {
         );
         // Colons and whitespace inside an id cannot break the structure.
         assert_eq!(feed_key("goal", "a:b c", "outcome"), "goal:a-b-c:outcome");
+    }
+
+    /// dagK owner-identity (2026-09-26): the new `Owner` source is wired into
+    /// every place a `FeedSource` variant has to appear — `ALL`, the inverse
+    /// lookup, and (implicitly, via a non-empty `as_str`/`short_name`/`label`)
+    /// the three per-variant match arms. `from_tag` round-tripping is the one
+    /// check that would have caught a variant added to the enum but left out
+    /// of `ALL` (a `match` omission fails to compile; a missed `ALL` entry
+    /// does not).
+    #[test]
+    fn owner_source_is_wired_into_all_and_round_trips_by_tag() {
+        assert!(FeedSource::ALL.contains(&FeedSource::Owner));
+        assert_eq!(FeedSource::Owner.as_str(), "permagent.owner");
+        assert_eq!(FeedSource::Owner.short_name(), "owner");
+        assert!(!FeedSource::Owner.label().is_empty());
+        assert_eq!(
+            FeedSource::from_tag("permagent.owner"),
+            Some(FeedSource::Owner)
+        );
     }
 
     #[test]

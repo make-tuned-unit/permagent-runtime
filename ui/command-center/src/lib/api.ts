@@ -1220,6 +1220,16 @@ export interface InboxFile {
 }
 
 /** Sovereign-mode status (GET/POST /api/security/sovereignty). */
+/** `GET`/`PUT /api/owner` — the human running this Permagent instance. */
+export interface OwnerResponse {
+  display_name: string | null;
+  email: string | null;
+  linked_person_id: string | null;
+  /** The linked person's current display name, resolved server-side. `null`
+   *  when unlinked, or when the link no longer resolves to a real person. */
+  linked_person_name: string | null;
+}
+
 export interface SovereigntyStatus {
   /** When on, all cloud inference is blocked (fail-closed) and audited. */
   enabled: boolean;
@@ -1832,6 +1842,19 @@ export const api = {
     display_name: string; traits: string[]; tone: string;
     opening_greeting: string; voice_id: string | null;
   }>('/api/agent/identity', {
+    method: 'PUT', body: JSON.stringify(update),
+  }),
+
+  // Owner — the human running this Permagent instance (distinct from the
+  // agent's own persona above). See useOwner.ts.
+  getOwner: () => apiFetch<OwnerResponse>('/api/owner'),
+
+  // The daemon's PUT response is the full fresh record (including the
+  // resolved `linked_person_name`) — callers adopt it directly rather than
+  // re-GETting, same contract as `putIdentity`.
+  putOwner: (update: {
+    display_name?: string | null; email?: string | null; linked_person_id?: string | null;
+  }) => apiFetch<OwnerResponse>('/api/owner', {
     method: 'PUT', body: JSON.stringify(update),
   }),
 

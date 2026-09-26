@@ -23,6 +23,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { FiSliders } from 'react-icons/fi';
 import { apiFetch } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
 import { font, radius, space, textSize } from '../../styles/tokens';
@@ -33,6 +34,7 @@ import type { DirectoryPerson } from '../projects/types';
 import { Button } from '../common/Button';
 import { Chip } from '../common/Chip';
 import { StateBlock } from '../common/StateBlock';
+import { Tooltip } from '../common/Tooltip';
 
 type Status = 'loading' | 'error' | 'ready';
 
@@ -94,6 +96,15 @@ export function PeopleDirectory() {
   const openPersonDetail = useCommandCenter(s => s.openPersonDetail);
   const bumpPeople = useCommandCenter(s => s.bumpPeople);
   const peopleRev = useCommandCenter(s => s.peopleRev);
+  const setPendingSettingsSection = useCommandCenter(s => s.setPendingSettingsSection);
+  const setActivePanel = useCommandCenter(s => s.setActivePanel);
+  // The "You" row's small edit affordance — same deep-link shape
+  // `openAgentSettings` uses for a worker persona (store.ts), reused here
+  // rather than duplicated since it is exactly "open Settings on a pane".
+  const openOwnerPreferences = useCallback(() => {
+    setPendingSettingsSection('preferences');
+    setActivePanel('settings');
+  }, [setPendingSettingsSection, setActivePanel]);
 
   const [people, setPeople] = useState<DirectoryPerson[]>([]);
   const [status, setStatus] = useState<Status>('loading');
@@ -375,13 +386,15 @@ export function PeopleDirectory() {
           ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: space.xs }}>
             {visible.map(p => (
-              // The row IS the button, and it distributes its own children
-              // against a `flex: 1` spacer — so the primitive's label wrapper
-              // is dissolved with `display: contents` and the children stay
-              // direct flex children, laid out exactly as before. What is new
-              // is that a clickable row finally acknowledges the pointer.
+              // Rows are usually a single Button (the row IS the button). The
+              // "You" row is the one exception: it carries a second, small
+              // action ("Edit in Settings" — R5, one click from where the
+              // agent's own understanding of "who you are" is mentioned), so
+              // it needs a sibling rather than a child — two nested `<button>`
+              // elements would be invalid HTML and would break the row's own
+              // click target along with it.
+              <div key={p.entity_uuid} style={{ display: 'flex', gap: space.xs, alignItems: 'stretch' }}>
               <Button
-                key={p.entity_uuid}
                 colors={colors}
                 data-testid={isOrganisation(p) ? 'people-row-organisation' : 'people-row-person'}
                 onClick={() => openPersonDetail(null, p)}
@@ -396,6 +409,8 @@ export function PeopleDirectory() {
                   '--pa-btn-pad': '8px 10px',
                   '--pa-btn-radius': `${radius.sm}px`,
                   '--pa-btn-weight': 400,
+                  flex: 1,
+                  minWidth: 0,
                   gap: space.lg,
                   textAlign: 'left',
                   fontFamily: font.body,
@@ -460,6 +475,34 @@ export function PeopleDirectory() {
                   </span>
                 )}
               </Button>
+              {isSelf(p) && (
+                <Tooltip content="Edit in Settings">
+                  <Button
+                    colors={colors}
+                    variant="bare"
+                    aria-label="Edit in Settings"
+                    data-testid="people-row-self-edit-in-settings"
+                    onClick={() => openOwnerPreferences()}
+                    style={{
+                      '--pa-btn-fg': colors.textDim,
+                      '--pa-btn-fg-hover': colors.text,
+                      '--pa-btn-bg-hover': colors.surfaceHi,
+                      '--pa-btn-border': colors.border,
+                      '--pa-btn-border-hover': colors.borderHi,
+                      '--pa-btn-pad': '0',
+                      '--pa-btn-radius': `${radius.sm}px`,
+                      width: 32,
+                      flexShrink: 0,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    } as CSSProperties}
+                  >
+                    <FiSliders size={13} aria-hidden />
+                  </Button>
+                </Tooltip>
+              )}
+              </div>
             ))}
           </div>
           )}
