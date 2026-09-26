@@ -1437,4 +1437,290 @@ mod tests {
             Ok(())
         }
     }
+
+    /// A reasoning model's tool-calling turn, through the real reply loop: an
+    /// OpenAI-compatible stream sends each reasoning delta and then the whole
+    /// reasoning again on the tool-call message. The reasoning must be kept
+    /// once per call and the parallel calls sent back as ONE assistant
+    /// message; text that came with the calls must not be dropped.
+    #[cfg(test)]
+    mod reasoning_tool_call_tests {
+        use super::*;
+        use async_trait::async_trait;
+        use permagent::agents::{AgentRunnerConfig, SessionConfig};
+        use permagent::config::permission::PermissionManager;
+        use permagent::config::GooseMode;
+        use permagent::conversation::message::{Message, MessageContent};
+        use permagent::model::ModelConfig;
+        use permagent::providers::base::{MessageStream, Provider, ProviderUsage, Usage};
+        use permagent::providers::errors::ProviderError;
+        use permagent::providers::formats::openai::{format_messages_with_echo, ReasoningEcho};
+        use permagent::providers::utils::ImageFormat;
+        use permagent::session::session_manager::SessionType;
+        use permagent::session::SessionManager;
+        use rmcp::model::{CallToolRequestParams, Tool};
+        use rmcp::object;
+        use serde_json::Value;
+        use std::path::PathBuf;
+        use std::sync::Mutex;
+
+        const STREAM_ID: &str = "chatcmpl-reasoning-turn";
+        const REASONING: &str = "Let me check.";
+        const PREAMBLE: &str = "I'll read both files.";
+
+        type Frame = Result<(Option<Message>, Option<ProviderUsage>), ProviderError>;
+
+        /// Answers the first request with `first_reply`, one frame at a time,
+        /// and every request after the tools ran with a short text, recording
+        /// what each of those carried.
+        struct ReasoningToolProvider {
+            first_reply: Vec<Message>,
+            later_requests: Mutex<Vec<Vec<Message>>>,
+        }
+
+        #[async_trait]
+        impl Provider for ReasoningToolProvider {
+            async fn stream(
+                &self,
+                _model_config: &ModelConfig,
+                _session_id: &str,
+                _system_prompt: &str,
+                messages: &[Message],
+                _tools: &[Tool],
+            ) -> Result<MessageStream, ProviderError> {
+                let usage = ProviderUsage::new(
+                    "mock-model".to_string(),
+                    Usage::new(Some(10), Some(5), Some(15)),
+                );
+                let tools_ran = messages.iter().any(|message| {
+                    message
+                        .content
+                        .iter()
+                        .any(|content| matches!(content, MessageContent::ToolResponse(_)))
+                });
+                if !tools_ran {
+                    let last = self.first_reply.len().saturating_sub(1);
+                    let frames: Vec<Frame> = self
+                        .first_reply
+                        .iter()
+                        .cloned()
+                        .enumerate()
+                        .map(|(index, message)| {
+                            let usage = if index == last {
+                                Some(usage.clone())
+                            } else {
+                                None
+                            };
+                            Ok((Some(message), usage))
+                        })
+                        .collect();
+                    return Ok(Box::pin(futures::stream::iter(frames)));
+                }
+                self.later_requests.lock().unwrap().push(messages.to_vec());
+                let reply = Message::assistant().with_text("Both files read.");
+                Ok(Box::pin(futures::stream::once(async move {
+                    Ok((Some(reply), Some(usage)))
+                })))
+            }
+
+            fn get_model_config(&self) -> ModelConfig {
+                ModelConfig::new("mock-model").unwrap()
+            }
+
+            fn get_name(&self) -> &str {
+                "reasoning-tool-mock"
+            }
+        }
+
+        fn frame(content: Vec<MessageContent>) -> Message {
+            let mut message = Message::assistant().with_id(STREAM_ID);
+            message.content = content;
+            message
+        }
+
+        fn call(id: &str, param: &str) -> MessageContent {
+            MessageContent::tool_request(
+                id,
+                Ok(CallToolRequestParams::new("test_tool")
+                    .with_arguments(object!({ "param": param }))),
+            )
+        }
+
+        /// One reply whose first model call answers with `first_reply`.
+        /// Returns what the session persisted and what the model was sent
+        /// once the tools had run.
+        async fn run_turn(first_reply: Vec<Message>) -> Result<(Vec<Message>, Vec<Message>)> {
+            let temp_dir = tempfile::tempdir()?;
+            let session_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
+            let config = AgentRunnerConfig::new(
+                session_manager.clone(),
+                PermissionManager::instance(),
+                None,
+                GooseMode::Auto,
+                true, // no session naming, so no extra provider call
+                GoosePlatform::GooseCli,
+            );
+            let agent = Agent::with_config(config);
+            let provider = Arc::new(ReasoningToolProvider {
+                first_reply,
+                later_requests: Mutex::new(Vec::new()),
+            });
+            let session = session_manager
+                .create_session(
+                    PathBuf::default(),
+                    "reasoning-tool-turn".to_string(),
+                    SessionType::Hidden,
+                    GooseMode::default(),
+                )
+                .await?;
+            agent.update_provider(provider.clone(), &session.id).await?;
+
+            let session_config = SessionConfig {
+                id: session.id.clone(),
+                schedule_id: None,
+                max_turns: Some(3),
+                retry_config: None,
+            };
+            let reply_stream = agent
+                .reply(
+                    Message::user().with_text("Read a.rs and b.rs"),
+                    session_config,
+                    None,
+                )
+                .await?;
+            tokio::pin!(reply_stream);
+            while let Some(event) = reply_stream.next().await {
+                event?;
+            }
+
+            let persisted = session_manager
+                .get_session(&session.id, true)
+                .await?
+                .conversation
+                .expect("the session should have a conversation")
+                .messages()
+                .to_vec();
+            let sent_next = provider
+                .later_requests
+                .lock()
+                .unwrap()
+                .first()
+                .cloned()
+                .expect("the model should be called again once the tools ran");
+            Ok((persisted, sent_next))
+        }
+
+        fn carrying<'a>(messages: &'a [Message], call_id: &str) -> &'a Message {
+            messages
+                .iter()
+                .find(|message| {
+                    message.content.iter().any(|content| {
+                        matches!(content, MessageContent::ToolRequest(request) if request.id == call_id)
+                    })
+                })
+                .unwrap_or_else(|| panic!("no message carries {call_id}: {messages:?}"))
+        }
+
+        fn thinking_of(message: &Message) -> Vec<String> {
+            message
+                .content
+                .iter()
+                .filter_map(MessageContent::as_thinking)
+                .map(|thinking| thinking.thinking.clone())
+                .collect()
+        }
+
+        /// The assistant messages with tool calls an OpenAI-compatible request
+        /// carries, with DeepSeek's always-echo policy.
+        fn tool_call_assistants(messages: &[Message]) -> Vec<Value> {
+            format_messages_with_echo(messages, &ImageFormat::OpenAi, ReasoningEcho::Always)
+                .into_iter()
+                .filter(|message| {
+                    message["role"] == "assistant" && message.get("tool_calls").is_some()
+                })
+                .collect()
+        }
+
+        #[tokio::test]
+        async fn streamed_reasoning_is_kept_once_and_the_calls_go_back_together() -> Result<()> {
+            let (persisted, sent_next) = run_turn(vec![
+                frame(vec![MessageContent::thinking("Let me ", "")]),
+                frame(vec![MessageContent::thinking("check.", "")]),
+                frame(vec![
+                    MessageContent::thinking(REASONING, ""),
+                    call("call_1", "a"),
+                    call("call_2", "b"),
+                ]),
+            ])
+            .await?;
+
+            for messages in [&persisted, &sent_next] {
+                assert_eq!(
+                    thinking_of(carrying(messages, "call_1")),
+                    vec![REASONING],
+                    "{messages:?}"
+                );
+                assert_eq!(
+                    thinking_of(carrying(messages, "call_2")),
+                    vec![REASONING],
+                    "{messages:?}"
+                );
+            }
+            let wire = tool_call_assistants(&sent_next);
+            assert_eq!(
+                wire.len(),
+                1,
+                "both calls in one assistant message: {wire:?}"
+            );
+            assert_eq!(wire[0]["tool_calls"].as_array().map(Vec::len), Some(2));
+            assert_eq!(wire[0]["reasoning_content"], REASONING);
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn non_streamed_reasoning_is_kept_once_and_the_calls_go_back_together() -> Result<()>
+        {
+            let (persisted, sent_next) = run_turn(vec![frame(vec![
+                MessageContent::thinking(REASONING, ""),
+                call("call_1", "a"),
+                call("call_2", "b"),
+            ])])
+            .await?;
+
+            for messages in [&persisted, &sent_next] {
+                assert_eq!(
+                    thinking_of(carrying(messages, "call_1")),
+                    vec![REASONING],
+                    "{messages:?}"
+                );
+            }
+            let wire = tool_call_assistants(&sent_next);
+            assert_eq!(
+                wire.len(),
+                1,
+                "both calls in one assistant message: {wire:?}"
+            );
+            assert_eq!(wire[0]["tool_calls"].as_array().map(Vec::len), Some(2));
+            assert_eq!(wire[0]["reasoning_content"], REASONING);
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn text_that_came_with_the_tool_calls_is_kept() -> Result<()> {
+            let (persisted, sent_next) = run_turn(vec![frame(vec![
+                MessageContent::thinking(REASONING, ""),
+                MessageContent::text(PREAMBLE),
+                call("call_1", "a"),
+                call("call_2", "b"),
+            ])])
+            .await?;
+
+            assert_eq!(carrying(&persisted, "call_1").as_concat_text(), PREAMBLE);
+            let wire = tool_call_assistants(&sent_next);
+            assert_eq!(wire.len(), 1, "the text must not split the calls: {wire:?}");
+            assert_eq!(wire[0]["content"], PREAMBLE);
+            assert_eq!(wire[0]["tool_calls"].as_array().map(Vec::len), Some(2));
+            Ok(())
+        }
+    }
 }
