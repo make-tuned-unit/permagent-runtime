@@ -33,6 +33,9 @@ vi.mock('../../lib/api', () => ({
 
 vi.mock('../../lib/store', () => ({
   navigateToTool: hooks.navigateToTool,
+  // The panel's copy names the agent from the persona (the store's agentName),
+  // never a hardcoded default — a neutral configured name proves the plumbing.
+  useCommandCenter: (select: (s: { agentName: string }) => unknown) => select({ agentName: 'Nova' }),
 }));
 
 vi.mock('../../lib/notifications', () => ({
@@ -184,6 +187,101 @@ describe('MemoryFeedPanel', () => {
     await act(async () => { toggleIn(r).click(); await flush(); });
     expect(hooks.upsertConfig).toHaveBeenCalledWith('BRAIN_FEED_DISABLED_SOURCES', 'finance', false);
     expect(toggleIn(r).getAttribute('aria-checked')).toBe('false');
+  });
+
+  it('serializes two fast toggles so the second write does not clobber the first (lost-update regression)', async () => {
+    // Two enabled sources. Disable both, back to back, before EITHER
+    // network round trip resolves — the exact race that used to compute
+    // the second toggle's disabled-set from a stale view that still
+    // thought the first source was enabled.
+    let resolveFirst: () => void = () => {};
+    let resolveSecond: () => void = () => {};
+    const firstWrite = new Promise<void>(resolve => { resolveFirst = resolve; });
+    const secondWrite = new Promise<void>(resolve => { resolveSecond = resolve; });
+    hooks.upsertConfig.mockImplementationOnce(() => firstWrite);
+    hooks.upsertConfig.mockImplementationOnce(() => secondWrite);
+
+    hooks.getBrainFeedStatus.mockResolvedValueOnce({
+      sources: [row('finance', { enabled: true }), row('meeting', { enabled: true })],
+      chat_outbox: { pending: 0, dead: 0 },
+    });
+    act(() => { root.render(<MemoryFeedPanel />); });
+    await flush();
+
+    const financeRow = container.querySelector('[data-testid="memory-feed-row-finance"]') as HTMLElement;
+    const meetingRow = container.querySelector('[data-testid="memory-feed-row-meeting"]') as HTMLElement;
+
+    // Click finance off, then meeting off, with no await in between — both
+    // fire before either request has had a chance to settle.
+    act(() => { toggleIn(financeRow).click(); });
+    act(() => { toggleIn(meetingRow).click(); });
+    await flush();
+
+    // The second write must not have gone out yet: it is queued behind the
+    // first, not fired from a stale snapshot of the (still "enabled")
+    // finance row.
+    expect(hooks.upsertConfig).toHaveBeenCalledTimes(1);
+    expect(hooks.upsertConfig).toHaveBeenNthCalledWith(1, 'BRAIN_FEED_DISABLED_SOURCES', 'finance', false);
+
+    await act(async () => { resolveFirst(); await flush(); });
+
+    // Once the first write lands, the queued second write fires — and it
+    // must carry BOTH disabled sources, not just 'meeting'.
+    expect(hooks.upsertConfig).toHaveBeenCalledTimes(2);
+    expect(hooks.upsertConfig).toHaveBeenNthCalledWith(2, 'BRAIN_FEED_DISABLED_SOURCES', 'finance,meeting', false);
+
+    await act(async () => { resolveSecond(); await flush(); });
+
+    expect(toggleIn(financeRow).getAttribute('aria-checked')).toBe('false');
+    expect(toggleIn(meetingRow).getAttribute('aria-checked')).toBe('false');
+  });
+
+  it('recomputes the queued second write from the rolled-back state when the first write fails (lost-update regression)', async () => {
+    // Same fast double-toggle as above, but this time the FIRST write fails.
+    // The second write is already queued behind it when that happens; it
+    // must not go out carrying the stale, pre-rollback disabled-set that was
+    // true at the moment it was queued — it has to see finance back on.
+    let rejectFirst: (e: Error) => void = () => {};
+    let resolveSecond: () => void = () => {};
+    const firstWrite = new Promise<void>((_resolve, reject) => { rejectFirst = reject; });
+    const secondWrite = new Promise<void>(resolve => { resolveSecond = resolve; });
+    hooks.upsertConfig.mockImplementationOnce(() => firstWrite);
+    hooks.upsertConfig.mockImplementationOnce(() => secondWrite);
+
+    hooks.getBrainFeedStatus.mockResolvedValueOnce({
+      sources: [row('finance', { enabled: true }), row('meeting', { enabled: true })],
+      chat_outbox: { pending: 0, dead: 0 },
+    });
+    act(() => { root.render(<MemoryFeedPanel />); });
+    await flush();
+
+    const financeRow = container.querySelector('[data-testid="memory-feed-row-finance"]') as HTMLElement;
+    const meetingRow = container.querySelector('[data-testid="memory-feed-row-meeting"]') as HTMLElement;
+
+    // Click finance off, then meeting off, before either request settles.
+    act(() => { toggleIn(financeRow).click(); });
+    act(() => { toggleIn(meetingRow).click(); });
+    await flush();
+
+    expect(hooks.upsertConfig).toHaveBeenCalledTimes(1);
+    expect(hooks.upsertConfig).toHaveBeenNthCalledWith(1, 'BRAIN_FEED_DISABLED_SOURCES', 'finance', false);
+
+    // The first write (finance) fails: it rolls back and toasts.
+    await act(async () => { rejectFirst(new Error('daemon unreachable')); await flush(); });
+
+    expect(toggleIn(financeRow).getAttribute('aria-checked')).toBe('true');
+    expect(hooks.toast).toHaveBeenCalledTimes(1);
+
+    // The queued second write (meeting) must now fire — and it must carry
+    // ONLY 'meeting', recomputed after finance's rollback, never the stale
+    // 'finance,meeting' snapshot taken back when it was queued.
+    expect(hooks.upsertConfig).toHaveBeenCalledTimes(2);
+    expect(hooks.upsertConfig).toHaveBeenNthCalledWith(2, 'BRAIN_FEED_DISABLED_SOURCES', 'meeting', false);
+
+    await act(async () => { resolveSecond(); await flush(); });
+
+    expect(toggleIn(financeRow).getAttribute('aria-checked')).toBe('true');
+    expect(toggleIn(meetingRow).getAttribute('aria-checked')).toBe('false');
   });
 
   it('rolls back and toasts when the config write fails', async () => {

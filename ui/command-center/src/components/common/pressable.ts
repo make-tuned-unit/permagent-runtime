@@ -64,6 +64,11 @@ export function pressable(onActivate: () => void, opts: PressableOptions = {}): 
     ...(enabled ? {} : { 'aria-disabled': true as const }),
     onClick: enabled ? (e) => { e.preventDefault(); onActivate(); } : undefined,
     onKeyDown: (e) => {
+      // A keydown that bubbled up from a nested interactive child (an input,
+      // a chip, a secondary button) belongs to that child, not to this row —
+      // without this, Space typed into a nested text field never lands and
+      // instead activates the row, and Enter on a nested button double-fires.
+      if (e.target !== e.currentTarget) return;
       if (!enabled) return;
       if (e.key === 'Enter') {
         e.preventDefault();
@@ -87,6 +92,10 @@ export function pressableEnterOnly(onActivate: () => void, opts: PressableOption
   return {
     ...base,
     onKeyDown: (e) => {
+      // Same origin guard as `pressable()` above — this variant exists
+      // specifically for rows that nest their own interactive children, so
+      // it needs this even more.
+      if (e.target !== e.currentTarget) return;
       if (!opts.enabled && opts.enabled !== undefined) return;
       if (e.key === 'Enter') {
         e.preventDefault();

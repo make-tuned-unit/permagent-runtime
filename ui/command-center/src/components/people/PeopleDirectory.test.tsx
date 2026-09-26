@@ -279,13 +279,13 @@ describe('PeopleDirectory', () => {
 
   it('shows the user\'s own record as "You", not their name, and never flags it a duplicate', async () => {
     apiFetch.mockResolvedValue([
-      person('me', 'Jesse Sharratt', { kind: 'self' }),
-      person('b', 'Jesse', {}),
+      person('me', 'Sam Okafor', { kind: 'self' }),
+      person('b', 'Sam', {}),
     ]);
     await act(async () => root.render(<PeopleDirectory />));
 
     expect(container.textContent).toContain('You');
-    expect(container.textContent).not.toContain('Jesse Sharratt');
+    expect(container.textContent).not.toContain('Sam Okafor');
     expect(container.textContent).not.toContain('possible duplicate');
   });
 });

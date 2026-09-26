@@ -1356,6 +1356,12 @@ function HoldingsSection({
   // trade and never doubles as the edit surface.
   const onEdit = (row: HoldingRow) => {
     setDraft(draftFromRow(row));
+    // The top form and a row's inline edit are mutually exclusive surfaces
+    // (see the comment above `onSubmit`) — closing this out here, not just
+    // relying on the `showForm && !editing` render guard to hide it, is what
+    // stops a stale `showForm=true` from popping the top form back open,
+    // freshly blanked, the moment this edit is later cancelled.
+    setShowForm(false);
     // The edit form expands INSIDE its row now, so the row has to stay in the
     // filtered list for it to have anywhere to render — a closed lot edited
     // while "Open" is selected would otherwise vanish along with its form.
@@ -1372,8 +1378,11 @@ function HoldingsSection({
           aria-expanded={showForm || editing}
           onClick={() => {
             // Editing already expands its own row; this button's job here is
-            // only to cancel that, never to also pop the new-trade form open.
-            if (editing) { setDraft(emptyDraft()); return; }
+            // only to cancel that, never to also pop the new-trade form open
+            // (`showForm` is reset too, defensively — `onEdit` already clears
+            // it on entry, but a stale `true` here would otherwise reopen the
+            // top form the instant `editing` goes back to false).
+            if (editing) { setDraft(emptyDraft()); setShowForm(false); return; }
             setShowForm((s) => !s);
           }}
         >
@@ -1518,7 +1527,7 @@ function HoldingsSection({
                             <Button colors={colors} variant="primary" type="submit" pending={busy} disabled={busy}>
                               Save trade
                             </Button>
-                            <Button colors={colors} type="button" disabled={busy} onClick={() => setDraft(emptyDraft())}>
+                            <Button colors={colors} type="button" disabled={busy} onClick={() => { setDraft(emptyDraft()); setShowForm(false); }}>
                               Cancel
                             </Button>
                           </div>

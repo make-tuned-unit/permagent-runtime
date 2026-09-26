@@ -2308,10 +2308,21 @@ async fn apply_project_intel(
         .await
         .map_err(|e| GuardError::Db(e.to_string()))?;
 
-    let summary = payload
-        .items
+    // project_intel accumulates rows across every applied decision, but the
+    // Brain feed key below is one evolving fact per project (feed_inner does
+    // a wholesale content replace on upsert). Building the summary from only
+    // this batch's payload.items would erase recall of every item fed by
+    // earlier applications, so re-query the full current table instead.
+    let all_items: Vec<(String, String)> = sqlx::query_as(
+        "SELECT name, kind FROM project_intel WHERE project_id = ? ORDER BY kind, name",
+    )
+    .bind(&payload.project_id)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    let summary = all_items
         .iter()
-        .map(|i| format!("{} ({})", i.name, i.kind))
+        .map(|(name, kind)| format!("{name} ({kind})"))
         .collect::<Vec<_>>()
         .join(", ");
     crate::brain_feed::feed_for_project(
@@ -6141,5 +6152,68 @@ mod tests {
             .await
             .unwrap_err();
         assert!(format!("{err:?}").contains("repo_target"));
+    }
+
+    fn project_intel_decision(items: serde_json::Value) -> NewDecision {
+        NewDecision {
+            kind: "project_intel_proposal".to_string(),
+            project_id: Some(PERSONAL_PROJECT_ID.to_string()),
+            headline: Some("Project intelligence found".to_string()),
+            detail: Some("intel".to_string()),
+            payload: serde_json::json!({
+                "project_id": PERSONAL_PROJECT_ID,
+                "project_name": "Personal",
+                "items": items,
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// Fix-as-found (REVIEW_CONFIRMED #9): `project_intel` accumulates rows
+    /// across every approved decision, but the Brain feed for it used to be
+    /// built ONLY from the current call's `payload.items` and written under a
+    /// static per-project key — so a second applied batch replaced (in
+    /// recall) everything an earlier batch had fed. The feed must reflect the
+    /// full, accumulated `project_intel` table after every apply.
+    #[tokio::test]
+    async fn project_intel_feed_accumulates_across_applied_batches() {
+        let pool = test_pool().await;
+
+        let d1 = decisions::create_decision(
+            &pool,
+            project_intel_decision(serde_json::json!([
+                {"kind": "competitor", "name": "Acme", "note": null, "source_url": "https://acme.example"}
+            ])),
+        )
+        .await
+        .unwrap();
+        apply_project_intel(&pool, &d1).await.unwrap();
+
+        let d2 = decisions::create_decision(
+            &pool,
+            project_intel_decision(serde_json::json!([
+                {"kind": "partner", "name": "Globex", "note": null, "source_url": "https://globex.example"}
+            ])),
+        )
+        .await
+        .unwrap();
+        apply_project_intel(&pool, &d2).await.unwrap();
+
+        let fed: String =
+            sqlx::query_scalar("SELECT content FROM brain_feed_outbox WHERE memory_key = ?")
+                .bind(crate::brain_feed::feed_key(
+                    "project",
+                    PERSONAL_PROJECT_ID,
+                    "intel",
+                ))
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+
+        assert!(
+            fed.contains("Acme"),
+            "the first batch's item must still be recallable: {fed}"
+        );
+        assert!(fed.contains("Globex"), "{fed}");
     }
 }

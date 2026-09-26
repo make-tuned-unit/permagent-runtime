@@ -239,7 +239,7 @@ describe('per-agent secret copy', () => {
 });
 
 describe('workerSummary', () => {
-  // Jesse's 1440px review of the real daemon: worker rows were printing the
+  // Ruling 2026-09-25's 1440px review of the real daemon: worker rows were printing the
   // full engineering paragraph (Scheduler's guardrail internals, Git
   // Steward's config keys, ...) because there was no separate short field.
   it('prefers the daemon-curated summary over the long description', () => {
@@ -279,7 +279,7 @@ describe('firstSentence', () => {
 });
 
 describe('liveStatusChip', () => {
-  // Jesse's 1440px review: the status column was leaking daemon internals
+  // Ruling 2026-09-25's 1440px review: the status column was leaking daemon internals
   // ("off (strix_enabled=false)", "no live state to query") straight onto
   // the row. Every raw value must narrow to one of five plain words, with the
   // raw text demoted to `detail` (a tooltip's content, never the chip label).

@@ -237,6 +237,60 @@ it('R8/coordinator 2026-09-25: the failure toast bypasses the "System messages" 
   setNotificationPref('system', true);
 });
 
+it('a fast success right after a failure does not leave the button stuck showing failure', async () => {
+  // Two independent flags (selfSuccess/selfFailure) shared one reset timer
+  // ref — a quick retry that lands the opposite outcome before the first
+  // flash's timer fired used to cancel that timer without ever clearing the
+  // flag it owned, orphaning it at `true` until it resurfaced later.
+  vi.useFakeTimers();
+  let calls = 0;
+  const onClick = () => (calls++ === 0 ? Promise.reject(new Error('nope')) : Promise.resolve(true));
+  act(() => {
+    root.render(<Button colors={colors} minPendingMs={0} onClick={onClick}>Save</Button>);
+  });
+
+  await act(async () => { btn().click(); for (let i = 0; i < 6; i += 1) await Promise.resolve(); });
+  expect(btn().getAttribute('data-state')).toBe('failure');
+
+  // Retry succeeds well within FAILURE_FLASH_MS of the first outcome.
+  await act(async () => {
+    vi.advanceTimersByTime(50);
+    btn().click();
+    for (let i = 0; i < 6; i += 1) await Promise.resolve();
+  });
+  expect(btn().getAttribute('data-state')).toBe('success');
+
+  // Once the success flash itself ends, the button must not revert to the
+  // earlier (orphaned) failure state.
+  await advance(SUCCESS_FLASH_MS + 10);
+  expect(btn().getAttribute('data-state')).toBeNull();
+});
+
+it('a fast failure right after a success does not leave the button stuck showing success', async () => {
+  // The symmetric case: a success's reset timer gets cancelled by a
+  // following failure before it fires, orphaning `selfSuccess` at `true`.
+  vi.useFakeTimers();
+  let calls = 0;
+  const onClick = () => (calls++ === 0 ? Promise.resolve(true) : Promise.reject(new Error('nope')));
+  act(() => {
+    root.render(<Button colors={colors} minPendingMs={0} onClick={onClick}>Save</Button>);
+  });
+
+  await act(async () => { btn().click(); for (let i = 0; i < 6; i += 1) await Promise.resolve(); });
+  expect(btn().getAttribute('data-state')).toBe('success');
+
+  // Retry fails well within SUCCESS_FLASH_MS of the first outcome.
+  await act(async () => {
+    vi.advanceTimersByTime(50);
+    btn().click();
+    for (let i = 0; i < 6; i += 1) await Promise.resolve();
+  });
+  expect(btn().getAttribute('data-state')).toBe('failure');
+
+  await advance(FAILURE_FLASH_MS + 10);
+  expect(btn().getAttribute('data-state')).toBeNull();
+});
+
 it('R8: onErrorFeedback={false} suppresses the shake and the toast', async () => {
   vi.useFakeTimers();
   let items: AppNotification[] = [];

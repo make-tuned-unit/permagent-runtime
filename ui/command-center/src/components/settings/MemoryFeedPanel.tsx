@@ -38,10 +38,10 @@
  * failing via the status chip, never as merely quiet), populated.
  */
 
-import { useCallback, useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { api } from '../../lib/api';
 import { toast } from '../../lib/notifications';
-import { navigateToTool, type ToolType } from '../../lib/store';
+import { navigateToTool, useCommandCenter, type ToolType } from '../../lib/store';
 import { space, radius, font, textSize, tabularNums } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { AsOf } from '../common/AsOf';
@@ -56,9 +56,10 @@ import { Toggle } from '../common/Toggle';
  * `chat` is the one source that predates `brain_feed` entirely (chat
  * persistence writes memories directly, tagged plainly `"chat"`, not under
  * this outbox), and it is the Brain's primary intake. Turning it off would
- * silently stop Henry learning from every future conversation. Flagged as an
- * open question in the lane report — if Jesse wants it toggleable too, drop
- * it from this set.
+ * silently stop the agent learning from every future conversation. The daemon
+ * enforces the same rule (brain_feed::disabled_sources strips `chat`, ruling
+ * 2026-09-25), so this lock only mirrors it; to make chat toggleable, both
+ * sides have to change.
  */
 const NEVER_DISABLE = new Set(['chat']);
 
@@ -125,12 +126,49 @@ export function MemoryFeedPanel() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [failingOnly, setFailingOnly] = useState(false);
+  const agentName = useCommandCenter(s => s.agentName);
+  /** Writes enqueued but not yet settled. A reload must not re-base the queue
+   *  while one is in flight: the server snapshot it fetched can predate that
+   *  write, and a write queued after the reload would then compute its payload
+   *  without it — the same lost update the queue exists to prevent. */
+  const inFlightWritesRef = useRef(0);
+
+  /** The disabled-sources baton, threaded THROUGH the write queue itself
+   *  rather than read from a ref every writes' callbacks share. Each queued
+   *  write receives the previous write's *committed* disabled-set (its
+   *  server-confirmed result on success, or the set unchanged on failure —
+   *  a rollback), computes its own delta on top of that, fires the request,
+   *  and hands the result to whichever write is queued behind it.
+   *
+   *  This is deliberately NOT a plain mutable ref that every in-flight write
+   *  reads at request time: two toggles clicked back to back (no await in
+   *  between) both run their click handlers before either write's callback
+   *  gets a turn, so a ref updated synchronously on click would already
+   *  show BOTH toggles flipped by the time the FIRST write goes to compute
+   *  its payload — sending 'finance,meeting' for a write that should only
+   *  ever have said 'finance', with the second write then redundantly
+   *  resending the same full set once it got the chance. Threading the set
+   *  through the promise chain instead means write N only ever sees writes
+   *  1..N-1's outcomes, never a later write's not-yet-applicable toggle —
+   *  and still sees an earlier write's rollback, so a write queued behind a
+   *  failed one recomputes from the state that failure actually left behind
+   *  rather than the stale pre-rollback snapshot that existed when it was
+   *  queued. Reseeded from the server's own view on every load. */
+  const writeQueueRef = useRef<Promise<Set<string>>>(Promise.resolve(new Set<string>()));
 
   const load = useCallback(() => {
     setLoading(true);
     setError(null);
     api.getBrainFeedStatus()
-      .then(res => { setData(res); setLoading(false); })
+      .then(res => {
+        if (inFlightWritesRef.current === 0) {
+          writeQueueRef.current = Promise.resolve(
+            new Set(res.sources.filter(s => !s.enabled).map(s => s.source)),
+          );
+        }
+        setData(res);
+        setLoading(false);
+      })
       .catch((e: unknown) => {
         setError(e instanceof Error ? e.message : 'Could not reach the Brain feed status.');
         setLoading(false);
@@ -139,39 +177,46 @@ export function MemoryFeedPanel() {
 
   useEffect(() => { load(); }, [load]);
 
-  /** Flip one source's enabled state: recompute the full disabled-set from
-   *  the CURRENT data (not stale closure state — `data` is read fresh each
-   *  call via the functional setData below), write it, and only then commit
-   *  the new `enabled` locally — Toggle's own optimistic display covers the
-   *  in-flight gap, this is what makes the committed value the daemon's,
-   *  not the click's. Rejects (and the caller shows a toast) on failure,
-   *  which is also Toggle's cue to snap back to the old position. */
+  /** Flip one source's enabled state: enqueue the write behind any
+   *  still-in-flight one, and only commit the new `enabled` locally once
+   *  THIS write's own outcome is known — Toggle's own optimistic display
+   *  covers the in-flight gap, this is what makes the committed value the
+   *  daemon's, not the click's. Returns a boolean outcome (Toggle's own
+   *  "did it fail" signal) rather than rejecting, so a failure reverts and
+   *  shows a message without the queue itself ever entering a rejected
+   *  state (which would need its own recovery before the next write could
+   *  chain onto it). */
   const setSourceEnabled = useCallback((source: string, nextEnabled: boolean) => {
-    let disabledAfter: string[] = [];
-    setData(prev => {
-      if (!prev) return prev;
-      disabledAfter = prev.sources
-        .filter(s => (s.source === source ? !nextEnabled : !s.enabled))
-        .map(s => s.source);
-      return prev;
-    });
-    // Literal, not `DISABLED_SOURCES_KEY`: `settingsWrites.test.ts` scans
-    // Settings for the config keys it writes and can only read a literal
-    // string here, not an identifier — see that file's own doc comment.
-    return api.upsertConfig('BRAIN_FEED_DISABLED_SOURCES', disabledAfter.join(','), false)
-      .then(() => {
+    let succeeded = true;
+    inFlightWritesRef.current += 1;
+    const nextQueue = writeQueueRef.current.then(async (baseDisabled) => {
+      const disabledAfter = new Set(baseDisabled);
+      if (nextEnabled) disabledAfter.delete(source); else disabledAfter.add(source);
+      try {
+        // Literal, not `DISABLED_SOURCES_KEY`: `settingsWrites.test.ts` scans
+        // Settings for the config keys it writes and can only read a literal
+        // string here, not an identifier — see that file's own doc comment.
+        await api.upsertConfig('BRAIN_FEED_DISABLED_SOURCES', Array.from(disabledAfter).join(','), false);
         setData(prev => prev && {
           ...prev,
           sources: prev.sources.map(s => s.source === source ? { ...s, enabled: nextEnabled } : s),
         });
-      })
-      .catch((e: unknown) => {
+        return disabledAfter;
+      } catch (e) {
+        succeeded = false;
         toast(
           `Couldn't ${nextEnabled ? 'enable' : 'disable'} that source`,
           e instanceof Error ? e.message : 'The setting was not saved.',
         );
-        return false;
-      });
+        return baseDisabled;
+      } finally {
+        inFlightWritesRef.current -= 1;
+      }
+    });
+
+    writeQueueRef.current = nextQueue;
+
+    return nextQueue.then(() => succeeded);
   }, []);
 
   const chatDead = data?.chat_outbox.dead ?? 0;
@@ -198,7 +243,7 @@ export function MemoryFeedPanel() {
   if (error) {
     return (
       <div data-testid="memory-feed-panel">
-        <StateBlock tone="error" title="Couldn't load what Henry learns from" detail={error} onRetry={load} />
+        <StateBlock tone="error" title={`Couldn't load what ${agentName} learns from`} detail={error} onRetry={load} />
       </div>
     );
   }
@@ -299,7 +344,7 @@ export function MemoryFeedPanel() {
                   disabled={NEVER_DISABLE.has(row.source)}
                   disabledReason={
                     NEVER_DISABLE.has(row.source)
-                      ? 'Conversations must stay on — turning this off would stop Henry learning from any future chat.'
+                      ? `Conversations must stay on — turning this off would stop ${agentName} learning from any future chat.`
                       : undefined
                   }
                   label={`Feed ${row.label} to the Brain`}

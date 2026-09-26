@@ -73,6 +73,12 @@ const FIRST_CURSOR: &str = "0";
 /// How long collected events are kept. Beyond the dashboard's longest window,
 /// so nothing displayable is ever removed.
 const RETENTION_DAYS: u32 = 400;
+/// Ceiling on how many days of missed rollups one project will backfill in a
+/// single pass — a guard against a corrupted or very old
+/// `analytics_rollup_state` row walking months of history, not a fairness
+/// quota. 35 days comfortably covers the "machine slept for a week" case the
+/// event drain itself is documented to catch up on (see the module doc).
+const MAX_ROLLUP_DAYS_PER_PASS: i64 = 35;
 
 fn http_client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
@@ -231,23 +237,121 @@ async fn run_once(state: &AppState) -> Result<(), String> {
                 project = %project.name, "analytics drain failed: {e}"
             ),
         }
-        // Fix-as-found (memory-feed lane, 2026-09-25): one Brain fact per
-        // project per day, fed from this SAME daily pass so it needs no timer
-        // of its own. Yesterday, not today — this pass runs once a day, so
-        // "today" is always partial and would report a shrinking number on
-        // every later read; yesterday is closed and stable. Best-effort: a
-        // rollup failure must never stop the drain loop from reaching the
-        // next project.
-        let yesterday = (chrono::Utc::now() - chrono::Duration::days(1)).date_naive();
-        if let Err(e) = rollup_analytics_day(&pool, &project.id, &project.name, yesterday).await {
-            tracing::debug!(
-                target: "analytics_drain",
-                project = %project.name, "analytics rollup skipped: {e}"
-            );
-        }
+        // Fix-as-found (memory-feed lane, 2026-09-25, backfill 2026-09-26): one
+        // Brain fact per project per day, fed from this SAME daily pass so it
+        // needs no timer of its own. `rollup_backlog` walks every day since
+        // this project's last successful rollup (bounded by
+        // `MAX_ROLLUP_DAYS_PER_PASS`) rather than only ever "yesterday" — a
+        // multi-day outage must not permanently lose every day but the most
+        // recent. Best-effort throughout: a rollup failure must never stop
+        // the drain loop from reaching the next project.
+        rollup_backlog(&pool, &project.id, &project.name).await;
     }
     sweep_behavioural_bots(&pool, &projects).await;
     Ok(())
+}
+
+/// Lazily creates the tiny state table that remembers, per project, the last
+/// date [`rollup_analytics_day`] was successfully run for (fix-as-found,
+/// backfill lane 2026-09-26). Without it the daily pass only ever knew
+/// "yesterday": a machine down for several days drained every backlogged raw
+/// event into `analytics_events` (the cursor-based drain is fine) but fed the
+/// Brain a rollup fact for only the single most recent day — every earlier
+/// day's pageviews/CTA data sat in the database and was never surfaced.
+/// `CREATE TABLE IF NOT EXISTS` here, next to the code that uses it, mirrors
+/// how other single-file state (e.g. `council_weekly_parents`) is owned.
+async fn ensure_rollup_state_table(pool: &Pool<Sqlite>) -> Result<(), String> {
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS analytics_rollup_state (
+            project_id TEXT PRIMARY KEY,
+            last_rolled_up_date TEXT NOT NULL
+        )",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+async fn last_rolled_up_date(pool: &Pool<Sqlite>, project_id: &str) -> Option<chrono::NaiveDate> {
+    let stored: Option<String> = sqlx::query_scalar(
+        "SELECT last_rolled_up_date FROM analytics_rollup_state WHERE project_id = ?",
+    )
+    .bind(project_id)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten();
+    stored.and_then(|s| chrono::NaiveDate::parse_from_str(&s, "%Y-%m-%d").ok())
+}
+
+async fn set_last_rolled_up_date(
+    pool: &Pool<Sqlite>,
+    project_id: &str,
+    date: chrono::NaiveDate,
+) -> Result<(), String> {
+    sqlx::query(
+        "INSERT INTO analytics_rollup_state (project_id, last_rolled_up_date) VALUES (?1, ?2)
+         ON CONFLICT(project_id) DO UPDATE SET last_rolled_up_date = excluded.last_rolled_up_date",
+    )
+    .bind(project_id)
+    .bind(date.format("%Y-%m-%d").to_string())
+    .execute(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Roll up every day since `project_id`'s last successful rollup, through
+/// yesterday, instead of only ever computing the single most recent day.
+///
+/// A project that has never been rolled up starts at yesterday, same as the
+/// original single-day behaviour — there is no earlier "last success" to
+/// resume from, and walking a brand-new project's entire history on first
+/// sight would be a surprise cost, not a backfill. A project that fell behind
+/// (daemon downtime, a missed pass) resumes the day after its last success,
+/// bounded by [`MAX_ROLLUP_DAYS_PER_PASS`] so a corrupted or ancient cursor
+/// cannot walk unbounded history.
+///
+/// Stops at the first failing day so the next pass retries from there — the
+/// persisted cursor only ever advances past a day that actually succeeded.
+async fn rollup_backlog(pool: &Pool<Sqlite>, project_id: &str, project_name: &str) {
+    if let Err(e) = ensure_rollup_state_table(pool).await {
+        tracing::debug!(
+            target: "analytics_drain",
+            project = %project_name, "analytics rollup state unavailable: {e}"
+        );
+        return;
+    }
+    let yesterday = (chrono::Utc::now() - chrono::Duration::days(1)).date_naive();
+    let earliest = last_rolled_up_date(pool, project_id)
+        .await
+        .map(|d| d + chrono::Duration::days(1))
+        .unwrap_or(yesterday);
+    let mut date = earliest.max(yesterday - chrono::Duration::days(MAX_ROLLUP_DAYS_PER_PASS));
+    if date > yesterday {
+        return; // already caught up — e.g. a second pass on the same day
+    }
+    loop {
+        if let Err(e) = rollup_analytics_day(pool, project_id, project_name, date).await {
+            tracing::debug!(
+                target: "analytics_drain",
+                project = %project_name, %date, "analytics rollup skipped: {e}"
+            );
+            break;
+        }
+        if let Err(e) = set_last_rolled_up_date(pool, project_id, date).await {
+            tracing::debug!(
+                target: "analytics_drain",
+                project = %project_name, "could not persist rollup progress: {e}"
+            );
+            break;
+        }
+        if date >= yesterday {
+            break;
+        }
+        date += chrono::Duration::days(1);
+    }
 }
 
 /// Feed the Brain one memory summarizing `project_id`'s first-party analytics
@@ -1387,5 +1491,83 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(n, 0);
+    }
+
+    /// REGRESSION — multi-day downtime must not silently lose every rollup
+    /// but the most recent (confirmed finding, fix-as-found 2026-09-26). The
+    /// old `run_once` computed a single hard-coded `yesterday` and never
+    /// looped over the backlog `drain_one` had just caught up, so a machine
+    /// down for several days fed the Brain a fact for only the latest day —
+    /// earlier non-zero days sat in `analytics_events` and were never
+    /// surfaced. This drives `rollup_backlog` from a stale
+    /// `analytics_rollup_state` cursor (as if the daemon last rolled up three
+    /// days ago) and asserts BOTH missed days get their own fact, and that
+    /// the cursor advances all the way to yesterday.
+    #[tokio::test]
+    async fn multi_day_gap_backfills_every_missed_day_not_just_yesterday() {
+        let pool = full_pool().await;
+        sqlx::query("INSERT INTO projects (id, user_id, slug, name, status) VALUES ('p1','default','evntally','Evntally','active')")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let yesterday = (chrono::Utc::now() - chrono::Duration::days(1)).date_naive();
+        let two_days_ago = yesterday - chrono::Duration::days(1);
+        let three_days_ago = yesterday - chrono::Duration::days(2);
+
+        // Raw events for both missed days already sit in analytics_events —
+        // the cursor-based event drain is not what's broken here — but no
+        // rollup has run since `three_days_ago`.
+        for (i, day) in [three_days_ago, two_days_ago, yesterday].iter().enumerate() {
+            insert_event(
+                &pool,
+                "p1",
+                &day_ev(
+                    &(i + 1).to_string(),
+                    "pageview",
+                    "/deals",
+                    None,
+                    &format!("{}T10:00:00Z", day.format("%Y-%m-%d")),
+                ),
+                None,
+            )
+            .await
+            .unwrap();
+        }
+
+        ensure_rollup_state_table(&pool).await.unwrap();
+        set_last_rolled_up_date(&pool, "p1", three_days_ago)
+            .await
+            .unwrap();
+
+        rollup_backlog(&pool, "p1", "Evntally").await;
+
+        let n: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM brain_feed_outbox WHERE memory_key LIKE 'analytics:p1:%'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            n, 2,
+            "both missed days must get their own rollup fact, not just yesterday"
+        );
+
+        assert_eq!(
+            last_rolled_up_date(&pool, "p1").await,
+            Some(yesterday),
+            "the cursor must advance all the way to yesterday once caught up"
+        );
+
+        // A pass that runs again the same day must not re-walk what it just
+        // caught up on.
+        rollup_backlog(&pool, "p1", "Evntally").await;
+        let n_again: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM brain_feed_outbox WHERE memory_key LIKE 'analytics:p1:%'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(n_again, 2, "already caught up — nothing to re-roll");
     }
 }

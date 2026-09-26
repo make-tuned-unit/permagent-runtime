@@ -523,6 +523,68 @@ it('keeps a lot\'s Edit / Close / Remove on one unwrapping line, with Remove nam
   expect(actions.querySelector('button[aria-label="Remove BLNE lot"]')).toBeTruthy();
 });
 
+it('does not reopen the top "Record a trade" form after cancelling a lot edit (regression: stale showForm)', async () => {
+  apiFetch.mockResolvedValue(lotsBoard([lot({ symbol: 'BLNE' })]));
+  await act(async () => { root.render(<FinanceView />); });
+  await flush();
+
+  // Open the top form (as if starting a brand-new trade), without submitting it.
+  const recordBtn = Array.from(container.querySelectorAll('button'))
+    .find((b) => b.textContent === 'Record a trade') as HTMLButtonElement;
+  expect(recordBtn).toBeTruthy();
+  await act(async () => { recordBtn.click(); });
+  expect(container.querySelector('#finance-holdings-form')).toBeTruthy();
+
+  // Switch to editing the existing lot instead — this used to leave the top
+  // form's `showForm` flag stuck `true` even though the row's inline guard
+  // hides it while `editing` is true.
+  const editBtn = Array.from(container.querySelectorAll('button'))
+    .find((b) => b.textContent === 'Edit') as HTMLButtonElement;
+  await act(async () => { editBtn.click(); });
+  expect(container.querySelector('#finance-holdings-form')).toBeNull();
+  expect(container.querySelector('[data-testid="lot-edit-row"]')).toBeTruthy();
+
+  // Cancel the edit via the inline row's own Cancel button.
+  const cancelBtn = Array.from(container.querySelectorAll('[data-testid="lot-edit-row"] button'))
+    .find((b) => b.textContent === 'Cancel') as HTMLButtonElement;
+  expect(cancelBtn).toBeTruthy();
+  await act(async () => { cancelBtn.click(); });
+
+  // The top "Record a trade" form must stay closed — it must not silently
+  // pop back open (with a blanked draft) just because editing ended.
+  expect(container.querySelector('[data-testid="lot-edit-row"]')).toBeNull();
+  expect(container.querySelector('#finance-holdings-form')).toBeNull();
+  const toggleBtn = Array.from(container.querySelectorAll('button'))
+    .find((b) => b.textContent === 'Record a trade' || b.textContent === 'Hide form') as HTMLButtonElement;
+  expect(toggleBtn.textContent).toBe('Record a trade');
+});
+
+it('does not reopen the top form after cancelling a lot edit via the header "Hide form" button', async () => {
+  apiFetch.mockResolvedValue(lotsBoard([lot({ symbol: 'BLNE' })]));
+  await act(async () => { root.render(<FinanceView />); });
+  await flush();
+
+  const recordBtn = Array.from(container.querySelectorAll('button'))
+    .find((b) => b.textContent === 'Record a trade') as HTMLButtonElement;
+  await act(async () => { recordBtn.click(); });
+  expect(container.querySelector('#finance-holdings-form')).toBeTruthy();
+
+  const editBtn = Array.from(container.querySelectorAll('button'))
+    .find((b) => b.textContent === 'Edit') as HTMLButtonElement;
+  await act(async () => { editBtn.click(); });
+  expect(container.querySelector('[data-testid="lot-edit-row"]')).toBeTruthy();
+
+  // Cancel via the card header's own toggle button, which reads "Hide form"
+  // while an edit is in progress.
+  const hideFormBtn = Array.from(container.querySelectorAll('button'))
+    .find((b) => b.textContent === 'Hide form') as HTMLButtonElement;
+  expect(hideFormBtn).toBeTruthy();
+  await act(async () => { hideFormBtn.click(); });
+
+  expect(container.querySelector('[data-testid="lot-edit-row"]')).toBeNull();
+  expect(container.querySelector('#finance-holdings-form')).toBeNull();
+});
+
 it('shows "—" for household figures when no transactions are imported, not a measured zero', async () => {
   await act(async () => { root.render(<FinanceView />); });
   await flush();

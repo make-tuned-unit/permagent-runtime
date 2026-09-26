@@ -151,9 +151,26 @@ function EditableName({ value, editing, onStartEdit, onStopEditing, onSave }: {
   // the full text on a tooltip is a label long enough to overflow even that.
   const [labelRef, clamped] = useClamped<HTMLSpanElement>(value);
 
+  // Reset `draft` only on the false→true transition of `editing`, never on a
+  // `value` change while already editing. The row's `label` is recomputed
+  // every render from the live session (toRow → sessionDisplayLabel), and a
+  // `session_changed` refresh (e.g. the daemon's own auto-namer still
+  // retitling a running agent session) can change it at any moment. Keying
+  // an effect on `[editing, value]` re-fires on THAT change too — not only
+  // when editing starts — silently overwriting whatever the user had typed
+  // and re-selecting the input (REVIEW_CONFIRMED #12). `valueRef` always
+  // holds the latest label so the transition still picks up a fresh value.
+  const valueRef = useRef(value);
+  valueRef.current = value;
+  const wasEditingRef = useRef(editing);
   useEffect(() => {
-    if (editing) { setDraft(value); inputRef.current?.focus(); inputRef.current?.select(); }
-  }, [editing, value]);
+    if (editing && !wasEditingRef.current) {
+      setDraft(valueRef.current);
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    }
+    wasEditingRef.current = editing;
+  }, [editing]);
 
   const commit = () => {
     const trimmed = draft.trim();

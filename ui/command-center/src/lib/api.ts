@@ -1656,10 +1656,15 @@ export const api = {
   // (network + backend), body-download, and JSON.parse, plus payload size. The
   // lean projection (#341b) drops the heavy JSON blobs the consumer discarded —
   // watch `bytes` fall from ~700KB toward ~55KB for the same session count.
+  // `?types=user,scheduled,sub_agent`: the daemon's default list (user +
+  // scheduled) leaves out SubAgent sessions (goal and coding-harness
+  // workers), so History's "Agent runs" tab silently starved without this —
+  // classifySession()'s `sub_agent` branch could only ever fire on a `User`
+  // session that happened to carry a goalId (REVIEW_CONFIRMED #11).
   getSessions: async (): Promise<SessionSummary[]> => {
     const t0 = performance.now();
     await requireCredential('/api/sessions');
-    const res = await fetch(`${API_BASE_URL}/api/sessions`, { headers: authHeaders() });
+    const res = await fetch(`${API_BASE_URL}/api/sessions?types=user,scheduled,sub_agent`, { headers: authHeaders() });
     const tResp = performance.now();
     if (!res.ok) {
       const err = await res.json().catch(() => ({ message: 'Unknown error' }));

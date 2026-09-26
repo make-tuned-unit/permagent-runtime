@@ -125,7 +125,7 @@ export function liveStateLabel(s: LiveState): StatusLabel {
  *  raw daemon value narrows to exactly one of these — never rendered bare —
  *  with the raw string (a config key, a reason, whatever the daemon actually
  *  said) available only as the caller's tooltip content, never in the chip
- *  itself (Jesse's 1440px review: "off (strix_enabled=false)" and "no live
+ *  itself (ruling 2026-09-25's 1440px review: "off (strix_enabled=false)" and "no live
  *  state to query" were leaking straight onto the row). */
 export interface LiveStatusChip {
   label: 'Running' | 'Idle' | 'Off' | 'Unknown' | string;
