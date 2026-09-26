@@ -4,9 +4,9 @@ import { Terminal } from './Terminal';
 import { useTheme } from '../../styles/useTheme';
 import { registerDropZone } from '../../lib/native-drag-drop';
 import { resolvePtyInjection } from './terminalDrop';
-import { duration, ease, font, textSize } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { Button } from '../common/Button';
-import { pressableEnterOnly } from '../common/pressable';
+import { pressable } from '../common/pressable';
 import { useGlass } from '../common/Glass';
 import { CycleTabsButton } from '../build/CycleTabsButton';
 import { nextPaneTabId, usePaneTabCycling } from '../build/paneTabCycling';
@@ -419,9 +419,10 @@ export const TerminalManager = forwardRef<TerminalManagerHandle, TerminalManager
     setActiveTabId(tab.id);
   }, []);
 
-  const handleCloseTab = useCallback((tabId: string, e?: React.MouseEvent) => {
-    e?.stopPropagation();
-
+  // The close affordance is its own real, sibling `<button>` (not nested
+  // inside the tab's own control) — it stops its own propagation, so
+  // nothing here needs a mouse event to do it too.
+  const handleCloseTab = useCallback((tabId: string) => {
     setClosingTabId(prev => {
       if (prev === tabId) {
         setTabs(prevTabs => {
@@ -610,13 +611,18 @@ export const TerminalManager = forwardRef<TerminalManagerHandle, TerminalManager
           {tabs.map(tab => {
             const isActive = tab.id === activeTabId;
             return (
-              <Button
+              // A `<button>` cannot contain interactive content, so the tab
+              // is a `pressable` ROW (not a `<Button>`) plus a real sibling
+              // `<button>` for close. `.pa-btn` reproduces the exact look
+              // `Button` gave it (same `chromeBareVars` vars); `.pa-pressable`
+              // (from `pressable()`) layers the row's press/focus feedback.
+              <div
                 key={tab.id}
-                colors={colors}
-                variant="bare"
-                onClick={() => setActiveTabId(tab.id)}
-                // `group` stays: the close affordance reveals on group-hover.
-                className="group shrink-0"
+                {...pressable(() => setActiveTabId(tab.id), {
+                  label: `Switch to terminal tab: ${tab.label}`,
+                  // `group` stays: the close affordance reveals on group-hover.
+                  className: 'pa-btn group shrink-0',
+                })}
                 style={{
                   ...chromeBareVars(colors, {
                     bg: isActive ? colors.fillSubtle : 'transparent',
@@ -645,34 +651,27 @@ export const TerminalManager = forwardRef<TerminalManagerHandle, TerminalManager
               >
                 <FiTerminal size={11} />
                 <span className="truncate max-w-[140px]">{tab.label}</span>
-                <span
-                  {...pressableEnterOnly(() => handleCloseTab(tab.id), {
-                    label: `Close terminal tab: ${tab.label}`,
-                    className: `ml-1 rounded p-0.5 ${
-                      closingTabId === tab.id ? '' : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100'
-                    }`,
-                  })}
-                  // Nested in the tab's own Button (which selects it); the
-                  // click must stop here rather than also selecting the tab.
-                  onClick={(e) => handleCloseTab(tab.id, e)}
+                <Button
+                  colors={colors}
+                  variant="bare"
+                  type="button"
+                  aria-label={`Close terminal tab: ${tab.label}`}
+                  // A real sibling now, not nested inside the tab's own
+                  // control — the click still must stop here or it also
+                  // selects the tab underneath it.
+                  onClick={(e) => { e.stopPropagation(); handleCloseTab(tab.id); }}
+                  className={`ml-1 ${closingTabId === tab.id ? '' : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100'}`}
                   style={{
-                    transition: `background-color ${duration.fast}ms ${ease.smooth}, color ${duration.fast}ms ${ease.smooth}`,
-                    ...(closingTabId === tab.id
-                      ? { background: dangerWash(colors), color: colors.danger }
-                      : { color: colors.textMuted }),
-                  }}
-                  onMouseEnter={(e) => {
-                    if (closingTabId === tab.id) return;
-                    e.currentTarget.style.background = colors.fillHover;
-                  }}
-                  onMouseLeave={(e) => {
-                    if (closingTabId === tab.id) return;
-                    e.currentTarget.style.background = 'transparent';
-                  }}
+                    '--pa-btn-pad': '2px',
+                    '--pa-btn-radius': `${radius.xs}px`,
+                    '--pa-btn-bg': closingTabId === tab.id ? dangerWash(colors) : 'transparent',
+                    '--pa-btn-fg': closingTabId === tab.id ? colors.danger : colors.textMuted,
+                    '--pa-btn-bg-hover': closingTabId === tab.id ? dangerWash(colors) : colors.fillHover,
+                  } as CSSProperties}
                 >
                   <FiX size={10} />
-                </span>
-              </Button>
+                </Button>
+              </div>
             );
           })}
         </div>

@@ -3,7 +3,7 @@ import { FiStar, FiX, FiLayers, FiTrash2, FiCornerUpLeft } from 'react-icons/fi'
 import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
-import { pressableEnterOnly } from '../common/pressable';
+import { pressable } from '../common/pressable';
 import { api, type BrowserBookmark, type BrowserTabSet } from '../../lib/api';
 import {
   isBookmarked,
@@ -131,12 +131,10 @@ export function BookmarksBar({
   }, [bookmarks, currentUrl, currentTitle, persistBookmarks]);
 
   const handleRemoveBookmark = useCallback(
-    // `e` is optional: a keyboard Enter on the pressable affordance has no
-    // mouse event to stop, and there's nothing to stop propagation to that
-    // way (the outer chip's Enter only fires from ITS OWN focus, not this
-    // nested one's).
-    (url: string, e?: React.MouseEvent) => {
-      e?.stopPropagation();
+    // The remove button is its own real, sibling `<button>` now (not nested
+    // inside the row's), so ITS OWN onClick stops propagation before calling
+    // this — nothing here needs a mouse event to do it too.
+    (url: string) => {
       persistBookmarks(removeBookmark(bookmarks, url), bookmarks);
     },
     [bookmarks, persistBookmarks],
@@ -163,9 +161,9 @@ export function BookmarksBar({
   );
 
   const handleDeleteSet = useCallback(
-    // `e` optional for the same reason as `handleRemoveBookmark` above.
-    (name: string, e?: React.MouseEvent) => {
-      e?.stopPropagation();
+    // The delete button is its own real, sibling `<button>` (see
+    // `handleRemoveBookmark`); it stops its own propagation.
+    (name: string) => {
       if (armedDelete === name) {
         persistTabSets(removeTabSet(tabSets, name), tabSets);
         setArmedDelete(null);
@@ -233,22 +231,21 @@ export function BookmarksBar({
           </span>
         ) : (
           bookmarks.map((b) => (
-            // `` dissolves the primitive's label
-            // wrapper: the chip's title and its remove affordance must stay the
-            // button's own flex children or the truncation and the
-            // group-hover reveal both come apart.
+            // A `<button>` cannot contain interactive content (HTML5 content
+            // model; screen readers also announce a nested control as one
+            // control, not two) — so the chip is a `pressable` ROW and the
+            // remove affordance is its own real sibling `<button>`, not a
+            // span nested inside the row's button. `.pa-btn` on the row
+            // reproduces the exact look `Button` gave it (same
+            // `chromeBareVars` vars); `.pa-pressable` (from `pressable()`)
+            // layers the row's new press/focus feedback on top.
             <Tooltip content={b.url}>
-              <Button
+              <div
                 key={b.url}
-                colors={colors}
-                variant="bare"
-                onClick={() => onNavigate(b.url)}
-                // The chip spins for the navigation, but does not tick: the tab
-                // title and the address bar are what confirm a page arrived, and
-                // a second green confirmation on the chip you left behind is one
-                // claim too many.
-                flashSuccess={false}
-                className="group shrink-0"
+                {...pressable(() => onNavigate(b.url), {
+                  label: `Open bookmark: ${b.title || b.url}`,
+                  className: 'pa-btn group shrink-0',
+                })}
                 style={{
                   ...chromeBareVars(colors, {
                     pad: chipPad,
@@ -261,28 +258,29 @@ export function BookmarksBar({
               >
                 <span className="truncate max-w-[140px]">{b.title || b.url}</span>
                 <Tooltip content="Remove bookmark">
-                  <span
-                    {...pressableEnterOnly(() => handleRemoveBookmark(b.url), {
-                      label: `Remove bookmark: ${b.title || b.url}`,
-                      className: 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100',
-                    })}
-                    // Override the shared primitive's onClick: this affordance
-                    // is nested inside the bookmark chip's own Button, so a
-                    // mouse click must stop here (handleRemoveBookmark does
-                    // it) or it also fires the chip's onNavigate underneath.
-                    onClick={(e) => handleRemoveBookmark(b.url, e)}
+                  <Button
+                    colors={colors}
+                    variant="bare"
+                    type="button"
+                    aria-label={`Remove bookmark: ${b.title || b.url}`}
+                    // Nested visually inside the row, but a real SIBLING
+                    // element now (not inside another button) — the click
+                    // still must stop here or it also fires the row's
+                    // onNavigate underneath it.
+                    onClick={(e) => { e.stopPropagation(); handleRemoveBookmark(b.url); }}
+                    className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
                     style={{
-                      color: colors.textMuted,
-                      borderRadius: radius.xs,
-                      padding: 2,
-                    }}
-                    onMouseEnter={(e) => { e.currentTarget.style.background = colors.fillHover; }}
-                    onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+                      '--pa-btn-pad': '2px',
+                      '--pa-btn-radius': `${radius.xs}px`,
+                      '--pa-btn-bg': 'transparent',
+                      '--pa-btn-fg': colors.textMuted,
+                      '--pa-btn-bg-hover': colors.fillHover,
+                    } as CSSProperties}
                   >
                     <FiX size={9} />
-                  </span>
+                  </Button>
                 </Tooltip>
-              </Button>
+              </div>
             </Tooltip>
           ))
         )}
@@ -394,16 +392,17 @@ export function BookmarksBar({
               </div>
             ) : (
               tabSets.map((set) => (
-                // Same as the chips above: the row distributes a `flex-1` name
-                // against right-aligned meta, so the label wrapper has to be
-                // `display: contents` or that distribution collapses.
+                // Same restructure as the bookmark chips above: a `pressable`
+                // row (not a `<Button>`) plus a real sibling `<button>` for
+                // delete, so the two controls are never nested inside one
+                // another.
                 <Tooltip content={`Restore ${set.tabs.length} tab${set.tabs.length !== 1 ? 's' : ''}`}>
-                  <Button
+                  <div
                     key={set.name}
-                    colors={colors}
-                    variant="bare"
-                    onClick={() => handleRestore(set)}
-                    className="group w-full"
+                    {...pressable(() => handleRestore(set), {
+                      label: `Restore tab set: ${set.name} (${set.tabs.length} tab${set.tabs.length !== 1 ? 's' : ''})`,
+                      className: 'pa-btn group w-full',
+                    })}
                     style={{
                       ...chromeBareVars(colors, {
                         pad: `${CHROME_GEOM.tabPadY}px ${CHROME_GEOM.tabPadX}px`,
@@ -421,36 +420,27 @@ export function BookmarksBar({
                       {set.tabs.length} tab{set.tabs.length !== 1 ? 's' : ''}
                     </span>
                     <Tooltip content={armedDelete === set.name ? 'Click again to delete' : 'Delete set'}>
-                      <span
-                        {...pressableEnterOnly(() => handleDeleteSet(set.name), {
-                          label: armedDelete === set.name
-                            ? `Confirm delete of tab set: ${set.name}`
-                            : `Delete tab set: ${set.name}`,
-                          className: armedDelete === set.name ? '' : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100',
-                        })}
-                        // Same override as the bookmark chip's remove
-                        // affordance above: this is nested in the set's own
-                        // Button (which restores the set), so the click must
-                        // stop here.
-                        onClick={(e) => handleDeleteSet(set.name, e)}
-                        style={
-                          armedDelete === set.name
-                            ? { background: dangerWash(colors), color: colors.danger, borderRadius: radius.xs, padding: 2 }
-                            : { color: colors.textMuted, borderRadius: radius.xs, padding: 2 }
-                        }
-                        onMouseEnter={(e) => {
-                          if (armedDelete === set.name) return;
-                          e.currentTarget.style.background = colors.fillHover;
-                        }}
-                        onMouseLeave={(e) => {
-                          if (armedDelete === set.name) return;
-                          e.currentTarget.style.background = 'transparent';
-                        }}
+                      <Button
+                        colors={colors}
+                        variant="bare"
+                        type="button"
+                        aria-label={armedDelete === set.name
+                          ? `Confirm delete of tab set: ${set.name}`
+                          : `Delete tab set: ${set.name}`}
+                        onClick={(e) => { e.stopPropagation(); handleDeleteSet(set.name); }}
+                        className={armedDelete === set.name ? '' : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100'}
+                        style={{
+                          '--pa-btn-pad': '2px',
+                          '--pa-btn-radius': `${radius.xs}px`,
+                          '--pa-btn-bg': armedDelete === set.name ? dangerWash(colors) : 'transparent',
+                          '--pa-btn-fg': armedDelete === set.name ? colors.danger : colors.textMuted,
+                          '--pa-btn-bg-hover': armedDelete === set.name ? dangerWash(colors) : colors.fillHover,
+                        } as CSSProperties}
                       >
                         <FiTrash2 size={10} />
-                      </span>
+                      </Button>
                     </Tooltip>
-                  </Button>
+                  </div>
                 </Tooltip>
               ))
             )}

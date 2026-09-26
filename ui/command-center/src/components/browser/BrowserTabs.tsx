@@ -1,9 +1,9 @@
 import { type CSSProperties } from 'react';
 import { FiPlus, FiX, FiGlobe, FiExternalLink } from 'react-icons/fi';
-import { font, textSize } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
-import { pressableEnterOnly } from '../common/pressable';
+import { pressable } from '../common/pressable';
 import { CycleTabsButton } from '../build/CycleTabsButton';
 import { CHROME_GEOM, chromeBareVars, dangerWash } from './browserChrome';
 
@@ -21,7 +21,7 @@ interface BrowserTabsProps {
   activeTabId: string;
   closingTabId: string | null;
   onSelectTab: (tabId: string) => void;
-  onCloseTab: (tabId: string, e?: React.MouseEvent) => void;
+  onCloseTab: (tabId: string) => void;
   onNewTab: () => void;
   onCycleTab: () => void;
   onPopOut?: () => void;
@@ -53,18 +53,20 @@ export function BrowserTabs({
         {tabs.map((tab) => {
           const isActive = tab.id === activeTabId;
           return (
-            // The tab keeps its own flex distribution — globe, truncating
-            // title, close affordance — so the primitive's label wrapper is
-            // dissolved with `display: contents`. `borderRight` stays inline:
-            // it is the strip's divider, not the button's own outline, and
-            // `--pa-btn-border` is transparent so the other three edges paint
-            // nothing.
-            <Button
+            // `borderRight` stays inline: it is the strip's divider, not the
+            // row's own outline, and `--pa-btn-border` is transparent so the
+            // other three edges paint nothing.
+            // A `<button>` cannot contain interactive content, so the tab is
+            // a `pressable` ROW (not a `<Button>`) plus a real sibling
+            // `<button>` for close. `.pa-btn` reproduces the exact look
+            // `Button` gave it (same `chromeBareVars` vars); `.pa-pressable`
+            // (from `pressable()`) layers the row's press/focus feedback.
+            <div
               key={tab.id}
-              colors={colors}
-              variant="bare"
-              onClick={() => onSelectTab(tab.id)}
-              className="group shrink-0"
+              {...pressable(() => onSelectTab(tab.id), {
+                label: `Switch to tab: ${tab.label || 'New Tab'}`,
+                className: 'pa-btn group shrink-0',
+              })}
               style={{
                 ...chromeBareVars(colors, {
                   bg: isActive ? colors.fillSubtle : 'transparent',
@@ -92,34 +94,28 @@ export function BrowserTabs({
                 {tab.label || 'New Tab'}
               </span>
               {tabs.length > 1 && (
-                <span
-                  {...pressableEnterOnly(() => onCloseTab(tab.id), {
-                    label: `Close tab: ${tab.label || 'New Tab'}`,
-                    className: `ml-1 rounded p-0.5 transition-colors ${
-                      closingTabId === tab.id ? '' : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100'
-                    }`,
-                  })}
-                  // Nested in the tab's own Button (which selects it); the
-                  // click must stop here rather than also selecting the tab.
-                  onClick={(e) => onCloseTab(tab.id, e)}
-                  style={
-                    closingTabId === tab.id
-                      ? { background: dangerWash(colors), color: colors.danger }
-                      : { color: colors.textMuted }
-                  }
-                  onMouseEnter={(e) => {
-                    if (closingTabId === tab.id) return;
-                    e.currentTarget.style.background = colors.fillHover;
-                  }}
-                  onMouseLeave={(e) => {
-                    if (closingTabId === tab.id) return;
-                    e.currentTarget.style.background = 'transparent';
-                  }}
+                <Button
+                  colors={colors}
+                  variant="bare"
+                  type="button"
+                  aria-label={`Close tab: ${tab.label || 'New Tab'}`}
+                  // A real sibling now, not nested inside the tab's own
+                  // control — the click still must stop here or it also
+                  // selects the tab underneath it.
+                  onClick={(e) => { e.stopPropagation(); onCloseTab(tab.id); }}
+                  className={`ml-1 ${closingTabId === tab.id ? '' : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100'}`}
+                  style={{
+                    '--pa-btn-pad': '2px',
+                    '--pa-btn-radius': `${radius.xs}px`,
+                    '--pa-btn-bg': closingTabId === tab.id ? dangerWash(colors) : 'transparent',
+                    '--pa-btn-fg': closingTabId === tab.id ? colors.danger : colors.textMuted,
+                    '--pa-btn-bg-hover': closingTabId === tab.id ? dangerWash(colors) : colors.fillHover,
+                  } as CSSProperties}
                 >
                   <FiX size={10} />
-                </span>
+                </Button>
               )}
-            </Button>
+            </div>
           );
         })}
       </div>

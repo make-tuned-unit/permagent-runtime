@@ -60,8 +60,11 @@ afterEach(() => {
 });
 
 function tabLabels(): string[] {
-  // Tab strip buttons carry the label inside a truncating span.
-  return Array.from(container.querySelectorAll('button span.truncate')).map(
+  // Tab strip rows (dagK-pressable: a `pressable` div, `role="button"`, not
+  // a literal `<button>` — the close affordance is its own real sibling
+  // `<button>` instead of being nested inside the row) carry the label
+  // inside a truncating span.
+  return Array.from(container.querySelectorAll('[role="button"] span.truncate')).map(
     el => el.textContent ?? '',
   );
 }
