@@ -25,6 +25,16 @@ export interface GraphMemory {
   timestamp: string;
   layer?: string | null;
   why?: string | null;
+  /** The `RememberOpts.source` tag this memory was fed with ("chat",
+   *  "permagent.card", "permagent.goal", …) — `null`/absent for a memory
+   *  written before the source column existed, or for a search-bar hit
+   *  (`/api/brain/search` doesn't carry it). The UI shows "source unknown"
+   *  rather than guessing (R5 "a memory shows its source"). */
+  source?: string | null;
+  /** When this memory was last reinforced (Spectral's Memify feedback loop) —
+   *  the closest durable signal to "last referenced" Spectral carries.
+   *  `null`/absent means never reinforced, or unavailable for this row. */
+  last_reinforced_at?: string | null;
 }
 export interface BrainGraph { self: GraphSelf; entities: GraphEntity[]; edges?: GraphEdge[]; memories: GraphMemory[] }
 

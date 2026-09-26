@@ -21,6 +21,9 @@ import {
   type BrainSearchResult,
 } from './brainSearch';
 import { readViewMode, rememberViewMode, type BrainViewMode as ViewMode } from './viewMode';
+import { humanizeMemorySource, isForgettableMemoryKey } from './brainMemorySource';
+import { scheduleForget } from './brainForget';
+import { toast } from '../../lib/notifications';
 
 import { Tooltip } from '../common/Tooltip';
 import { CHAT_LAUNCHER_MARGIN } from '../chat/ChatLauncher';
@@ -141,6 +144,36 @@ export function BrainView() {
   const selectMemory = useCallback((mem: GraphMemory, viaPreview = false) => {
     setSelected({ id: mem.id, kind: 'memory', label: deriveMemoryTitle(mem), note: mem.text.slice(0, 120), data: mem, preview: viaPreview });
   }, []);
+
+  // Forget (R5 "explicit forget with undo") from the side panel. Closing the
+  // panel IS the immediate feedback (R8) — the toast that follows offers ~8s
+  // to undo, which reopens exactly what was showing; only once that window
+  // lapses unactioned does the DELETE actually fire (`brainForget.ts`).
+  const forgetCancelRef = useRef<(() => void) | null>(null);
+  const handleForgetSelected = useCallback((mem: GraphMemory) => {
+    if (!isForgettableMemoryKey(mem.key)) return;
+    const key = mem.key;
+    const title = deriveMemoryTitle(mem);
+    const reopen = selected;
+    setSelected(null);
+    const cancel = scheduleForget(key, outcome => {
+      forgetCancelRef.current = null;
+      if (outcome === 'restored') {
+        setSelected(reopen);
+        toast('Could not forget that memory', `"${title}" is back — try again.`, undefined, {
+          tone: 'danger', force: true,
+        });
+      }
+    });
+    forgetCancelRef.current = cancel;
+    toast('Memory forgotten', `"${title}" will be removed from Henry's mind.`, undefined, {
+      action: {
+        label: 'Undo',
+        onAction: () => { forgetCancelRef.current?.(); forgetCancelRef.current = null; setSelected(reopen); },
+      },
+      force: true,
+    });
+  }, [selected]);
 
   // Brain-loop deep-link (#587-adjacent): focus the memory a product surface
   // asked to surface. Graph-preferred (real recency/chips); the caller's preview
@@ -720,6 +753,46 @@ export function BrainView() {
               {selected.label}
             </h3>
 
+            {/* Memory provenance + Forget (R5) — metadata about the whole
+                row, so it sits under the title rather than inside the
+                scrollable content below. */}
+            {selected.kind === 'memory' && selected.data && (() => {
+              const mem = selected.data as GraphMemory;
+              const sourceInfo = humanizeMemorySource(mem.source);
+              const forgettable = isForgettableMemoryKey(mem.key);
+              return (
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: space.md, marginBottom: space.xl }}>
+                  <Chip
+                    kind="static"
+                    quiet
+                    title={sourceInfo.known ? 'Where this memory came from' : "Written before source tracking existed — Henry can't say where it came from"}
+                  >
+                    {sourceInfo.phrase}
+                  </Chip>
+                  {forgettable && (
+                    <Button
+                      colors={colors}
+                      variant="ghost"
+                      type="button"
+                      onClick={() => handleForgetSelected(mem)}
+                      style={{
+                        '--pa-btn-fg': colors.danger,
+                        '--pa-btn-fg-hover': colors.danger,
+                        '--pa-btn-border': 'transparent',
+                        '--pa-btn-border-hover': colors.danger,
+                        '--pa-btn-bg-hover': `${colors.danger}1a`,
+                        '--pa-btn-pad': '3px 10px',
+                        '--pa-btn-radius': `${radius.sm}px`,
+                        fontFamily: font.body, fontSize: textSize.caption,
+                      } as CSSProperties}
+                    >
+                      Forget
+                    </Button>
+                  )}
+                </div>
+              );
+            })()}
+
             {/* Entity card: description + typed fields with provenance +
                 connection stats — the entity now reads like a memory card. */}
             {selected.kind !== 'memory' && (() => {
@@ -956,8 +1029,11 @@ export function BrainView() {
                   {/* Pinned stats footer. "last recalled" removed (2026-07
                       wiring audit): it fabricated concrete recall dates
                       ("3 days ago") from the same age bucket recency already
-                      shows — the backend tracks no recall timestamp. */}
-                  <div style={{ flexShrink: 0, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: space.md, borderTop: `1px solid ${colors.borderHi}`, paddingTop: space.xl }}>
+                      shows — the backend tracked no recall timestamp then.
+                      "referenced" (R5) is different: Spectral's own Memify
+                      reinforcement timestamp, a real value the backend now
+                      carries — not a re-fabrication of the same age bucket. */}
+                  <div style={{ flexShrink: 0, display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: space.md, borderTop: `1px solid ${colors.borderHi}`, paddingTop: space.xl }}>
                     {/* One number, one word. This said "reinforcement" while
                         the List view called the same field "signal" — same
                         memory, same tab, two vocabularies and neither defined.
@@ -987,6 +1063,14 @@ export function BrainView() {
                         </Tooltip>
                       );
                     })()}
+                    <Tooltip content={mem.last_reinforced_at || 'Never reinforced since it was written'}>
+                      <span tabIndex={0} style={{ outline: 'none' }}>
+                        <Stat
+                          label="referenced"
+                          value={mem.last_reinforced_at ? formatMemoryAge(mem.last_reinforced_at).label : 'not yet'}
+     />
+                      </span>
+                    </Tooltip>
                   </div>
                 </div>
               );

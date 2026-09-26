@@ -2727,20 +2727,32 @@ export const api = {
     }>(`/api/brain/search?${qs.toString()}`);
   },
 
-  getBrainMemories: (params: { q?: string; before?: string; before_id?: string; after?: string; offset?: number; limit?: number }) => {
+  getBrainMemories: (params: { q?: string; before?: string; before_id?: string; after?: string; source?: string; offset?: number; limit?: number }) => {
     const qs = new URLSearchParams();
     if (params.q) qs.set('q', params.q);
     if (params.before) qs.set('before', params.before);
     if (params.before_id) qs.set('before_id', params.before_id);
     if (params.after) qs.set('after', params.after);
+    if (params.source) qs.set('source', params.source);
     if (params.offset !== undefined) qs.set('offset', String(params.offset));
     if (params.limit !== undefined) qs.set('limit', String(params.limit));
     return apiFetch<{
-      memories: { id: string; key: string | null; text: string; description: string | null; ent: string[]; age: number; weight: number; timestamp: string }[];
+      memories: { id: string; key: string | null; text: string; description: string | null; ent: string[]; age: number; weight: number; timestamp: string; source?: string | null; last_reinforced_at?: string | null }[];
       total: number;
       has_more: boolean;
     }>(`/api/brain/memories?${qs.toString()}`);
   },
+
+  /** DELETE /api/brain/memory?key= — hard-delete a memory across every
+   *  Spectral substrate (R5 "explicit forget"). `existed: false` means the
+   *  key named nothing (already gone); `verified: false` with `existed: true`
+   *  means the delete ran but a post-delete probe still found residue. The
+   *  Brain list/panel's Forget action fires this once its undo toast expires
+   *  unactioned — never on the click itself. */
+  forgetBrainMemory: (key: string) =>
+    apiFetch<{ existed: boolean; verified: boolean }>(`/api/brain/memory?key=${encodeURIComponent(key)}`, {
+      method: 'DELETE',
+    }),
 
   /** Per-source Brain-feed status (Settings → Memory's "What Henry learns
    *  from" panel) — count/last-fed/error/pending/dead for every structured

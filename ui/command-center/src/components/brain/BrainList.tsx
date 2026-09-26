@@ -10,6 +10,10 @@ import { useTheme } from '../../styles/useTheme';
 import { deriveMemoryTitle, MEMORY_STALE_AFTER_DAYS } from './brainMemoryFocus';
 import { AsOf } from '../common/AsOf';
 import { MEMORY_STRENGTH } from '../../lib/vocabulary';
+import { Chip } from '../common/Chip';
+import { humanizeMemorySource, isForgettableMemoryKey, SOURCE_FILTERS, UNKNOWN_SOURCE } from './brainMemorySource';
+import { scheduleForget } from './brainForget';
+import { toast } from '../../lib/notifications';
 
 import { Tooltip } from '../common/Tooltip';
 // ── Date formatting ──────────────────────────────────────────────────
@@ -107,13 +111,30 @@ export function BrainList({
   const requestGeneration = useRef(0);
   const isSearch = !!(searchQuery && searchQuery.trim());
 
-  // Reset and load first page when query or time changes (browse mode only)
+  // The List's "sources" filter row (R5, UX_BENCHMARK_RESEARCH §5). `null` =
+  // all sources. `knownSources` only ever grows — every browse page's rows
+  // (filtered or not) contribute the tags actually seen, so the row shows
+  // real, present categories rather than the full ~18-tag vocabulary most
+  // brains will only ever populate a handful of (NN/g H8, recognition over
+  // recall). It can end up offering a tag that yields zero rows under the
+  // CURRENT time-slider window; the stats bar's own count says so honestly.
+  const [sourceFilter, setSourceFilter] = useState<string | null>(null);
+  const [knownSources, setKnownSources] = useState<Set<string>>(new Set());
+
+  // Rows mid-"Forget": hidden immediately (optimistic) regardless of whether
+  // they came from browse or search — see `brainForget.ts` for why the actual
+  // delete is scheduled outside React state/lifecycle.
+  const [hiddenIds, setHiddenIds] = useState<Set<string>>(new Set());
+  const forgetCancels = useRef<Map<string, () => void>>(new Map());
+
+  // Reset and load first page when query, time or the source filter changes
+  // (browse mode only).
   useEffect(() => {
     if (isSearch) return;
     setState({ memories: [], total: 0, hasMore: false, loading: true, error: false, lastTimestamp: null, lastId: null, searchOffset: 0 });
     loadPage(true);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchQuery, timeValue, isSearch]);
+  }, [searchQuery, timeValue, sourceFilter, isSearch]);
 
   // Resolves `true` only when a page actually landed, so the Retry button that
   // awaits it cannot tick success over the error it is standing next to.
@@ -141,10 +162,17 @@ export function BrainList({
         const cutoffMs = Date.now() - timeValue * maxAgeDays * 24 * 60 * 60 * 1000;
         params.after = new Date(cutoffMs).toISOString();
       }
+      if (sourceFilter) params.source = sourceFilter;
 
       const res = await api.getBrainMemories(params);
       if (generation !== requestGeneration.current) return false;
       if (!res || !Array.isArray(res.memories)) throw new Error('Invalid memories response');
+
+      setKnownSources(prev => {
+        const next = new Set(prev);
+        for (const m of res.memories) next.add(m.source ?? UNKNOWN_SOURCE);
+        return next;
+      });
 
       setState(prev => {
         const combined = reset ? res.memories : [...prev.memories, ...res.memories];
@@ -169,7 +197,47 @@ export function BrainList({
       if (generation === requestGeneration.current) loadingMore.current = false;
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state, searchQuery, isSearch, timeValue]);
+  }, [state, searchQuery, isSearch, timeValue, sourceFilter]);
+
+  // Restore a hidden row — from Undo (cancels the pending delete before it
+  // fires) or from a failed delete (the timer already fired; cancelling again
+  // is a harmless no-op). Never touches the network itself.
+  const restoreRow = useCallback((id: string) => {
+    forgetCancels.current.get(id)?.();
+    forgetCancels.current.delete(id);
+    setHiddenIds(prev => {
+      if (!prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+  }, []);
+
+  // Forget (R5 "explicit forget with undo", R4 "reversible actions offer
+  // undo instead of a confirm"): hide the row now, offer ~8s to undo via the
+  // toast's action slot, and only then let the DELETE fire — see
+  // `brainForget.scheduleForget`. Never a ConfirmDialog: this IS the confirm.
+  const handleForget = useCallback((mem: GraphMemory) => {
+    if (!isForgettableMemoryKey(mem.key)) return;
+    const key = mem.key;
+    const title = deriveMemoryTitle(mem);
+    setHiddenIds(prev => new Set(prev).add(mem.id));
+    const cancel = scheduleForget(key, outcome => {
+      if (outcome === 'restored') {
+        restoreRow(mem.id);
+        toast('Could not forget that memory', `"${title}" is back — try again.`, undefined, {
+          tone: 'danger', force: true,
+        });
+      } else {
+        forgetCancels.current.delete(mem.id);
+      }
+    });
+    forgetCancels.current.set(mem.id, cancel);
+    toast('Memory forgotten', `"${title}" will be removed from Henry's mind.`, undefined, {
+      action: { label: 'Undo', onAction: () => restoreRow(mem.id) },
+      force: true,
+    });
+  }, [restoreRow]);
 
   // Infinite scroll
   const handleScroll = useCallback(() => {
@@ -183,10 +251,14 @@ export function BrainList({
     }
   }, [loadPage, state.hasMore, state.loading, isSearch]);
 
-  const displayMemories = isSearch ? (searchResults ?? []) : state.memories;
+  const rawMemories = isSearch ? (searchResults ?? []) : state.memories;
+  // Rows mid-"Forget" vanish immediately (R8-adjacent instant feedback) —
+  // filtered at render time rather than spliced out of `state`/`searchResults`
+  // so Undo (or a failed delete) can bring a row back with no refetch.
+  const displayMemories = hiddenIds.size === 0 ? rawMemories : rawMemories.filter(m => !hiddenIds.has(m.id));
   const displayLoading = isSearch ? !!searchLoading : state.loading;
   const displayError = isSearch ? searchError : (state.error ? 'Could not load memories' : null);
-  const displayTotal = isSearch ? displayMemories.length : state.total;
+  const displayTotal = isSearch ? displayMemories.length : Math.max(0, state.total - hiddenIds.size);
 
   return (
     <div style={{
@@ -208,6 +280,46 @@ export function BrainList({
         </span>
         <span>{(isSearch ? 0 : filteredEntities.length) + displayMemories.length} shown</span>
       </div>
+
+      {/* "Sources" filter row (R5; UX_BENCHMARK_RESEARCH §5) — only once the
+          API has actually returned a source for something to filter by, and
+          only in browse mode (a search query is its own, narrower filter). */}
+      {!isSearch && knownSources.size > 0 && (
+        <div
+          data-testid="brain-source-filters"
+          style={{
+            display: 'flex', flexWrap: 'wrap', gap: space.xs,
+            padding: `${space.sm}px ${space.xxl}px`,
+            borderBottom: `1px solid ${colors.border}`,
+          }}
+        >
+          <Chip kind="filter" quiet={sourceFilter !== null} pressed={sourceFilter === null} onClick={() => setSourceFilter(null)}>
+            all sources
+          </Chip>
+          {SOURCE_FILTERS.filter(f => knownSources.has(f.tag)).map(f => (
+            <Chip
+              key={f.tag}
+              kind="filter"
+              quiet={sourceFilter !== f.tag}
+              pressed={sourceFilter === f.tag}
+              onClick={() => setSourceFilter(prev => prev === f.tag ? null : f.tag)}
+            >
+              {f.label}
+            </Chip>
+          ))}
+          {knownSources.has(UNKNOWN_SOURCE) && (
+            <Chip
+              kind="filter"
+              quiet={sourceFilter !== UNKNOWN_SOURCE}
+              pressed={sourceFilter === UNKNOWN_SOURCE}
+              onClick={() => setSourceFilter(prev => prev === UNKNOWN_SOURCE ? null : UNKNOWN_SOURCE)}
+              title="Memories written before source tracking existed"
+            >
+              source unknown
+            </Chip>
+          )}
+        </div>
+      )}
 
       {/* Scrollable list */}
       <div
@@ -265,6 +377,7 @@ export function BrainList({
               note: mem.text.slice(0, 120),
               data: mem,
             })}
+            onForget={handleForget}
           />
         ))}
 
@@ -336,11 +449,12 @@ function highlightText(text: string, terms: string[], colors: { text: string; cy
 
 // ── Row component ────────────────────────────────────────────────────
 
-function MemoryRow({ memory, selected, highlightTerms, onClick }: {
+function MemoryRow({ memory, selected, highlightTerms, onClick, onForget }: {
   memory: GraphMemory;
   selected: boolean;
   highlightTerms: string[];
   onClick: () => void;
+  onForget: (memory: GraphMemory) => void;
 }) {
   const { colors, reduceMotion } = useTheme();
   // Rows are content (D1): a solid theme fill, never a translucent wash
@@ -355,6 +469,8 @@ function MemoryRow({ memory, selected, highlightTerms, onClick }: {
   const descPreview = memory.description
     ? memory.description.slice(0, 120) + (memory.description.length > 120 ? '...' : '')
     : null;
+  const sourceInfo = humanizeMemorySource(memory.source);
+  const forgettable = isForgettableMemoryKey(memory.key);
 
   return (
     <div
@@ -421,7 +537,7 @@ function MemoryRow({ memory, selected, highlightTerms, onClick }: {
 
       {/* Metadata footer */}
       <div style={{
-        display: 'flex', gap: space.xxl, marginTop: space.sm,
+        display: 'flex', alignItems: 'center', gap: space.xxl, marginTop: space.sm,
         fontFamily: font.mono, fontSize: 10, color: colors.textDim,
       }}>
         {/* The same field the graph panel shows. It used to say "signal" here
@@ -438,6 +554,39 @@ function MemoryRow({ memory, selected, highlightTerms, onClick }: {
             window shared one bucket and a three-year-old note read as merely
             "older" — on the list whose subject is what was learned when. */}
         <AsOf asOf={memory.timestamp} granularity="calendar" staleAfterMs={MEMORY_STALE_AFTER_DAYS * 86_400_000} />
+        {/* Last referenced (R5's "created/last-referenced" pair) — Spectral's
+            Memify reinforcement timestamp, the closest durable signal it
+            carries; never marked stale, since "not yet referenced again" is
+            the normal state for most memories, not a problem. */}
+        <AsOf asOf={memory.last_reinforced_at} prefix="referenced" unknownLabel="not yet referenced" />
+        {/* Source (R5 "a memory shows its source") — humanized, never the raw
+            RememberOpts tag; "quiet" per Chip's own density rule, since this
+            renders on every row in the list. */}
+        <Chip kind="static" quiet title={sourceInfo.known ? 'Where this memory came from' : "Written before source tracking existed — Henry can't say where it came from"}>
+          {sourceInfo.phrase}
+        </Chip>
+        {forgettable && (
+          <Button
+            colors={colors}
+            variant="ghost"
+            type="button"
+            onClick={e => { e.stopPropagation(); onForget(memory); }}
+            aria-label={`Forget "${title}"`}
+            style={{
+              marginLeft: 'auto',
+              '--pa-btn-fg': colors.danger,
+              '--pa-btn-fg-hover': colors.danger,
+              '--pa-btn-border': 'transparent',
+              '--pa-btn-border-hover': colors.danger,
+              '--pa-btn-bg-hover': `${colors.danger}1a`,
+              '--pa-btn-pad': '2px 8px',
+              '--pa-btn-radius': `${radius.sm}px`,
+              fontFamily: font.body, fontSize: textSize.micro,
+            } as CSSProperties}
+          >
+            Forget
+          </Button>
+        )}
       </div>
     </div>
   );
