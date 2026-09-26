@@ -153,6 +153,29 @@ pub(crate) fn is_unbilled_rate_rejection(
         && !first_byte_stall_retried
 }
 
+pub(crate) fn record_transport_success() {
+    // An accepted HTTP request can have generated billable work even when a
+    // later stream frame says rate-limited. Only transport-level rejections
+    // prove that dispatch was rejected before generation.
+    let _ = AUTHORIZED_ATTEMPTS
+        .try_with(|a| a.ambiguous_transport_failure.store(true, Ordering::Release));
+}
+
+pub(crate) async fn finalize_missing_usage(
+    manager: &SessionManager,
+    reservation_id: &str,
+    rejected_without_usage: bool,
+) -> anyhow::Result<()> {
+    if rejected_without_usage {
+        manager.release_provider_invocation(reservation_id).await?;
+    } else {
+        manager
+            .mark_provider_invocation_unknown(reservation_id)
+            .await?;
+    }
+    Ok(())
+}
+
 pub(crate) fn record_transport_attempt() {
     let _ = AUTHORIZED_ATTEMPTS.try_with(|a| a.transport_attempts.fetch_add(1, Ordering::Relaxed));
 }
@@ -216,6 +239,206 @@ pub(crate) fn extension_calls() -> u32 {
 mod tests {
     use super::*;
 
+    struct TransportProvider;
+
+    #[async_trait::async_trait]
+    impl crate::providers::base::Provider for TransportProvider {
+        fn get_name(&self) -> &str {
+            "test"
+        }
+        fn get_model_config(&self) -> crate::model::ModelConfig {
+            crate::model::ModelConfig::new("test").unwrap()
+        }
+        async fn stream(
+            &self,
+            _: &crate::model::ModelConfig,
+            _: &str,
+            _: &str,
+            _: &[crate::conversation::message::Message],
+            _: &[rmcp::model::Tool],
+        ) -> Result<crate::providers::base::MessageStream, crate::providers::errors::ProviderError>
+        {
+            unreachable!("transport closure is injected into the real retry loop")
+        }
+    }
+
+    #[tokio::test]
+    async fn transport_rejections_release_durable_holds_but_timeouts_and_accepted_requests_do_not()
+    {
+        use crate::providers::errors::ProviderError;
+        use crate::providers::retry::{ProviderRetry, RetryConfig};
+        for scenario in [
+            "rejected",
+            "timeout_then_rejected",
+            "accepted_then_stream_rejected",
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let manager = Arc::new(SessionManager::new(temp.path().to_path_buf()));
+            let session = manager
+                .create_session(
+                    temp.path().to_path_buf(),
+                    "transport test".into(),
+                    crate::session::SessionType::User,
+                    crate::config::GooseMode::Auto,
+                )
+                .await
+                .unwrap();
+            let task = manager.begin_budget_task(&session.id).await.unwrap();
+            let reserve = manager
+                .reserve_provider_invocation(
+                    "first",
+                    &session.id,
+                    Some(&task),
+                    0.5,
+                    "2099-01-01T00:00:00Z",
+                    &crate::cost_router::budget::BudgetConfig::default(),
+                )
+                .await
+                .unwrap();
+            let CostReservationOutcome::Granted { reservation_id } = reserve else {
+                panic!("{reserve:?}")
+            };
+            let calls = AtomicU32::new(0);
+            let (result, evidence) = with_reservation_attempts_evidence(
+                Arc::clone(&manager),
+                "first".into(),
+                Some(2),
+                TransportProvider.with_retry_config(
+                    || async {
+                        let attempt = calls.fetch_add(1, Ordering::SeqCst);
+                        if scenario == "accepted_then_stream_rejected" {
+                            return Ok(());
+                        }
+                        if scenario == "timeout_then_rejected" && attempt == 0 {
+                            return Err(ProviderError::NetworkError(
+                                "timeout after dispatch".into(),
+                            ));
+                        }
+                        Err(ProviderError::RateLimitExceeded {
+                            details: "HTTP 429".into(),
+                            retry_delay: None,
+                        })
+                    },
+                    RetryConfig::new(1, 0, 1.0, 0).with_rate_limit_floor_ms(0),
+                ),
+            )
+            .await;
+            let error = result
+                .err()
+                .unwrap_or_else(|| ProviderError::RateLimitExceeded {
+                    details: "in-band rejection after HTTP acceptance".into(),
+                    retry_delay: None,
+                });
+            let release = is_unbilled_rate_rejection(&error, evidence, false, false);
+            finalize_missing_usage(&manager, &reservation_id, release)
+                .await
+                .unwrap();
+            let pool = manager.pool_clone().await.unwrap();
+            let state: String = sqlx::query_scalar(
+                "SELECT state FROM cost_reservations WHERE invocation_id = 'first'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(
+                state,
+                if scenario == "rejected" {
+                    "released"
+                } else {
+                    "unknown"
+                },
+                "{scenario}"
+            );
+            assert!(calls.load(Ordering::SeqCst) <= 2);
+            // A retry uses a fresh invocation; release must not consume the
+            // budget or synthesize a ledger charge for the rejected request.
+            if scenario == "rejected" {
+                let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM cost_ledger")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+                assert_eq!(count, 0);
+                let next = manager
+                    .reserve_provider_invocation(
+                        "next",
+                        &session.id,
+                        Some(&task),
+                        0.5,
+                        "2099-01-01T00:00:00Z",
+                        &crate::cost_router::budget::BudgetConfig::default(),
+                    )
+                    .await
+                    .unwrap();
+                let CostReservationOutcome::Granted {
+                    reservation_id: next_id,
+                } = next
+                else {
+                    panic!("{next:?}")
+                };
+                let (success, _) = with_reservation_attempts_evidence(
+                    Arc::clone(&manager),
+                    "next".into(),
+                    Some(1),
+                    TransportProvider.with_retry_config(
+                        || async { Ok::<_, ProviderError>(()) },
+                        RetryConfig::new(0, 0, 1.0, 0),
+                    ),
+                )
+                .await;
+                success.unwrap();
+                let row = crate::session::CostLedgerRow {
+                    call_id: "next".into(),
+                    ts: "2026-09-26T00:00:00Z".into(),
+                    session_id: session.id.clone(),
+                    parent_session_id: None,
+                    task_id: Some(task.clone()),
+                    goal_id: None,
+                    subagent_id: None,
+                    provider: Some("test".into()),
+                    model: Some("test".into()),
+                    cost_tier: crate::session::CostTier::PaidApi,
+                    is_headless: true,
+                    input_tokens: 10,
+                    output_tokens: 5,
+                    cache_read_tokens: 0,
+                    cache_write_tokens: 0,
+                    input_cost: 0.02,
+                    output_cost: 0.0,
+                    cache_read_cost: 0.0,
+                    cache_write_cost: 0.0,
+                    cost_usd: 0.02,
+                    cache_savings_usd: 0.0,
+                    is_estimated: false,
+                    provenance: Default::default(),
+                    outcome: Default::default(),
+                };
+                manager
+                    .settle_provider_invocation(
+                        &next_id,
+                        &row,
+                        None,
+                        Some(15),
+                        Some(10),
+                        Some(5),
+                        15,
+                        10,
+                        5,
+                    )
+                    .await
+                    .unwrap();
+                let (state, cost): (String, f64) = sqlx::query_as("SELECT state, settled_cost_usd FROM cost_reservations WHERE invocation_id = 'next'")
+                    .fetch_one(&pool).await.unwrap();
+                assert_eq!(state, "settled");
+                assert_eq!(cost, 0.02);
+                let charged: f64 = sqlx::query_scalar("SELECT SUM(cost_usd) FROM cost_ledger")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+                assert_eq!(charged, 0.02);
+            }
+        }
+    }
+
     async fn rejection_evidence(errors: Vec<crate::providers::errors::ProviderError>) -> bool {
         let authorization = AttemptAuthorization::new(2, None);
         AUTHORIZED_ATTEMPTS
@@ -233,7 +456,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn explicit_rate_rejections_do_not_strand_the_hold() {
+    async fn explicit_rate_rejections_provide_unambiguous_evidence() {
         use crate::providers::errors::ProviderError;
         assert!(
             rejection_evidence(vec![

@@ -4581,14 +4581,9 @@ impl Agent {
                             break;
                         }
                     } else if let Some(reservation_id) = invocation.reservation_id.as_deref() {
-                        if rejected_without_usage {
-                            // An explicit rate-limit rejection before output is
-                            // not an unknown bill. Earlier ambiguous transport
-                            // attempts keep this false, preserving their hold.
-                            session_manager.release_provider_invocation(reservation_id).await?;
-                        } else {
-                            session_manager.mark_provider_invocation_unknown(reservation_id).await?;
-                        }
+                        crate::cost_router::authorized_attempts::finalize_missing_usage(
+                            &session_manager, reservation_id, rejected_without_usage,
+                        ).await?;
                     }
                 } else if let Some(usage) = terminal_usage.as_ref() {
                     self.update_session_metrics_for_invocation(

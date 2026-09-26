@@ -364,7 +364,10 @@ impl<P: Provider> ProviderRetry for P {
         loop {
             crate::cost_router::authorized_attempts::record_transport_attempt();
             return match operation().await {
-                Ok(result) => Ok(result),
+                Ok(result) => {
+                    crate::cost_router::authorized_attempts::record_transport_success();
+                    Ok(result)
+                }
                 Err(error) => {
                     crate::cost_router::authorized_attempts::record_transport_failure(&error);
                     // Auth retry is separate from transient-error retries: we get
