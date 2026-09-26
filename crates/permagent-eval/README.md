@@ -178,6 +178,79 @@ every task load) enforces:
 A task whose oracle imports an undeclared, workspace-shadowable module fails
 `validate` (and never runs), so the grade can't be rigged by a planted module.
 
+## SWE-bench slice (SWE-arm-30)
+
+`benchmarks/swe-arm-30.yaml` pins 30 SWE-bench Verified instances (plus 6
+spares) for the fast paired A/B loop: dataset
+`SWE-bench/SWE-bench_Verified@78f471bf655a3137b2e8a75af1501690ec009ec3`
+(the copy that ships each instance's `eval_script` and `log_parser`,
+cross-checked row by row against `princeton-nlp/SWE-bench_Verified@c104f840…`),
+Verified-mini members first, stratified 12 "<15 min fix" / 18 "15 min - 1 hour",
+capped at 8 per repo, no scikit-learn / matplotlib / xarray, and only instances
+whose Epoch arm64 image (`ghcr.io/epoch-research/swe-bench.eval.arm64.<id>`)
+exists — pinned by digest. `benchmarks/swe-arm-30.instances.jsonl` holds what
+the judge needs (issue text, eval script, test lists); gold patches are never
+stored. `benchmarks/tools/select_swe_arm30.py` reproduces the selection and
+`benchmarks/tools/validate_swe_arm.py` checks it (`--static`: registry only;
+`--remote m1`: gold twice + empty once on the M1, disk-floor guarded).
+
+A SWE-bench instance becomes an ordinary task, so it runs through the same
+tiers, cost ledger, report and `--record`/`qualify` path as the curated set:
+
+```bash
+# 1. Materialize: repo at base_commit as workspace/, issue as the prompt, and
+#    an oracle that calls back into `swe-judge`. Needs GitHub access (blob-less
+#    mirrors are cached under ~/Library/Caches/permagent-eval/swe-repos).
+cargo build --release -p permagent-eval
+./target/release/permagent-eval swe-materialize \
+  --slice crates/permagent-eval/benchmarks/swe-arm-30.yaml \
+  --out ~/swe-arm-30-tasks --ssh m1
+#    (--instance <id> for a subset, --spares to add the spares,
+#     --harness-timeout-secs/--max-turns to bound each run)
+
+# 2. Run it like any task set.
+./target/release/permagent-eval run --tasks-dir ~/swe-arm-30-tasks \
+  --tier <tier> --permagent-bin ./target/release/permagent \
+  --format json --out swe-arm-30.json
+
+# 3. Per-task cost, model calls and wall time, and $/solved.
+./target/release/permagent-eval swe-summary --report swe-arm-30.json \
+  --slice crates/permagent-eval/benchmarks/swe-arm-30.yaml \
+  --verdict-dir ~/swe-arm-30-tasks/verdicts
+```
+
+**Judging.** Each task's oracle is `permagent-eval swe-judge --slice … --instance
+<id> …`, run in the finished workspace. It diffs the workspace against the
+runner's seed commit (untracked files included, commits the harness landed
+included, `.permagent*`/`.goose` excluded), then on the Docker host over SSH:
+pulls `image@digest` only if absent and only if the host keeps
+`--min-free-gib` (default 15) free, pipes the patch and the dataset's own
+`eval_script` into `docker run -i --memory 2g … bash -s` (patch applied with
+`git apply`, then `patch --fuzz=5`, as upstream), grades the log with ports of
+the upstream parsers (django, sympy, pytest and its options/v2 variants,
+seaborn), then removes the container, removes the image if it pulled it, and
+`fstrim`s the Colima disk so the host gets the space back. **Resolved** = every
+`FAIL_TO_PASS` test passes and every `PASS_TO_PASS` test still passes (skipped
+counts as maintained for P2P only). Exit 0 = resolved, 1 = not resolved,
+2 = judge/infrastructure error (disk floor, pull, SSH, Docker). The runner
+counts 1 and 2 alike as a fail; each verdict (and the judged patch) is written
+to `--verdict-dir`, which `swe-summary` uses to show judge errors separately.
+Judge a patch directly with `swe-judge --patch-file gold.diff` or `--empty`
+(validation).
+
+**Cost, turns, time.** Cost is the run's isolated ledger total (as for every
+task); "model calls" is the ledger's row count (one per provider response,
+sub-agents included); wall time is harness plus judge. `$/solved` is total
+spend over every attempted instance divided by instances resolved.
+
+**Caveats.** Epoch's arm64 images are best-effort and upstream calls them
+untested, so every instance must pass gold twice and fail empty before its
+results count; see the slice file's `validation` block for what has been
+checked. The agent's local checkout has no test environment (the tests run
+only in the image). The oracle argv embeds the absolute path of the binary
+that ran `swe-materialize` (override with `--judge-bin`); rebuild then
+re-materialize if it moves.
+
 ## Tests
 
 The pure logic — task loading/validation, invocation construction, oracle parsing,
