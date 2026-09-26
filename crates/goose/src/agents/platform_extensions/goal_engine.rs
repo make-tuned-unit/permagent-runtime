@@ -79,6 +79,35 @@ pub(crate) const COMMIT_ONLY_BRIEF: &str =
 Pushing from this worktree is disabled — Permagent scans your commits for \
 credential-shaped content and performs the push itself after the scan passes.";
 
+/// Deterministic dependency facts for the newly isolated worker. Missing
+/// dependencies are setup work, never evidence that a stronger model is needed.
+fn dependency_setup_brief(worktree: &Path) -> String {
+    if !worktree.join("package.json").is_file() {
+        return String::new();
+    }
+    let manager = super::developer::verify::detect_node_package_manager(worktree);
+    let installed = which::which(manager).is_ok();
+    let runner = if installed {
+        manager.to_string()
+    } else if matches!(manager, "pnpm" | "yarn") && which::which("corepack").is_ok() {
+        format!("corepack {manager}")
+    } else {
+        return format!("\n\nDEPENDENCY PREFLIGHT: This Node worktree uses {manager}, but its executable is missing from PATH. Repair the package-manager setup before running checks or editing application code. This is an environment blocker, not a coding failure; do not repeat failing commands or escalate the model.");
+    };
+    let setup = match manager {
+        "npm" if worktree.join("package-lock.json").is_file() => format!("{runner} ci"),
+        "pnpm" => format!("{runner} install --frozen-lockfile"),
+        "bun" => format!("{runner} install --frozen-lockfile"),
+        _ => format!("{runner} install"),
+    };
+    let dependencies = if worktree.join("node_modules").is_dir() {
+        "node_modules is present; inspect relevant installed framework documentation before editing.".to_string()
+    } else {
+        format!("node_modules is absent in this isolated worktree. Run `{setup}` here before checks and before reading framework docs under node_modules. If installation fails, report the exact environment blocker without repeated code-search/model retries.")
+    };
+    format!("\n\nDEPENDENCY PREFLIGHT: Package-manager command: `{runner}`. {dependencies} Run package scripts with `{runner} run <script>`. Preserve the declared package manager and lockfiles; do not share mutable node_modules through a symlink to another checkout.")
+}
+
 /// Lane Y9: name the worker's worktree as its ONE writable root, in the prompt
 /// as well as in the enforcement.
 ///
@@ -670,10 +699,11 @@ impl GoalEngine for InternalSubagentEngine {
         .with_compact_worker_profile(self.compact_worker_profile);
 
         let worker_prompt = format!(
-            "{}{}{}",
+            "{}{}{}{}",
             task.instructions,
             COMMIT_ONLY_BRIEF,
-            worktree_scope_brief(&work_dir)
+            worktree_scope_brief(&work_dir),
+            dependency_setup_brief(&work_dir)
         );
         let recipe = Recipe::builder()
             .version("1.0.0")
@@ -1004,7 +1034,11 @@ impl GoalEngine for ExternalCliEngine {
         // and the verifier records Uncertain rather than guessing a stale base.
         let work_base_hooks = install_work_base_hooks(&worktree).await;
 
-        let prompt = self.build_prompt(&task.instructions);
+        let prompt = format!(
+            "{}{}",
+            self.build_prompt(&task.instructions),
+            dependency_setup_brief(&worktree)
+        );
         let mut args: Vec<String> = self
             .args
             .iter()
@@ -3582,6 +3616,27 @@ mod tests {
     /// before it is hit. Pins the path interpolation and the "only" wording —
     /// a brief that says "this worktree" without saying WHICH is exactly what
     /// the workers that edited the trunk by absolute path already had.
+    #[test]
+    fn dependency_preflight_reports_isolated_setup_before_code_work() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(dependency_setup_brief(dir.path()).is_empty());
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"packageManager":"npm@10.0.0"}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("package-lock.json"), "{}").unwrap();
+        let brief = dependency_setup_brief(dir.path());
+        if which::which("npm").is_ok() {
+            assert!(brief.contains("`npm ci`"));
+            assert!(brief.contains("node_modules is absent"));
+            std::fs::create_dir(dir.path().join("node_modules")).unwrap();
+            assert!(dependency_setup_brief(dir.path()).contains("node_modules is present"));
+        } else {
+            assert!(brief.contains("environment blocker"));
+        }
+    }
+
     #[test]
     fn worktree_scope_brief_names_the_worktree_as_the_only_writable_root() {
         let brief = worktree_scope_brief(Path::new("/repos/.permagent-goal-worktrees/run-1"));

@@ -1773,13 +1773,50 @@ fn missing_import_dependency(output: &str) -> Option<String> {
         .map(|m| m.as_str().to_string())
 }
 
-/// Package manager implied by the lockfile present (npm is the default).
-fn detect_node_package_manager(dir: &Path) -> &'static str {
+/// Prefer an explicit packageManager. An extra stale lock must not force a
+/// missing executable when the repo also supports the installed manager.
+pub(crate) fn detect_node_package_manager(dir: &Path) -> &'static str {
+    detect_node_package_manager_with(dir, |program| which::which(program).is_ok())
+}
+
+fn detect_node_package_manager_with(dir: &Path, available: impl Fn(&str) -> bool) -> &'static str {
+    let package: serde_json::Value = std::fs::read_to_string(dir.join("package.json"))
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default();
+    if let Some(declared) = package
+        .get("packageManager")
+        .and_then(|value| value.as_str())
+    {
+        match declared.split('@').next().unwrap_or_default() {
+            "npm" => return "npm",
+            "pnpm" => return "pnpm",
+            "yarn" => return "yarn",
+            "bun" => return "bun",
+            _ => {}
+        }
+    }
     if dir.join("pnpm-lock.yaml").exists() {
+        let requires_pnpm = dir.join("pnpm-workspace.yaml").exists()
+            || package
+                .get("scripts")
+                .and_then(|value| value.as_object())
+                .is_some_and(|scripts| {
+                    scripts
+                        .values()
+                        .any(|script| script.as_str().is_some_and(|text| text.contains("pnpm")))
+                });
+        if !requires_pnpm
+            && dir.join("package-lock.json").exists()
+            && !available("pnpm")
+            && available("npm")
+        {
+            return "npm";
+        }
         "pnpm"
     } else if dir.join("yarn.lock").exists() {
         "yarn"
-    } else if dir.join("bun.lockb").exists() {
+    } else if dir.join("bun.lockb").exists() || dir.join("bun.lock").exists() {
         "bun"
     } else {
         "npm"
@@ -4533,6 +4570,51 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
         assert_eq!(
             checks_of(dir.path()),
             vec![Check::direct("pnpm", &["run", "test"])]
+        );
+    }
+
+    #[test]
+    fn node_manager_respects_declaration_and_workspace_before_available_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        for file in ["pnpm-lock.yaml", "package-lock.json"] {
+            std::fs::write(dir.path().join(file), "").unwrap();
+        }
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"scripts":{"test":"vitest"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            detect_node_package_manager_with(dir.path(), |p| p == "npm"),
+            "npm"
+        );
+        assert_eq!(
+            detect_node_package_manager_with(dir.path(), |_| true),
+            "pnpm"
+        );
+        std::fs::write(dir.path().join("pnpm-workspace.yaml"), "packages: []").unwrap();
+        assert_eq!(
+            detect_node_package_manager_with(dir.path(), |p| p == "npm"),
+            "pnpm"
+        );
+        std::fs::remove_file(dir.path().join("pnpm-workspace.yaml")).unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"packageManager":"pnpm@10.0.0"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            detect_node_package_manager_with(dir.path(), |p| p == "npm"),
+            "pnpm"
+        );
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"scripts":{"test":"pnpm exec vitest"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            detect_node_package_manager_with(dir.path(), |p| p == "npm"),
+            "pnpm"
         );
     }
 
