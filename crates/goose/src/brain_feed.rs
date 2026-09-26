@@ -83,6 +83,12 @@ pub enum FeedSource {
     /// per real edit from `PUT /api/owner` so the agent has a durable memory
     /// of who its user is, instead of that fact living only in `owner.yaml`.
     Owner,
+    /// A person's relationship-strength bucket crossed into "fading"/"dormant"
+    /// (DAG K, `routes::relationship_strength`). Distinct from `Meeting`: this
+    /// fires on the *derived score* transitioning, not on a single logged
+    /// event, and is keyed per-person (`person:{id}:relationship`) rather than
+    /// per-meeting.
+    Person,
 }
 
 impl FeedSource {
@@ -106,6 +112,7 @@ impl FeedSource {
         FeedSource::Incident,
         FeedSource::ModelReview,
         FeedSource::Owner,
+        FeedSource::Person,
     ];
 
     /// The `RememberOpts.source` tag. `Chat` keeps the tag chat persistence
@@ -130,6 +137,7 @@ impl FeedSource {
             FeedSource::Incident => "permagent.incident",
             FeedSource::ModelReview => "permagent.model_review",
             FeedSource::Owner => "permagent.owner",
+            FeedSource::Person => "permagent.person",
         }
     }
 
@@ -154,6 +162,7 @@ impl FeedSource {
             FeedSource::Incident => "incident",
             FeedSource::ModelReview => "model_review",
             FeedSource::Owner => "owner",
+            FeedSource::Person => "person",
         }
     }
 
@@ -178,6 +187,7 @@ impl FeedSource {
             FeedSource::Incident => "Incidents",
             FeedSource::ModelReview => "Model reviews",
             FeedSource::Owner => "Who you are, to the agent",
+            FeedSource::Person => "Relationship changes",
         }
     }
 

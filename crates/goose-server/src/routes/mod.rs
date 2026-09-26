@@ -60,6 +60,7 @@ pub mod public_apis;
 pub mod reader;
 pub mod recipe;
 pub mod recipe_utils;
+pub mod relationship_strength;
 pub mod reply;
 pub mod runs;
 pub mod sampling;

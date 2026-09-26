@@ -1352,29 +1352,16 @@ async fn get_cost_vs_outcome(State(state): State<Arc<AppState>>) -> Json<CardDat
     })
 }
 
-/// Env var name for the overdue-contact threshold (coordinator ruling: a
-/// config key, never a hardcoded personal preference — "agnostic and
-/// plug-and-play"). Per-person cadence is round 2; this is the fleet-wide
-/// default in the meantime.
-const PEOPLE_ATTENTION_DAYS_ENV: &str = "PERMAGENT_PEOPLE_ATTENTION_DAYS";
-const PEOPLE_ATTENTION_DAYS_DEFAULT: i64 = 21;
-
-/// Read fresh on every call (not cached at startup) so changing the env var
-/// takes effect without a daemon restart. Anything unparsable falls back to
-/// the default rather than erroring the whole card.
-fn people_attention_threshold_days() -> i64 {
-    std::env::var(PEOPLE_ATTENTION_DAYS_ENV)
-        .ok()
-        .and_then(|v| v.parse::<i64>().ok())
-        .filter(|&n| n > 0)
-        .unwrap_or(PEOPLE_ATTENTION_DAYS_DEFAULT)
-}
-
-/// People overdue for contact (§3 `people_attention`). No per-person cadence
-/// field exists yet, so a configurable fleet-wide threshold
-/// (`PERMAGENT_PEOPLE_ATTENTION_DAYS`, default 21) stands in for "your stated
-/// or inferred cadence" — people with no `last_contact_at` at all are
-/// excluded rather than defaulted to overdue (honest-data rule).
+/// People overdue for contact (§3 `people_attention`) — "who am I
+/// neglecting" (Attio framing, UX_BENCHMARK_RESEARCH §6). Superseded
+/// 2026-09-26 (DAG K relationship-strength lane): this used to apply its own
+/// fleet-wide `PERMAGENT_PEOPLE_ATTENTION_DAYS` threshold directly to
+/// `last_contact_at`; it now reads the SAME `relationship_signal` score the
+/// People page shows (`relationship_strength::relationship_strength_by_person`),
+/// so a person the People page calls "fading" is exactly who this card calls
+/// overdue — one definition, not two. People with no signal at all
+/// (`RelationshipBucket::NoSignal`) are excluded rather than defaulted to
+/// overdue (honest-data rule, carried over from the threshold version).
 async fn get_people_attention(State(state): State<Arc<AppState>>) -> Json<CardData> {
     let Ok(pool) = state.session_manager().pool_clone().await else {
         return Json(CardData::note(
@@ -1384,17 +1371,31 @@ async fn get_people_attention(State(state): State<Arc<AppState>>) -> Json<CardDa
     let people = permagent::people::list_people(&pool, &permagent::people::PeopleFilter::default())
         .await
         .unwrap_or_default();
+    // `feed_transitions: false` — this card only reads the score. The People
+    // page load is the one call site that records a Brain memory on a bucket
+    // transition (see that function's doc for why only one call site does).
+    let strengths = crate::routes::relationship_strength::relationship_strength_by_person(
+        &pool, &people, false,
+    )
+    .await;
     let now = chrono::Utc::now();
-    let overdue_after_days = people_attention_threshold_days();
     let mut overdue: Vec<(i64, String)> = people
         .iter()
         .filter_map(|p| {
-            let at = p.last_contact_at.as_deref()?;
+            let strength = strengths.get(&p.entity_uuid)?;
+            if !matches!(
+                strength.bucket,
+                crate::routes::relationship_strength::RelationshipBucket::Fading
+                    | crate::routes::relationship_strength::RelationshipBucket::Dormant
+            ) {
+                return None;
+            }
+            let at = strength.last_interaction_at.as_deref()?;
             let dt = chrono::DateTime::parse_from_rfc3339(at)
                 .ok()?
                 .with_timezone(&chrono::Utc);
             let days = (now - dt).num_days();
-            (days >= overdue_after_days).then_some((days, p.display_name.clone()))
+            Some((days, p.display_name.clone()))
         })
         .collect();
     overdue.sort_by_key(|(days, _)| std::cmp::Reverse(*days));

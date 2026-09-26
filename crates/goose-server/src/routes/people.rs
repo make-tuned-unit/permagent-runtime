@@ -661,6 +661,11 @@ pub struct DirectoryPerson {
     person: Person,
     projects: Vec<permagent::project_association::ProjectRef>,
     next_follow_up_at: Option<String>,
+    /// Computed, signal-derived relationship strength (never the manual
+    /// `relationship_strength` field `Person` already flattens onto this same
+    /// object — see `crate::routes::relationship_strength` module docs for why
+    /// this lives under a different wire key).
+    relationship_signal: crate::routes::relationship_strength::RelationshipStrength,
 }
 
 /// The whole directory in two queries — `list_people` plus one grouped pass over
@@ -698,6 +703,14 @@ async fn people_directory_handler(
     let follow_ups = permagent::person_meetings::next_follow_up_by_person(&pool)
         .await
         .unwrap_or_default();
+    // One shared bulk pass backs both this list and the Home `people_attention`
+    // card (`dashboard_cards::get_people_attention`) — one source of truth for
+    // the score. This is the one call site that also records a Brain memory
+    // when a person's bucket newly crosses into fading/dormant (see
+    // `relationship_strength_by_person`'s `feed_transitions` doc).
+    let mut relationship_signals =
+        crate::routes::relationship_strength::relationship_strength_by_person(&pool, &people, true)
+            .await;
 
     Ok(Json(
         people
@@ -705,10 +718,19 @@ async fn people_directory_handler(
             .map(|person| {
                 let next_follow_up_at = follow_ups.get(&person.entity_uuid).cloned();
                 let projects = refs.remove(&person.entity_uuid).unwrap_or_default();
+                let relationship_signal = relationship_signals
+                    .remove(&person.entity_uuid)
+                    .unwrap_or_else(|| {
+                        crate::routes::relationship_strength::compute_relationship_strength(
+                            &crate::routes::relationship_strength::RelationshipInputs::default(),
+                            chrono::Utc::now(),
+                        )
+                    });
                 DirectoryPerson {
                     person,
                     projects,
                     next_follow_up_at,
+                    relationship_signal,
                 }
             })
             .collect(),
