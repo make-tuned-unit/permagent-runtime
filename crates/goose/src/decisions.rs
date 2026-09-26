@@ -293,6 +293,9 @@ pub enum UnblockCause {
     SpendBlocked,
     /// The goal stalled with no further progress after a gate.
     Stalled,
+    /// The zero-progress circuit breaker stopped the goal: consecutive
+    /// attempts changed nothing, and no stronger worker tier was left to try.
+    NoProgress,
 }
 
 /// What the salvage-before-park pass found (D2), copied from the goal's
@@ -3099,6 +3102,11 @@ pub fn summarize_decision(
                     }
                     (_, Some(UnblockCause::Stalled)) => {
                         "The goal stopped making progress after a spending check.".to_string()
+                    }
+                    (_, Some(UnblockCause::NoProgress)) => {
+                        "Two attempts in a row changed nothing, so it was stopped before \
+                         spending more."
+                            .to_string()
                     }
                     ("attempt_cap", None) => match cap {
                         Some(c) => format!(

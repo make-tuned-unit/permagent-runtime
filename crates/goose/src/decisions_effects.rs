@@ -1911,6 +1911,11 @@ pub async fn apply_decision_effect_with_auto_land(
             if let Some((key, value)) = wall_reset.clone() {
                 patch.insert(key, value);
             }
+            // QA 2026-09-26: a human's approve also clears the zero-progress
+            // circuit breaker's streak and spent escalation, or the very next
+            // dispatch reads them and parks the goal again before any worker
+            // runs — the same reason D7 restarts the wall budget just above.
+            goal_transition::clear_zero_progress_on_human_unblock(&mut patch, &acted_by);
             goal_transition::advance_goal_checked(
                 pool,
                 goal_id,
