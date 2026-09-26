@@ -2842,7 +2842,7 @@ fn plain_duration(secs: u64) -> String {
 fn plain_count(n: u64) -> String {
     if n >= 1_000_000 {
         let tenths = (n + 50_000) / 100_000;
-        if tenths % 10 == 0 {
+        if tenths.is_multiple_of(10) {
             format!("{}M", tenths / 10)
         } else {
             format!("{}.{}M", tenths / 10, tenths % 10)

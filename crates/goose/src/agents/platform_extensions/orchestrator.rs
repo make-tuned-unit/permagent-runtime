@@ -5996,17 +5996,15 @@ async fn park_for_zero_progress(
     let decision = match decisions::find_open_decision_for_goal(pool, &card.id, "unblock").await {
         Ok(Some(existing)) => Ok(existing.id),
         Ok(None) | Err(_) => {
-            let headline: String = format!(
-                "\"{}\" keeps making no progress and needs your direction",
-                card.title
-            )
-            .chars()
-            .take(decisions::MAX_HEADLINE_CHARS)
-            .collect();
+            // Title-free, like every park headline: the title travels in
+            // `goal_title`, so the inbox never shows it quoted and cut.
+            let headline = "Goal keeps making no progress and needs your direction".to_string();
             match serde_json::to_value(decisions::UnblockPayload {
                 reason: decisions::UnblockReason::Stuck,
                 spent: None,
                 cap: None,
+                cause: Some(decisions::UnblockCause::Stalled),
+                ..Default::default()
             }) {
                 Ok(payload) => create_decision_with_retry(
                     pool,
