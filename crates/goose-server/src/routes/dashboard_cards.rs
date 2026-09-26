@@ -1397,7 +1397,7 @@ async fn get_people_attention(State(state): State<Arc<AppState>>) -> Json<CardDa
             (days >= overdue_after_days).then_some((days, p.display_name.clone()))
         })
         .collect();
-    overdue.sort_by(|a, b| b.0.cmp(&a.0));
+    overdue.sort_by_key(|(days, _)| std::cmp::Reverse(*days));
     if overdue.is_empty() {
         return Json(CardData::note("Nobody is overdue for contact right now"));
     }
@@ -1676,7 +1676,7 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn people_attention_threshold_defaults_to_21_days() {
-        let _guard = env_lock::lock_env([(PEOPLE_ATTENTION_DAYS_ENV, None)]);
+        let _guard = env_lock::lock_env([(PEOPLE_ATTENTION_DAYS_ENV, None::<&str>)]);
         assert_eq!(people_attention_threshold_days(), 21);
     }
 
@@ -1690,10 +1690,17 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn people_attention_threshold_ignores_garbage_and_falls_back() {
-        let _guard = env_lock::lock_env([(PEOPLE_ATTENTION_DAYS_ENV, Some("not-a-number"))]);
-        assert_eq!(people_attention_threshold_days(), 21);
-        let _guard2 = env_lock::lock_env([(PEOPLE_ATTENTION_DAYS_ENV, Some("-5"))]);
-        assert_eq!(people_attention_threshold_days(), 21);
+        // One guard at a time: env_lock holds a single process-wide mutex, so
+        // taking it again on this thread while the first guard lives would
+        // deadlock the test binary.
+        for garbage in ["not-a-number", "-5"] {
+            let _guard = env_lock::lock_env([(PEOPLE_ATTENTION_DAYS_ENV, Some(garbage))]);
+            assert_eq!(
+                people_attention_threshold_days(),
+                21,
+                "{garbage:?} must fall back"
+            );
+        }
     }
 
     #[test]
