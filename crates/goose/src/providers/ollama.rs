@@ -355,10 +355,11 @@ fn architecture_count(
 /// `details.parameter_size` (`"7.6B"`, `"494.03M"`) as a parameter count.
 fn parse_parameter_size(size: &str) -> Option<u64> {
     let size = size.trim();
-    let (number, scale) = match size.chars().last()?.to_ascii_uppercase() {
-        'B' => (&size[..size.len() - 1], 1e9),
-        'M' => (&size[..size.len() - 1], 1e6),
-        'K' => (&size[..size.len() - 1], 1e3),
+    let mut chars = size.chars();
+    let (number, scale) = match chars.next_back()?.to_ascii_uppercase() {
+        'B' => (chars.as_str(), 1e9),
+        'M' => (chars.as_str(), 1e6),
+        'K' => (chars.as_str(), 1e3),
         _ => (size, 1.0),
     };
     let value: f64 = number.trim().parse().ok()?;
