@@ -653,6 +653,196 @@ pub(crate) fn coalesce_turn_messages(messages: Vec<Message>) -> (Vec<Message>, u
     (folded, issues.len())
 }
 
+/// The assistant side of a tool-calling response, as history keeps it.
+#[derive(Debug)]
+pub(crate) struct ToolCallHistory {
+    /// Pushed ahead of the calls, and only when no call parsed: the response's
+    /// reasoning and text then have no tool-call message to ride on.
+    pub(crate) lead: Option<Message>,
+    /// One entry per request, in order: the message that carries the call, or
+    /// `None` for a call that did not parse (the reply loop answers those
+    /// with a recovery observation instead).
+    pub(crate) calls: Vec<Option<Message>>,
+}
+
+/// A message this provider call streamed ahead of the tool-calling response:
+/// an assistant message with no tool traffic. The reply loop pushes those as
+/// they arrive, and every tool branch ends on a tool result or a recovery
+/// observation (both user messages), so the trailing run of them in the
+/// turn's unsaved messages is what preceded the current response.
+fn is_streamed_ahead_of_tool_calls(message: &Message) -> bool {
+    message.role == rmcp::model::Role::Assistant
+        && !message.content.iter().any(|content| {
+            matches!(
+                content,
+                MessageContent::ToolRequest(_)
+                    | MessageContent::FrontendToolRequest(_)
+                    | MessageContent::ToolResponse(_)
+            )
+        })
+}
+
+fn joined_thinking(content: &[MessageContent]) -> String {
+    content
+        .iter()
+        .filter_map(MessageContent::as_thinking)
+        .map(|thinking| thinking.thinking.as_str())
+        .collect()
+}
+
+fn joined_text(content: &[MessageContent]) -> String {
+    content.iter().filter_map(MessageContent::as_text).collect()
+}
+
+/// Remove the parts `is_part` matches from the streamed run that starts at
+/// `run_start`, and drop any message there that held nothing else.
+fn strip_streamed_parts(
+    pending: &mut Vec<Message>,
+    run_start: usize,
+    is_part: fn(&MessageContent) -> bool,
+) {
+    let run = pending.split_off(run_start);
+    pending.extend(run.into_iter().filter_map(|mut message| {
+        let held = message.content.len();
+        message.content.retain(|content| !is_part(content));
+        (held == 0 || !message.content.is_empty()).then_some(message)
+    }));
+}
+
+/// The message that carries one parsed tool call into history: the response's
+/// reasoning, then `lead_text` (only the first call is given any), then the
+/// call.
+///
+/// Every call gets its own copy of the reasoning. DeepSeek and Kimi want
+/// `reasoning_content` on each assistant message with tool calls, and
+/// `merge_split_tool_call_messages` (formats/openai.rs) rejoins the split
+/// calls into one assistant message by matching it. The text goes on the
+/// first call because that merge only folds in later messages with no content
+/// of their own.
+fn tool_call_history_message(
+    request: &ToolRequest,
+    reasoning: &[MessageContent],
+    lead_text: Vec<MessageContent>,
+) -> Message {
+    let mut message = Message::assistant().with_generated_id();
+    message.content.extend(reasoning.iter().cloned());
+    message.content.extend(lead_text);
+    message.with_tool_request_with_metadata(
+        request.id.clone(),
+        request.tool_call.clone(),
+        request.metadata.as_ref(),
+        request.tool_meta.clone(),
+    )
+}
+
+/// What a tool-calling `response` adds to history, given `pending`, the turn's
+/// unsaved messages (`messages_to_add`).
+///
+/// The reasoning is kept ONCE per tool-call message. It used to be kept up to
+/// three times on the first one: an OpenAI-compatible stream sends each
+/// reasoning delta (pushed and folded into one message as it arrives) and then
+/// the whole reasoning again on the tool-call message, and the loop also saved
+/// that replay as a message of its own before the per-call copies. Coalescing
+/// the turn folded all three into one `Thinking`, so the first call's
+/// `reasoning_content` no longer matched the others: the parallel calls went
+/// out split across assistant messages, and DeepSeek/Kimi were re-sent the
+/// extra copies on every later request. Now the streamed copy is removed when
+/// the response repeats it (the replay equals the streamed reasoning or
+/// extends it), and reasoning the stream did not send is left alone.
+///
+/// Text that came in the same message as the calls (a non-streamed reply, a
+/// Google chunk, Bedrock) used to be dropped. It now goes on the first call,
+/// unless it repeats text already streamed, as Ollama's XML tool-call prefix
+/// does; text that extends what was streamed replaces the streamed part.
+pub(crate) fn tool_call_history(
+    pending: &mut Vec<Message>,
+    response: &Message,
+    requests: &[&ToolRequest],
+) -> ToolCallHistory {
+    let run_start = pending
+        .iter()
+        .rposition(|message| !is_streamed_ahead_of_tool_calls(message))
+        .map_or(0, |index| index + 1);
+
+    let mut reasoning: Vec<MessageContent> = response
+        .content
+        .iter()
+        .filter(|content| matches!(content, MessageContent::Thinking(_)))
+        .cloned()
+        .collect();
+    let replayed_reasoning = joined_thinking(&reasoning);
+    let streamed_reasoning: String = pending[run_start..]
+        .iter()
+        .map(|message| joined_thinking(&message.content))
+        .collect();
+    if !streamed_reasoning.is_empty() && replayed_reasoning.starts_with(&streamed_reasoning) {
+        // A replay without the signature the streamed deltas carried keeps it.
+        let streamed_signature = pending[run_start..]
+            .iter()
+            .flat_map(|message| &message.content)
+            .filter_map(MessageContent::as_thinking)
+            .map(|thinking| thinking.signature.clone())
+            .find(|signature| !signature.is_empty());
+        if let (Some(signature), Some(MessageContent::Thinking(first))) =
+            (streamed_signature, reasoning.first_mut())
+        {
+            if first.signature.is_empty() {
+                first.signature = signature;
+            }
+        }
+        strip_streamed_parts(pending, run_start, |content| {
+            matches!(content, MessageContent::Thinking(_))
+        });
+    }
+
+    let mut text: Vec<MessageContent> = response
+        .content
+        .iter()
+        .filter(|content| matches!(content, MessageContent::Text(_)))
+        .cloned()
+        .collect();
+    let same_message_text = joined_text(&text);
+    let streamed_text: String = pending[run_start..]
+        .iter()
+        .map(|message| joined_text(&message.content))
+        .collect();
+    let (same_message_text, streamed_text) = (same_message_text.trim(), streamed_text.trim());
+    if same_message_text.is_empty() {
+        text.clear();
+    } else if !streamed_text.is_empty() {
+        if streamed_text.starts_with(same_message_text) {
+            text.clear();
+        } else if same_message_text.starts_with(streamed_text) {
+            strip_streamed_parts(pending, run_start, |content| {
+                matches!(content, MessageContent::Text(_))
+            });
+        }
+    }
+
+    let mut lead_text = Some(text);
+    let mut calls = Vec::with_capacity(requests.len());
+    for request in requests {
+        calls.push(if request.tool_call.is_ok() {
+            Some(tool_call_history_message(
+                request,
+                &reasoning,
+                lead_text.take().unwrap_or_default(),
+            ))
+        } else {
+            None
+        });
+    }
+    // `lead_text` is still here only when no call parsed.
+    let lead = lead_text.and_then(|text| {
+        let content: Vec<MessageContent> = reasoning.iter().cloned().chain(text).collect();
+        (!content.is_empty()).then(|| {
+            Message::new(response.role.clone(), response.created, content).with_generated_id()
+        })
+    });
+
+    ToolCallHistory { lead, calls }
+}
+
 /// Lane R19a (harness loop 2026-09-14, M19 DeepSeek forensics). Should a
 /// pre-first-byte provider stall be retried, or has this turn already spent
 /// its one retry?
@@ -3357,46 +3547,30 @@ impl Agent {
                                     }
                                 }
 
-                                // Preserve thinking/reasoning content from the original response
-                                // Gemini (and other thinking models) require thinking to be echoed back
-                                // Kimi/DeepSeek require reasoning_content on assistant tool call messages
-                                let thinking_content: Vec<MessageContent> = response.content.iter()
-                                    .filter(|c| matches!(c, MessageContent::Thinking(_)))
-                                    .cloned()
+                                // The response's reasoning goes on every
+                                // tool-call message (DeepSeek/Kimi require
+                                // reasoning_content on each; Gemini wants its
+                                // thinking echoed), ONCE: `tool_call_history`
+                                // removes the streamed copy a provider replays
+                                // here. Text that came with the calls goes on
+                                // the first one instead of being dropped.
+                                let requests: Vec<&ToolRequest> = frontend_requests
+                                    .iter()
+                                    .chain(remaining_requests.iter())
                                     .collect();
-                                if !thinking_content.is_empty() {
-                                    let thinking_msg = Message::new(
-                                        response.role.clone(),
-                                        response.created,
-                                        thinking_content,
-                                    ).with_id(format!("msg_{}", Uuid::new_v4()));
-                                    messages_to_add.push(thinking_msg);
+                                let ToolCallHistory { lead, calls } = {
+                                    let mut pending: Vec<Message> =
+                                        std::mem::take(&mut messages_to_add).into_iter().collect();
+                                    let history = tool_call_history(&mut pending, &response, &requests);
+                                    messages_to_add = Conversation::new_unvalidated(pending);
+                                    history
+                                };
+                                if let Some(lead) = lead {
+                                    messages_to_add.push(lead);
                                 }
 
-                                // Collect reasoning content to attach to tool request messages
-                                let reasoning_content: Vec<MessageContent> = response.content.iter()
-                                    .filter(|c| matches!(c, MessageContent::Thinking(_)))
-                                    .cloned()
-                                    .collect();
-
-                                for request in frontend_requests.iter().chain(remaining_requests.iter()) {
-                                    if request.tool_call.is_ok() {
-                                        let mut request_msg = Message::assistant()
-                                            .with_id(format!("msg_{}", Uuid::new_v4()));
-
-                                        // Providers like Kimi require reasoning_content on all assistant
-                                        // messages with tool_calls when thinking mode is enabled.
-                                        for rc in &reasoning_content {
-                                            request_msg = request_msg.with_content(rc.clone());
-                                        }
-
-                                        request_msg = request_msg
-                                            .with_tool_request_with_metadata(
-                                                request.id.clone(),
-                                                request.tool_call.clone(),
-                                                request.metadata.as_ref(),
-                                                request.tool_meta.clone(),
-                                            );
+                                for (request, request_msg) in requests.iter().zip(calls) {
+                                    if let Some(request_msg) = request_msg {
                                         messages_to_add.push(request_msg);
                                         let final_response = request_to_response_map
                                             .remove(&request.id)
@@ -5876,6 +6050,335 @@ mod tests {
             runtime_outcome(g.iteration_errored(), false),
             AgentRuntimeOutcome::Succeeded
         );
+    }
+
+    // ── A reasoning + tool-call turn's history (`tool_call_history`) ────
+
+    mod tool_call_history_tests {
+        use super::*;
+        use crate::providers::formats::openai::{format_messages_with_echo, ReasoningEcho};
+        use crate::providers::utils::ImageFormat;
+
+        const STREAM_ID: &str = "chatcmpl-reasoning-turn";
+        const REASONING: &str = "Let me check.";
+
+        fn thinking(text: &str) -> MessageContent {
+            MessageContent::thinking(text, "")
+        }
+
+        fn call(id: &str, path: &str) -> MessageContent {
+            MessageContent::tool_request(
+                id,
+                Ok(CallToolRequestParams::new("read")
+                    .with_arguments(rmcp::object!({ "path": path }))),
+            )
+        }
+
+        /// One frame of a provider reply, carrying the stream's id the way an
+        /// OpenAI-compatible chunk does.
+        fn frame(content: Vec<MessageContent>) -> Message {
+            Message::new(rmcp::model::Role::Assistant, 0, content).with_id(STREAM_ID)
+        }
+
+        /// What the reply loop persists for one provider call: a frame with no
+        /// tool call is pushed as the no-tool branch pushes it, a frame with
+        /// calls goes through `tool_call_history` as the tool branch does (every
+        /// parsed call answered), and the turn is coalesced as the end of the
+        /// iteration coalesces it.
+        fn persist_turn(frames: Vec<Message>) -> Vec<Message> {
+            let mut turn = Conversation::default();
+            for frame in frames {
+                let owned: Vec<ToolRequest> = frame
+                    .content
+                    .iter()
+                    .filter_map(|content| match content {
+                        MessageContent::ToolRequest(request) => Some(request.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                if owned.is_empty() {
+                    turn.push(frame);
+                    continue;
+                }
+                let requests: Vec<&ToolRequest> = owned.iter().collect();
+                let mut pending: Vec<Message> = std::mem::take(&mut turn).into_iter().collect();
+                let history = tool_call_history(&mut pending, &frame, &requests);
+                turn = Conversation::new_unvalidated(pending);
+                if let Some(lead) = history.lead {
+                    turn.push(lead);
+                }
+                for (request, message) in requests.iter().zip(history.calls) {
+                    if let Some(message) = message {
+                        turn.push(message);
+                        turn.push(Message::user().with_generated_id().with_tool_response(
+                            request.id.clone(),
+                            Ok(CallToolResult::success(vec![Content::text("ok")])),
+                        ));
+                    }
+                }
+            }
+            coalesce_turn_messages(turn.into_iter().collect()).0
+        }
+
+        fn carrying<'a>(turn: &'a [Message], call_id: &str) -> &'a Message {
+            turn.iter()
+                .find(|message| {
+                    message.content.iter().any(|content| {
+                        matches!(content, MessageContent::ToolRequest(request) if request.id == call_id)
+                    })
+                })
+                .unwrap_or_else(|| panic!("no message carries {call_id}: {turn:?}"))
+        }
+
+        fn thinking_of(message: &Message) -> Vec<String> {
+            message
+                .content
+                .iter()
+                .filter_map(MessageContent::as_thinking)
+                .map(|thinking| thinking.thinking.clone())
+                .collect()
+        }
+
+        fn all_thinking(turn: &[Message]) -> Vec<String> {
+            turn.iter().flat_map(thinking_of).collect()
+        }
+
+        fn all_assistant_text(turn: &[Message]) -> String {
+            turn.iter()
+                .filter(|message| message.role == rmcp::model::Role::Assistant)
+                .flat_map(|message| message.content.iter())
+                .filter_map(MessageContent::as_text)
+                .collect()
+        }
+
+        /// The assistant messages an OpenAI-compatible request carries for the
+        /// turn, with DeepSeek's always-echo policy.
+        fn wire_assistants(turn: &[Message]) -> Vec<Value> {
+            format_messages_with_echo(turn, &ImageFormat::OpenAi, ReasoningEcho::Always)
+                .into_iter()
+                .filter(|message| message["role"] == "assistant")
+                .collect()
+        }
+
+        /// The traced defect: the deltas, then the tool-call message replaying
+        /// them, used to persist "Let me check." three times on call_1 and once
+        /// on call_2, so the two calls went out as two assistant messages.
+        #[test]
+        fn streamed_reasoning_the_tool_call_replays_is_kept_once() {
+            let turn = persist_turn(vec![
+                frame(vec![thinking("Let me ")]),
+                frame(vec![thinking("check.")]),
+                frame(vec![
+                    thinking(REASONING),
+                    call("call_1", "a.rs"),
+                    call("call_2", "b.rs"),
+                ]),
+            ]);
+
+            assert_eq!(thinking_of(carrying(&turn, "call_1")), vec![REASONING]);
+            assert_eq!(thinking_of(carrying(&turn, "call_2")), vec![REASONING]);
+            assert_eq!(
+                all_thinking(&turn),
+                vec![REASONING, REASONING],
+                "one copy per call and no other: {turn:?}"
+            );
+
+            let wire = wire_assistants(&turn);
+            assert_eq!(
+                wire.len(),
+                1,
+                "one assistant message for both calls: {wire:?}"
+            );
+            assert_eq!(wire[0]["tool_calls"].as_array().map(Vec::len), Some(2));
+            assert_eq!(wire[0]["reasoning_content"], REASONING);
+        }
+
+        /// A non-streamed reply used to persist it twice on call_1.
+        #[test]
+        fn non_streamed_reasoning_on_the_tool_calls_is_kept_once() {
+            let turn = persist_turn(vec![frame(vec![
+                thinking(REASONING),
+                call("call_1", "a.rs"),
+                call("call_2", "b.rs"),
+            ])]);
+
+            assert_eq!(thinking_of(carrying(&turn, "call_1")), vec![REASONING]);
+            assert_eq!(thinking_of(carrying(&turn, "call_2")), vec![REASONING]);
+            assert_eq!(all_thinking(&turn), vec![REASONING, REASONING]);
+
+            let wire = wire_assistants(&turn);
+            assert_eq!(wire.len(), 1, "{wire:?}");
+            assert_eq!(wire[0]["tool_calls"].as_array().map(Vec::len), Some(2));
+            assert_eq!(wire[0]["reasoning_content"], REASONING);
+        }
+
+        #[test]
+        fn a_single_tool_call_keeps_one_copy_of_its_reasoning() {
+            let turn = persist_turn(vec![
+                frame(vec![thinking("Let me ")]),
+                frame(vec![thinking("check.")]),
+                frame(vec![thinking(REASONING), call("call_1", "a.rs")]),
+            ]);
+
+            assert_eq!(all_thinking(&turn), vec![REASONING]);
+            let wire = wire_assistants(&turn);
+            assert_eq!(wire.len(), 1, "{wire:?}");
+            assert_eq!(wire[0]["reasoning_content"], REASONING);
+        }
+
+        /// Reasoning that arrived while the call's arguments streamed is only in
+        /// the replay; the replay wins and nothing is lost.
+        #[test]
+        fn a_replay_that_extends_the_streamed_reasoning_replaces_it() {
+            let turn = persist_turn(vec![
+                frame(vec![thinking("Let me ")]),
+                frame(vec![thinking(REASONING), call("call_1", "a.rs")]),
+            ]);
+
+            assert_eq!(all_thinking(&turn), vec![REASONING]);
+        }
+
+        /// A provider that sends NEW reasoning with the call (not a replay)
+        /// keeps both.
+        #[test]
+        fn reasoning_the_stream_did_not_send_is_not_dropped() {
+            let turn = persist_turn(vec![
+                frame(vec![thinking("Plan: read both.")]),
+                frame(vec![
+                    thinking("Reading a.rs first."),
+                    call("call_1", "a.rs"),
+                ]),
+            ]);
+
+            let kept = all_thinking(&turn).concat();
+            assert!(kept.contains("Plan: read both."), "{kept}");
+            assert!(kept.contains("Reading a.rs first."), "{kept}");
+        }
+
+        /// The streamed deltas' signature survives the dedupe.
+        #[test]
+        fn a_replay_without_the_streamed_signature_keeps_it() {
+            let turn = persist_turn(vec![
+                frame(vec![MessageContent::thinking(REASONING, "sig-streamed")]),
+                frame(vec![thinking(REASONING), call("call_1", "a.rs")]),
+            ]);
+
+            let carried: Vec<(String, String)> = carrying(&turn, "call_1")
+                .content
+                .iter()
+                .filter_map(MessageContent::as_thinking)
+                .map(|thinking| (thinking.thinking.clone(), thinking.signature.clone()))
+                .collect();
+            assert_eq!(
+                carried,
+                vec![(REASONING.to_string(), "sig-streamed".to_string())]
+            );
+        }
+
+        /// Anthropic streams its signed thinking block, then each tool_use as a
+        /// response of its own with no thinking in it. The block must stay on
+        /// the FIRST tool_use and nowhere else, exactly as before.
+        #[test]
+        fn anthropic_signed_thinking_stays_on_the_first_tool_use() {
+            let turn = persist_turn(vec![
+                frame(vec![MessageContent::thinking("plan", "sig-1")]),
+                frame(vec![call("toolu_1", "a.rs")]),
+                frame(vec![call("toolu_2", "b.rs")]),
+            ]);
+
+            let first = carrying(&turn, "toolu_1");
+            match first.content.first() {
+                Some(MessageContent::Thinking(block)) => {
+                    assert_eq!(block.thinking, "plan");
+                    assert_eq!(block.signature, "sig-1");
+                }
+                other => panic!("the signed block must lead the first tool_use: {other:?}"),
+            }
+            assert!(thinking_of(carrying(&turn, "toolu_2")).is_empty());
+            assert_eq!(all_thinking(&turn), vec!["plan"]);
+        }
+
+        /// Finding 2: text in the SAME message as the calls used to be dropped.
+        #[test]
+        fn text_that_came_with_the_tool_calls_is_kept() {
+            let turn = persist_turn(vec![frame(vec![
+                thinking(REASONING),
+                MessageContent::text("I'll read both files."),
+                call("call_1", "a.rs"),
+                call("call_2", "b.rs"),
+            ])]);
+
+            assert_eq!(all_assistant_text(&turn), "I'll read both files.");
+            assert_eq!(
+                carrying(&turn, "call_1").as_concat_text(),
+                "I'll read both files."
+            );
+
+            let wire = wire_assistants(&turn);
+            assert_eq!(wire.len(), 1, "the text must not block the merge: {wire:?}");
+            assert_eq!(wire[0]["content"], "I'll read both files.");
+            assert_eq!(wire[0]["tool_calls"].as_array().map(Vec::len), Some(2));
+            assert_eq!(wire[0]["reasoning_content"], REASONING);
+        }
+
+        /// Ollama's XML tool calls stream their prefix as text and then send it
+        /// again with the parsed calls; it is kept once.
+        #[test]
+        fn text_the_stream_already_sent_is_not_kept_twice() {
+            let turn = persist_turn(vec![
+                frame(vec![MessageContent::text("I'll check the file. <func")]),
+                Message::new(
+                    rmcp::model::Role::Assistant,
+                    0,
+                    vec![
+                        MessageContent::text("I'll check the file."),
+                        call("call_1", "a.rs"),
+                    ],
+                ),
+            ]);
+
+            let text = all_assistant_text(&turn);
+            assert_eq!(text.matches("I'll check the file.").count(), 1, "{text}");
+        }
+
+        #[test]
+        fn text_that_extends_the_streamed_text_replaces_it() {
+            let turn = persist_turn(vec![
+                frame(vec![MessageContent::text("I'll check")]),
+                frame(vec![
+                    MessageContent::text("I'll check the file."),
+                    call("call_1", "a.rs"),
+                ]),
+            ]);
+
+            assert_eq!(all_assistant_text(&turn), "I'll check the file.");
+        }
+
+        /// With no call that parsed there is no tool-call message to carry the
+        /// reasoning and text, so they keep one of their own, once.
+        #[test]
+        fn reasoning_and_text_with_no_parsed_call_keep_a_message() {
+            let unparsed = MessageContent::tool_request(
+                "call_bad",
+                Err(ErrorData::new(ErrorCode::INVALID_PARAMS, "bad json", None)),
+            );
+            let turn = persist_turn(vec![
+                frame(vec![thinking("Let me ")]),
+                frame(vec![thinking("check.")]),
+                frame(vec![
+                    thinking(REASONING),
+                    MessageContent::text("Reading."),
+                    unparsed,
+                ]),
+            ]);
+
+            assert_eq!(all_thinking(&turn), vec![REASONING], "{turn:?}");
+            assert_eq!(all_assistant_text(&turn), "Reading.");
+            assert!(
+                turn.iter().all(|message| !message.is_tool_call()),
+                "an unparsed call is answered by a recovery observation, not kept: {turn:?}"
+            );
+        }
     }
 
     // ── Y-poll-suspend ───────────────────────────────────────────────────
