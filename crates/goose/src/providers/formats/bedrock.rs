@@ -43,6 +43,34 @@ pub fn to_bedrock_message_with_caching(
         .map_err(|err| anyhow!("Failed to construct Bedrock message: {}", err))
 }
 
+/// Convert agent-visible messages into Converse's `messages`, the first
+/// `cache_count` of them each ending on a cache point.
+///
+/// Converse requires user and assistant roles to strictly alternate and
+/// rejects anything else with a ValidationException ("A conversation must
+/// alternate between user and assistant roles"). A conversation can hold two
+/// user messages in a row. The agent sends per-turn host context (MOIM) as its
+/// own user message right after the tool results that end every tool-loop
+/// turn. Consecutive same-role messages are folded into one Converse message,
+/// keeping their content blocks in order, so the tool results still lead the
+/// merged user turn.
+pub fn to_bedrock_messages(
+    messages: &[&Message],
+    cache_count: usize,
+) -> Result<Vec<bedrock::Message>> {
+    let mut out: Vec<bedrock::Message> = Vec::with_capacity(messages.len());
+    for (idx, message) in messages.iter().enumerate() {
+        let converted = to_bedrock_message_with_caching(message, idx < cache_count)?;
+        match out.last_mut() {
+            Some(previous) if previous.role == converted.role => {
+                previous.content.extend(converted.content);
+            }
+            _ => out.push(converted),
+        }
+    }
+    Ok(out)
+}
+
 pub fn to_bedrock_message_content(content: &MessageContent) -> Result<bedrock::ContentBlock> {
     Ok(match content {
         MessageContent::Text(text) => bedrock::ContentBlock::Text(text.text.to_string()),
@@ -591,6 +619,70 @@ mod tests {
         let empty = Message::new(Role::User, Utc::now().timestamp(), vec![]);
         let empty_msg = to_bedrock_message_with_caching(&empty, true)?;
         assert_eq!(empty_msg.content.len(), 0);
+
+        Ok(())
+    }
+
+    /// Every tool-loop request ends `assistant(toolUse) → user(toolResult) →
+    /// user(MOIM text)`. Sent one to one, that is two user messages in a row,
+    /// which Converse rejects, so every tool-loop turn failed. They fold into
+    /// one user turn with the tool result first. An alternating conversation
+    /// converts exactly as before.
+    #[test]
+    fn consecutive_same_role_messages_fold_into_one_converse_turn() -> Result<()> {
+        let moim = "<info-msg>\nIt is currently 2026-09-26 10:00:00\n</info-msg>";
+        let messages = [
+            Message::user().with_text("list the files"),
+            Message::assistant()
+                .with_tool_request("call_1", Ok(CallToolRequestParams::new("shell"))),
+            Message::user().with_tool_response(
+                "call_1",
+                Ok(rmcp::model::CallToolResult::success(vec![Content::text(
+                    "a.py",
+                )])),
+            ),
+            Message::user().with_text(moim),
+        ];
+        let visible: Vec<&Message> = messages.iter().collect();
+
+        let converted = to_bedrock_messages(&visible, 0)?;
+        let roles: Vec<bedrock::ConversationRole> =
+            converted.iter().map(|m| m.role.clone()).collect();
+        assert_eq!(
+            roles,
+            [
+                bedrock::ConversationRole::User,
+                bedrock::ConversationRole::Assistant,
+                bedrock::ConversationRole::User,
+            ]
+        );
+        let tail = &converted[2].content;
+        assert_eq!(tail.len(), 2, "{tail:?}");
+        assert!(matches!(tail[0], bedrock::ContentBlock::ToolResult(_)));
+        assert!(matches!(&tail[1], bedrock::ContentBlock::Text(t) if t == moim));
+
+        // Cache points stay where each source message ended.
+        let cached = to_bedrock_messages(&visible, 4)?;
+        let cache_points = |m: &bedrock::Message| {
+            m.content
+                .iter()
+                .filter(|b| matches!(b, bedrock::ContentBlock::CachePoint(_)))
+                .count()
+        };
+        assert_eq!(cached.len(), 3);
+        assert_eq!(cache_points(&cached[2]), 2);
+        assert!(matches!(
+            cached[2].content[1],
+            bedrock::ContentBlock::CachePoint(_)
+        ));
+
+        // No two neighbours share a role: nothing is folded.
+        let alternating = &visible[..3];
+        let one_to_one = alternating
+            .iter()
+            .map(|m| to_bedrock_message_with_caching(m, false))
+            .collect::<Result<Vec<_>>>()?;
+        assert_eq!(to_bedrock_messages(alternating, 0)?, one_to_one);
 
         Ok(())
     }

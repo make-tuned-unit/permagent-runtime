@@ -60,6 +60,10 @@ pub async fn inject_moim(
         // MOIM's single insertion can explain — that means the conversation
         // arrived already holding consecutive same-role messages, which is the
         // corruption the review was actually looking for.
+        //
+        // (MOIM now rides at the tail — see `with_moim_inserted` — so only its
+        // fallback placement, for a conversation that does not end on a user
+        // message, can still cause the merge described above.)
         let merge_count = issues
             .iter()
             .filter(|issue| issue.contains("Merged consecutive"))
@@ -91,10 +95,30 @@ pub async fn inject_moim(
     conversation
 }
 
-/// Place the MOIM text at the very END of the request: appended as the last
-/// content block of the last agent-visible message when that is a user
-/// message (every agent-loop turn ends on one — the user's words or the tool
-/// results just returned).
+/// Place the MOIM text at the very END of the request. Every agent-loop turn
+/// ends on a user message — the user's words or the tool results just
+/// returned — and the two take MOIM differently:
+///
+/// - The user's words: MOIM is appended as the last content block of that
+///   message.
+/// - Tool results: MOIM goes in its OWN user message right after them, never
+///   inside the tool-result message. A text block inside a tool-result message
+///   is a shape the OpenAI chat/completions formatter cannot order: it turns
+///   the message into a `user` text item plus `role: tool` items, and the
+///   `assistant(tool_calls)` → `tool` adjacency OpenAI-compatible APIs enforce
+///   broke on every tool-loop turn (HTTP 400 from OpenAI, DeepSeek, Azure and
+///   xAI; strict local chat templates fail the same way). `effective_role`
+///   calls the result message "tool", so `fix_conversation` never merges MOIM
+///   into it. The request then holds two user messages in a row, and each
+///   format has to accept that. Chat/completions, Responses and Databricks
+///   send it as `tool` item(s) followed by a `user` item, which is legal. The
+///   Anthropic API folds the two into one turn with the `tool_result` blocks
+///   first. Bedrock Converse rejects roles that do not alternate, so its
+///   formatter folds consecutive same-role messages itself
+///   (`formats::bedrock::to_bedrock_messages`).
+///
+/// Either way MOIM is the last thing in the request and nothing before it
+/// changes, so the cacheable prefix stays byte-stable.
 ///
 /// It used to be inserted in front of the last assistant turn, i.e. merged
 /// into the user message TWO back from the end. MOIM carries a clock and a
@@ -126,6 +150,9 @@ fn with_moim_inserted(conversation: &Conversation, moim: String) -> Vec<Message>
     match last_visible {
         // Messages after it (if any) are not agent-visible and are filtered out
         // before the provider call, so this IS the tail the model sees.
+        Some(i) if messages[i].role == Role::User && messages[i].is_tool_response() => {
+            messages.insert(i + 1, Message::user().with_text(moim));
+        }
         Some(i) if messages[i].role == Role::User => {
             messages[i].content.push(MessageContent::text(moim));
         }
@@ -297,14 +324,18 @@ mod tests {
         let n = turn_n.messages();
         let n1 = turn_n1.messages();
         // Turn N minus its trailing MOIM block…
+        // (Both turns end on a tool result, so MOIM is its own trailing
+        // message there, not a block inside the result message.)
         let mut n_without_moim = n.clone();
-        let last = n_without_moim.last_mut().unwrap();
-        assert!(last
-            .content
-            .last()
-            .and_then(|c| c.as_text())
-            .is_some_and(|t| t.starts_with("<info-msg>")));
-        last.content.pop();
+        let tail = n_without_moim.pop().unwrap();
+        assert_eq!(tail.role, Role::User);
+        assert!(
+            tail.content.len() == 1
+                && tail.content[0]
+                    .as_text()
+                    .is_some_and(|t| t.starts_with("<info-msg>")),
+            "the tail must be MOIM alone: {tail:?}"
+        );
         // …is exactly the head of turn N+1.
         assert_eq!(&n1[..n_without_moim.len()], &n_without_moim[..]);
         // Exactly one MOIM block per request, always in the last message.
@@ -366,25 +397,192 @@ mod tests {
         let result = inject_moim("test-session-id", conv, &em, &working_dir).await;
         let msgs = result.messages();
 
-        // No message is added: MOIM is a trailing block of the last message,
-        // after the tool result it accompanies.
-        assert_eq!(msgs.len(), 5);
+        // MOIM is its own user message right AFTER the last tool result, never
+        // a block inside it: the OpenAI chat format emits a tool-result
+        // message's text ahead of its `role: tool` item, and the request 400s.
+        assert_eq!(msgs.len(), 6);
 
-        let moim_msg = &msgs[4];
-        assert!(moim_msg.content[0].as_tool_response().is_some());
-        let has_moim = moim_msg
-            .content
-            .iter()
-            .any(|c| c.as_text().is_some_and(|t| t.contains("<info-msg>")));
-
-        assert!(has_moim, "MOIM should ride at the tail of the last message");
+        let results = &msgs[4];
         assert!(
-            !msgs[..4].iter().any(|m| m
+            results
+                .content
+                .iter()
+                .all(|c| c.as_tool_response().is_some()),
+            "the tool-result message must carry only tool results: {results:?}"
+        );
+        let moim_msg = &msgs[5];
+        assert_eq!(moim_msg.role, Role::User);
+        assert_eq!(moim_msg.content.len(), 1);
+        assert!(
+            moim_msg.content[0]
+                .as_text()
+                .is_some_and(|t| t.starts_with("<info-msg>")),
+            "MOIM should be the last message: {moim_msg:?}"
+        );
+        assert!(
+            !msgs[..5].iter().any(|m| m
                 .content
                 .iter()
                 .any(|c| c.as_text().is_some_and(|t| t.contains("<info-msg>")))),
             "MOIM must not touch the history"
         );
+    }
+
+    /// End to end on the chat/completions wire, where the old shape broke: a
+    /// tool loop with MOIM injected goes through the OpenAI formatter for a
+    /// CurrentTurnOnly family (GLM), with a volatile system tail. Every
+    /// `tool_calls` must be answered in place, MOIM must follow the results,
+    /// and the in-flight call must keep its reasoning.
+    #[tokio::test]
+    async fn a_tool_loop_with_moim_reaches_the_chat_completions_wire_in_order() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let em = ExtensionManager::new_without_provider(temp_dir.path().to_path_buf());
+        let working_dir = PathBuf::from("/test/dir");
+
+        let conv = Conversation::new_unvalidated(vec![
+            Message::user().with_text("Search for something"),
+            Message::assistant()
+                .with_thinking("LIVE REASONING", "")
+                .with_tool_request("search_1", Ok(CallToolRequestParams::new("search"))),
+            Message::user().with_tool_response(
+                "search_1",
+                Ok(rmcp::model::CallToolResult::success(vec![
+                    rmcp::model::Content::text("one hit"),
+                ])),
+            ),
+        ]);
+        let with_moim = inject_moim("s", conv, &em, &working_dir).await;
+        assert!(conversation_has_moim(&with_moim));
+
+        let payload = chat_completions_wire(with_moim.messages(), "glm-5.3", "- 1 worker");
+        let wire = payload.as_array().unwrap();
+        let roles: Vec<&str> = wire.iter().map(|m| m["role"].as_str().unwrap()).collect();
+        assert_eq!(
+            roles,
+            ["system", "user", "assistant", "tool", "user", "system"],
+            "{wire:#?}"
+        );
+        assert_eq!(wire[2]["tool_calls"][0]["id"], "search_1");
+        assert_eq!(wire[3]["tool_call_id"], "search_1");
+        assert!(wire[4]["content"]
+            .as_str()
+            .is_some_and(|t| t.starts_with("<info-msg>")));
+        assert_eq!(wire[2]["reasoning_content"], "LIVE REASONING");
+    }
+
+    /// Prefix stability on the chat/completions wire across two tool turns:
+    /// turn N's messages minus its tail (the MOIM message and the volatile
+    /// system block) are exactly the head of turn N+1's.
+    #[tokio::test]
+    async fn moim_keeps_the_chat_completions_prefix_stable_across_tool_turns() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let em = ExtensionManager::new_without_provider(temp_dir.path().to_path_buf());
+        let working_dir = PathBuf::from("/test/dir");
+        let tool_round = |id: &str| {
+            vec![
+                Message::assistant()
+                    .with_tool_request(id, Ok(CallToolRequestParams::new("search"))),
+                Message::user().with_tool_response(
+                    id,
+                    Ok(rmcp::model::CallToolResult::success(vec![
+                        rmcp::model::Content::text(format!("result {id}")),
+                    ])),
+                ),
+            ]
+        };
+        let mut history = vec![Message::user().with_text("Search")];
+        history.extend(tool_round("s1"));
+        let turn_n = inject_moim(
+            "s",
+            Conversation::new_unvalidated(history.clone()),
+            &em,
+            &working_dir,
+        )
+        .await;
+        history.extend(tool_round("s2"));
+        let turn_n1 = inject_moim(
+            "s",
+            Conversation::new_unvalidated(history.clone()),
+            &em,
+            &working_dir,
+        )
+        .await;
+
+        let a = chat_completions_wire(turn_n.messages(), "deepseek-chat", "- worker running");
+        let b = chat_completions_wire(turn_n1.messages(), "deepseek-chat", "- worker done");
+        let (a, b) = (a.as_array().unwrap(), b.as_array().unwrap());
+        assert!(a[a.len() - 2]["content"]
+            .as_str()
+            .is_some_and(|t| t.starts_with("<info-msg>")));
+        let shared = &a[..a.len() - 2];
+        assert_eq!(&b[..shared.len()], shared);
+    }
+
+    /// Bedrock Converse rejects a conversation whose roles do not alternate.
+    /// MOIM as its own message after the tool results is two user messages in
+    /// a row, so on Bedrock every tool-loop turn failed until its formatter
+    /// folded them. They reach Converse as one user turn, tool result first
+    /// and MOIM last.
+    #[cfg(feature = "aws-providers")]
+    #[tokio::test]
+    async fn a_tool_loop_with_moim_alternates_roles_on_bedrock_converse() {
+        use aws_sdk_bedrockruntime::types::ContentBlock;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let em = ExtensionManager::new_without_provider(temp_dir.path().to_path_buf());
+        let working_dir = PathBuf::from("/test/dir");
+
+        let conv = Conversation::new_unvalidated(vec![
+            Message::user().with_text("Search for something"),
+            Message::assistant()
+                .with_tool_request("search_1", Ok(CallToolRequestParams::new("search"))),
+            Message::user().with_tool_response(
+                "search_1",
+                Ok(rmcp::model::CallToolResult::success(vec![
+                    rmcp::model::Content::text("one hit"),
+                ])),
+            ),
+        ]);
+        let with_moim = inject_moim("s", conv, &em, &working_dir).await;
+        assert!(conversation_has_moim(&with_moim));
+
+        let visible: Vec<&Message> = with_moim
+            .messages()
+            .iter()
+            .filter(|m| m.is_agent_visible())
+            .collect();
+        let converse =
+            crate::providers::formats::bedrock::to_bedrock_messages(&visible, 0).unwrap();
+        let roles: Vec<_> = converse.iter().map(|m| m.role.clone()).collect();
+        assert!(roles.windows(2).all(|w| w[0] != w[1]), "{roles:?}");
+        assert_eq!(converse.len(), 3, "{converse:#?}");
+        let tail = &converse[2].content;
+        assert!(matches!(tail.first(), Some(ContentBlock::ToolResult(_))));
+        assert!(
+            matches!(tail.last(), Some(ContentBlock::Text(t)) if t.starts_with("<info-msg>")),
+            "{tail:?}"
+        );
+    }
+
+    /// The `messages` array a chat/completions provider receives.
+    fn chat_completions_wire(
+        messages: &[Message],
+        model: &str,
+        live_status: &str,
+    ) -> serde_json::Value {
+        let payload = crate::providers::formats::openai::create_request_split(
+            &crate::model::ModelConfig::new_or_fail(model),
+            &crate::cost_router::cache::SystemPromptParts::new(
+                "You are a coding agent.\n".to_string(),
+                format!("\n# Live Status\n{live_status}\n"),
+            ),
+            messages,
+            &[],
+            &crate::providers::utils::ImageFormat::OpenAi,
+            false,
+        )
+        .unwrap();
+        payload["messages"].clone()
     }
 
     fn conversation_has_moim(conv: &Conversation) -> bool {
