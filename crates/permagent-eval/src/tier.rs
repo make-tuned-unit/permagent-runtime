@@ -272,6 +272,23 @@ impl Tier {
                     Some("DEEPSEEK_API_KEY"),
                 )
             }),
+            // HF loop (2026-09-26): the same coordinator with the best local
+            // worker the probes found on 16 GB Apple Silicon, Ornith-1.0-9B
+            // Q4_K_M (`ornith-ai/Ornith-1.0-9B-GGUF`; 11/12 tool calls, smoke
+            // pass on every runtime tried). Ollama's `ornith:9b` tag needs
+            // Ollama >= 0.30.11, so this runs where that holds (the M4 today);
+            // an older Ollama fails fast via `crate::provider_unavailable`.
+            "dschat+ornith" => Some(Tier {
+                harness_timeout_secs: Some(1200),
+                worker_provider: Some("ollama".to_string()),
+                worker_model: Some("ornith:9b".to_string()),
+                ..t(
+                    "dschat+ornith",
+                    "custom_deepseek",
+                    "deepseek-chat",
+                    Some("DEEPSEEK_API_KEY"),
+                )
+            }),
             _ => None,
         }
     }
@@ -297,6 +314,7 @@ impl Tier {
             "minicpm5-hf",
             "dschat+minicpm",
             "dschat+qwen-coder",
+            "dschat+ornith",
         ]
     }
 
@@ -440,7 +458,7 @@ mod tests {
             assert!(names.contains(&name), "{name} missing from builtin_names()");
         }
         // Lane R48a: the two mixed (cloud coordinator + local worker) tiers.
-        for name in ["dschat+minicpm", "dschat+qwen-coder"] {
+        for name in ["dschat+minicpm", "dschat+qwen-coder", "dschat+ornith"] {
             assert!(names.contains(&name), "{name} missing from builtin_names()");
         }
     }
@@ -593,6 +611,7 @@ mod tests {
                     | "minicpm5-hf"
                     | "dschat+minicpm"
                     | "dschat+qwen-coder"
+                    | "dschat+ornith"
             ) {
                 continue;
             }
@@ -629,6 +648,15 @@ mod tests {
         assert_eq!(qwen_coder.worker_provider.as_deref(), Some("ollama"));
         assert_eq!(qwen_coder.worker_model.as_deref(), Some("qwen2.5-coder:7b"));
         assert_eq!(qwen_coder.harness_timeout_secs, Some(1200));
+
+        let ornith = Tier::builtin("dschat+ornith").unwrap();
+        assert_eq!(ornith.provider, "custom_deepseek");
+        assert_eq!(ornith.model, "deepseek-chat");
+        assert_eq!(ornith.required_key_env.as_deref(), Some("DEEPSEEK_API_KEY"));
+        assert_eq!(ornith.worker_provider.as_deref(), Some("ollama"));
+        assert_eq!(ornith.worker_model.as_deref(), Some("ornith:9b"));
+        assert_eq!(ornith.harness_timeout_secs, Some(1200));
+        assert!(ornith.pin_packs);
     }
 
     /// Lane R48a: `pack_env()` on a mixed tier pins `MECHANICAL`/`LOCAL` (the
