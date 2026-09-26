@@ -41,6 +41,7 @@ export interface GraphNode {
   role: string | null;
   photoUrl: string | null;
   lastContactAt: string | null;
+  relationshipScore?: number;
   projectIds: string[];
   kind: 'person' | 'you';
   x: number;
@@ -396,6 +397,7 @@ export function layoutPeopleGraph(people: DirectoryPerson[]): PeopleGraphLayout 
       role: person.role,
       photoUrl: person.photo_url,
       lastContactAt: person.last_contact_at,
+      relationshipScore: person.relationship_signal?.score,
       projectIds,
       kind: 'person',
       x: x / n + jitter(person.entity_uuid, 'x'),

@@ -2535,6 +2535,34 @@ mod tests {
         }
     }
 
+    // The minimum applies to the complete tools/system/messages prefix,
+    // not the incremental message chunk. Keep short tool turns cacheable
+    // once the stable prefix is large enough.
+    // https://platform.claude.com/docs/en/build-with-claude/prompt-caching
+    #[test]
+    fn haiku_short_turns_keep_rolling_markers_after_a_large_stable_prefix() {
+        let _env = no_thinking_env();
+        let config = cfg("claude-haiku-4-5");
+        let system = "stable context ".repeat(6000);
+        let messages = [
+            Message::user().with_text("first"),
+            Message::assistant().with_text("reply"),
+            Message::user().with_text("second"),
+        ];
+        let payload = create_request_cached(
+            &config,
+            &system,
+            &messages,
+            &cache_guard_tools(),
+            &[],
+            CacheTtl::FiveMinute,
+        )
+        .unwrap();
+        assert_eq!(collect_cache_controls(&payload).len(), 4);
+        assert!(payload["messages"][0]["content"][0]["cache_control"].is_object());
+        assert!(payload["messages"][2]["content"][0]["cache_control"].is_object());
+    }
+
     /// Recursively drop every `cache_control` marker: the markers say where to
     /// write/read, they are not part of the cached content being matched.
     fn strip_cache_control(value: &Value) -> Value {

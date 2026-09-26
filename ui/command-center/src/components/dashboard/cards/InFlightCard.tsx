@@ -9,6 +9,7 @@ import { autonomyChip, goalStateLabel } from '../../../lib/goalStateLabel';
 
 import { Chip } from '../../common/Chip';
 import { Tooltip } from '../../common/Tooltip';
+import { pressable } from '../../common/pressable';
 
 /** A text line that truncates with an ellipsis instead of wrapping or being
  *  sliced by the tile edge. Every line of a row uses it: the title had an
@@ -188,7 +189,7 @@ const GoalCard = memo(function GoalCard({ goal }: { goal: ActiveGoal }) {
     }>
       <div
         data-testid="inflight-row"
-        onClick={() => openGoalDetail(goal.project_id, goal.id)}
+        {...pressable(() => openGoalDetail(goal.project_id, goal.id), { label: `Open goal detail: ${goal.title}` })}
         onMouseEnter={() => setHover(true)}
         onMouseLeave={() => { setHover(false); setPressed(false); }}
         onPointerDown={() => setPressed(true)}

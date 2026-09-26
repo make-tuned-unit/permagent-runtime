@@ -3,6 +3,7 @@
 //! Split from the original ollama.rs monolith. Each submodule owns a single
 //! concern; this file wires them together for route registration.
 
+mod awaiting;
 pub mod consolidation;
 mod pruning;
 mod scheduling;
@@ -22,6 +23,11 @@ use crate::state::AppState;
 /// Register the 4 Librarian HTTP routes.
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
+        .route("/api/librarian/awaiting", get(awaiting::list))
+        .route(
+            "/api/librarian/awaiting/{id}/answer",
+            post(awaiting::answer),
+        )
         .route(
             "/api/librarian/schedule",
             get(scheduling::get_librarian_schedule),

@@ -47,13 +47,30 @@ const CARD: Record<string, unknown> = {
 const COLUMNS = [{ id: 'col-ready', name: 'Ready', stateBinding: 'ready' }];
 const PROJECT_GOALS = [CARD, { id: 'g2', title: 'Other goal', cardType: 'goal', metadataJson: {} }];
 
-function mockApi(activeGoal: Record<string, unknown> | null) {
+// dagK Q2: a card whose `worker_plan` metadata is the shape
+// `cards::set_goal_worker_plan` actually writes — `{ text, attempt,
+// session_id, captured_at }` — captured server-side from the worker's own
+// first plan-shaped assistant turn.
+const CARD_WITH_PLAN: Record<string, unknown> = {
+  ...CARD,
+  metadataJson: {
+    ...(CARD.metadataJson as Record<string, unknown>),
+    worker_plan: {
+      text: "I'll reproduce the bug with a failing test first, then fix the root cause in the parser.",
+      attempt: 2,
+      session_id: 'sess-plan-1',
+      captured_at: '2026-09-25T12:00:00Z',
+    },
+  },
+};
+
+function mockApi(activeGoal: Record<string, unknown> | null, card: Record<string, unknown> = CARD) {
   vi.doMock('../../lib/api', () => ({
     apiFetch: vi.fn().mockImplementation((url: string) => {
       if (url.includes('/columns')) return Promise.resolve(COLUMNS);
       if (url.includes('?card_type=goal')) return Promise.resolve(PROJECT_GOALS);
       if (url.includes('/api/goals/active')) return Promise.resolve({ goals: activeGoal ? [activeGoal] : [] });
-      return Promise.resolve(CARD);
+      return Promise.resolve(card);
     }),
   }));
 }
@@ -75,8 +92,8 @@ afterEach(() => {
   vi.doUnmock('../../lib/api');
 });
 
-async function renderModal(activeGoal: Record<string, unknown> | null = null) {
-  mockApi(activeGoal);
+async function renderModal(activeGoal: Record<string, unknown> | null = null, card: Record<string, unknown> = CARD) {
+  mockApi(activeGoal, card);
   const { GoalDetailModal } = await import('./GoalDetailModal');
   const onClose = vi.fn();
   await act(async () => {
@@ -141,4 +158,16 @@ it('GM7: A2A inbox and sent messages render as a Messages section', async () => 
   expect(document.body.textContent).toContain('watch the race');
   expect(document.body.textContent).toContain('on it');
   expect(document.body.textContent).toContain('Other goal');
+});
+
+it("dagK Q2: renders the worker's own plan with its attempt when the server captured one", async () => {
+  await renderModal(null, CARD_WITH_PLAN);
+  expect(document.body.textContent).toContain("Worker's plan");
+  expect(document.body.textContent).toContain('reproduce the bug with a failing test first');
+  expect(document.body.textContent).toContain('Attempt 2');
+});
+
+it("dagK Q2: renders no plan section at all when the server never captured one — never a guess", async () => {
+  await renderModal();
+  expect(document.body.textContent).not.toContain("Worker's plan");
 });

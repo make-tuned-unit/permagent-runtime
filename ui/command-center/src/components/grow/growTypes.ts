@@ -45,6 +45,28 @@ export interface AnalyticsConnectionStatus {
   /** Whether a key is stored server-side — the key itself is never sent back. */
   hasApiKey: boolean;
 }
+/** The window `visitors`/`pageviews` cover. `null` only when `connected` is
+ *  `false` — there is no window to name. Mirrors `PeriodMeta` in
+ *  routes/grow_analytics.rs. */
+export interface AnalyticsPeriod {
+  /** `YYYY-MM-DD`. */
+  start: string;
+  end: string;
+  days: number;
+}
+
+/**
+ * The equivalent immediately-preceding window's headline metrics, for the
+ * delta chip beside Reach. `null` whenever there is nothing honest to
+ * report — not connected, the current fetch itself failed, or the shifted
+ * fetch failed — never a fabricated number standing in for a real one.
+ * Mirrors `PreviousPeriodStats` in routes/grow_analytics.rs.
+ */
+export interface AnalyticsPreviousPeriod {
+  visitors: number | null;
+  pageviews: number | null;
+}
+
 export interface AnalyticsStatsData {
   connected: boolean;
   provider: AnalyticsProviderId | null;
@@ -53,6 +75,8 @@ export interface AnalyticsStatsData {
   pageviews: number | null;
   /** Fetch failures (provider down, bad key, sovereign mode) arrive here — honest, never faked. */
   error: string | null;
+  period?: AnalyticsPeriod | null;
+  previousPeriod?: AnalyticsPreviousPeriod | null;
 }
 export interface AnalyticsTestResult {
   ok: boolean;
@@ -127,6 +151,16 @@ export interface FirstPartyStats {
   bounceRate: number | null;
   pagesPerSession: number | null;
   topEntryPages: { name: string; count: number }[];
+  /** The window every figure above covers. Mirrors `PeriodMeta` in
+   *  routes/first_party_analytics.rs; RFC-3339 instants (finer than the
+   *  connector route's whole-day `AnalyticsPeriod`, since first-party events
+   *  carry real timestamps). */
+  period: { start: string; end: string; days: number };
+  /** The equivalent immediately-preceding window's device signatures and
+   *  pageviews, for the delta chip beside Reach/Devices. `null` when this
+   *  project's entire recorded history sits inside the CURRENT window — no
+   *  prior period exists yet, never a fabricated zero. */
+  previousPeriod?: { pageviews: number; deviceSignatures: number } | null;
 }
 
 export type GrowLens = 'actions' | 'results' | 'strategy' | 'calendar' | 'analytics';

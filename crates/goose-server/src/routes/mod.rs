@@ -50,6 +50,7 @@ pub mod local_inference;
 pub mod model_review;
 pub mod ollama;
 pub mod onboarding;
+pub mod owner;
 pub mod packs;
 pub mod people;
 pub mod program;
@@ -59,6 +60,7 @@ pub mod public_apis;
 pub mod reader;
 pub mod recipe;
 pub mod recipe_utils;
+pub mod relationship_strength;
 pub mod reply;
 pub mod runs;
 pub mod sampling;
@@ -205,6 +207,7 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         .merge(dashboard_cards::routes(state.clone()))
         .merge(council::routes(state.clone()))
         .merge(identity::routes(state.clone()))
+        .merge(owner::routes(state.clone()))
         .merge(workers::routes(state.clone()))
         .merge(findings::routes(state.clone()))
         .merge(model_review::routes(state.clone()))

@@ -355,24 +355,109 @@ pub async fn approve_post(
     let project = projects::get_project(pool, project_id)
         .await?
         .ok_or_else(|| "project not found".to_string())?;
-    let published = publisher::submit_approved(pool, &project, &card).await?;
-    let mut patch = serde_json::json!({ cards::POST_STATUS_KEY: "scheduled" });
-    if let Some(ids) = published {
-        let obj = patch.as_object_mut().expect("literal");
-        obj.insert(
-            cards::POST_PUBLISHER_POST_ID_KEY.to_string(),
-            serde_json::json!(ids.post_id),
-        );
-        obj.insert(
-            cards::POST_PUBLISHER_INTEGRATION_KEY.to_string(),
-            serde_json::json!(ids.integration_id),
-        );
+    attempt_publish(pool, &project, &card, card_id, project_id).await
+}
+
+/// Retry a publish that previously failed. Same submission path as
+/// [`approve_post`] — the only difference is the status it may start from:
+/// `publish_failed` rather than `draft`. Exists because a failed publish used
+/// to have no way back other than editing the card back to a draft and
+/// re-approving it, which loses the record of what went wrong.
+pub async fn retry_publish(
+    pool: &Pool<Sqlite>,
+    project_id: &str,
+    card_id: &str,
+) -> Result<Card, String> {
+    let card = cards::get_card(pool, card_id)
+        .await?
+        .ok_or_else(|| format!("Card '{card_id}' not found"))?;
+    if card.project_id != project_id {
+        return Err("Card does not belong to this project".into());
     }
+    if card.card_type != "social_post" {
+        return Err("retry is only valid for social_post cards".into());
+    }
+    cards::assert_ready_to_schedule(&card.metadata_json)?;
+    let status = card
+        .metadata_json
+        .get(cards::POST_STATUS_KEY)
+        .and_then(|v| v.as_str())
+        .unwrap_or("draft");
+    if status != "publish_failed" {
+        return Err(format!(
+            "only a post whose publish failed can be retried (status is '{status}')"
+        ));
+    }
+    let project = projects::get_project(pool, project_id)
+        .await?
+        .ok_or_else(|| "project not found".to_string())?;
+    attempt_publish(pool, &project, &card, card_id, project_id).await
+}
+
+/// Hand the post to the publisher and write the result onto the card either
+/// way — shared by [`approve_post`] and [`retry_publish`], the two states a
+/// publish attempt may legally start from.
+///
+/// A failure here used to `?`-propagate straight out of the request handler
+/// (both callers used to `.await?` this call directly), so the card was left
+/// silently on `draft` with no record an attempt was ever made — Calendar's
+/// "Needs attention" filter had no publish-failure status to catch it
+/// (2026-09-25 finding). This follows the same convention `set_drain` already
+/// uses for first-party analytics: a failed attempt is reported as a normal,
+/// honest result — `publish_failed` plus the error and when it happened —
+/// never an opaque error that leaves the card's real state a mystery.
+async fn attempt_publish(
+    pool: &Pool<Sqlite>,
+    project: &Project,
+    card: &Card,
+    card_id: &str,
+    project_id: &str,
+) -> Result<Card, String> {
+    let attempted_at = chrono::Utc::now().to_rfc3339();
+    let result = publisher::submit_approved(pool, project, card).await;
+    let patch = publish_attempt_patch(&result, &attempted_at);
     let updated = cards::merge_card_metadata(pool, card_id, patch, true)
         .await?
-        .ok_or_else(|| "card vanished during approve".to_string())?;
+        .ok_or_else(|| "card vanished during publish attempt".to_string())?;
     events::emit(events::project_changed(project_id, "grow_media"));
     Ok(updated)
+}
+
+/// The metadata patch for one publish attempt's result — pure, so the state
+/// transition is unit-tested without a live Postiz account. Success clears
+/// any earlier failure (never leaves a stale error sitting next to a
+/// `scheduled` status); failure records the error and when it happened, and
+/// leaves the publisher-id fields untouched (there is nothing new to record).
+fn publish_attempt_patch(
+    result: &Result<Option<publisher::PublishIds>, String>,
+    attempted_at: &str,
+) -> serde_json::Value {
+    match result {
+        Ok(published) => {
+            let mut patch = serde_json::json!({
+                cards::POST_STATUS_KEY: "scheduled",
+                cards::POST_LAST_PUBLISH_ERROR_KEY: serde_json::Value::Null,
+                cards::POST_LAST_PUBLISH_ATTEMPT_AT_KEY: serde_json::Value::Null,
+            });
+            if let Some(ids) = published {
+                let obj = patch.as_object_mut().expect("literal");
+                obj.insert(
+                    cards::POST_PUBLISHER_POST_ID_KEY.to_string(),
+                    serde_json::json!(ids.post_id),
+                );
+                obj.insert(
+                    cards::POST_PUBLISHER_INTEGRATION_KEY.to_string(),
+                    serde_json::json!(ids.integration_id),
+                );
+            }
+            patch
+        }
+        Err(e) => serde_json::json!({
+            cards::POST_STATUS_KEY: "publish_failed",
+            cards::POST_LAST_PUBLISH_ERROR_KEY: e,
+            cards::POST_LAST_PUBLISH_ATTEMPT_AT_KEY: attempted_at,
+        }),
+    }
 }
 
 async fn mark_failed(pool: &Pool<Sqlite>, card_id: &str, error: &str) -> Result<(), String> {
@@ -667,5 +752,162 @@ mod tests {
             "scheduledFor": "2026-08-20T12:00:00Z"
         }))
         .is_ok());
+    }
+
+    // ── Publish-failure state transition (dagK grow-deltas, 2026-09-26) ──────
+    //
+    // `publish_attempt_patch` is pure (no network, no DB), so the state
+    // transition itself — the thing the "Needs attention" filter depends on —
+    // is pinned directly rather than through a live Postiz round-trip.
+
+    #[test]
+    fn publish_attempt_patch_success_schedules_and_clears_any_prior_failure() {
+        let patch = publish_attempt_patch(&Ok(None), "2026-09-26T00:00:00Z");
+        assert_eq!(patch[cards::POST_STATUS_KEY], "scheduled");
+        assert!(patch[cards::POST_LAST_PUBLISH_ERROR_KEY].is_null());
+        assert!(patch[cards::POST_LAST_PUBLISH_ATTEMPT_AT_KEY].is_null());
+    }
+
+    #[test]
+    fn publish_attempt_patch_success_with_ids_carries_them_onto_the_card() {
+        let ids = publisher::PublishIds {
+            post_id: "post-1".into(),
+            integration_id: "int-1".into(),
+        };
+        let patch = publish_attempt_patch(&Ok(Some(ids)), "2026-09-26T00:00:00Z");
+        assert_eq!(patch[cards::POST_STATUS_KEY], "scheduled");
+        assert_eq!(patch[cards::POST_PUBLISHER_POST_ID_KEY], "post-1");
+        assert_eq!(patch[cards::POST_PUBLISHER_INTEGRATION_KEY], "int-1");
+    }
+
+    #[test]
+    fn publish_attempt_patch_failure_records_the_error_and_when_it_happened() {
+        let patch = publish_attempt_patch(
+            &Err("Postiz returned HTTP 500".to_string()),
+            "2026-09-26T00:00:00Z",
+        );
+        assert_eq!(patch[cards::POST_STATUS_KEY], "publish_failed");
+        assert_eq!(
+            patch[cards::POST_LAST_PUBLISH_ERROR_KEY],
+            "Postiz returned HTTP 500"
+        );
+        assert_eq!(
+            patch[cards::POST_LAST_PUBLISH_ATTEMPT_AT_KEY],
+            "2026-09-26T00:00:00Z"
+        );
+    }
+
+    async fn social_post_card(
+        pool: &Pool<Sqlite>,
+        project_id: &str,
+        metadata: serde_json::Value,
+    ) -> Card {
+        cards::create_card(
+            pool,
+            cards::CreateCard {
+                project_id: project_id.to_string(),
+                title: "Ship day post".into(),
+                description: Some("We shipped it.".into()),
+                card_type: Some("social_post".into()),
+                column_id: None,
+                created_by: Some("user".into()),
+                metadata_json: Some(metadata),
+            },
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn retry_publish_refuses_a_card_that_never_failed() {
+        let pool = pool().await;
+        let project = projects::create_project(
+            &pool,
+            CreateProject {
+                name: "Example App".into(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let card = social_post_card(
+            &pool,
+            &project.id,
+            serde_json::json!({
+                "postStatus": "draft",
+                "mediaStatus": "ready",
+                "scheduledFor": "2026-08-21T15:00:00Z",
+            }),
+        )
+        .await;
+        let err = retry_publish(&pool, &project.id, &card.id)
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("publish_failed") && err.contains("draft"),
+            "unexpected: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn retry_publish_from_publish_failed_reattempts_and_can_clear_the_error() {
+        let pool = pool().await;
+        let project = projects::create_project(
+            &pool,
+            CreateProject {
+                name: "Example App".into(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let card = social_post_card(
+            &pool,
+            &project.id,
+            serde_json::json!({
+                "postStatus": "publish_failed",
+                "mediaStatus": "ready",
+                "scheduledFor": "2026-08-21T15:00:00Z",
+                "lastPublishError": "Postiz returned HTTP 500",
+                "lastPublishAttemptAt": "2026-08-21T14:00:00Z",
+            }),
+        )
+        .await;
+        // No Postiz key is configured in this test process, so
+        // `submit_approved` takes its calendar-only path (`Ok(None)`) rather
+        // than making a network call — the same path `approve_post` already
+        // exercises for an unconfigured install, and deterministic here.
+        let updated = retry_publish(&pool, &project.id, &card.id).await.unwrap();
+        assert_eq!(updated.metadata_json[cards::POST_STATUS_KEY], "scheduled");
+        assert!(updated.metadata_json[cards::POST_LAST_PUBLISH_ERROR_KEY].is_null());
+        assert!(updated.metadata_json[cards::POST_LAST_PUBLISH_ATTEMPT_AT_KEY].is_null());
+    }
+
+    #[tokio::test]
+    async fn approve_post_still_requires_draft() {
+        let pool = pool().await;
+        let project = projects::create_project(
+            &pool,
+            CreateProject {
+                name: "Example App".into(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let card = social_post_card(
+            &pool,
+            &project.id,
+            serde_json::json!({
+                "postStatus": "publish_failed",
+                "mediaStatus": "ready",
+                "scheduledFor": "2026-08-21T15:00:00Z",
+            }),
+        )
+        .await;
+        let err = approve_post(&pool, &project.id, &card.id)
+            .await
+            .unwrap_err();
+        assert!(err.contains("draft"), "unexpected: {err}");
     }
 }

@@ -977,8 +977,10 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
     setTimeout(() => urlInputRef.current?.focus(), 50);
   }, []);
 
-  const handleCloseTab = useCallback(async (tabId: string, e?: React.MouseEvent) => {
-    e?.stopPropagation();
+  // The close affordance is its own real, sibling `<button>` in BrowserTabs
+  // (not nested inside the tab's own control) — it stops its own
+  // propagation, so nothing here needs a mouse event to do it too.
+  const handleCloseTab = useCallback(async (tabId: string) => {
     if (closingTabId !== tabId) {
       setClosingTabId(tabId);
       setTimeout(() => setClosingTabId((p) => (p === tabId ? null : p)), 2000);

@@ -12,6 +12,7 @@ import type { CSSProperties } from 'react';
 import { font, radius, space, textSize } from '../../styles/tokens';
 import type { ThemeColors } from '../../styles/tokens';
 import { apiFetch } from '../../lib/api';
+import { AsOf } from '../common/AsOf';
 import { Button } from '../common/Button';
 import type { Project } from '../projects/types';
 import {
@@ -288,10 +289,31 @@ function CalendarPostRow({
   const approve = async () => {
     setBusy(true);
     try {
-      await apiFetch(`/api/projects/${encodeURIComponent(projectId)}/cards/${encodeURIComponent(post.id)}/approve`, {
+      const updated = await apiFetch<{ metadataJson?: Record<string, unknown> }>(`/api/projects/${encodeURIComponent(projectId)}/cards/${encodeURIComponent(post.id)}/approve`, {
         method: 'POST',
       });
       onReload();
+      if (updated?.metadataJson?.postStatus === 'publish_failed') {
+        throw new Error(String(updated.metadataJson.lastPublishError || 'Publishing failed. Please retry.'));
+      }
+    } finally { setBusy(false); }
+  };
+
+  /** Re-attempt a publish that previously failed (`postStatus === 'publish_failed'`).
+   *  Same submission path Approve uses; the outcome — scheduled again, or
+   *  failed again with a fresh error — comes back on the reloaded card, so
+   *  there is nothing to reconcile locally beyond refetching. */
+  const retryPublish = async () => {
+    setBusy(true);
+    try {
+      const updated = await apiFetch<{ metadataJson?: Record<string, unknown> }>(`/api/projects/${encodeURIComponent(projectId)}/cards/${encodeURIComponent(post.id)}/publish/retry`, {
+        method: 'POST',
+      });
+      onReload();
+      if (updated?.metadataJson?.postStatus === 'publish_failed') {
+        throw new Error(String(updated.metadataJson.lastPublishError || 'Publishing failed. Please retry.'));
+      }
+      return true;
     } finally { setBusy(false); }
   };
 
@@ -445,6 +467,35 @@ function CalendarPostRow({
       {media.mediaError && (
         <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: space.md }}>{media.mediaError}</div>
       )}
+      {status === 'publish_failed' && (
+        <div
+          role="alert"
+          data-testid="publish-error"
+          style={{
+            display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: space.md,
+            fontSize: textSize.micro, color: colors.danger, marginTop: space.md,
+            background: colors.bgDeeper, border: `1px solid ${colors.border}`,
+            borderRadius: ROW_INNER_R, padding: `${space.sm}px ${space.md}px`,
+          }}
+        >
+          <span style={{ flex: 1, minWidth: 0 }}>
+            {meta.lastPublishError ?? 'Publishing failed.'}
+            {meta.lastPublishAttemptAt && (
+              <>
+                {' · '}
+                <AsOf asOf={meta.lastPublishAttemptAt} prefix="Last tried" />
+              </>
+            )}
+          </span>
+          <Button
+            colors={colors}
+            type="button"
+            style={btn}
+            disabled={busy}
+            onClick={() => retryPublish()}
+          >Retry publish</Button>
+        </div>
+      )}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: space.md, marginTop: space.lg, alignItems: 'center' }}>
         <label style={{ fontSize: textSize.micro, color: colors.textDim, display: 'flex', alignItems: 'center', gap: space.sm }}>
           Schedule
@@ -462,7 +513,7 @@ function CalendarPostRow({
             style={{ ...growField(colors), fontSize: textSize.micro, borderRadius: ROW_INNER_R }}
           />
         </label>
-        {status !== 'draft' && (
+        {status !== 'draft' && status !== 'publish_failed' && (
         <label style={{ fontSize: textSize.micro, color: colors.textDim, display: 'flex', alignItems: 'center', gap: space.sm }}>
           Status
           <select

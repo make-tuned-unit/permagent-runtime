@@ -28,6 +28,8 @@ import { useCommandCenter } from '../../lib/store';
 import type { ActiveGoal } from '../../lib/useLiveGoals';
 import { font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { MarkdownContent } from '../chat/MarkdownContent';
+import { AsOf } from '../common/AsOf';
 import { Button } from '../common/Button';
 import { Chip } from '../common/Chip';
 import { DetailModal } from '../common/DetailModal';
@@ -85,6 +87,32 @@ function parseA2aMessages(value: unknown): A2aMessage[] {
     && typeof (m as A2aMessage).to_goal === 'string'
     && typeof (m as A2aMessage).body === 'string'
     && typeof (m as A2aMessage).ts === 'string');
+}
+
+/** Mirrors `cards::set_goal_worker_plan`'s write shape (dagK Q2) — the
+ *  worker's own first plan-shaped assistant turn, captured server-side by
+ *  `goal_engine::worker_first_plan` / `worker_plan_from_message`. `attempt` /
+ *  `session_id` / `captured_at` are best-effort context, not guaranteed. */
+interface WorkerPlan {
+  text: string;
+  attempt: number | null;
+  sessionId: string | null;
+  capturedAt: string | null;
+}
+
+/** Metadata is an untrusted, server-written JSON blob — validate shape before
+ *  rendering rather than trusting `unknown` fields into JSX. Absent or
+ *  malformed reads as "no plan" (renders nothing) rather than guessing. */
+function parseWorkerPlan(value: unknown): WorkerPlan | null {
+  if (!value || typeof value !== 'object') return null;
+  const v = value as Record<string, unknown>;
+  if (typeof v.text !== 'string' || !v.text.trim()) return null;
+  return {
+    text: v.text,
+    attempt: typeof v.attempt === 'number' ? v.attempt : null,
+    sessionId: typeof v.session_id === 'string' ? v.session_id : null,
+    capturedAt: typeof v.captured_at === 'string' ? v.captured_at : null,
+  };
 }
 
 /**
@@ -179,6 +207,7 @@ export function GoalDetailModal({
 
   const meta = card?.metadataJson ?? {};
   const workerSessionId = typeof meta.worker_session_id === 'string' ? meta.worker_session_id : null;
+  const workerPlan = parseWorkerPlan(meta.worker_plan);
   const attemptCount = typeof meta.attempt_count === 'number' ? meta.attempt_count : null;
   const isGoal = card?.cardType === 'goal';
   const dependsOn: string[] = Array.isArray(meta.depends_on)
@@ -399,9 +428,9 @@ export function GoalDetailModal({
               {/* Benchmark follow-up (dagK, Devin plan-first pattern): ruling
                   2026-09-25 — don't invent a "Plan" from data that isn't one. This
                   IS the goal's brief, so it gets the section label the rest of
-                  the modal uses; a real "Worker's plan" section (below) shows
-                  only when a genuine plan artifact exists, which none does
-                  yet — capturing one is round 2, not a client-side guess. */}
+                  the modal uses; the separate "Worker's plan" section (below)
+                  shows the worker's OWN stated approach when it captured one
+                  (dagK Q2), never a guess when it didn't. */}
               <div style={{
                 fontSize: textSize.micro, color: colors.textDim, fontFamily: font.mono,
                 textTransform: 'uppercase', letterSpacing: '0.04em',
@@ -417,11 +446,15 @@ export function GoalDetailModal({
             </div>
           )}
 
-          {/* Round 2 seam: renders only if the daemon ever starts writing a
-              genuine worker-facing plan onto the card (e.g. `meta.worker_plan`).
-              Nothing writes that field today — this is intentionally inert,
-              not a guess at what the field will be called. */}
-          {typeof meta.worker_plan === 'string' && meta.worker_plan.trim() && (
+          {/* dagK Q2: the worker's own first plan-shaped assistant turn,
+              captured server-side (goal_engine::worker_first_plan /
+              worker_plan_from_message) and written to `meta.worker_plan` by
+              cards::set_goal_worker_plan. Renders only when the server
+              actually captured one — a plan that was never stated is
+              honestly absent, never a client-side guess (see
+              GoalEvidence::worker_plan's doc comment). The full transcript is
+              one click away via "Open transcript" in the meta grid below. */}
+          {workerPlan && (
             <div>
               <div style={{
                 fontSize: textSize.micro, color: colors.textDim, fontFamily: font.mono,
@@ -429,11 +462,19 @@ export function GoalDetailModal({
               }}>
                 Worker's plan
               </div>
+              {(workerPlan.attempt != null || workerPlan.capturedAt) && (
+                <div style={{
+                  marginTop: space.xs, display: 'flex', gap: space.md,
+                  fontSize: textSize.micro, color: colors.textDim,
+                }}>
+                  {workerPlan.attempt != null && <span>Attempt {workerPlan.attempt}</span>}
+                  {workerPlan.capturedAt && <AsOf asOf={workerPlan.capturedAt} prefix="Captured" />}
+                </div>
+              )}
               <div style={{
                 marginTop: space.sm, fontSize: textSize.small, color: colors.textMuted, lineHeight: 1.5,
-                whiteSpace: 'pre-wrap', wordBreak: 'break-word', userSelect: 'text',
               }}>
-                {meta.worker_plan as string}
+                <MarkdownContent content={workerPlan.text} />
               </div>
             </div>
           )}

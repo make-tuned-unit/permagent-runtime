@@ -127,6 +127,10 @@ describe('queueBucket / queueCounts / filterByQueue', () => {
     id: '4', title: 'F', description: '',
     metadataJson: { postStatus: 'scheduled', mediaStatus: 'failed' },
   };
+  const publishFailed: SocialCard = {
+    id: '5', title: 'PF', description: '',
+    metadataJson: { postStatus: 'publish_failed', lastPublishError: 'Postiz returned HTTP 500' },
+  };
 
   it('buckets a card by its schedule status', () => {
     expect(queueBucket(draft)).toBe('draft');
@@ -138,16 +142,27 @@ describe('queueBucket / queueCounts / filterByQueue', () => {
     expect(queueBucket(failedStill)).toBe('attention');
   });
 
+  // dagK grow-deltas, 2026-09-26: publish failure is a different fact from a
+  // failed still, but the same bucket — either needs the user's eyes.
+  it('puts a failed-publish card in attention too', () => {
+    expect(queueBucket(publishFailed)).toBe('attention');
+  });
+
   it('counts every bucket', () => {
     const counts = queueCounts([draft, scheduled, posted, failedStill]);
     expect(counts).toEqual({ draft: 1, scheduled: 1, posted: 1, attention: 1 });
   });
 
+  it('counts a failed publish into attention alongside a failed still', () => {
+    const counts = queueCounts([draft, scheduled, posted, failedStill, publishFailed]);
+    expect(counts).toEqual({ draft: 1, scheduled: 1, posted: 1, attention: 2 });
+  });
+
   it('filters to one bucket, or passes everything through for "all"', () => {
-    const all = [draft, scheduled, posted, failedStill];
+    const all = [draft, scheduled, posted, failedStill, publishFailed];
     expect(filterByQueue(all, 'all')).toEqual(all);
     expect(filterByQueue(all, 'draft').map((p) => p.id)).toEqual(['1']);
-    expect(filterByQueue(all, 'attention').map((p) => p.id)).toEqual(['4']);
+    expect(filterByQueue(all, 'attention').map((p) => p.id)).toEqual(['4', '5']);
   });
 });
 
@@ -415,5 +430,65 @@ describe('Grow calendar lens', () => {
     expect(container.textContent).not.toContain('A scheduled post');
     expect(container.textContent).not.toContain('A posted post');
     expect(draftTab.getAttribute('aria-selected')).toBe('true');
+  });
+
+  // dagK grow-deltas, 2026-09-26: the post data model previously had no
+  // publish-failure state, so a failed Postiz submit left the card silently
+  // on `draft` with no sign anything was tried. This pins the whole surface:
+  // "Needs attention" catches it, the error shows inline, and Retry publish
+  // posts to the dedicated route and reflects whatever the reload returns.
+  it('shows a failed publish inline under Needs attention, with a working Retry', async () => {
+    let attempts = 0;
+    const card: { id: string; title: string; description: string; metadataJson: Record<string, unknown> } = {
+      id: 'post-5',
+      title: 'Publish me',
+      description: 'body copy',
+      metadataJson: {
+        postStatus: 'publish_failed',
+        scheduledFor: '2026-08-18T12:00:00.000Z',
+        mediaStatus: 'ready',
+        media: [{ kind: 'still', file: 'still.png' }],
+        lastPublishError: 'Postiz returned HTTP 500',
+        lastPublishAttemptAt: '2026-08-18T11:00:00.000Z',
+      },
+    };
+    apiFetchMock.mockImplementation(((url: string, init?: RequestInit) => {
+      if (url === '/api/projects') return Promise.resolve([project('p1', 'First')]);
+      if (url === '/api/grow/higgsfield') return Promise.resolve({ configured: false });
+      // A live list read, not a snapshot — Retry's own effect (mutating
+      // `card` below) must be visible on the very next reload, the same way
+      // a real backend's next GET reflects the previous POST.
+      if (url.includes('/cards?card_type=social_post')) return Promise.resolve([card]);
+      if (url === '/api/projects/p1/cards/post-5/publish/retry' && init?.method === 'POST') {
+        attempts += 1;
+        card.metadataJson = { ...card.metadataJson, postStatus: 'scheduled', lastPublishError: null, lastPublishAttemptAt: null };
+        return Promise.resolve(card);
+      }
+      return Promise.resolve(growExtras(url) ?? []);
+    }) as typeof apiFetch);
+
+    await renderGrow();
+    await openCalendar();
+
+    // "Needs attention" earns a tab, and this card is bucketed into it.
+    const tabs = Array.from(container.querySelectorAll('[data-testid="queue-filter"] [role="tab"]'));
+    expect(tabs.some((t) => t.textContent === 'Needs attention (1)')).toBe(true);
+    expect(container.textContent).toContain('Needs attention');
+    // The chip and the reason are two different things — the chip is the one
+    // shared vocabulary, the error text is the specific reason underneath.
+    const alert = container.querySelector('[data-testid="publish-error"]');
+    expect(alert).toBeTruthy();
+    expect(alert!.textContent).toContain('Postiz returned HTTP 500');
+
+    const retry = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Retry publish')!;
+    await act(async () => { retry.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+    await act(async () => { await Promise.resolve(); });
+
+    expect(attempts).toBe(1);
+    expect(apiFetchMock.mock.calls.some(
+      (c) => String(c[0]) === '/api/projects/p1/cards/post-5/publish/retry' && (c[1] as RequestInit)?.method === 'POST',
+    )).toBe(true);
+    // Reload picked up the new, successful state — the error is gone.
+    expect(container.querySelector('[data-testid="publish-error"]')).toBeNull();
   });
 });

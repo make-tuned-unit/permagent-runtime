@@ -55,6 +55,21 @@ function card() {
 }
 
 describe('ToastCard', () => {
+  it('does not extend an undo deadline on hover or accept Undo while leaving', async () => {
+    const undo = vi.fn(); const commit = vi.fn(); const dismiss = vi.fn();
+    await act(async () => root.render(<ToastCard notification={makeNotification({
+      expiresAt: Date.now() + 8000, action: { label: 'Undo', onAction: undo }, onDismiss: commit,
+    })} ttlMs={6000} onDismiss={dismiss} onActivate={vi.fn()} />));
+    await advance(4000);
+    act(() => card().dispatchEvent(new MouseEvent('mouseover', { bubbles: true, relatedTarget: document.body })));
+    await advance(4000);
+    expect(commit).toHaveBeenCalledTimes(1);
+    const button = Array.from(container.querySelectorAll('button')).find(b => b.textContent === 'Undo')!;
+    act(() => button.click());
+    expect(undo).not.toHaveBeenCalled();
+    await advance(duration.snappy); expect(dismiss).toHaveBeenCalledTimes(1);
+  });
+
   it('auto-dismisses ttlMs after mount, once the exit spring finishes', async () => {
     const onDismiss = vi.fn();
     await act(async () => {

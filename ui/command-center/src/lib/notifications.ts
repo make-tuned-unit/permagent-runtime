@@ -37,6 +37,9 @@ export interface AppNotification {
    *  you can return to any time has no need for an Undo slot). Firing it
    *  dismisses the toast. */
   action?: { label: string; onAction: () => void };
+  /** An irreversible operation's undo deadline; never extended by hover. */
+  expiresAt?: number;
+  onDismiss?: () => void;
 }
 
 export type NotificationKind =
@@ -465,8 +468,8 @@ export function toast(
   title: string,
   body = '',
   onActivate?: () => void,
-  opts?: { tone?: AppNotification['tone']; action?: AppNotification['action']; force?: boolean },
+  opts?: { tone?: AppNotification['tone']; action?: AppNotification['action']; force?: boolean; expiresAt?: number; onDismiss?: () => void },
 ): string | null {
   if (!opts?.force && !getNotificationPrefs().system) return null;
-  return push({ kind: 'system', title, body, onActivate, tone: opts?.tone, action: opts?.action });
+  return push({ kind: 'system', title, body, onActivate, tone: opts?.tone, action: opts?.action, expiresAt: opts?.expiresAt, onDismiss: opts?.onDismiss });
 }

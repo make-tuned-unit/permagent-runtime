@@ -123,6 +123,27 @@ impl StatsPeriod {
     }
 }
 
+/// The `[start, end]` calendar-day bounds of the window that immediately
+/// PRECEDES a `period`-long window ending on `today` — the equivalent prior
+/// period for the Grow Analytics delta chip.
+///
+/// Fixed-duration (`chrono::Duration::days`), never a calendar month, so a
+/// window spanning a short month or a local DST transition still shifts back
+/// by exactly `period.days()` days. The previous window's `end` is exactly
+/// the current window's `start`, so the two tile the timeline with no gap and
+/// no overlap — mirrors `period_and_previous_window` in
+/// `routes::first_party_analytics`, which does the same thing for the
+/// self-hosted collector's finer-grained timestamps.
+pub fn previous_window(
+    period: StatsPeriod,
+    today: chrono::NaiveDate,
+) -> (chrono::NaiveDate, chrono::NaiveDate) {
+    let current_start = today - chrono::Duration::days(period.days() as i64);
+    let previous_end = current_start;
+    let previous_start = previous_end - chrono::Duration::days(period.days() as i64);
+    (previous_start, previous_end)
+}
+
 /// The core metrics the Grow funnel needs. `Option` per metric because not
 /// every provider exposes both: GoatCounter's site-wide total is a visitor
 /// count with no separate pageview aggregate — an absent metric renders as
@@ -363,6 +384,122 @@ pub async fn fetch_stats(
     })
 }
 
+/// Fetch visitors/pageviews for an EXPLICIT `[start, end)` calendar-day
+/// window rather than a provider-relative period ending "today" —
+/// [`fetch_stats`] covers that default case and stays untouched; this exists
+/// solely for the Grow Analytics "previous period" delta chip, where the
+/// window is a specific shifted range (see [`previous_window`]), never "the
+/// last N days from today".
+///
+/// Deliberately a separate function rather than an extra parameter on
+/// [`fetch_stats`]: the two request shapes differ per provider (a relative
+/// `period=30d` vs. an explicit date range), and keeping them apart means the
+/// well-tested default path is not disturbed by this addition.
+///
+/// Shares every guard `fetch_stats` has — validation, and the sovereign-mode /
+/// egress-audit fail-closed check, since this is still cloud egress on the
+/// same audited destination.
+pub async fn fetch_stats_for_window(
+    client: &reqwest::Client,
+    conn: &AnalyticsConnection,
+    api_key: &str,
+    start: chrono::NaiveDate,
+    end: chrono::NaiveDate,
+) -> Result<AnalyticsStats, AnalyticsError> {
+    validate_connection(conn)?;
+    let base = normalize_base_url(&conn.base_url)?;
+    if !sovereignty::guard_outbound_egress(EgressKind::AnalyticsPull, &base, conn.provider.label())
+        .await
+    {
+        return if sovereignty::global_sovereign_mode() {
+            Err(AnalyticsError::SovereignBlocked)
+        } else {
+            Err(AnalyticsError::AuditUnavailable)
+        };
+    }
+    let period_days = (end - start).num_days().max(0) as u32;
+
+    let response = match conn.provider {
+        AnalyticsProvider::Plausible => {
+            // v1's `period=custom&date=<start>,<end>` — the explicit-range
+            // form of the same endpoint `fetch_stats` calls with `period=Nd`.
+            let url = format!(
+                "{base}/api/v1/stats/aggregate?site_id={}&period=custom&date={start},{end}&metrics=visitors,pageviews",
+                urlencoding::encode(conn.site_id.trim()),
+            );
+            client.get(url).bearer_auth(api_key).send().await
+        }
+        AnalyticsProvider::PlausibleV2 => {
+            // v2's query API accepts an explicit `[start, end]` pair in place
+            // of a preset string like `"30d"`.
+            let body = serde_json::json!({
+                "site_id": conn.site_id.trim(),
+                "metrics": ["visitors", "pageviews"],
+                "date_range": [start.to_string(), end.to_string()],
+            });
+            client
+                .post(format!("{base}/api/v2/query"))
+                .bearer_auth(api_key)
+                .json(&body)
+                .send()
+                .await
+        }
+        AnalyticsProvider::Goatcounter => {
+            // Same hour-rounded RFC3339 shape `goatcounter_range` builds,
+            // anchored at midnight since we only have day-level bounds here.
+            let fmt = "%Y-%m-%dT%H:%M:%SZ";
+            let start_str = start
+                .and_hms_opt(0, 0, 0)
+                .expect("midnight is always a valid time")
+                .and_utc()
+                .format(fmt)
+                .to_string();
+            let end_str = end
+                .and_hms_opt(0, 0, 0)
+                .expect("midnight is always a valid time")
+                .and_utc()
+                .format(fmt)
+                .to_string();
+            let url = format!(
+                "{base}/api/v0/stats/total?start={}&end={}",
+                urlencoding::encode(&start_str),
+                urlencoding::encode(&end_str)
+            );
+            client
+                .get(url)
+                .bearer_auth(api_key)
+                .header("Content-Type", "application/json")
+                .send()
+                .await
+        }
+    }
+    .map_err(|e| AnalyticsError::Network(e.to_string()))?;
+
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .map_err(|e| AnalyticsError::Network(e.to_string()))?;
+    if !status.is_success() {
+        let detail: String = body.chars().take(300).collect();
+        return Err(AnalyticsError::Http {
+            status: status.as_u16(),
+            detail,
+        });
+    }
+
+    let (visitors, pageviews) = match conn.provider {
+        AnalyticsProvider::Plausible => parse_plausible_v1(&body)?,
+        AnalyticsProvider::PlausibleV2 => parse_plausible_v2(&body)?,
+        AnalyticsProvider::Goatcounter => parse_goatcounter_total(&body)?,
+    };
+    Ok(AnalyticsStats {
+        visitors,
+        pageviews,
+        period_days,
+    })
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -510,6 +647,39 @@ mod tests {
         assert_eq!(start, "2026-06-20T15:00:00Z");
     }
 
+    #[test]
+    fn previous_window_tiles_immediately_before_the_current_one() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 7, 20).unwrap();
+        let (prev_start, prev_end) = previous_window(StatsPeriod::Days30, today);
+        // The current window is [Jun 20, Jul 20); the previous one ends
+        // exactly there and is the same length — no gap, no overlap.
+        assert_eq!(
+            prev_end,
+            chrono::NaiveDate::from_ymd_opt(2026, 6, 20).unwrap()
+        );
+        assert_eq!(
+            prev_start,
+            chrono::NaiveDate::from_ymd_opt(2026, 5, 21).unwrap()
+        );
+        assert_eq!((prev_end - prev_start).num_days(), 30);
+    }
+
+    #[test]
+    fn previous_window_crosses_a_month_and_year_boundary_cleanly() {
+        // A 7-day window ending Jan 3 starts Dec 27; fixed-duration
+        // arithmetic must carry that back across the year boundary exactly.
+        let today = chrono::NaiveDate::from_ymd_opt(2027, 1, 3).unwrap();
+        let (prev_start, prev_end) = previous_window(StatsPeriod::Days7, today);
+        assert_eq!(
+            prev_end,
+            chrono::NaiveDate::from_ymd_opt(2026, 12, 27).unwrap()
+        );
+        assert_eq!(
+            prev_start,
+            chrono::NaiveDate::from_ymd_opt(2026, 12, 20).unwrap()
+        );
+    }
+
     // ── sovereignty fail-closed ──
 
     #[tokio::test]
@@ -645,6 +815,74 @@ mod tests {
                 }
                 other => panic!("expected Http error, got {other}"),
             }
+        }
+
+        // ── `fetch_stats_for_window` (dagK grow-deltas, 2026-09-26: the Grow
+        // Analytics "previous period" delta chip) ──
+
+        #[tokio::test]
+        async fn window_fetch_uses_an_explicit_plausible_v1_date_range() {
+            let _guard = sovereign_off();
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/api/v1/stats/aggregate"))
+                .and(query_param("site_id", "example.com"))
+                .and(query_param("period", "custom"))
+                .and(query_param("date", "2026-06-20,2026-07-20"))
+                .and(query_param("metrics", "visitors,pageviews"))
+                .respond_with(ResponseTemplate::new(200).set_body_string(
+                    r#"{"results":{"visitors":{"value":5},"pageviews":{"value":9}}}"#,
+                ))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let c = conn(AnalyticsProvider::Plausible, &server.uri());
+            let stats = fetch_stats_for_window(
+                &reqwest::Client::new(),
+                &c,
+                "test-key",
+                chrono::NaiveDate::from_ymd_opt(2026, 6, 20).unwrap(),
+                chrono::NaiveDate::from_ymd_opt(2026, 7, 20).unwrap(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(stats.visitors, Some(5));
+            assert_eq!(stats.pageviews, Some(9));
+            assert_eq!(stats.period_days, 30);
+        }
+
+        #[tokio::test]
+        async fn window_fetch_uses_an_explicit_plausible_v2_date_range_array() {
+            let _guard = sovereign_off();
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/api/v2/query"))
+                .and(body_json(serde_json::json!({
+                    "site_id": "example.com",
+                    "metrics": ["visitors", "pageviews"],
+                    "date_range": ["2026-07-13", "2026-07-20"],
+                })))
+                .respond_with(ResponseTemplate::new(200).set_body_string(
+                    r#"{"results":[{"metrics":[3,4],"dimensions":[]}],"meta":{},"query":{}}"#,
+                ))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let c = conn(AnalyticsProvider::PlausibleV2, &server.uri());
+            let stats = fetch_stats_for_window(
+                &reqwest::Client::new(),
+                &c,
+                "k2",
+                chrono::NaiveDate::from_ymd_opt(2026, 7, 13).unwrap(),
+                chrono::NaiveDate::from_ymd_opt(2026, 7, 20).unwrap(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(stats.visitors, Some(3));
+            assert_eq!(stats.pageviews, Some(4));
+            assert_eq!(stats.period_days, 7);
         }
     }
 }

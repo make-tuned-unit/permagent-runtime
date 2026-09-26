@@ -1,3 +1,4 @@
+import { RelationshipBreakdown } from '../people/RelationshipSignal';
 /**
  * PersonDetailModal (CRM epic slice 2a read view + slice 2b manual edit) — the
  * detail view for one person, opened from a project's Overview People panel or
@@ -666,6 +667,7 @@ export function PersonDetailModal({
         footerStyle={{ flexWrap: 'wrap', justifyContent: 'flex-start', gap: space.md }}
       >
         <div style={{ display: 'flex', flexDirection: 'column', gap: space.xxl }}>
+          {!deletedReport && <RelationshipBreakdown signal={view.relationship_signal} />}
           {deletedReport ? (
             <DeletedCard colors={colors} report={deletedReport} onClose={onClose} />
           ) : merging ? (

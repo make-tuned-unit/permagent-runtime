@@ -15,6 +15,7 @@ const { apiFetch } = vi.hoisted(() => ({ apiFetch: vi.fn() }));
 vi.mock('../../lib/api', () => ({ apiFetch }));
 
 import { PeopleDirectory } from './PeopleDirectory';
+import { useCommandCenter } from '../../lib/store';
 import type { DirectoryPerson } from '../projects/types';
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
@@ -64,6 +65,26 @@ afterEach(() => {
 });
 
 describe('PeopleDirectory', () => {
+  it('filters fading contacts and sorts the measured strength, including zero honestly', async () => {
+    const signal = (score: number, bucket: 'strong' | 'fading' | 'no_signal') => ({ score, bucket,
+      last_interaction_at: null, signals: { meetings: { count: 0, most_recent: null },
+        decisions: { count: 0, most_recent: null }, memories: { count: 0, most_recent: null }, last_contact: { count: 0, most_recent: null } } });
+    apiFetch.mockResolvedValue([
+      person('a', 'Ada', { relationship_signal: signal(0, 'no_signal') }),
+      person('b', 'Blair', { relationship_signal: signal(20, 'fading') }),
+      person('c', 'Casey', { relationship_signal: signal(90, 'strong') }),
+    ]);
+    await act(async () => root.render(<PeopleDirectory />));
+    expect(container.querySelector('[aria-label="No interactions recorded yet"]')).toBeTruthy();
+    await act(async () => (container.querySelector('[data-testid="people-sort-strength"]') as HTMLButtonElement).click());
+    const body = container.textContent!;
+    expect(body.indexOf('Casey')).toBeLessThan(body.indexOf('Blair'));
+    await act(async () => (container.querySelector('[data-testid="people-cohort-fading"]') as HTMLButtonElement).click());
+    expect(container.textContent).toContain('Blair');
+    expect(container.textContent).not.toContain('Casey');
+    expect(container.textContent).not.toContain('Ada');
+  });
+
   it('surfaces people with no project — the cohort no other UI can reach', async () => {
     apiFetch.mockResolvedValue([
       person('a', 'Ashley Lecroy'),
@@ -287,5 +308,24 @@ describe('PeopleDirectory', () => {
     expect(container.textContent).toContain('You');
     expect(container.textContent).not.toContain('Sam Okafor');
     expect(container.textContent).not.toContain('possible duplicate');
+  });
+
+  it('gives only the "You" row an Edit-in-Settings affordance, which opens Settings → Preferences', async () => {
+    apiFetch.mockResolvedValue([
+      person('me', 'Sam Okafor', { kind: 'self' }),
+      person('b', 'Priya Shah', {}),
+    ]);
+    await act(async () => root.render(<PeopleDirectory />));
+
+    const editButtons = container.querySelectorAll('[data-testid="people-row-self-edit-in-settings"]');
+    expect(editButtons.length).toBe(1);
+
+    useCommandCenter.setState({ activePanel: 'chat', pendingSettingsSection: null });
+    await act(async () => {
+      editButtons[0].dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    const state = useCommandCenter.getState();
+    expect(state.activePanel).toBe('settings');
+    expect(state.pendingSettingsSection).toBe('preferences');
   });
 });

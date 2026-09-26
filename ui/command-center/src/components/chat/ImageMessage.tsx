@@ -3,6 +3,7 @@ import { FiImage } from 'react-icons/fi';
 import { Lightbox } from './Lightbox';
 import { font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { pressable } from '../common/pressable';
 
 interface ImageMessageProps {
   src: string;
@@ -49,8 +50,8 @@ export function ImageMessage({ src, alt, allImages }: ImageMessageProps) {
       <img
         src={src}
         alt={alt || 'Attached image'}
-        className="rounded-lg max-h-[400px] max-w-full cursor-pointer hover:opacity-90 transition my-1"
-        onClick={() => setShowLightbox(true)}
+        {...pressable(() => setShowLightbox(true), { label: `View larger: ${alt || 'attached image'}` })}
+        className="pa-pressable rounded-lg max-h-[400px] max-w-full cursor-pointer hover:opacity-90 transition my-1"
         onError={() => setFailed(true)}
       />
       {showLightbox && (

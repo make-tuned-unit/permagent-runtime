@@ -10,6 +10,7 @@ import type { GrowthResultsData } from '../../grow/growthResults';
 import { lastCumulativeNet } from '../../grow/growthTrend';
 
 import { Tooltip } from '../../common/Tooltip';
+import { pressable } from '../../common/pressable';
 /**
  * Home-dashboard view of growth actions taken — fleet trend, then each project.
  *
@@ -73,7 +74,7 @@ export const GrowthResultsCard = memo(function GrowthResultsCard() {
       }}
     >
       <Tooltip content="Open growth results">
-        <div onClick={openFleet} style={{ cursor: 'pointer' }}>
+        <div {...pressable(openFleet, { label: 'Open growth results' })} style={{ cursor: 'pointer' }}>
           <SectionTitle title="Growth" right={summary?.right} />
         </div>
       </Tooltip>
@@ -120,7 +121,7 @@ export const GrowthResultsCard = memo(function GrowthResultsCard() {
               says nothing the note above does not, and reads as broken. */}
           {hasTrend && trend.length > 0 && (
             <Tooltip content="All projects, last 12 weeks">
-              <div onClick={openFleet} style={{ cursor: 'pointer', marginTop: space.xl }}>
+              <div {...pressable(openFleet, { label: 'All projects, last 12 weeks — open growth results' })} style={{ cursor: 'pointer', marginTop: space.xl }}>
                 <div style={{
                   fontFamily: font.mono, fontSize: 9, letterSpacing: '0.08em',
                   textTransform: 'uppercase', color: colors.textDim, marginBottom: space.xs,

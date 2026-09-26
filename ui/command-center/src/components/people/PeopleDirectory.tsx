@@ -1,3 +1,4 @@
+import { RelationshipMeter, isFading } from './RelationshipSignal';
 /**
  * PeopleDirectory — the global people surface.
  *
@@ -23,6 +24,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { FiSliders } from 'react-icons/fi';
 import { apiFetch } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
 import { font, radius, space, textSize } from '../../styles/tokens';
@@ -33,6 +35,7 @@ import type { DirectoryPerson } from '../projects/types';
 import { Button } from '../common/Button';
 import { Chip } from '../common/Chip';
 import { StateBlock } from '../common/StateBlock';
+import { Tooltip } from '../common/Tooltip';
 
 type Status = 'loading' | 'error' | 'ready';
 
@@ -94,6 +97,15 @@ export function PeopleDirectory() {
   const openPersonDetail = useCommandCenter(s => s.openPersonDetail);
   const bumpPeople = useCommandCenter(s => s.bumpPeople);
   const peopleRev = useCommandCenter(s => s.peopleRev);
+  const setPendingSettingsSection = useCommandCenter(s => s.setPendingSettingsSection);
+  const setActivePanel = useCommandCenter(s => s.setActivePanel);
+  // The "You" row's small edit affordance — same deep-link shape
+  // `openAgentSettings` uses for a worker persona (store.ts), reused here
+  // rather than duplicated since it is exactly "open Settings on a pane".
+  const openOwnerPreferences = useCallback(() => {
+    setPendingSettingsSection('preferences');
+    setActivePanel('settings');
+  }, [setPendingSettingsSection, setActivePanel]);
 
   const [people, setPeople] = useState<DirectoryPerson[]>([]);
   const [status, setStatus] = useState<Status>('loading');
@@ -103,7 +115,8 @@ export function PeopleDirectory() {
   const [newName, setNewName] = useState('');
   const [addError, setAddError] = useState<string | null>(null);
   const [addBusy, setAddBusy] = useState(false);
-  const [cohort, setCohort] = useState<'all' | 'quiet' | 'followup'>('all');
+  const [strengthSort, setStrengthSort] = useState(false);
+  const [cohort, setCohort] = useState<'all' | 'quiet' | 'followup' | 'fading'>('all');
   /**
    * True when rows came back but every attribute is null — the shape of a
    * Brain-down daemon, because the overlay clears the columns and then returns
@@ -171,11 +184,13 @@ export function PeopleDirectory() {
   const visible = useMemo(() => {
     const filtered = people.filter(p => {
       if (orgsOnly && !isOrganisation(p)) return false;
+      if (cohort === 'fading') return !isSelf(p) && isFading(p.relationship_signal);
       if (cohort === 'quiet') return isQuiet(p.last_contact_at);
       if (cohort === 'followup') return isFollowUpDue(p.next_follow_up_at);
       return true;
     });
     return [...filtered].sort((a, b) => {
+      if (strengthSort) return (b.relationship_signal?.score ?? -1) - (a.relationship_signal?.score ?? -1) || a.display_name.localeCompare(b.display_name);
       const aDue = isFollowUpDue(a.next_follow_up_at) ? 0 : 1;
       const bDue = isFollowUpDue(b.next_follow_up_at) ? 0 : 1;
       if (aDue !== bDue) return aDue - bDue;
@@ -184,7 +199,7 @@ export function PeopleDirectory() {
       if (aQ !== bQ) return aQ - bQ;
       return a.display_name.localeCompare(b.display_name);
     });
-  }, [people, cohort, orgsOnly]);
+  }, [people, cohort, orgsOnly, strengthSort]);
 
   /** Resolves false when nothing was added — the failure is swallowed into
    *  `addError` below, so the button must not tick over the top of it. */
@@ -338,6 +353,7 @@ export function PeopleDirectory() {
                 of announcing when they were hand-rolled. */}
             {([
               ['all', 'All'],
+              ['fading', 'Fading'],
               ['quiet', `Quiet${quietCount ? ` ${quietCount}` : ''}`],
               ['followup', `Follow-up${followUpCount ? ` ${followUpCount}` : ''}`],
             ] as const).map(([key, label]) => (
@@ -355,6 +371,7 @@ export function PeopleDirectory() {
             {/* P3: only appears once the backend actually sends a `kind` this
                 can filter on — an org chip that always shows everyone (or
                 always shows none) is worse than no chip. */}
+            <Chip kind="filter" tone="accent" pressed={strengthSort} onClick={() => setStrengthSort(v => !v)} data-testid="people-sort-strength">Strength</Chip>
             {orgCount > 0 && (
               <Chip
                 kind="filter"
@@ -375,13 +392,15 @@ export function PeopleDirectory() {
           ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: space.xs }}>
             {visible.map(p => (
-              // The row IS the button, and it distributes its own children
-              // against a `flex: 1` spacer — so the primitive's label wrapper
-              // is dissolved with `display: contents` and the children stay
-              // direct flex children, laid out exactly as before. What is new
-              // is that a clickable row finally acknowledges the pointer.
+              // Rows are usually a single Button (the row IS the button). The
+              // "You" row is the one exception: it carries a second, small
+              // action ("Edit in Settings" — R5, one click from where the
+              // agent's own understanding of "who you are" is mentioned), so
+              // it needs a sibling rather than a child — two nested `<button>`
+              // elements would be invalid HTML and would break the row's own
+              // click target along with it.
+              <div key={p.entity_uuid} style={{ display: 'flex', gap: space.xs, alignItems: 'stretch' }}>
               <Button
-                key={p.entity_uuid}
                 colors={colors}
                 data-testid={isOrganisation(p) ? 'people-row-organisation' : 'people-row-person'}
                 onClick={() => openPersonDetail(null, p)}
@@ -396,6 +415,8 @@ export function PeopleDirectory() {
                   '--pa-btn-pad': '8px 10px',
                   '--pa-btn-radius': `${radius.sm}px`,
                   '--pa-btn-weight': 400,
+                  flex: 1,
+                  minWidth: 0,
                   gap: space.lg,
                   textAlign: 'left',
                   fontFamily: font.body,
@@ -436,6 +457,7 @@ export function PeopleDirectory() {
                   </Chip>
                 )}
                 <span style={{ flex: 1 }} />
+                {!isSelf(p) && <RelationshipMeter signal={p.relationship_signal} />}
                 {/* P2: the banner above already says nobody has a recorded
                     interaction — repeating "never" on every one of N rows
                     added nothing, so it is only drawn once something has one. */}
@@ -460,6 +482,34 @@ export function PeopleDirectory() {
                   </span>
                 )}
               </Button>
+              {isSelf(p) && (
+                <Tooltip content="Edit in Settings">
+                  <Button
+                    colors={colors}
+                    variant="bare"
+                    aria-label="Edit in Settings"
+                    data-testid="people-row-self-edit-in-settings"
+                    onClick={() => openOwnerPreferences()}
+                    style={{
+                      '--pa-btn-fg': colors.textDim,
+                      '--pa-btn-fg-hover': colors.text,
+                      '--pa-btn-bg-hover': colors.surfaceHi,
+                      '--pa-btn-border': colors.border,
+                      '--pa-btn-border-hover': colors.borderHi,
+                      '--pa-btn-pad': '0',
+                      '--pa-btn-radius': `${radius.sm}px`,
+                      width: 32,
+                      flexShrink: 0,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    } as CSSProperties}
+                  >
+                    <FiSliders size={13} aria-hidden />
+                  </Button>
+                </Tooltip>
+              )}
+              </div>
             ))}
           </div>
           )}

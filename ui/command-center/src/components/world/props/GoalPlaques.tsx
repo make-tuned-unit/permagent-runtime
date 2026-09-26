@@ -15,6 +15,7 @@ import { useCommandCenter, navigateToTool } from '../../../lib/store';
 import { radius, space } from '../../../styles/tokens';
 
 import { Tooltip } from '../../common/Tooltip';
+import { pressable } from '../../common/pressable';
 const ROW_Z = [0, -3.0];
 const STATION_X = [-2.4, 0, 2.4];
 const PLAQUE_Y = 2.35;
@@ -84,7 +85,15 @@ function PlaqueCard({
     <Html position={position} center distanceFactor={14} style={{ pointerEvents: 'none' }}>
       <Tooltip content="Open goal detail">
         <div
-          onClick={openDetail}
+          {...pressable(openDetail, { label: `Open goal detail: ${goal.title}` })}
+          // No `.pa-pressable` class: this card is a drei `<Html>` overlay
+          // positioned in 3D screen-space (`center distanceFactor={14}`), and
+          // the shared press-dip's `transform: scale()` would fight the
+          // wrapper's own centering transform and visibly misplace the
+          // plaque on click. Role/tabIndex/Enter+Space still come from the
+          // primitive; hover/press feedback here is the existing glow/border
+          // state below instead.
+          className=""
           onPointerEnter={() => setHover(true)}
           onPointerLeave={() => setHover(false)}
           style={{

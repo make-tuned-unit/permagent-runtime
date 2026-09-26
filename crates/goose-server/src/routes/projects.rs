@@ -594,6 +594,14 @@ async fn list_project_people_handler(
             );
         }
     }
+    // Dag K owner-identity (2026-09-26): the owner's own record can be
+    // associated with a project like any contact, and this list must render it
+    // as "You" too — the People → List directory is not the only surface that
+    // reads `person.is_self`.
+    let owner = permagent::config::agent_identity::load_owner_identity();
+    for pp in &mut people {
+        permagent::people::overlay_owner_self(std::slice::from_mut(&mut pp.person), &owner);
+    }
     Ok(Json(people))
 }
 

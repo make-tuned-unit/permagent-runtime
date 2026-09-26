@@ -1,6 +1,6 @@
 import { type CSSProperties } from 'react';
 import { FiPlus, FiX, FiGlobe, FiExternalLink } from 'react-icons/fi';
-import { font, textSize } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { CycleTabsButton } from '../build/CycleTabsButton';
@@ -20,7 +20,7 @@ interface BrowserTabsProps {
   activeTabId: string;
   closingTabId: string | null;
   onSelectTab: (tabId: string) => void;
-  onCloseTab: (tabId: string, e?: React.MouseEvent) => void;
+  onCloseTab: (tabId: string) => void;
   onNewTab: () => void;
   onCycleTab: () => void;
   onPopOut?: () => void;
@@ -52,18 +52,13 @@ export function BrowserTabs({
         {tabs.map((tab) => {
           const isActive = tab.id === activeTabId;
           return (
-            // The tab keeps its own flex distribution — globe, truncating
-            // title, close affordance — so the primitive's label wrapper is
-            // dissolved with `display: contents`. `borderRight` stays inline:
-            // it is the strip's divider, not the button's own outline, and
-            // `--pa-btn-border` is transparent so the other three edges paint
-            // nothing.
-            <Button
+            // `borderRight` stays inline: it is the strip's divider, not the
+            // row's own outline, and `--pa-btn-border` is transparent so the
+            // other three edges paint nothing.
+            // Selection and removal are separate sibling buttons.
+            <div
               key={tab.id}
-              colors={colors}
-              variant="bare"
-              onClick={() => onSelectTab(tab.id)}
-              className="group shrink-0"
+              className="pa-btn group shrink-0"
               style={{
                 ...chromeBareVars(colors, {
                   bg: isActive ? colors.fillSubtle : 'transparent',
@@ -86,34 +81,32 @@ export function BrowserTabs({
                 borderRight: `1px solid ${colors.border}`,
               } as CSSProperties}
             >
+              <Button colors={colors} variant="bare" aria-label={`Switch to tab: ${tab.label || 'New Tab'}`} onClick={() => onSelectTab(tab.id)} style={{ ...chromeBareVars(colors, { pad: "0", radiusPx: 0 }), gap: CHROME_GEOM.bookmarksGap, minWidth: 0 }}>
               <FiGlobe size={11} className={tab.loading ? 'animate-spin' : ''} />
               <span className="truncate max-w-[120px]">
                 {tab.label || 'New Tab'}
               </span>
+              </Button>
               {tabs.length > 1 && (
-                <span
-                  onClick={(e) => onCloseTab(tab.id, e)}
-                  className={`ml-1 rounded p-0.5 transition-colors ${
-                    closingTabId === tab.id ? '' : 'opacity-0 group-hover:opacity-100'
-                  }`}
-                  style={
-                    closingTabId === tab.id
-                      ? { background: dangerWash(colors), color: colors.danger }
-                      : { color: colors.textMuted }
-                  }
-                  onMouseEnter={(e) => {
-                    if (closingTabId === tab.id) return;
-                    e.currentTarget.style.background = colors.fillHover;
-                  }}
-                  onMouseLeave={(e) => {
-                    if (closingTabId === tab.id) return;
-                    e.currentTarget.style.background = 'transparent';
-                  }}
+                <Button
+                  colors={colors}
+                  variant="bare"
+                  type="button"
+                  aria-label={`Close tab: ${tab.label || 'New Tab'}`}
+                  onClick={(e) => { e.stopPropagation(); onCloseTab(tab.id); }}
+                  className={`ml-1 ${closingTabId === tab.id ? '' : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100'}`}
+                  style={{
+                    '--pa-btn-pad': '2px',
+                    '--pa-btn-radius': `${radius.xs}px`,
+                    '--pa-btn-bg': closingTabId === tab.id ? dangerWash(colors) : 'transparent',
+                    '--pa-btn-fg': closingTabId === tab.id ? colors.danger : colors.textMuted,
+                    '--pa-btn-bg-hover': closingTabId === tab.id ? dangerWash(colors) : colors.fillHover,
+                  } as CSSProperties}
                 >
                   <FiX size={10} />
-                </span>
+                </Button>
               )}
-            </Button>
+            </div>
           );
         })}
       </div>

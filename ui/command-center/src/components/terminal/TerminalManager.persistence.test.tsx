@@ -60,8 +60,8 @@ afterEach(() => {
 });
 
 function tabLabels(): string[] {
-  // Tab strip buttons carry the label inside a truncating span.
-  return Array.from(container.querySelectorAll('button span.truncate')).map(
+  // Selection and close are separate native buttons.
+  return Array.from(container.querySelectorAll('button[aria-label^="Switch to terminal tab:"] span.truncate')).map(
     el => el.textContent ?? '',
   );
 }

@@ -82,14 +82,21 @@ pub struct Person {
     /// filed — see `people_create::classify_person_or_org`), so this is
     /// forward-declared plumbing more than a populated signal today.
     pub kind: String,
-    /// True when this row is the operator's own record. **Always `false`**:
-    /// no owner/self identity concept exists anywhere in this codebase today
-    /// (searched `config::agent_identity`, the `users` table, and the
-    /// decision-actor constants — `ACTOR_JESSE` is a string literal for
-    /// decision attribution, not a `people` row link). Reported rather than
-    /// guessed from a name match, per the memory-feed lane's instruction not
-    /// to invent an identity. A real owner-identity source needs to exist
-    /// before this can be anything but `false`.
+    /// True when this row is the operator's own record.
+    ///
+    /// **Always `false` out of the DB / at construction** (see [`row_to_person`]
+    /// and every other builder in this module) — nothing at the storage layer
+    /// knows who the owner is. It becomes meaningful only after a caller
+    /// overlays [`overlay_owner_self`] using the configured
+    /// [`crate::config::agent_identity::OwnerIdentity`] (dagK owner-identity,
+    /// 2026-09-26; `routes::people` does this for every people-list read path).
+    /// Before that overlay existed this field could never be anything but
+    /// `false` — no owner/self identity concept existed anywhere in this
+    /// codebase (`config::agent_identity` had no owner record, there was no
+    /// `users` table, and the decision-actor constants like `ACTOR_JESSE` are
+    /// string literals for decision attribution, not a `people` row link) — so
+    /// People → List rendered the operator's own record like any other
+    /// contact, including flagging it as a possible duplicate of itself.
     pub is_self: bool,
     pub created_at: String,
     pub updated_at: String,
@@ -585,6 +592,62 @@ pub async fn list_people(
     Ok(rows.iter().map(row_to_person).collect())
 }
 
+// ── Owner/self overlay (dagK owner-identity, 2026-09-26) ────────────────────
+
+/// Whether `person` IS the configured owner's own directory record.
+///
+/// Two ways to match, checked in order, both conservative by design (a false
+/// positive here means the operator's own record silently absorbs someone
+/// else's — see the People merge/delete audit trail for why that is not a
+/// cheap mistake to undo):
+///
+/// 1. **Explicit link** (`owner.linked_person_id`) — wins whenever set, by
+///    `entity_uuid` equality. This is the only path that survives the owner
+///    renaming themselves in the directory.
+/// 2. **Name fallback** — only when no link is set: a case-insensitive,
+///    WHOLE-STRING match against `owner.display_name`. Deliberately not a
+///    substring or fuzzy match ("Ada" must not match "Ada Lovelace" or
+///    "Ada's Assistant") — a false-positive self-match would hide a real
+///    contact from the directory's duplicate flagging and misroute the "You"
+///    label onto a stranger who happens to share a first name.
+///
+/// Returns `false` whenever neither `linked_person_id` nor a non-empty
+/// `display_name` is configured — an owner record nobody has ever filled in
+/// must never accidentally match every blank-named row.
+pub fn is_owner_self(
+    person: &Person,
+    owner: &crate::config::agent_identity::OwnerIdentity,
+) -> bool {
+    if let Some(linked) = owner.linked_person_id.as_deref() {
+        if !linked.trim().is_empty() {
+            return person.entity_uuid == linked;
+        }
+    }
+    match owner.display_name.as_deref().map(str::trim) {
+        Some(name) if !name.is_empty() => person.display_name.trim().eq_ignore_ascii_case(name),
+        _ => false,
+    }
+}
+
+/// Overlay `is_self` onto every row per [`is_owner_self`].
+///
+/// Call this after [`crate::people`]'s other overlays
+/// (`routes::people::overlay_graph_attributes` / `overlay_meeting_contact`) in
+/// every people-list read path, so the owner's own record — however it is
+/// identified — renders as "You" (`peopleKind.isSelf` on the UI side) and is
+/// excluded from duplicate-flagging (`peopleKind.isContact`). Every row not
+/// matched by [`is_owner_self`] is explicitly reset to `false`, so a stale
+/// `true` from a previous overlay pass can never survive a re-run against a
+/// changed owner record.
+pub fn overlay_owner_self(
+    people: &mut [Person],
+    owner: &crate::config::agent_identity::OwnerIdentity,
+) {
+    for p in people.iter_mut() {
+        p.is_self = is_owner_self(p, owner);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -623,9 +686,10 @@ mod tests {
     }
 
     /// `people.kind` defaults to `"person"` for every row minted through the
-    /// ordinary write path, and `is_self` is always `false` — no owner/self
-    /// identity source exists in this codebase to derive it from (memory-feed
-    /// lane, 2026-09-25; see the field's doc comment on [`Person`]).
+    /// ordinary write path, and `is_self` is always `false` straight out of the
+    /// DB/write layer — it only becomes `true` once a reader applies
+    /// [`overlay_owner_self`] using the configured owner record (dagK
+    /// owner-identity, 2026-09-26; see the field's doc comment on [`Person`]).
     #[tokio::test]
     async fn kind_defaults_to_person_and_is_self_is_always_false() {
         let pool = fresh_pool().await;
@@ -1114,5 +1178,109 @@ mod tests {
         .unwrap();
         assert_eq!(q.len(), 1);
         assert_eq!(q[0].display_name, "John Roe");
+    }
+
+    // ── Owner/self overlay (dagK owner-identity, 2026-09-26) ────────────
+
+    use crate::config::agent_identity::OwnerIdentity;
+
+    #[test]
+    fn unconfigured_owner_matches_nobody() {
+        let p = blank_person();
+        assert!(!is_owner_self(&p, &OwnerIdentity::default()));
+    }
+
+    #[test]
+    fn explicit_link_wins_by_entity_uuid_regardless_of_name() {
+        let mut p = blank_person();
+        p.entity_uuid = "person-uuid-1".into();
+        p.display_name = "Totally Different Name".into();
+        let owner = OwnerIdentity {
+            display_name: Some("Ignored Because Linked".into()),
+            email: None,
+            linked_person_id: Some("person-uuid-1".into()),
+        };
+        assert!(is_owner_self(&p, &owner));
+    }
+
+    #[test]
+    fn explicit_link_does_not_match_a_different_person() {
+        let mut p = blank_person();
+        p.entity_uuid = "person-uuid-1".into();
+        let owner = OwnerIdentity {
+            linked_person_id: Some("person-uuid-2".into()),
+            ..Default::default()
+        };
+        assert!(!is_owner_self(&p, &owner));
+    }
+
+    #[test]
+    fn name_fallback_matches_case_insensitively_when_unlinked() {
+        let mut p = blank_person();
+        p.display_name = "Jane Doe".into();
+        let owner = OwnerIdentity {
+            display_name: Some("jane DOE".into()),
+            ..Default::default()
+        };
+        assert!(is_owner_self(&p, &owner));
+    }
+
+    /// Deliberately conservative: a first-name-only owner record must not
+    /// absorb a directory row that merely starts with it — the false-positive
+    /// this whole function exists to avoid.
+    #[test]
+    fn name_fallback_requires_a_whole_string_match_not_a_prefix() {
+        let mut p = blank_person();
+        p.display_name = "Jane Doe".into();
+        let owner = OwnerIdentity {
+            display_name: Some("Jane".into()),
+            ..Default::default()
+        };
+        assert!(!is_owner_self(&p, &owner));
+    }
+
+    #[test]
+    fn blank_owner_display_name_matches_nobody() {
+        let mut p = blank_person();
+        p.display_name = String::new();
+        let owner = OwnerIdentity {
+            display_name: Some("   ".into()),
+            ..Default::default()
+        };
+        assert!(!is_owner_self(&p, &owner));
+    }
+
+    #[test]
+    fn overlay_sets_true_for_the_match_and_false_for_everyone_else() {
+        let mut jane = blank_person();
+        jane.entity_uuid = "u-jane".into();
+        jane.display_name = "Jane Doe".into();
+        let mut john = blank_person();
+        john.entity_uuid = "u-john".into();
+        john.display_name = "John Roe".into();
+        let mut rows = vec![jane, john];
+
+        let owner = OwnerIdentity {
+            display_name: Some("Jane Doe".into()),
+            ..Default::default()
+        };
+        overlay_owner_self(&mut rows, &owner);
+        assert!(rows[0].is_self);
+        assert!(!rows[1].is_self);
+    }
+
+    /// A row overlaid `true` on a previous pass must flip back to `false` once
+    /// the owner record no longer matches it — the overlay must not just set
+    /// `true` and leave everyone else's prior value untouched.
+    #[test]
+    fn overlay_clears_a_stale_true_when_the_owner_record_changes() {
+        let mut p = blank_person();
+        p.entity_uuid = "u-jane".into();
+        p.display_name = "Jane Doe".into();
+        p.is_self = true;
+        let mut rows = vec![p];
+
+        overlay_owner_self(&mut rows, &OwnerIdentity::default());
+        assert!(!rows[0].is_self);
     }
 }

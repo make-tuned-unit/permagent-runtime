@@ -13,11 +13,13 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 const apiFetch = vi.fn();
+const setOpenGrowLens = vi.fn();
+const navigateToTool = vi.fn();
 vi.mock('../../../lib/api', () => ({ apiFetch: (...a: unknown[]) => apiFetch(...a) }));
 vi.mock('../../../lib/store', () => ({
   useCommandCenter: (sel: (s: Record<string, unknown>) => unknown) =>
-    sel({ setOpenGrowLens: () => {}, growProject: () => {} }),
-  navigateToTool: () => {},
+    sel({ setOpenGrowLens: (...a: unknown[]) => setOpenGrowLens(...a), growProject: () => {} }),
+  navigateToTool: (...a: unknown[]) => navigateToTool(...a),
 }));
 
 import { GrowthResultsCard, growthSummary } from './GrowthResultsCard';
@@ -31,6 +33,8 @@ beforeEach(() => {
   document.body.appendChild(container);
   root = createRoot(container);
   apiFetch.mockReset();
+  setOpenGrowLens.mockReset();
+  navigateToTool.mockReset();
 });
 afterEach(() => {
   act(() => root.unmount());
@@ -86,6 +90,37 @@ it('decisive verdicts keep the trend line and per-project counts', async () => {
   expect(text).toContain('All projects');
   expect(text).toContain('2 helped');
   expect(text).toContain('3 measured');
+});
+
+it('R4/R8 dagK-pressable: the "Growth" title row is a keyboard-operable control that opens the fleet results', async () => {
+  apiFetch.mockResolvedValue(fleet({}));
+  await render();
+  const row = container.querySelector('[aria-label="Open growth results"]') as HTMLElement;
+  expect(row).toBeTruthy();
+  expect(row.getAttribute('role')).toBe('button');
+  expect(row.tabIndex).toBe(0);
+  expect(row.className).toContain('pa-pressable');
+  await act(async () => {
+    row.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+  });
+  expect(setOpenGrowLens).toHaveBeenCalledWith('results');
+  expect(navigateToTool).toHaveBeenCalledWith('grow');
+});
+
+it('R4/R8 dagK-pressable: the sparkline row is a keyboard-operable control (decisive verdicts only)', async () => {
+  const weeks = zeroWeeks.map((w, i) => (i === 11 ? { ...w, helped: 2, net: 2, cumulativeNet: 2 } : w));
+  apiFetch.mockResolvedValue(fleet({
+    helped: 2, inconclusive: 1, trend: weeks,
+    byProject: [{ projectId: 'p1', projectName: 'Venture site', helped: 2, hindered: 0, noEffect: 0, points: weeks }],
+  }));
+  await render();
+  const row = container.querySelector('[aria-label^="All projects, last 12 weeks"]') as HTMLElement;
+  expect(row).toBeTruthy();
+  expect(row.tabIndex).toBe(0);
+  await act(async () => {
+    row.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+  });
+  expect(navigateToTool).toHaveBeenCalledWith('grow');
 });
 
 it('growthSummary counts inconclusive into measured and flags the all-inconclusive case', () => {

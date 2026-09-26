@@ -4,7 +4,7 @@ import { Terminal } from './Terminal';
 import { useTheme } from '../../styles/useTheme';
 import { registerDropZone } from '../../lib/native-drag-drop';
 import { resolvePtyInjection } from './terminalDrop';
-import { duration, ease, font, textSize } from '../../styles/tokens';
+import { font, radius, textSize } from '../../styles/tokens';
 import { Button } from '../common/Button';
 import { useGlass } from '../common/Glass';
 import { CycleTabsButton } from '../build/CycleTabsButton';
@@ -418,9 +418,10 @@ export const TerminalManager = forwardRef<TerminalManagerHandle, TerminalManager
     setActiveTabId(tab.id);
   }, []);
 
-  const handleCloseTab = useCallback((tabId: string, e?: React.MouseEvent) => {
-    e?.stopPropagation();
-
+  // The close affordance is its own real, sibling `<button>` (not nested
+  // inside the tab's own control) — it stops its own propagation, so
+  // nothing here needs a mouse event to do it too.
+  const handleCloseTab = useCallback((tabId: string) => {
     setClosingTabId(prev => {
       if (prev === tabId) {
         setTabs(prevTabs => {
@@ -609,13 +610,10 @@ export const TerminalManager = forwardRef<TerminalManagerHandle, TerminalManager
           {tabs.map(tab => {
             const isActive = tab.id === activeTabId;
             return (
-              <Button
+            // Selection and removal are separate sibling buttons.
+            <div
                 key={tab.id}
-                colors={colors}
-                variant="bare"
-                onClick={() => setActiveTabId(tab.id)}
-                // `group` stays: the close affordance reveals on group-hover.
-                className="group shrink-0"
+                className="pa-btn group shrink-0"
                 style={{
                   ...chromeBareVars(colors, {
                     bg: isActive ? colors.fillSubtle : 'transparent',
@@ -642,31 +640,28 @@ export const TerminalManager = forwardRef<TerminalManagerHandle, TerminalManager
                   gap: CHROME_GEOM.tabGap,
                 } as CSSProperties}
               >
+                <Button colors={colors} variant="bare" aria-label={`Switch to terminal tab: ${tab.label}`} onClick={() => setActiveTabId(tab.id)} style={{ ...chromeBareVars(colors, { pad: '0', radiusPx: 0 }), gap: CHROME_GEOM.tabGap, minWidth: 0 }}>
                 <FiTerminal size={11} />
                 <span className="truncate max-w-[140px]">{tab.label}</span>
-                <span
-                  onClick={(e) => handleCloseTab(tab.id, e)}
-                  className={`ml-1 rounded p-0.5 ${
-                    closingTabId === tab.id ? '' : 'opacity-0 group-hover:opacity-100'
-                  }`}
+                </Button>
+                <Button
+                  colors={colors}
+                  variant="bare"
+                  type="button"
+                  aria-label={`Close terminal tab: ${tab.label}`}
+                  onClick={(e) => { e.stopPropagation(); handleCloseTab(tab.id); }}
+                  className={`ml-1 ${closingTabId === tab.id ? '' : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100'}`}
                   style={{
-                    transition: `background-color ${duration.fast}ms ${ease.smooth}, color ${duration.fast}ms ${ease.smooth}`,
-                    ...(closingTabId === tab.id
-                      ? { background: dangerWash(colors), color: colors.danger }
-                      : { color: colors.textMuted }),
-                  }}
-                  onMouseEnter={(e) => {
-                    if (closingTabId === tab.id) return;
-                    e.currentTarget.style.background = colors.fillHover;
-                  }}
-                  onMouseLeave={(e) => {
-                    if (closingTabId === tab.id) return;
-                    e.currentTarget.style.background = 'transparent';
-                  }}
+                    '--pa-btn-pad': '2px',
+                    '--pa-btn-radius': `${radius.xs}px`,
+                    '--pa-btn-bg': closingTabId === tab.id ? dangerWash(colors) : 'transparent',
+                    '--pa-btn-fg': closingTabId === tab.id ? colors.danger : colors.textMuted,
+                    '--pa-btn-bg-hover': closingTabId === tab.id ? dangerWash(colors) : colors.fillHover,
+                  } as CSSProperties}
                 >
                   <FiX size={10} />
-                </span>
-              </Button>
+                </Button>
+              </div>
             );
           })}
         </div>

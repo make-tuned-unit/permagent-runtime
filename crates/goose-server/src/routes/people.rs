@@ -128,6 +128,21 @@ pub(crate) async fn overlay_meeting_contact(
     }
 }
 
+/// Overlay `is_self` using the configured owner record (dagK owner-identity,
+/// 2026-09-26). Call in every people-list read path, after the graph/meeting
+/// overlays above, so the owner's own record — however it is identified —
+/// renders as "You" (`peopleKind.isSelf`) and is excluded from
+/// duplicate-flagging (`peopleKind.isContact`) instead of appearing twice, as
+/// itself and flagged a possible duplicate of itself.
+///
+/// A small sync file read (`owner.yaml`, typically a few dozen bytes) rather
+/// than an `await` — same tradeoff `put_identity`/`save_agent_config` already
+/// make for `agent.yaml` on this server.
+pub(crate) fn overlay_owner_self(people: &mut [Person]) {
+    let owner = permagent::config::agent_identity::load_owner_identity();
+    permagent::people::overlay_owner_self(people, &owner);
+}
+
 #[derive(Debug, Deserialize)]
 pub struct PeopleQuery {
     /// Exact company match.
@@ -163,6 +178,7 @@ async fn list_people_handler(
 
     overlay_graph_attributes(state.brain.as_ref(), people.iter_mut().collect()).await;
     overlay_meeting_contact(&pool, &mut people).await;
+    overlay_owner_self(&mut people);
 
     Ok(Json(people))
 }
@@ -645,6 +661,11 @@ pub struct DirectoryPerson {
     person: Person,
     projects: Vec<permagent::project_association::ProjectRef>,
     next_follow_up_at: Option<String>,
+    /// Computed, signal-derived relationship strength (never the manual
+    /// `relationship_strength` field `Person` already flattens onto this same
+    /// object — see `crate::routes::relationship_strength` module docs for why
+    /// this lives under a different wire key).
+    relationship_signal: Option<crate::routes::relationship_strength::RelationshipStrength>,
 }
 
 /// The whole directory in two queries — `list_people` plus one grouped pass over
@@ -674,6 +695,7 @@ async fn people_directory_handler(
     // this the directory renders stale/blank column values as if they were truth.
     overlay_graph_attributes(state.brain.as_ref(), people.iter_mut().collect()).await;
     overlay_meeting_contact(&pool, &mut people).await;
+    overlay_owner_self(&mut people);
 
     let mut refs = permagent::project_association::project_refs_by_person(&pool)
         .await
@@ -681,6 +703,14 @@ async fn people_directory_handler(
     let follow_ups = permagent::person_meetings::next_follow_up_by_person(&pool)
         .await
         .unwrap_or_default();
+    // One shared bulk pass backs both this list and the Home `people_attention`
+    // card (`dashboard_cards::get_people_attention`) — one source of truth for
+    // the score. This is the one call site that also records a Brain memory
+    // when a person's bucket newly crosses into fading/dormant (see
+    // `relationship_strength_by_person`'s `feed_transitions` doc).
+    let mut relationship_signals =
+        crate::routes::relationship_strength::relationship_strength_by_person(&pool, &people, true)
+            .await;
 
     Ok(Json(
         people
@@ -688,10 +718,12 @@ async fn people_directory_handler(
             .map(|person| {
                 let next_follow_up_at = follow_ups.get(&person.entity_uuid).cloned();
                 let projects = refs.remove(&person.entity_uuid).unwrap_or_default();
+                let relationship_signal = relationship_signals.remove(&person.entity_uuid);
                 DirectoryPerson {
                     person,
                     projects,
                     next_follow_up_at,
+                    relationship_signal,
                 }
             })
             .collect(),
@@ -1032,6 +1064,13 @@ async fn duplicate_suggestions_handler(
     // graph is authoritative for those. Overlay before scoring or an email that
     // only exists in `entity_fields` is invisible to the matcher.
     overlay_graph_attributes(state.brain.as_ref(), rows.iter_mut().collect()).await;
+    overlay_owner_self(&mut rows);
+    // The owner is never a "duplicate contact" of themself — same rule the
+    // People → List UI applies client-side (`peopleKind.isContact`,
+    // PeopleDirectory.tsx's `duplicateIds`): flagging it here would repeat what
+    // rendering it as "You" already says, against whichever other record
+    // happens to share a similar name.
+    rows.retain(|p| !p.is_self);
     let limit = q.limit.unwrap_or(20).min(100);
     Ok(Json(permagent::people_merge::suggest_duplicates(
         &rows, limit,

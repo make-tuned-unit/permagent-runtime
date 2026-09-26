@@ -1,3 +1,4 @@
+import { LibrarianAwaiting } from './LibrarianAwaiting';
 /**
  * Per-agent settings, at the agent (J8 / C7).
  *
@@ -235,6 +236,7 @@ export function LibrarianScheduleSettings() {
   // needs the user to say who/what one of them is (librarian_entities.rs). No
   // route exists yet to list or answer them individually (only this count),
   // so the row can only say how many and point at the Brain view.
+  const [reviewContext, setReviewContext] = useState(false);
   const [awaitingContext, setAwaitingContext] = useState<number | null>(null);
 
   useEffect(() => {
@@ -361,13 +363,17 @@ export function LibrarianScheduleSettings() {
       {!!awaitingContext && (
         <Row
           label="Needs your input"
-          hint="Memories the Librarian described but couldn't confidently place — it will ask about one when it fits a conversation, one at a time. There is no list here yet to review or answer them directly; browse the Brain view in the meantime."
+          hint="Answer the Librarian’s questions to help it understand the people and projects in your memories."
         >
           <span data-testid="librarian-awaiting-context" style={{ fontSize: textSize.caption, color: colors.warning }}>
             {awaitingContext} awaiting your context
           </span>
         </Row>
       )}
+      <Row label="Needs your input" hint="Your answers become memories your agent can use.">
+        <Button colors={colors} onClick={() => setReviewContext(v => !v)}>{reviewContext ? 'Hide requests' : 'Review requests'}</Button>
+      </Row>
+      {reviewContext && <LibrarianAwaiting onCount={setAwaitingContext} />}
       <Row label="Run now" hint="Manually warm-load the model and trigger a Librarian run.">
         <Button
           colors={colors}

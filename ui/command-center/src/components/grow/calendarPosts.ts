@@ -1,7 +1,7 @@
 /** Pure helpers for Grow content-calendar grouping. Kept out of GrowView so
  *  the lens can stay honest about schedule/status without growing the view. */
 
-export type PostStatus = 'draft' | 'scheduled' | 'posted';
+export type PostStatus = 'draft' | 'scheduled' | 'posted' | 'publish_failed';
 export type MediaStatus = 'queued' | 'generating' | 'ready' | 'failed';
 
 export interface SocialCard {
@@ -12,7 +12,7 @@ export interface SocialCard {
   metadataJson?: Record<string, unknown> | null;
 }
 
-const STATUSES: PostStatus[] = ['draft', 'scheduled', 'posted'];
+const STATUSES: PostStatus[] = ['draft', 'scheduled', 'posted', 'publish_failed'];
 const MEDIA_STATUSES: MediaStatus[] = ['queued', 'generating', 'ready', 'failed'];
 
 export interface PostMedia {
@@ -25,6 +25,14 @@ export interface PostMedia {
 export function readPostMeta(card: SocialCard): {
   scheduledFor: string | null;
   status: PostStatus;
+  /** The most recent failed publish attempt's error, verbatim. Present only
+   *  while `status === 'publish_failed'`; a card whose last attempt succeeded
+   *  (or never attempted) has none. */
+  lastPublishError: string | null;
+  /** When the most recent publish attempt happened (ISO), success or
+   *  failure. Pairs with `lastPublishError` so Calendar can say WHEN, not
+   *  just that it failed. */
+  lastPublishAttemptAt: string | null;
 } {
   const meta = card.metadataJson;
   const rawStatus = meta && typeof meta.postStatus === 'string' ? meta.postStatus : null;
@@ -33,7 +41,14 @@ export function readPostMeta(card: SocialCard): {
   const rawWhen = meta && typeof meta.scheduledFor === 'string' ? meta.scheduledFor : null;
   const scheduledFor =
     rawWhen && !Number.isNaN(Date.parse(rawWhen)) ? rawWhen : null;
-  return { scheduledFor, status };
+  const lastPublishError =
+    meta && typeof meta.lastPublishError === 'string' && meta.lastPublishError.trim()
+      ? meta.lastPublishError
+      : null;
+  const rawAttemptAt = meta && typeof meta.lastPublishAttemptAt === 'string' ? meta.lastPublishAttemptAt : null;
+  const lastPublishAttemptAt =
+    rawAttemptAt && !Number.isNaN(Date.parse(rawAttemptAt)) ? rawAttemptAt : null;
+  return { scheduledFor, status, lastPublishError, lastPublishAttemptAt };
 }
 
 export function readMediaMeta(card: SocialCard): {
@@ -143,13 +158,11 @@ export function groupPostsByDay(posts: SocialCard[]): DayGroup[] {
 /**
  * The calendar's status filter (UX_BENCHMARK_RESEARCH §9, dagK 2026-09-25:
  * Buffer's queue — one list, filtered by status, rather than scattered
- * states). `attention` is not a `PostStatus` — a post's schedule state
- * (draft/scheduled/posted) and its still's generation state are two different
- * facts on the same card, and a still stuck on `failed` or `generating` needs
- * the user's eyes regardless of which schedule state the post is in. There is
- * no publish-failure status in the data model yet (`PostStatus` has no
- * `failed`; a scheduled post either becomes `posted` or stays `scheduled`),
- * so "failed" here means the nearest real thing: media generation failed.
+ * states). `attention` is not a `PostStatus` — it is a VIEW over two
+ * different facts that can each independently go wrong on the same card: the
+ * still's generation (`mediaStatus === 'failed'`) and the publish attempt
+ * itself (`postStatus === 'publish_failed'`, dagK grow-deltas 2026-09-26).
+ * Either one needs the user's eyes regardless of the other.
  */
 export type QueueFilter = 'all' | 'draft' | 'scheduled' | 'posted' | 'attention';
 
@@ -161,19 +174,24 @@ export const QUEUE_FILTERS: { id: QueueFilter; label: string }[] = [
   { id: 'attention', label: 'Needs attention' },
 ];
 
-/** Whether a card's still generation needs the user's eyes: failed outright,
- *  or generating past the point a card would normally have finished (the
- *  generator writes `stillGeneratedAt` on success; a still with none and no
- *  error is either brand new or stuck, and `mediaStatus` disambiguates). */
+/** Whether a card needs the user's eyes: its still failed to generate, or its
+ *  most recent publish attempt itself failed (Postiz down, the channel
+ *  disconnected, a bad upload — a different failure mode than media
+ *  generation, and one the schedule status now records directly). */
 export function needsAttention(card: SocialCard): boolean {
-  return readMediaMeta(card).mediaStatus === 'failed';
+  return readMediaMeta(card).mediaStatus === 'failed' || readPostMeta(card).status === 'publish_failed';
 }
 
 /** One bucket per card — `attention` takes priority over its schedule status,
- *  since a card whose still failed needs a look whatever its schedule state. */
+ *  since a card whose still failed (or whose publish attempt failed) needs a
+ *  look whatever its schedule state. */
 export function queueBucket(card: SocialCard): Exclude<QueueFilter, 'all'> {
   if (needsAttention(card)) return 'attention';
-  return readPostMeta(card).status;
+  const status = readPostMeta(card).status;
+  // `publish_failed` always trips `needsAttention` above; this branch is for
+  // TypeScript's exhaustiveness only (it cannot see across the two calls) —
+  // `queueBucket` itself has no `publish_failed` bucket, `attention` is it.
+  return status === 'publish_failed' ? 'attention' : status;
 }
 
 export function queueCounts(posts: SocialCard[]): Record<Exclude<QueueFilter, 'all'>, number> {

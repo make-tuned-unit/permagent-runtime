@@ -935,7 +935,15 @@ pub const DUE_DISMISSED_KEY: &str = "dueDismissedAt";
 pub const POST_SCHEDULED_FOR_KEY: &str = "scheduledFor";
 
 /// Metadata key holding a `social_post`'s lifecycle status:
-/// `"draft"` | `"scheduled"` | `"posted"`.
+/// `"draft"` | `"scheduled"` | `"posted"` | `"publish_failed"`.
+///
+/// `publish_failed` is the state a `draft` (or another `publish_failed`
+/// retry) lands in when the publisher call itself errors — Postiz down, the
+/// channel disconnected, a bad upload. Before this status existed the failure
+/// had nowhere to go: `approve_post` `?`-propagated the error straight out of
+/// the request handler and the card was left silently on `draft`, so
+/// Calendar's "Needs attention" filter (which only knew about failed media
+/// generation) never caught it (2026-09-25 finding).
 ///
 /// Same rationale as [`POST_SCHEDULED_FOR_KEY`]: metadata rather than a column
 /// so the field can land without a migration and be withdrawn cheaply. Not a
@@ -943,7 +951,7 @@ pub const POST_SCHEDULED_FOR_KEY: &str = "scheduledFor";
 pub const POST_STATUS_KEY: &str = "postStatus";
 
 /// Accepted `postStatus` values for [`POST_STATUS_KEY`].
-const POST_STATUSES: &[&str] = &["draft", "scheduled", "posted"];
+const POST_STATUSES: &[&str] = &["draft", "scheduled", "posted", "publish_failed"];
 
 /// `social_post` format: `"text"` | `"carousel"` | `"reel"` | `"compose"`.
 pub const POST_FORMAT_KEY: &str = "format";
@@ -968,6 +976,15 @@ pub const POST_MEDIA_FEEDBACK_KEY: &str = "mediaFeedback";
 pub const POST_PUBLISHER_POST_ID_KEY: &str = "publisherPostId";
 /// Postiz integration id the post was scheduled against.
 pub const POST_PUBLISHER_INTEGRATION_KEY: &str = "publisherIntegrationId";
+/// The error from the most recent failed publish attempt, verbatim. Present
+/// only while [`POST_STATUS_KEY`] is `"publish_failed"`; cleared (set to JSON
+/// null) the moment a later attempt succeeds — never left around to be
+/// mistaken for the current state once the post is actually scheduled.
+pub const POST_LAST_PUBLISH_ERROR_KEY: &str = "lastPublishError";
+/// RFC-3339 instant of the most recent publish attempt, success or failure.
+/// Pairs with [`POST_LAST_PUBLISH_ERROR_KEY`] so the Calendar can say WHEN a
+/// publish failed, not just that it did; cleared alongside it on success.
+pub const POST_LAST_PUBLISH_ATTEMPT_AT_KEY: &str = "lastPublishAttemptAt";
 
 /// Keys the Grow media job owns. HTTP and agent patches keep the existing
 /// values so a stale calendar poll cannot wipe a finished still.
@@ -1105,8 +1122,9 @@ pub fn assert_ready_to_schedule(metadata: &serde_json::Value) -> Result<(), Stri
 /// Validate social-post scheduling metadata before it is written.
 ///
 /// `scheduled_for`, when present, must parse as RFC-3339. `status`, when
-/// present, must be one of `draft` / `scheduled` / `posted`. Either argument
-/// may be `None` (partial updates); absent fields are not checked.
+/// present, must be one of `draft` / `scheduled` / `posted` / `publish_failed`.
+/// Either argument may be `None` (partial updates); absent fields are not
+/// checked.
 pub fn validate_post_metadata(
     scheduled_for: Option<&str>,
     status: Option<&str>,
@@ -1114,7 +1132,7 @@ pub fn validate_post_metadata(
     if let Some(status) = status {
         if !POST_STATUSES.contains(&status) {
             return Err(format!(
-                "postStatus must be one of \"draft\", \"scheduled\", or \"posted\", got '{status}'"
+                "postStatus must be one of \"draft\", \"scheduled\", \"posted\", or \"publish_failed\", got '{status}'"
             ));
         }
     }
@@ -2146,6 +2164,23 @@ pub async fn set_goal_execution_receipt(
     set_goal_metadata_key_atomic(pool, card_id, "execution_receipt", receipt).await
 }
 
+/// dagK Q2 ("Worker's plan"): writes ONLY the `worker_plan` metadata key on a
+/// goal card — the worker's own first plan-shaped assistant turn, captured by
+/// `goal_engine::worker_first_plan` / `worker_plan_from_message` and shaped as
+/// `{ text, attempt, session_id, captured_at }` by the orchestrator's
+/// completion tracker, right beside its `set_goal_dispatch_evidence` call.
+/// Never moves cards, never touches protected keys. Mirrors
+/// [`set_goal_dispatch_evidence`]; only ever called when a plan was actually
+/// captured — absent otherwise, so `GoalDetailModal` renders nothing rather
+/// than a guess.
+pub async fn set_goal_worker_plan(
+    pool: &Pool<Sqlite>,
+    card_id: &str,
+    plan: serde_json::Value,
+) -> Result<(), String> {
+    set_goal_metadata_key_atomic(pool, card_id, "worker_plan", plan).await
+}
+
 /// Atomically patch one narrow, non-lifecycle metadata key while preserving
 /// all other goal metadata. This is shared by completion evidence and receipt
 /// writers because those writes frequently race with verifier/program writes.
@@ -2344,6 +2379,7 @@ mod tests {
             validate_post_metadata(Some("2026-08-15T18:00:00+00:00"), Some("scheduled")).is_ok()
         );
         assert!(validate_post_metadata(None, Some("posted")).is_ok());
+        assert!(validate_post_metadata(None, Some("publish_failed")).is_ok());
     }
 
     #[test]
@@ -3582,6 +3618,13 @@ mod tests {
         set_goal_execution_receipt(&pool, &goal.id, serde_json::json!({"state": "Completed"}))
             .await
             .unwrap();
+        set_goal_worker_plan(
+            &pool,
+            &goal.id,
+            serde_json::json!({"text": "Add a regression test, then fix the root cause."}),
+        )
+        .await
+        .unwrap();
         let after = get_card(&pool, &goal.id).await.unwrap().unwrap();
         assert_eq!(after.metadata_json["program_receipts"][0]["gate"], "old");
         assert_eq!(after.metadata_json["program_transition"]["digest"], "keep");
@@ -3590,6 +3633,44 @@ mod tests {
             after.metadata_json["execution_receipt"]["state"],
             "Completed"
         );
+        assert_eq!(
+            after.metadata_json["worker_plan"]["text"],
+            "Add a regression test, then fix the root cause."
+        );
+    }
+
+    /// dagK Q2: `set_goal_worker_plan` writes ONLY the `worker_plan` key —
+    /// evidence and the receipt from an earlier point in the same attempt must
+    /// both survive it, mirroring the other narrow metadata writers.
+    #[tokio::test]
+    async fn set_goal_worker_plan_preserves_other_goal_metadata() {
+        let pool = test_pool().await;
+        let goal = make_goal(&pool).await;
+        set_goal_dispatch_evidence(&pool, &goal.id, serde_json::json!({"files_changed": 3}))
+            .await
+            .unwrap();
+
+        set_goal_worker_plan(
+            &pool,
+            &goal.id,
+            serde_json::json!({
+                "text": "I'll reproduce the bug with a failing test first, then patch it.",
+                "attempt": 1,
+                "session_id": "sess-1",
+                "captured_at": "2026-09-26T00:00:00Z",
+            }),
+        )
+        .await
+        .unwrap();
+
+        let after = get_card(&pool, &goal.id).await.unwrap().unwrap();
+        assert_eq!(after.metadata_json["dispatch_evidence"]["files_changed"], 3);
+        assert_eq!(
+            after.metadata_json["worker_plan"]["text"],
+            "I'll reproduce the bug with a failing test first, then patch it."
+        );
+        assert_eq!(after.metadata_json["worker_plan"]["attempt"], 1);
+        assert_eq!(after.metadata_json["worker_plan"]["session_id"], "sess-1");
     }
 
     #[tokio::test]

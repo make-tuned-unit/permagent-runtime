@@ -130,8 +130,10 @@ export function BookmarksBar({
   }, [bookmarks, currentUrl, currentTitle, persistBookmarks]);
 
   const handleRemoveBookmark = useCallback(
-    (url: string, e: React.MouseEvent) => {
-      e.stopPropagation();
+    // The remove button is its own real, sibling `<button>` now (not nested
+    // inside the row's), so ITS OWN onClick stops propagation before calling
+    // this — nothing here needs a mouse event to do it too.
+    (url: string) => {
       persistBookmarks(removeBookmark(bookmarks, url), bookmarks);
     },
     [bookmarks, persistBookmarks],
@@ -158,8 +160,9 @@ export function BookmarksBar({
   );
 
   const handleDeleteSet = useCallback(
-    (name: string, e: React.MouseEvent) => {
-      e.stopPropagation();
+    // The delete button is its own real, sibling `<button>` (see
+    // `handleRemoveBookmark`); it stops its own propagation.
+    (name: string) => {
       if (armedDelete === name) {
         persistTabSets(removeTabSet(tabSets, name), tabSets);
         setArmedDelete(null);
@@ -227,22 +230,11 @@ export function BookmarksBar({
           </span>
         ) : (
           bookmarks.map((b) => (
-            // `` dissolves the primitive's label
-            // wrapper: the chip's title and its remove affordance must stay the
-            // button's own flex children or the truncation and the
-            // group-hover reveal both come apart.
-            <Tooltip content={b.url}>
-              <Button
+            // Selection and removal are separate sibling buttons.
+            <Tooltip key={b.url} content={b.url}>
+              <div
                 key={b.url}
-                colors={colors}
-                variant="bare"
-                onClick={() => onNavigate(b.url)}
-                // The chip spins for the navigation, but does not tick: the tab
-                // title and the address bar are what confirm a page arrived, and
-                // a second green confirmation on the chip you left behind is one
-                // claim too many.
-                flashSuccess={false}
-                className="group shrink-0"
+                className="pa-btn group shrink-0"
                 style={{
                   ...chromeBareVars(colors, {
                     pad: chipPad,
@@ -253,23 +245,29 @@ export function BookmarksBar({
                   gap: CHROME_GEOM.chipPadY * 2,
                 } as CSSProperties}
               >
+                <Button colors={colors} variant="bare" aria-label={`Open bookmark: ${b.title || b.url}`} onClick={() => onNavigate(b.url)} style={{ ...chromeBareVars(colors, { pad: '0', radiusPx: 0 }), minWidth: 0 }}>
                 <span className="truncate max-w-[140px]">{b.title || b.url}</span>
+                </Button>
                 <Tooltip content="Remove bookmark">
-                  <span
-                    onClick={(e) => handleRemoveBookmark(b.url, e)}
-                    className="opacity-0 group-hover:opacity-100"
+                  <Button
+                    colors={colors}
+                    variant="bare"
+                    type="button"
+                    aria-label={`Remove bookmark: ${b.title || b.url}`}
+                    onClick={(e) => { e.stopPropagation(); handleRemoveBookmark(b.url); }}
+                    className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
                     style={{
-                      color: colors.textMuted,
-                      borderRadius: radius.xs,
-                      padding: 2,
-                    }}
-                    onMouseEnter={(e) => { e.currentTarget.style.background = colors.fillHover; }}
-                    onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+                      '--pa-btn-pad': '2px',
+                      '--pa-btn-radius': `${radius.xs}px`,
+                      '--pa-btn-bg': 'transparent',
+                      '--pa-btn-fg': colors.textMuted,
+                      '--pa-btn-bg-hover': colors.fillHover,
+                    } as CSSProperties}
                   >
                     <FiX size={9} />
-                  </span>
+                  </Button>
                 </Tooltip>
-              </Button>
+              </div>
             </Tooltip>
           ))
         )}
@@ -381,16 +379,11 @@ export function BookmarksBar({
               </div>
             ) : (
               tabSets.map((set) => (
-                // Same as the chips above: the row distributes a `flex-1` name
-                // against right-aligned meta, so the label wrapper has to be
-                // `display: contents` or that distribution collapses.
-                <Tooltip content={`Restore ${set.tabs.length} tab${set.tabs.length !== 1 ? 's' : ''}`}>
-                  <Button
+                // Selection and removal are separate sibling buttons.
+                <Tooltip key={set.name} content={`Restore ${set.tabs.length} tab${set.tabs.length !== 1 ? 's' : ''}`}>
+                  <div
                     key={set.name}
-                    colors={colors}
-                    variant="bare"
-                    onClick={() => handleRestore(set)}
-                    className="group w-full"
+                    className="pa-btn group w-full"
                     style={{
                       ...chromeBareVars(colors, {
                         pad: `${CHROME_GEOM.tabPadY}px ${CHROME_GEOM.tabPadX}px`,
@@ -402,33 +395,35 @@ export function BookmarksBar({
                       textAlign: 'left',
                     } as CSSProperties}
                   >
+                    <Button colors={colors} variant="bare" aria-label={`Restore tab set: ${set.name} (${set.tabs.length} tab${set.tabs.length !== 1 ? 's' : ''})`} onClick={() => handleRestore(set)} style={{ ...chromeBareVars(colors, { pad: '0', radiusPx: 0 }), gap: CHROME_GEOM.bookmarksGap, flex: 1, minWidth: 0 }}>
                     <FiCornerUpLeft size={10} style={{ color: colors.cyan }} />
                     <span className="flex-1 truncate">{set.name}</span>
                     <span className="shrink-0" style={{ opacity: 0.7 }}>
                       {set.tabs.length} tab{set.tabs.length !== 1 ? 's' : ''}
                     </span>
+                    </Button>
                     <Tooltip content={armedDelete === set.name ? 'Click again to delete' : 'Delete set'}>
-                      <span
-                        onClick={(e) => handleDeleteSet(set.name, e)}
-                        className={armedDelete === set.name ? '' : 'opacity-0 group-hover:opacity-100'}
-                        style={
-                          armedDelete === set.name
-                            ? { background: dangerWash(colors), color: colors.danger, borderRadius: radius.xs, padding: 2 }
-                            : { color: colors.textMuted, borderRadius: radius.xs, padding: 2 }
-                        }
-                        onMouseEnter={(e) => {
-                          if (armedDelete === set.name) return;
-                          e.currentTarget.style.background = colors.fillHover;
-                        }}
-                        onMouseLeave={(e) => {
-                          if (armedDelete === set.name) return;
-                          e.currentTarget.style.background = 'transparent';
-                        }}
+                      <Button
+                        colors={colors}
+                        variant="bare"
+                        type="button"
+                        aria-label={armedDelete === set.name
+                          ? `Confirm delete of tab set: ${set.name}`
+                          : `Delete tab set: ${set.name}`}
+                        onClick={(e) => { e.stopPropagation(); handleDeleteSet(set.name); }}
+                        className={armedDelete === set.name ? '' : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100'}
+                        style={{
+                          '--pa-btn-pad': '2px',
+                          '--pa-btn-radius': `${radius.xs}px`,
+                          '--pa-btn-bg': armedDelete === set.name ? dangerWash(colors) : 'transparent',
+                          '--pa-btn-fg': armedDelete === set.name ? colors.danger : colors.textMuted,
+                          '--pa-btn-bg-hover': armedDelete === set.name ? dangerWash(colors) : colors.fillHover,
+                        } as CSSProperties}
                       >
                         <FiTrash2 size={10} />
-                      </span>
+                      </Button>
                     </Tooltip>
-                  </Button>
+                  </div>
                 </Tooltip>
               ))
             )}

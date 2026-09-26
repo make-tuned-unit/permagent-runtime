@@ -428,6 +428,18 @@ struct GraphMemory {
     layer: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     why: Option<String>,
+    /// Where this memory came from — the `RememberOpts.source` tag
+    /// (`"chat"`, `"permagent.card"`, `"permagent.goal"`, …; see
+    /// `permagent::brain_feed::FeedSource::as_str`). `None` for a memory
+    /// written before the source column existed — the UI shows "source
+    /// unknown" rather than guessing (R5 "a memory shows its source").
+    #[serde(default)]
+    source: Option<String>,
+    /// When this memory was last reinforced (Spectral's Memify feedback
+    /// loop — the closest durable signal to "last referenced" Spectral
+    /// carries; `None` means never reinforced since creation, not unknown).
+    #[serde(default)]
+    last_reinforced_at: Option<String>,
 }
 
 /// An entity→entity edge (graph triple) between two emitted entities —
@@ -632,6 +644,7 @@ async fn brain_graph(
             };
             let mut stmt = match conn.prepare(
                 "SELECT m.id, m.key, m.content, m.description, m.signal_score, m.created_at, \
+                        m.source, m.last_reinforced_at, \
                         COUNT(a.id) as entity_count \
                  FROM memories m \
                  LEFT JOIN memory_annotations a ON a.memory_id = m.id \
@@ -652,13 +665,24 @@ async fn brain_graph(
                         row.get::<_, Option<String>>(3)?,
                         row.get::<_, f64>(4).unwrap_or(0.0),
                         row.get::<_, Option<String>>(5)?,
+                        row.get::<_, Option<String>>(6)?,
+                        row.get::<_, Option<String>>(7)?,
                     ))
                 })
                 .ok();
             let mut result = Vec::new();
             if let Some(rows) = rows {
                 for row in rows.flatten() {
-                    let (id, key, content, description, signal_score, created_at_str) = row;
+                    let (
+                        id,
+                        key,
+                        content,
+                        description,
+                        signal_score,
+                        created_at_str,
+                        source,
+                        last_reinforced_at,
+                    ) = row;
                     let age = created_at_str
                         .as_deref()
                         .and_then(|s| {
@@ -684,6 +708,8 @@ async fn brain_graph(
                         timestamp,
                         layer: None,
                         why: None,
+                        source,
+                        last_reinforced_at,
                     });
                 }
             }
@@ -723,6 +749,8 @@ async fn brain_graph(
                         timestamp,
                         layer: None,
                         why: None,
+                        source: hit.source,
+                        last_reinforced_at: hit.last_reinforced_at,
                     });
                 }
                 memories
@@ -879,6 +907,11 @@ struct MemoriesQuery {
     /// Time slider lower bound: only return memories with created_at >= this value (browse mode).
     #[serde(default)]
     after: Option<String>,
+    /// Filter to one `RememberOpts.source` tag (List's "sources" filter row,
+    /// R5). The sentinel `"unknown"` selects memories with no source recorded
+    /// (written before the column existed) — never a literal `FeedSource` tag.
+    #[serde(default)]
+    source: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -907,6 +940,7 @@ async fn brain_memories(
                 &conn,
                 &q,
                 params.offset.unwrap_or(0),
+                params.source.as_deref(),
                 limit,
                 now,
                 max_age_secs,
@@ -917,9 +951,9 @@ async fn brain_memories(
                 params.before.as_deref(),
                 params.before_id.as_deref(),
                 params.after.as_deref(),
+                params.source.as_deref(),
                 limit,
-                now,
-                max_age_secs,
+                (now, max_age_secs),
             )
         }
     })
@@ -953,10 +987,11 @@ fn query_browse_memories(
     before: Option<&str>,
     before_id: Option<&str>,
     after: Option<&str>,
+    source: Option<&str>,
     limit: usize,
-    now: DateTime<Utc>,
-    max_age_secs: f64,
+    age_context: (DateTime<Utc>, f64),
 ) -> Result<MemoriesResponse, String> {
+    let (now, max_age_secs) = age_context;
     // #92 — order the timeline by original event time when we have it, so
     // imported memories (Slack/browser history) sit at their event date rather
     // than the batch-import date. `event_at` is backfilled at boot; on an older
@@ -977,6 +1012,18 @@ fn query_browse_memories(
         where_clauses.push(format!("{time_col} >= ?{param_idx}"));
         params_vec.push(a.to_string());
         param_idx += 1;
+    }
+
+    // Source filter (List's "sources" chip row, R5). "unknown" is a sentinel
+    // for "no source recorded" (pre-dates the column), never a real tag.
+    if let Some(s) = source {
+        if s == "unknown" {
+            where_clauses.push("source IS NULL".to_string());
+        } else {
+            where_clauses.push(format!("source = ?{param_idx}"));
+            params_vec.push(s.to_string());
+            param_idx += 1;
+        }
     }
 
     // Cursor upper bound
@@ -1002,18 +1049,35 @@ fn query_browse_memories(
         format!("WHERE {}", where_clauses.join(" AND "))
     };
 
-    // Total count: only apply the 'after' filter (not cursor params which are for pagination)
-    let total: usize = if let Some(a) = after {
-        conn.query_row(
-            &format!("SELECT COUNT(*) FROM memories WHERE {time_col} >= ?1"),
-            [a],
+    // Total count: applies the 'after' and 'source' filters (not cursor params,
+    // which are for pagination only) — built independently of `param_idx`
+    // above so the cursor's placeholder numbering above is unaffected.
+    let mut count_where: Vec<String> = Vec::new();
+    let mut count_params: Vec<String> = Vec::new();
+    if let Some(a) = after {
+        count_where.push(format!("{time_col} >= ?{}", count_params.len() + 1));
+        count_params.push(a.to_string());
+    }
+    if let Some(s) = source {
+        if s == "unknown" {
+            count_where.push("source IS NULL".to_string());
+        } else {
+            count_where.push(format!("source = ?{}", count_params.len() + 1));
+            count_params.push(s.to_string());
+        }
+    }
+    let count_where_sql = if count_where.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", count_where.join(" AND "))
+    };
+    let total: usize = conn
+        .query_row(
+            &format!("SELECT COUNT(*) FROM memories {count_where_sql}"),
+            rusqlite::params_from_iter(count_params.iter()),
             |r| r.get(0),
         )
-        .map_err(|e| e.to_string())?
-    } else {
-        conn.query_row("SELECT COUNT(*) FROM memories", [], |r| r.get(0))
-            .map_err(|e| e.to_string())?
-    };
+        .map_err(|e| e.to_string())?;
 
     let limit_param = format!("?{}", param_idx);
     params_vec.push((limit + 1).to_string());
@@ -1022,7 +1086,8 @@ fn query_browse_memories(
     // reads it unchanged and the cursor the frontend echoes back (before/before_id)
     // stays consistent with the sort key.
     let sql = format!(
-        "SELECT id, key, content, description, signal_score, {time_col} AS created_at \
+        "SELECT id, key, content, description, signal_score, {time_col} AS created_at, \
+                source, last_reinforced_at \
          FROM memories {} ORDER BY {time_col} DESC, id DESC LIMIT {}",
         where_sql, limit_param
     );
@@ -1050,6 +1115,7 @@ fn query_fts_memories(
     conn: &rusqlite::Connection,
     query: &str,
     offset: usize,
+    source: Option<&str>,
     limit: usize,
     now: DateTime<Utc>,
     max_age_secs: f64,
@@ -1078,35 +1144,82 @@ fn query_fts_memories(
 
     let fts_query = words.join(" OR ");
 
-    // Count total matches only on first page to avoid double-query per keystroke
+    // Count total matches only on first page to avoid double-query per keystroke.
+    // The no-filter path stays a single-table scan (no join) — unchanged from
+    // before the source filter existed.
     let total: usize = if offset == 0 {
-        conn.query_row(
-            "SELECT COUNT(*) FROM memories_fts WHERE memories_fts MATCH ?1",
-            [&fts_query],
-            |r| r.get(0),
-        )
-        .unwrap_or(0)
+        let base = "SELECT COUNT(*) FROM memories_fts fts JOIN memories m ON m.rowid = fts.rowid \
+             WHERE memories_fts MATCH ?1";
+        match source {
+            Some("unknown") => conn
+                .query_row(&format!("{base} AND m.source IS NULL"), [&fts_query], |r| {
+                    r.get(0)
+                })
+                .unwrap_or(0),
+            Some(s) => conn
+                .query_row(
+                    &format!("{base} AND m.source = ?2"),
+                    rusqlite::params![fts_query, s],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0),
+            None => conn
+                .query_row(
+                    "SELECT COUNT(*) FROM memories_fts WHERE memories_fts MATCH ?1",
+                    [&fts_query],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0),
+        }
     } else {
         0 // subsequent pages don't recompute total
     };
 
-    let sql = "SELECT m.id, m.key, m.content, m.description, m.signal_score, m.created_at \
+    // "unknown" filters IS NULL inline (no bindable param); a real tag binds
+    // as ?4, after the three positional params every query already sends.
+    let source_clause = match source {
+        Some("unknown") => " AND m.source IS NULL",
+        Some(_) => " AND m.source = ?4",
+        None => "",
+    };
+    let sql = format!(
+        "SELECT m.id, m.key, m.content, m.description, m.signal_score, m.created_at, \
+                m.source, m.last_reinforced_at \
          FROM memories_fts fts \
          JOIN memories m ON m.rowid = fts.rowid \
-         WHERE memories_fts MATCH ?1 \
+         WHERE memories_fts MATCH ?1{source_clause} \
          ORDER BY bm25(memories_fts, 1.0, 1.0, 0.5) \
          LIMIT ?2 OFFSET ?3"
-        .to_string();
+    );
 
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map(
+    let real_source = source.filter(|s| *s != "unknown");
+    let rows = if let Some(s) = real_source {
+        let params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![
+            Box::new(fts_query.clone()),
+            Box::new((limit + 1) as i64),
+            Box::new(offset as i64),
+            Box::new(s.to_string()),
+        ];
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params.iter().map(|p| p.as_ref()).collect();
+        stmt.query_map(param_refs.as_slice(), |row| {
+            row_to_graph_memory(row, now, max_age_secs)
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect::<Vec<_>>()
+    } else {
+        stmt.query_map(
             rusqlite::params![fts_query, (limit + 1) as i64, offset as i64],
             |row| row_to_graph_memory(row, now, max_age_secs),
         )
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect::<Vec<_>>()
+    };
 
-    let mut memories: Vec<GraphMemory> = rows.filter_map(|r| r.ok()).collect();
+    let mut memories: Vec<GraphMemory> = rows;
     let has_more = memories.len() > limit;
     memories.truncate(limit);
     apply_assemble_layers(&mut memories);
@@ -1129,6 +1242,8 @@ fn row_to_graph_memory(
     let description: Option<String> = row.get(3)?;
     let signal_score: f64 = row.get(4)?;
     let created_at: Option<String> = row.get(5)?;
+    let source: Option<String> = row.get(6)?;
+    let last_reinforced_at: Option<String> = row.get(7)?;
 
     let age = created_at
         .as_deref()
@@ -1155,6 +1270,8 @@ fn row_to_graph_memory(
         timestamp,
         layer: None,
         why: None,
+        source,
+        last_reinforced_at,
     })
 }
 
@@ -1248,6 +1365,75 @@ async fn brain_memory_by_key(
         timestamp: mem.created_at.unwrap_or_else(|| now.to_rfc3339()),
         layer: Some("full".to_string()),
         why: Some("requested full text".to_string()),
+        source: mem.source,
+        last_reinforced_at: mem.last_reinforced_at,
+    }))
+}
+
+/// Response for `DELETE /api/brain/memory?key=`.
+#[derive(Debug, Serialize)]
+struct ForgetMemoryResponse {
+    /// `false` means the key named no memory — a no-op, not an error (the row
+    /// was already gone, e.g. a stale UI or a double-click).
+    existed: bool,
+    /// Both post-delete probes (`recall`, `recognize`) came back clear. `false`
+    /// with `existed: true` means the hard-delete ran but residue was found —
+    /// surfaced so a caller doesn't take a silent partial forget as done.
+    verified: bool,
+}
+
+/// DELETE /api/brain/memory?key= — hard-delete a memory across every Spectral
+/// substrate (R5 "explicit forget with undo"; the undo window itself is
+/// client-side — see BrainList.tsx's Forget action, which delays this request
+/// until an 8s toast expires unactioned). Reuses `SafeBrain::forget`, the same
+/// verified-forgetting primitive the Reader uses to retire a stale document.
+///
+/// Auth: this route sits behind the same bearer-token layer as every other
+/// `/api/brain/*` route (see `routes::mod::routes`) — no extra check here.
+async fn forget_memory(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<MemoryByKeyQuery>,
+) -> Result<Json<ForgetMemoryResponse>, crate::routes::errors::ErrorResponse> {
+    let key = params.key.trim();
+    if key.is_empty() {
+        return Err(crate::routes::errors::ErrorResponse::bad_request(
+            "key is required",
+        ));
+    }
+    let brain = state.brain.as_ref().ok_or_else(|| {
+        crate::routes::errors::ErrorResponse::service_unavailable("Brain is not ready")
+    })?;
+    let report = brain
+        .forget(key)
+        .await
+        .map_err(|e| crate::routes::errors::ErrorResponse::internal(e.to_string()))?;
+
+    // Audit trail (R5 "what did the agent — or I — do"): record the forget in
+    // the durable activity journal even though the memory itself is now gone.
+    // Best-effort — a journal write failure must never undo the forget or fail
+    // the request, since the memory is already gone from Spectral by this
+    // point. Not added to `activity_journal::KNOWN_KINDS` (that list also
+    // drives the frontend's kind-filter chips); the row is still durable and
+    // shows on the unfiltered activity timeline and via direct query.
+    if report.store.existed {
+        if let Ok(pool) = state.session_manager().pool_clone().await {
+            let entry = permagent::activity_journal::NewEntry {
+                id: uuid::Uuid::now_v7().to_string(),
+                ts: Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                kind: "memory_forgotten".to_string(),
+                actor: permagent::activity_journal::Actor::User,
+                title: "Forgot a memory".to_string(),
+                detail: None,
+                ref_kind: Some("memory".to_string()),
+                ref_id: Some(key.to_string()),
+            };
+            let _ = permagent::activity_journal::insert_entry(&pool, &entry).await;
+        }
+    }
+
+    Ok(Json(ForgetMemoryResponse {
+        existed: report.store.existed,
+        verified: report.recall_clear && report.recognize_clear,
     }))
 }
 
@@ -1399,7 +1585,10 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/api/brain/search", get(brain_search))
         .route("/api/brain/graph", get(brain_graph))
         .route("/api/brain/memories", get(brain_memories))
-        .route("/api/brain/memory", get(brain_memory_by_key))
+        .route(
+            "/api/brain/memory",
+            get(brain_memory_by_key).delete(forget_memory),
+        )
         .route("/api/brain/feed-status", get(brain_feed_status))
         .route(
             "/api/brain/backfill-approval-halls",
@@ -1528,18 +1717,23 @@ mod tests {
                  description TEXT,
                  signal_score REAL,
                  created_at TEXT,
-                 event_at TEXT
+                 event_at TEXT,
+                 source TEXT,
+                 last_reinforced_at TEXT
              );",
         )
         .unwrap();
         // Imported in July but the event was in March — event_at wins.
         conn.execute(
-            "INSERT INTO memories VALUES ('march','import-core','march slack',NULL,0.0,'2026-07-01T00:00:00+00:00','2026-03-14T09:30:00+00:00')",
+            "INSERT INTO memories (id, key, content, description, signal_score, created_at, event_at, source, last_reinforced_at) \
+             VALUES ('march','import-core','march slack',NULL,0.0,'2026-07-01T00:00:00+00:00','2026-03-14T09:30:00+00:00','permagent.card',NULL)",
             [],
         ).unwrap();
         // A native June memory with no event_at — falls back to created_at.
+        // No source (pre-dates the column) — exercises the "unknown" filter.
         conn.execute(
-            "INSERT INTO memories VALUES ('june','session:chat','june chat',NULL,0.0,'2026-06-01T00:00:00+00:00',NULL)",
+            "INSERT INTO memories (id, key, content, description, signal_score, created_at, event_at, source, last_reinforced_at) \
+             VALUES ('june','session:chat','june chat',NULL,0.0,'2026-06-01T00:00:00+00:00',NULL,NULL,'2026-06-02T00:00:00+00:00')",
             [],
         ).unwrap();
         conn
@@ -1549,8 +1743,16 @@ mod tests {
     fn browse_orders_by_event_at_then_created_at() {
         let conn = seed_browse_db();
         let now = Utc::now();
-        let res =
-            query_browse_memories(&conn, None, None, None, 50, now, 90.0 * 24.0 * 3600.0).unwrap();
+        let res = query_browse_memories(
+            &conn,
+            None,
+            None,
+            None,
+            None,
+            50,
+            (now, 90.0 * 24.0 * 3600.0),
+        )
+        .unwrap();
         let ids: Vec<&str> = res.memories.iter().map(|m| m.id.as_str()).collect();
         // June (event 2026-06) sorts above March (event 2026-03), even though
         // March was *imported* (created_at) more recently in July.
@@ -1559,6 +1761,15 @@ mod tests {
         // cursor the frontend echoes back stays consistent with the sort key.
         let march = res.memories.iter().find(|m| m.id == "march").unwrap();
         assert_eq!(march.timestamp, "2026-03-14T09:30:00+00:00");
+        // Source and last-reinforced pass through untouched (R5: "a memory
+        // shows its source").
+        assert_eq!(march.source.as_deref(), Some("permagent.card"));
+        let june = res.memories.iter().find(|m| m.id == "june").unwrap();
+        assert_eq!(june.source, None);
+        assert_eq!(
+            june.last_reinforced_at.as_deref(),
+            Some("2026-06-02T00:00:00+00:00")
+        );
     }
 
     #[test]
@@ -1572,9 +1783,9 @@ mod tests {
             None,
             None,
             Some("2026-05-01T00:00:00+00:00"),
+            None,
             50,
-            now,
-            90.0 * 24.0 * 3600.0,
+            (now, 90.0 * 24.0 * 3600.0),
         )
         .unwrap();
         let ids: Vec<&str> = res.memories.iter().map(|m| m.id.as_str()).collect();
@@ -1589,12 +1800,13 @@ mod tests {
         conn.execute_batch(
             "CREATE TABLE memories (
                  id TEXT PRIMARY KEY, key TEXT, content TEXT, description TEXT,
-                 signal_score REAL, created_at TEXT
+                 signal_score REAL, created_at TEXT, source TEXT, last_reinforced_at TEXT
              );",
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO memories VALUES ('a','k','c',NULL,0.0,'2026-06-01T00:00:00+00:00')",
+            "INSERT INTO memories (id, key, content, description, signal_score, created_at) \
+             VALUES ('a','k','c',NULL,0.0,'2026-06-01T00:00:00+00:00')",
             [],
         )
         .unwrap();
@@ -1604,13 +1816,53 @@ mod tests {
             None,
             None,
             None,
+            None,
             50,
-            Utc::now(),
-            90.0 * 24.0 * 3600.0,
+            (Utc::now(), 90.0 * 24.0 * 3600.0),
         )
         .unwrap();
         assert_eq!(res.memories.len(), 1);
         assert_eq!(res.memories[0].id, "a");
+    }
+
+    #[test]
+    fn browse_filters_by_source() {
+        let conn = seed_browse_db();
+        let now = Utc::now();
+        let res = query_browse_memories(
+            &conn,
+            None,
+            None,
+            None,
+            Some("permagent.card"),
+            50,
+            (now, 90.0 * 24.0 * 3600.0),
+        )
+        .unwrap();
+        let ids: Vec<&str> = res.memories.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, vec!["march"]);
+        assert_eq!(res.total, 1);
+    }
+
+    #[test]
+    fn browse_filters_by_unknown_source_sentinel() {
+        let conn = seed_browse_db();
+        let now = Utc::now();
+        // "unknown" selects rows with no source recorded (NULL) — "june" here —
+        // never a literal FeedSource tag string.
+        let res = query_browse_memories(
+            &conn,
+            None,
+            None,
+            None,
+            Some("unknown"),
+            50,
+            (now, 90.0 * 24.0 * 3600.0),
+        )
+        .unwrap();
+        let ids: Vec<&str> = res.memories.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, vec!["june"]);
+        assert_eq!(res.total, 1);
     }
 
     // ── Lane R61a: repo-scoped search ──

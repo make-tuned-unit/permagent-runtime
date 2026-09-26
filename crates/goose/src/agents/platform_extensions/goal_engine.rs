@@ -29,12 +29,13 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::agents::subagent_handler::{run_subagent_task, SubagentRunParams};
+use crate::agents::subagent_handler::{run_subagent_task, OnMessageCallback, SubagentRunParams};
 use crate::agents::subagent_task_config::TaskConfig;
 use crate::agents::{AgentRunnerConfig, GoosePlatform};
 use crate::config::permission::PermissionManager;
 use crate::config::search_path::SearchPaths;
 use crate::config::{ExtensionConfig, GooseMode};
+use crate::conversation::message::{Message, MessageContent};
 use crate::providers;
 use crate::providers::base::Provider;
 use crate::recipe::Recipe;
@@ -50,6 +51,13 @@ use crate::subprocess::configure_subprocess;
 /// worker's agent.yaml entry. Per-goal bounds are a future enhancement,
 /// deliberately not this knob.
 pub const DEFAULT_EXTERNAL_CLI_TIMEOUT_SECS: u64 = 2 * 60 * 60;
+
+/// dagK Q2: a candidate "worker's plan" message shorter than this cannot be
+/// one — it filters bare acknowledgements ("Got it, starting now.") from a
+/// genuine stated approach. Applied identically by both engines' plan-capture
+/// heuristics ([`worker_first_plan`], [`worker_plan_from_message`]) so a goal
+/// dispatched to either one is held to the same honesty bar.
+const MIN_PLAN_CHARS: usize = 60;
 
 /// Literal token in an external worker's arg template, replaced with the goal
 /// prompt at dispatch time. Everything else passes through verbatim.
@@ -264,6 +272,18 @@ pub struct GoalEvidence {
     /// (Layer 2a self-report). Empty if the worker printed nothing.
     #[serde(default)]
     pub worker_summary: String,
+    /// dagK Q2: the worker's own stated plan, if it gave one — the FIRST
+    /// plan-shaped assistant turn, not the closing one ([`worker_summary`] is
+    /// that). Carrier-only: deliberately `#[serde(skip)]` because this rides
+    /// inside `GoalEvidence` purely to get the text from the engine (which
+    /// owns the raw stdout/message stream) to the orchestrator's completion
+    /// tracker (which owns the card write) — the tracker persists it to its
+    /// OWN `worker_plan` metadata key via `cards::set_goal_worker_plan`, never
+    /// into the `dispatch_evidence` blob this struct otherwise serializes to.
+    /// `None` when no turn ever qualified; the UI then shows nothing rather
+    /// than a guess.
+    #[serde(skip)]
+    pub worker_plan: Option<Box<str>>,
     /// Fix A (#505): `true` when the diff/diffstat git command itself FAILED
     /// (non-zero exit / could not run) while collecting evidence — e.g. the
     /// baseline was unreachable. Distinguishes a git ERROR from a genuine empty
@@ -668,6 +688,26 @@ impl GoalEngine for InternalSubagentEngine {
         // The cancel path (#490) fires this token to stop an in-flight subagent.
         let kill = GoalKill::Cancel(cancel_token.clone());
         let run_session_id = session_id.clone();
+        // dagK Q2: the in-process counterpart to the external engine's
+        // forward NDJSON scan (`worker_first_plan`) — captures the worker's
+        // own first plan-shaped assistant turn as it streams. A plain
+        // `Mutex<Option<String>>`, not a `tokio::sync::Mutex`, because
+        // `on_message` is a synchronous `Fn` invoked from inside the agent's
+        // own reply loop (`subagent_handler::get_agent_messages`), not from
+        // an async task that could `.await` a lock.
+        let captured_plan: Arc<std::sync::Mutex<(Option<String>, bool)>> =
+            Arc::new(std::sync::Mutex::new((None, false)));
+        let captured_plan_for_hook = Arc::clone(&captured_plan);
+        let on_message: OnMessageCallback = Arc::new(move |msg: &Message| {
+            let mut slot = captured_plan_for_hook.lock().unwrap();
+            if slot.0.is_none() && !slot.1 {
+                slot.0 = worker_plan_from_message(msg, MIN_PLAN_CHARS);
+                slot.1 = msg
+                    .content
+                    .iter()
+                    .any(|c| matches!(c, MessageContent::ToolRequest(_)));
+            }
+        });
         let join = tokio::spawn(async move {
             // GM6 (dagK): `return_last_only: true` makes the Ok value the
             // worker's own closing message — the in-process counterpart to
@@ -683,13 +723,14 @@ impl GoalEngine for InternalSubagentEngine {
                 return_last_only: true,
                 session_id: run_session_id,
                 cancellation_token: Some(cancel_token),
-                on_message: None,
+                on_message: Some(on_message),
                 notification_tx: None,
                 persona_override,
             })
             .await
             .map_err(|e| e.to_string());
-            finalize_internal_run(&worktree, &baseline, run).await
+            let worker_plan = captured_plan.lock().unwrap().0.clone();
+            finalize_internal_run(&worktree, &baseline, run, worker_plan).await
         });
 
         Ok(DispatchedWork {
@@ -722,6 +763,7 @@ async fn finalize_internal_run(
     worktree: &Path,
     baseline: &str,
     run: Result<String, String>,
+    worker_plan: Option<String>,
 ) -> GoalOutcome {
     match run {
         // Credential scan first (#508 — a secret must never survive to review),
@@ -746,9 +788,12 @@ async fn finalize_internal_run(
                         tail(trimmed, 4000)
                     }
                 };
-                GoalOutcome::Success(Some(
-                    collect_evidence(worktree, baseline, worker_summary).await,
-                ))
+                let mut evidence = collect_evidence(worktree, baseline, worker_summary).await;
+                // dagK Q2: whatever `on_message` captured during the run (see
+                // `InternalSubagentEngine::spawn`), `None` when no turn ever
+                // qualified as a plan.
+                evidence.worker_plan = worker_plan.map(String::into_boxed_str);
+                GoalOutcome::Success(Some(evidence))
             }
         }
         // W4: failure must not destroy the work either. Whatever the subagent
@@ -2056,11 +2101,14 @@ async fn await_external_child(
                 // concurrent push) leaves the work reviewable-but-unpushed in
                 // the worktree rather than failing the goal.
                 push_clean_work(&working_dir, &baseline).await;
-                let worker_summary = worker_closing_summary(
-                    &redact_secrets(&String::from_utf8_lossy(&output.stdout)),
-                    4000,
-                );
-                let evidence = collect_evidence(&working_dir, &baseline, worker_summary).await;
+                let redacted_stdout = redact_secrets(&String::from_utf8_lossy(&output.stdout));
+                let worker_summary = worker_closing_summary(&redacted_stdout, 4000);
+                // dagK Q2: same buffered stdout `worker_closing_summary` just
+                // scanned backward — scan it forward for the worker's own
+                // FIRST plan-shaped turn instead of its last one.
+                let worker_plan = worker_first_plan(&redacted_stdout, MIN_PLAN_CHARS, 4000);
+                let mut evidence = collect_evidence(&working_dir, &baseline, worker_summary).await;
+                evidence.worker_plan = worker_plan.map(String::into_boxed_str);
                 GoalOutcome::Success(Some(evidence))
             } else {
                 // W4: failure must not destroy the work. Scan + push whatever
@@ -2474,6 +2522,10 @@ pub(crate) async fn collect_evidence(
         deletions,
         push_target,
         worker_summary,
+        // Set by the caller after this returns (each engine's own capture
+        // source is only available at its own call site) — see the field's
+        // doc comment on why this is never populated here.
+        worker_plan: None,
         diff_errored,
     }
 }
@@ -2605,6 +2657,104 @@ fn tail(s: &str, max: usize) -> String {
     }
     let tail: String = kept.into_iter().rev().collect();
     format!("…{}", tail)
+}
+
+/// dagK Q2 (Worker's plan): the worker's own stated approach, extracted from
+/// the SAME buffered NDJSON `stdout` [`worker_closing_summary`] scans — but
+/// forward instead of backward, and stopping at the first turn that qualifies
+/// instead of the last line overall.
+///
+/// Walks assistant turns in order (`{"type":"assistant",…}` lines). Within
+/// each turn's `message.content` array, collects `text` blocks in order and
+/// stops at the first `tool_use` — so a turn that opens with a sentence and
+/// immediately calls a tool still contributes that leading sentence, but
+/// nothing the tool call itself or a later turn's narration would add. A turn
+/// that comes back empty (pure `tool_use`, or too short to read as a plan
+/// rather than a bare acknowledgement like "Got it, starting now.") is
+/// skipped until the first tool call. Later prose may be a result, so it
+/// must never be relabelled as an initial plan.
+///
+/// Returns `None` when nothing ever qualifies. This is not a fallback-to-tail
+/// function like `worker_closing_summary`: a closing summary always exists in
+/// SOME form (worst case, the raw tail), but a plan that was never stated is
+/// honestly absent — the UI is expected to render nothing in that case rather
+/// than a guess (see `GoalEvidence::worker_plan`'s doc comment).
+///
+/// `stdout` must already be [`redact_secrets`]-cleaned, matching
+/// `worker_closing_summary`'s contract — this function does not redact again.
+fn worker_first_plan(stdout: &str, min_chars: usize, max: usize) -> Option<String> {
+    for line in stdout.lines() {
+        let line = line.trim();
+        if !line.starts_with('{') {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if value.get("type").and_then(serde_json::Value::as_str) != Some("assistant") {
+            continue;
+        }
+        let Some(content) = value
+            .pointer("/message/content")
+            .and_then(serde_json::Value::as_array)
+        else {
+            continue;
+        };
+        let mut buf = String::new();
+        for item in content {
+            match item.get("type").and_then(serde_json::Value::as_str) {
+                Some("text") => {
+                    if let Some(t) = item.get("text").and_then(serde_json::Value::as_str) {
+                        buf.push_str(t);
+                    }
+                }
+                Some("tool_use") => break,
+                _ => {}
+            }
+        }
+        let trimmed = buf.trim();
+        if trimmed.chars().count() >= min_chars {
+            return Some(tail(trimmed, max));
+        }
+        if content
+            .iter()
+            .any(|item| item.get("type").and_then(serde_json::Value::as_str) == Some("tool_use"))
+        {
+            return None;
+        }
+    }
+    None
+}
+
+/// dagK Q2: the internal (in-process subagent) engine's counterpart to
+/// [`worker_first_plan`] — same heuristic ("prose before the first tool call,
+/// long enough not to be a bare acknowledgement"), applied to a live
+/// [`Message`] from the agent's own reply stream rather than to buffered
+/// NDJSON. `InternalSubagentEngine::spawn`'s `on_message` hook calls this on
+/// every assistant turn until one qualifies, exactly mirroring
+/// `worker_first_plan`'s per-line loop.
+///
+/// Unlike the external path, the source text here was never pre-redacted (it
+/// never passed through a subprocess's stdout), so this applies
+/// [`redact_secrets`] itself before tail-capping.
+fn worker_plan_from_message(msg: &Message, min_chars: usize) -> Option<String> {
+    if msg.role != rmcp::model::Role::Assistant {
+        return None;
+    }
+    let mut buf = String::new();
+    for content in &msg.content {
+        match content {
+            MessageContent::Text(t) => buf.push_str(&t.text),
+            MessageContent::ToolRequest(_) => break,
+            _ => {}
+        }
+    }
+    let trimmed = buf.trim();
+    if trimmed.chars().count() >= min_chars {
+        Some(tail(&redact_secrets(trimmed), 4000))
+    } else {
+        None
+    }
 }
 
 /// Heuristic secret redaction for worker output that gets PERSISTED on the goal
@@ -3222,6 +3372,113 @@ mod tests {
             "trailing prose the worker printed\n",
         );
         assert!(worker_closing_summary(stdout, 4000).contains("trailing prose"));
+    }
+
+    // ── dagK Q2: worker's plan (worker_first_plan / worker_plan_from_message) ─
+
+    /// The common case: the worker's first turn states an approach, then
+    /// immediately calls a tool in the SAME turn. The leading sentence is the
+    /// plan; the tool call must not appear in it.
+    #[test]
+    fn worker_first_plan_captures_the_leading_prose_before_the_first_tool_call() {
+        let stdout = concat!(
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"I'll fix the null-pointer crash by adding a guard clause in the parser, then add a regression test that reproduces it."},{"type":"tool_use","name":"Read","input":{"file_path":"parser.rs"}}]}}"#,
+            "\n",
+            r#"{"type":"result","result":"Added the guard clause and a regression test."}"#,
+            "\n",
+        );
+        let plan = worker_first_plan(stdout, MIN_PLAN_CHARS, 4000);
+        assert_eq!(
+            plan.as_deref(),
+            Some(
+                "I'll fix the null-pointer crash by adding a guard clause in the parser, then add a regression test that reproduces it."
+            )
+        );
+    }
+
+    /// A bare acknowledgement is not a plan — scanning must continue to a
+    /// later turn rather than latch onto the first thing the worker said.
+    #[test]
+    fn worker_first_plan_does_not_mislabel_later_prose_as_a_plan() {
+        let stdout = concat!(
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Got it, starting now."}]}}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"parser.rs"}}]}}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"The crash is a null dereference in parse_header; I'll add a guard clause and a regression test for it."}]}}"#,
+            "\n",
+        );
+        let plan = worker_first_plan(stdout, MIN_PLAN_CHARS, 4000);
+        assert_eq!(
+            plan, None,
+            "prose after work starts is not the initial plan"
+        );
+    }
+
+    /// A worker that jumps straight into tool calls with no stated approach
+    /// anywhere in the transcript has no plan — `None`, never a guess.
+    #[test]
+    fn worker_first_plan_returns_none_when_the_worker_never_stated_a_plan() {
+        let stdout = concat!(
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"grep -rn TODO ."}}]}}"#,
+            "\n",
+            r#"{"type":"user","message":{"content":[{"tool_use_id":"t1","type":"tool_result","content":"no matches"}]}}"#,
+            "\n",
+            r#"{"type":"result","result":"Done, nothing to fix."}"#,
+            "\n",
+        );
+        assert_eq!(worker_first_plan(stdout, MIN_PLAN_CHARS, 4000), None);
+    }
+
+    /// `codex exec`-style plain prose has no NDJSON assistant lines at all —
+    /// must degrade to `None`, not panic or misparse the prose as JSON.
+    #[test]
+    fn worker_first_plan_returns_none_for_plain_prose_engines_with_no_ndjson() {
+        let stdout = "Created PROOF.txt containing OK.\nCommitted locally as fd39d17.\n";
+        assert_eq!(worker_first_plan(stdout, MIN_PLAN_CHARS, 4000), None);
+    }
+
+    /// The internal engine's live-`Message` counterpart: a text block followed
+    /// by a tool request in the same turn — the text is the plan.
+    #[test]
+    fn worker_plan_from_message_captures_leading_text_before_tool_request() {
+        let msg = Message::assistant()
+            .with_text("I'll reproduce the flaky test locally first, then fix the underlying race.")
+            .with_tool_request("t1", Ok(rmcp::model::CallToolRequestParams::new("Bash")));
+        assert_eq!(
+            worker_plan_from_message(&msg, MIN_PLAN_CHARS).as_deref(),
+            Some("I'll reproduce the flaky test locally first, then fix the underlying race.")
+        );
+    }
+
+    /// Only an assistant turn can be a plan — a user-role message (e.g. a
+    /// relayed tool result) must never be read as one.
+    #[test]
+    fn worker_plan_from_message_ignores_non_assistant_roles() {
+        let msg = Message::user().with_text(
+            "I'll reproduce the flaky test locally first, then fix the underlying race.",
+        );
+        assert_eq!(worker_plan_from_message(&msg, MIN_PLAN_CHARS), None);
+    }
+
+    /// Same bare-acknowledgement filter as the external path.
+    #[test]
+    fn worker_plan_from_message_rejects_a_short_acknowledgement() {
+        let msg = Message::assistant().with_text("On it.");
+        assert_eq!(worker_plan_from_message(&msg, MIN_PLAN_CHARS), None);
+    }
+
+    /// #455 applies to the internal engine's plan capture too: unlike the
+    /// external path (pre-redacted before it ever reaches `worker_first_plan`),
+    /// this text comes straight from a live `Message`, so the function itself
+    /// must redact.
+    #[test]
+    fn worker_plan_from_message_redacts_secrets() {
+        let msg = Message::assistant().with_text(
+            "I'll reuse the existing DATABASE_URL=postgres://admin:hunter2@db.prod.example.com/app connection to reproduce this.",
+        );
+        let plan = worker_plan_from_message(&msg, MIN_PLAN_CHARS).unwrap();
+        assert!(!plan.contains("hunter2"), "secret must not survive: {plan}");
     }
 
     /// #455: persisted worker output must not leak prod credentials. A stdout/
@@ -4970,7 +5227,7 @@ mod tests {
             .trim()
             .to_string();
 
-        let outcome = finalize_internal_run(&wt, &baseline, Ok("done".to_string())).await;
+        let outcome = finalize_internal_run(&wt, &baseline, Ok("done".to_string()), None).await;
 
         assert!(matches!(outcome, GoalOutcome::Success(Some(_))));
         let goal_ref = format!("refs/heads/{}", goal_branch_name(run_id));
@@ -5008,6 +5265,7 @@ mod tests {
             &wt,
             &baseline,
             Ok("Implemented the retry loop and added a regression test.".to_string()),
+            None,
         )
         .await;
 
@@ -5033,7 +5291,7 @@ mod tests {
             .unwrap();
         commit_in_worktree(&wt, "work.txt");
 
-        let outcome = finalize_internal_run(&wt, &baseline, Ok("   ".to_string())).await;
+        let outcome = finalize_internal_run(&wt, &baseline, Ok("   ".to_string()), None).await;
 
         match outcome {
             GoalOutcome::Success(Some(evidence)) => {
@@ -5060,7 +5318,7 @@ mod tests {
             .trim()
             .to_string();
 
-        let outcome = finalize_internal_run(&wt, &baseline, Err("boom".to_string())).await;
+        let outcome = finalize_internal_run(&wt, &baseline, Err("boom".to_string()), None).await;
 
         assert!(matches!(outcome, GoalOutcome::Failed(e) if e == "boom"));
         let goal_ref = format!("refs/heads/{}", goal_branch_name(run_id));
@@ -5086,7 +5344,7 @@ mod tests {
         git(&wt, &["add", "-f", ".env"]);
         git(&wt, &["commit", "-q", "-m", "oops"]);
 
-        let outcome = finalize_internal_run(&wt, &baseline, Ok("done".to_string())).await;
+        let outcome = finalize_internal_run(&wt, &baseline, Ok("done".to_string()), None).await;
 
         assert!(
             matches!(outcome, GoalOutcome::Blocked { .. }),
