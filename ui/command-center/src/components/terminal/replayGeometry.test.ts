@@ -384,7 +384,11 @@ const POP_OUTS: Array<[Size, Size]> = [
   [{ cols: 40, rows: 12 }, { cols: 100, rows: 33 }],
 ];
 
-describe('pop-out replay in real xterm.js', () => {
+// These parse megabytes of real PTY bytes through xterm.js; alone they take
+// ~0.5–2 s each, but under a loaded machine (a parallel cargo build) they hit
+// vitest's 5 s default. A generous per-test budget keeps the gate honest
+// without hiding a real hang (each still fails if it never finishes).
+describe('pop-out replay in real xterm.js', { timeout: 30_000 }, () => {
   it('reproduces the stale frames with the old attach', async () => {
     const stale: number[] = [];
     for (const [first, final] of POP_OUTS) {

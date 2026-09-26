@@ -8,7 +8,8 @@ vi.mock('../../../lib/useLiveGoals', () => ({
   useLiveGoals: () => ({ activeCount: 0, loaded: true }),
 }));
 vi.mock('../../settings/useSettings', () => ({
-  usePersona: () => ({ data: null }),
+  // A neutral fixture name: the inbox renders the persona seam, never a literal.
+  usePersona: () => ({ data: { display_name: 'Nova' } }),
 }));
 vi.mock('./client', () => ({
   decisionsClient: { cancelGoal: vi.fn() },
@@ -93,9 +94,9 @@ describe('DecisionInbox states (R2)', () => {
     const loadHistory = vi.fn().mockResolvedValue([]);
     render(makeInbox({ data: { ...emptyInbox, handled_count: 4 }, loadHistory }));
     expect(document.body.textContent).toContain('Nothing needs you');
-    expect(document.body.textContent).toContain('Henry has handled 4 items so far.');
+    expect(document.body.textContent).toContain('Nova has handled 4 items so far.');
     expect(document.body.textContent).not.toMatch(/overnight/);
-    const review = Array.from(document.body.querySelectorAll('button')).find(b => b.textContent === 'Review what Henry did')!;
+    const review = Array.from(document.body.querySelectorAll('button')).find(b => b.textContent === 'Review what Nova did')!;
     await act(async () => { review.click(); });
     expect(loadHistory).toHaveBeenCalledTimes(1);
   });
@@ -117,7 +118,7 @@ describe('the header handled link (U18)', () => {
     expect(link.textContent).toMatch(/^3 handled since 12 AM ›$/);
     await act(async () => { link.click(); });
     expect(loadHistory).toHaveBeenCalledTimes(1);
-    expect(document.body.textContent).toContain('What Henry did');
+    expect(document.body.textContent).toContain('What Nova did');
   });
 
   it('falls back to "N handled" with no window', () => {

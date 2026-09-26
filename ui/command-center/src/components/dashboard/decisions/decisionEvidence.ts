@@ -295,7 +295,7 @@ function unblockCause(d: Decision, agentName: string): string[] {
  * The body's cause: at most two sentences, plain words, no ids, never the raw
  * `detail` (U1, R3). The daemon's `summary` wins when present.
  */
-export function plainCause(d: Decision, agentName = 'Henry'): string {
+export function plainCause(d: Decision, agentName = 'Your agent'): string {
   const fromDaemon = asText(d.summary);
   if (fromDaemon) return fromDaemon;
   const payload = asObject(d.payload);

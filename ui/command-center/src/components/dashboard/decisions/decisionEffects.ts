@@ -116,7 +116,7 @@ function localActions(d: Decision, agentName: string, canCancelGoal: boolean): D
           ghost('reject', 'Keep paused', 'The job stays paused; you can resume it later.', '3', REJECT, { doneLabel: 'Kept paused' }),
         ];
       }
-      // No Reject (D8, Jesse's delegated ruling): the daemon has no reject arm
+      // No Reject (D8, the user's delegated ruling): the daemon has no reject arm
       // for a goal unblock, so it left a parked goal with no open question.
       const actions: Draft[] = [
         primary('approve', 'Try again', 'Wakes the goal and gives it more attempts.', APPROVE, { doneLabel: 'Trying again' }),
@@ -270,7 +270,7 @@ function localActions(d: Decision, agentName: string, canCancelGoal: boolean): D
  * The single source for a decision's verdicts. `canCancelGoal` is false where
  * the surface has no goal to cancel (no project/goal id).
  */
-export function decisionPlan(d: Decision, agentName = 'Henry', canCancelGoal = !!(d.project_id && d.goal_id)): DecisionPlan {
+export function decisionPlan(d: Decision, agentName = 'Your agent', canCancelGoal = !!(d.project_id && d.goal_id)): DecisionPlan {
   const drafts = localActions(d, agentName, canCancelGoal);
   const daemonEffects = d.effects && typeof d.effects === 'object' ? d.effects : null;
   const actions: VerdictAction[] = (drafts ?? []).map(a => {

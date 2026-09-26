@@ -1283,7 +1283,7 @@ pub fn answer_effects(
                 vec![
             (
                 "choice",
-                "Records the option you pick. Henry creates the roadmap only if you approve \
+                "Records the option you pick. The roadmap is created only if you approve \
                  it."
                     .into(),
             ),
@@ -1333,7 +1333,7 @@ pub fn answer_effects(
                     if str_of(payload, "normalized_command").is_empty() {
                         "Declines it.".into()
                     } else {
-                        "Declines it. Henry won't suggest this automation again.".into()
+                        "Declines it. This automation won't be suggested again.".into()
                     },
                 ),
             ],

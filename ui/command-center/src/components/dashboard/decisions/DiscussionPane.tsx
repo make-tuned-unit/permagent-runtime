@@ -6,7 +6,7 @@
  * the last element of the single column: a one-line, auto-growing composer
  * with the thread growing above it (capped at 50vh). Nothing typed here
  * answers the decision — the action bar does — and the conversation stays
- * separate from the main chat (Jesse's D1 ruling: discussion comes to the
+ * separate from the main chat (the user's D1 ruling: discussion comes to the
  * review, never decisions to chat).
  *
  * S2: messages render as React text nodes only.

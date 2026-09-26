@@ -47,7 +47,7 @@ describe('decisionPlan — one record drives the effect rows AND the buttons (U3
   });
 });
 
-describe('goal unblock buttons (Jesse ruling: no separate Reject)', () => {
+describe('goal unblock buttons (delegated ruling: no separate Reject)', () => {
   it('offers Try again (1, Return), Retry with notes (2) and Cancel goal… — no Reject', () => {
     const plan = decisionPlan(goalUnblock(), 'Henry');
     expect(plan.actions.map(a => a.label)).toEqual(['Cancel goal…', 'Try again', 'Retry with notes']);

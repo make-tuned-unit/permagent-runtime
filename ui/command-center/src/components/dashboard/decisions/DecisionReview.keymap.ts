@@ -71,7 +71,7 @@ export const SHORTCUT_ROWS: ReadonlyArray<{ keys: string[]; label: string }> = [
   { keys: ['H'], label: 'Later' },
   { keys: ['J', 'K'], label: 'Next / previous decision' },
   { keys: ['Z'], label: 'Undo your last answer' },
-  { keys: ['/'], label: 'Ask Henry about this' },
+  { keys: ['/'], label: 'Ask about this decision' },
   { keys: ['?'], label: 'Show these shortcuts' },
   { keys: ['esc'], label: 'Close' },
 ];

@@ -9,7 +9,7 @@
  * The separate "Parked goals" list is gone (U2): every parked goal with an
  * open unblock decision is already in the queue, so it showed the same goal
  * twice. Zero batch/multi-select affordances — answers are one at a time
- * (Jesse's delegated ruling, 2026-09-25).
+ * (the user's delegated ruling, 2026-09-25).
  */
 
 import { useCallback, useEffect, useState, type CSSProperties } from 'react';
@@ -32,6 +32,7 @@ import {
 import { handledLinkLabel, handledSentence, handledSummary } from './DecisionInbox.handled';
 import { ageLabel } from './decisionEvidence';
 import { usePersona } from '../../settings/useSettings';
+import { useOrchestratorName } from '../../world/shared/useOrchestratorName';
 
 interface Props {
   inbox: ReturnType<typeof useDecisions>;
@@ -57,7 +58,9 @@ export function DecisionInbox({ inbox, onClose, placement = 'center' }: Props) {
   const goalDetail = useCommandCenter(state => state.goalDetail);
   const { data, loading, error } = inbox;
   const { data: persona } = usePersona();
-  const agentName = persona?.display_name ?? 'Henry';
+  // The persona seam, never a literal (identity_name_guard, #986).
+  const configuredName = useOrchestratorName();
+  const agentName = persona?.display_name ?? configuredName ?? 'Your agent';
   const review = useDecisionReviewState(inbox, agentName);
   const [view, setView] = useState<'list' | 'history'>('list');
   const [historyFilter, setHistoryFilter] = useState<'agent' | 'all'>('all');
