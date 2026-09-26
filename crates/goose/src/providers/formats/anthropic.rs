@@ -1,5 +1,7 @@
 use crate::conversation::message::{Message, MessageContent};
-use crate::cost_router::cache::{CacheTtl, SystemPromptParts};
+use crate::cost_router::cache::{
+    is_turn_context_text, wrap_turn_context, CacheTtl, SystemPromptParts,
+};
 use crate::mcp_utils::extract_text_from_resource;
 use crate::model::ModelConfig;
 use crate::providers::base::Usage;
@@ -270,16 +272,27 @@ pub fn format_messages(messages: &[Message]) -> Vec<Value> {
     // During each turn, we mark the final message with cache_control so the conversation can be
     // incrementally cached. The second-to-last user message is also marked for caching with the
     // cache_control parameter, so that this checkpoint can read from the previous cache.
+    //
+    // The marker goes on the last block that is NOT per-turn host context (MOIM,
+    // a relocated volatile suffix). Those blocks ride only on the newest user
+    // message and are gone when the next turn replays it as history, so a
+    // breakpoint on one would cache a prefix no later request can ever repeat.
     let mut user_count = 0;
     for message in anthropic_messages.iter_mut().rev() {
         if message.get(ROLE_FIELD) == Some(&json!(USER_ROLE)) {
             if let Some(content) = message.get_mut(CONTENT_FIELD) {
                 if let Some(content_array) = content.as_array_mut() {
-                    if let Some(last_content) = content_array.last_mut() {
-                        last_content.as_object_mut().unwrap().insert(
-                            CACHE_CONTROL_FIELD.to_string(),
-                            json!({ TYPE_FIELD: "ephemeral" }),
-                        );
+                    if let Some(anchor) = content_array
+                        .iter_mut()
+                        .rev()
+                        .find(|block| !is_turn_context_block(block))
+                    {
+                        if let Some(obj) = anchor.as_object_mut() {
+                            obj.insert(
+                                CACHE_CONTROL_FIELD.to_string(),
+                                json!({ TYPE_FIELD: "ephemeral" }),
+                            );
+                        }
                     }
                 }
             }
@@ -291,6 +304,43 @@ pub fn format_messages(messages: &[Message]) -> Vec<Value> {
     }
 
     anthropic_messages
+}
+
+/// A formatted text block whose text is per-turn host context (see
+/// [`is_turn_context_text`]).
+fn is_turn_context_block(block: &Value) -> bool {
+    block.get(TYPE_FIELD).and_then(Value::as_str) == Some(TEXT_TYPE)
+        && block
+            .get(TEXT_TYPE)
+            .and_then(Value::as_str)
+            .is_some_and(is_turn_context_text)
+}
+
+/// Append the system prompt's volatile suffix as a trailing text block of the
+/// LAST message, when that message is a user message. Returns whether it did.
+///
+/// Anthropic orders a request tools → system → messages, so a volatile block in
+/// `system` sits upstream of the entire history: any change to it (a worker
+/// flipping state, a briefing read) misses every message-level breakpoint and
+/// re-writes the whole history at the 1.25x write rate. At the tail it sits
+/// after both rolling breakpoints and costs only its own tokens. Must run AFTER
+/// [`format_messages`] placed the breakpoints (it also skips turn-context
+/// blocks, so the order is belt and braces).
+fn append_turn_context_to_last_user(messages: &mut [Value], volatile_suffix: &str) -> bool {
+    let Some(last) = messages.last_mut() else {
+        return false;
+    };
+    if last.get(ROLE_FIELD).and_then(Value::as_str) != Some(USER_ROLE) {
+        return false;
+    }
+    let Some(content) = last.get_mut(CONTENT_FIELD).and_then(Value::as_array_mut) else {
+        return false;
+    };
+    content.push(json!({
+        TYPE_FIELD: TEXT_TYPE,
+        TEXT_TYPE: wrap_turn_context(volatile_suffix),
+    }));
+    true
 }
 
 fn anthropic_flavored_input_schema(input_schema: Arc<JsonObject>) -> Arc<JsonObject> {
@@ -830,13 +880,26 @@ pub fn create_request_split(
     read_only_files: &[ReadOnlyFile],
     ttl: CacheTtl,
 ) -> Result<Value> {
-    let anthropic_messages = format_messages(messages);
+    let mut anthropic_messages = format_messages(messages);
     let tool_specs = format_tools(tools);
-    let system_spec = format_system_parts(system, read_only_files);
 
     if anthropic_messages.is_empty() {
         return Err(anyhow!("No valid messages to send to Anthropic API"));
     }
+
+    // The volatile suffix rides at the END of the request whenever the request
+    // ends on a user message (every agent-loop turn does); only a request that
+    // ends on something else keeps it as the unmarked second system block.
+    let relocated = !system.volatile_suffix().is_empty()
+        && append_turn_context_to_last_user(&mut anthropic_messages, system.volatile_suffix());
+    let stable_only;
+    let system_for_spec = if relocated {
+        stable_only = SystemPromptParts::all_stable(system.stable_prefix().to_string());
+        &stable_only
+    } else {
+        system
+    };
+    let system_spec = format_system_parts(system_for_spec, read_only_files);
 
     let max_tokens = model_config.max_output_tokens();
     let mut payload = json!({
@@ -847,7 +910,7 @@ pub fn create_request_split(
 
     // Emit the system block whenever there is either a base prompt or pinned
     // read-only context — read-only context alone must still be sent (and cached).
-    if !system.is_empty() || !read_only_files.is_empty() {
+    if !system_for_spec.is_empty() || !read_only_files.is_empty() {
         // (`is_empty` covers both halves — a prompt that is only a volatile
         // suffix still has to be sent.)
         payload
@@ -2352,10 +2415,24 @@ mod tests {
         let turn2 = request("\n# Live Status\n- 4 described, 12 pending\n");
 
         assert_eq!(
-            turn1["system"][0], turn2["system"][0],
+            turn1["system"], turn2["system"],
             "the cached system block must not move when only live status changed"
         );
-        assert_ne!(turn1["system"][1], turn2["system"][1]);
+        // The request ends on a user message, so the volatile suffix rides at
+        // the tail of that message (after the history), not in `system`.
+        let tail = |payload: &Value| {
+            payload["messages"].as_array().unwrap().last().unwrap()["content"]
+                .as_array()
+                .unwrap()
+                .last()
+                .unwrap()
+                .clone()
+        };
+        assert_ne!(tail(&turn1), tail(&turn2));
+        assert!(tail(&turn2)["text"]
+            .as_str()
+            .unwrap()
+            .contains("12 pending"));
         assert_eq!(turn1["tools"], turn2["tools"]);
 
         // Guard the reason this works: exactly one breakpoint in the system spec.
@@ -2446,6 +2523,167 @@ mod tests {
                 assert_eq!(n, 4, "expected exactly 4 canonical breakpoints, got {n}");
             }
         }
+    }
+
+    /// Recursively drop every `cache_control` marker: the markers say where to
+    /// write/read, they are not part of the cached content being matched.
+    fn strip_cache_control(value: &Value) -> Value {
+        match value {
+            Value::Object(map) => Value::Object(
+                map.iter()
+                    .filter(|(k, _)| k.as_str() != "cache_control")
+                    .map(|(k, v)| (k.clone(), strip_cache_control(v)))
+                    .collect(),
+            ),
+            Value::Array(items) => Value::Array(items.iter().map(strip_cache_control).collect()),
+            other => other.clone(),
+        }
+    }
+
+    /// (message index, block index) of the LAST cache breakpoint in `messages`.
+    fn last_message_breakpoint(payload: &Value) -> (usize, usize) {
+        let mut found = None;
+        for (m, message) in payload["messages"].as_array().unwrap().iter().enumerate() {
+            if let Some(blocks) = message["content"].as_array() {
+                for (b, block) in blocks.iter().enumerate() {
+                    if block.get("cache_control").is_some() {
+                        found = Some((m, b));
+                    }
+                }
+            }
+        }
+        found.expect("the request carries a message-level breakpoint")
+    }
+
+    /// The bytes a message-level breakpoint caches: tools, system and every
+    /// message block up to and including the breakpoint block.
+    fn cached_prefix_at(payload: &Value, (m, b): (usize, usize)) -> Value {
+        let messages = payload["messages"].as_array().unwrap();
+        let mut prefix: Vec<Value> = messages[..m].to_vec();
+        let mut last = messages[m].clone();
+        let kept: Vec<Value> = last["content"].as_array().unwrap()[..=b].to_vec();
+        last["content"] = Value::Array(kept);
+        prefix.push(last);
+        strip_cache_control(&json!({
+            "tools": payload["tools"],
+            "system": payload["system"],
+            "messages": prefix,
+        }))
+    }
+
+    fn moim(minute: u32) -> String {
+        format!(
+            "<info-msg>\nIt is currently 2026-09-25 11:{minute:02}:00\nWorking directory: /w\n\
+             Context: ~{minute}k/400k tokens used\n</info-msg>"
+        )
+    }
+
+    fn tool_turn(id: &str) -> [Message; 2] {
+        [
+            Message::assistant()
+                .with_tool_request(id, Ok(CallToolRequestParams::new("developer__shell"))),
+            Message::user().with_tool_response(
+                id,
+                Ok(rmcp::model::CallToolResult::success(vec![
+                    rmcp::model::Content::text(format!("output of {id}")),
+                ])),
+            ),
+        ]
+    }
+
+    /// The measured defect (sessions 20260925_5/_6, 20260924_12): every turn
+    /// read only the ~8.9k-token tools+system prefix and re-wrote the whole
+    /// history. Two consecutive turns — with a changed clock in MOIM AND a
+    /// changed live status — must let turn N+1 read everything turn N's last
+    /// breakpoint cached.
+    #[test]
+    fn consecutive_turns_share_the_whole_history_prefix() {
+        let _env = no_thinking_env();
+        let config = cfg("claude-haiku-4-5");
+        let tools = cache_guard_tools();
+        let stable = cache_guard_system();
+
+        // Turn N: the agent loop appends MOIM to the newest user message.
+        let mut history = vec![Message::user().with_text("fix the bug")];
+        history.extend(tool_turn("t1"));
+        let mut turn_n = history.clone();
+        let last = turn_n.pop().unwrap();
+        turn_n.push(last.with_text(moim(1)));
+
+        // Turn N+1: history grew by one tool round; MOIM moved to the new tail.
+        history.extend(tool_turn("t2"));
+        let mut turn_n1 = history.clone();
+        let last = turn_n1.pop().unwrap();
+        turn_n1.push(last.with_text(moim(2)));
+
+        let req = |messages: &[Message], status: &str| {
+            create_request_split(
+                &config,
+                &SystemPromptParts::new(stable.clone(), status.to_string()),
+                messages,
+                &tools,
+                &[],
+                CacheTtl::FiveMinute,
+            )
+            .unwrap()
+        };
+        let a = req(&turn_n, "\n# Live Status (this turn)\n- worker running\n");
+        let b = req(&turn_n1, "\n# Live Status (this turn)\n- worker finished\n");
+
+        // Turn N's last breakpoint is on the tool result, not on MOIM or the
+        // relocated status…
+        let bp = last_message_breakpoint(&a);
+        let block = &a["messages"][bp.0]["content"][bp.1];
+        assert_eq!(block["type"], "tool_result", "breakpoint landed on {block}");
+
+        // …and turn N+1 repeats that exact prefix and marks the same block, so
+        // the read hits instead of re-writing the history.
+        assert_eq!(
+            cached_prefix_at(&a, bp),
+            cached_prefix_at(&b, bp),
+            "turn N+1 must replay turn N's cached prefix byte-for-byte"
+        );
+        assert!(
+            b["messages"][bp.0]["content"][bp.1]
+                .get("cache_control")
+                .is_some(),
+            "turn N+1 must carry a breakpoint on turn N's last cached block"
+        );
+
+        // Neither per-turn block ever carries a breakpoint.
+        for payload in [&a, &b] {
+            for message in payload["messages"].as_array().unwrap() {
+                for block in message["content"].as_array().unwrap() {
+                    if is_turn_context_block(block) {
+                        assert!(block.get("cache_control").is_none(), "{block}");
+                    }
+                }
+            }
+            assert_eq!(collect_cache_controls(payload).len(), 4);
+        }
+    }
+
+    /// A request that does not end on a user message cannot take a trailing
+    /// block, so the volatile suffix stays the unmarked second system block.
+    #[test]
+    fn volatile_suffix_falls_back_to_system_when_the_request_ends_on_assistant() {
+        let _env = no_thinking_env();
+        let config = cfg("claude-opus-4-8");
+        let payload = create_request_split(
+            &config,
+            &SystemPromptParts::new(cache_guard_system(), "\n# Live Status\n- 1\n".into()),
+            &[
+                Message::user().with_text("go"),
+                Message::assistant().with_text("prefill"),
+            ],
+            &cache_guard_tools(),
+            &[],
+            CacheTtl::FiveMinute,
+        )
+        .unwrap();
+        let system = payload["system"].as_array().unwrap();
+        assert_eq!(system.len(), 2);
+        assert!(system[1].get("cache_control").is_none());
     }
 
     #[test]

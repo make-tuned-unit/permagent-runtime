@@ -1352,6 +1352,15 @@ impl Agent {
             .map(|m| m.agent_visible_content())
             .collect();
 
+        // Observation masking: tool-result bodies older than the configured
+        // window are swapped for a placeholder in what the MODEL sees (the
+        // stored transcript keeps them). Block-quantized so the masked prefix
+        // changes only once every window's worth of turns — see
+        // `observation_mask` for the measured cache trade-off.
+        let keep_turns = crate::agents::observation_mask::configured_keep_turns();
+        let filtered_messages =
+            crate::agents::observation_mask::mask_old_observations(&filtered_messages, keep_turns);
+
         // Convert tool messages to text if toolshim is enabled
         let messages_for_provider = if config.toolshim {
             convert_tool_messages_to_text(&filtered_messages)

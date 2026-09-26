@@ -1,5 +1,5 @@
 use crate::agents::extension_manager::ExtensionManager;
-use crate::conversation::message::Message;
+use crate::conversation::message::{Message, MessageContent};
 use crate::conversation::{fix_conversation, Conversation};
 use rmcp::model::Role;
 use std::path::Path;
@@ -91,8 +91,25 @@ pub async fn inject_moim(
     conversation
 }
 
-/// Insert the synthetic MOIM user message in front of the last assistant
-/// turn. Adjacent text/thinking parts are coalesced *first* so historical
+/// Place the MOIM text at the very END of the request: appended as the last
+/// content block of the last agent-visible message when that is a user
+/// message (every agent-loop turn ends on one — the user's words or the tool
+/// results just returned).
+///
+/// It used to be inserted in front of the last assistant turn, i.e. merged
+/// into the user message TWO back from the end. MOIM carries a clock and a
+/// context-fill line, and the slot it occupied moved forward every turn, so
+/// the message it had sat in changed on the next turn: on Anthropic no
+/// message-level cache breakpoint could ever be read back (measured
+/// 2026-09-25: cache reads flat at the ~8.9k-token tools+system prefix while
+/// the whole history was re-written at 1.25x each turn), and on the
+/// automatic-prefix providers the last two messages were always re-billed.
+/// At the tail it is the only thing that differs from the previous turn.
+///
+/// A conversation whose last visible message is not a user message keeps the old
+/// placement (before the last assistant turn).
+///
+/// Adjacent text/thinking parts are coalesced *first* so historical
 /// streamed deltas do not show up as MOIM issues. Session 20260827_1's
 /// issue list grew by ~2 items per turn because `fix_conversation` reported
 /// one `"Merged text content"` per un-coalesced assistant message in the
@@ -105,11 +122,21 @@ fn with_moim_inserted(conversation: &Conversation, moim: String) -> Vec<Message>
         .cloned()
         .map(Message::coalesce_adjacent_text_and_thinking)
         .collect();
-    let idx = messages
-        .iter()
-        .rposition(|m| m.role == Role::Assistant)
-        .unwrap_or(0);
-    messages.insert(idx, Message::user().with_text(moim));
+    let last_visible = messages.iter().rposition(|m| m.is_agent_visible());
+    match last_visible {
+        // Messages after it (if any) are not agent-visible and are filtered out
+        // before the provider call, so this IS the tail the model sees.
+        Some(i) if messages[i].role == Role::User => {
+            messages[i].content.push(MessageContent::text(moim));
+        }
+        _ => {
+            let idx = messages
+                .iter()
+                .rposition(|m| m.role == Role::Assistant)
+                .unwrap_or(0);
+            messages.insert(idx, Message::user().with_text(moim));
+        }
+    }
     messages
 }
 
@@ -217,15 +244,81 @@ mod tests {
         assert_eq!(msgs[0].content[0].as_text().unwrap(), "Hello");
         assert_eq!(msgs[1].content[0].as_text().unwrap(), "Hi");
 
-        let merged_content = msgs[0]
+        // MOIM rides at the tail of the newest user message, as its own block…
+        assert_eq!(msgs[2].content.len(), 2);
+        assert_eq!(msgs[2].content[0].as_text().unwrap(), "Bye");
+        let moim = msgs[2].content[1].as_text().unwrap();
+        assert!(moim.starts_with("<info-msg>"));
+        assert!(moim.contains("Working directory: /test/dir"));
+
+        // …and the earlier history is untouched, so it replays byte-identically
+        // as next turn's cached prefix.
+        assert_eq!(msgs[0].content.len(), 1);
+    }
+
+    /// Prefix stability across two consecutive turns: every message of turn
+    /// N's request except the MOIM block reappears unchanged, in place, at the
+    /// front of turn N+1's request.
+    #[tokio::test]
+    async fn moim_never_touches_the_history_a_later_turn_replays() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let em = ExtensionManager::new_without_provider(temp_dir.path().to_path_buf());
+        let working_dir = PathBuf::from("/test/dir");
+        let tool_round = |id: &str| {
+            vec![
+                Message::assistant()
+                    .with_tool_request(id, Ok(CallToolRequestParams::new("search"))),
+                Message::user().with_tool_response(
+                    id,
+                    Ok(rmcp::model::CallToolResult::success(vec![
+                        rmcp::model::Content::text(format!("result {id}")),
+                    ])),
+                ),
+            ]
+        };
+        let mut history = vec![Message::user().with_text("Search")];
+        history.extend(tool_round("s1"));
+        let turn_n = inject_moim(
+            "s",
+            Conversation::new_unvalidated(history.clone()),
+            &em,
+            &working_dir,
+        )
+        .await;
+        history.extend(tool_round("s2"));
+        let turn_n1 = inject_moim(
+            "s",
+            Conversation::new_unvalidated(history.clone()),
+            &em,
+            &working_dir,
+        )
+        .await;
+
+        let n = turn_n.messages();
+        let n1 = turn_n1.messages();
+        // Turn N minus its trailing MOIM block…
+        let mut n_without_moim = n.clone();
+        let last = n_without_moim.last_mut().unwrap();
+        assert!(last
             .content
-            .iter()
-            .filter_map(|c| c.as_text())
-            .collect::<Vec<_>>()
-            .join("");
-        assert!(merged_content.contains("Hello"));
-        assert!(merged_content.contains("<info-msg>"));
-        assert!(merged_content.contains("Working directory: /test/dir"));
+            .last()
+            .and_then(|c| c.as_text())
+            .is_some_and(|t| t.starts_with("<info-msg>")));
+        last.content.pop();
+        // …is exactly the head of turn N+1.
+        assert_eq!(&n1[..n_without_moim.len()], &n_without_moim[..]);
+        // Exactly one MOIM block per request, always in the last message.
+        for msgs in [n, n1] {
+            let count = msgs
+                .iter()
+                .flat_map(|m| m.content.iter())
+                .filter(|c| c.as_text().is_some_and(|t| t.contains("<info-msg>")))
+                .count();
+            assert_eq!(count, 1);
+            assert!(conversation_has_moim(&Conversation::new_unvalidated(vec![
+                msgs.last().unwrap().clone()
+            ])));
+        }
     }
 
     #[tokio::test]
@@ -273,17 +366,24 @@ mod tests {
         let result = inject_moim("test-session-id", conv, &em, &working_dir).await;
         let msgs = result.messages();
 
-        assert_eq!(msgs.len(), 6);
+        // No message is added: MOIM is a trailing block of the last message,
+        // after the tool result it accompanies.
+        assert_eq!(msgs.len(), 5);
 
-        let moim_msg = &msgs[3];
+        let moim_msg = &msgs[4];
+        assert!(moim_msg.content[0].as_tool_response().is_some());
         let has_moim = moim_msg
             .content
             .iter()
             .any(|c| c.as_text().is_some_and(|t| t.contains("<info-msg>")));
 
+        assert!(has_moim, "MOIM should ride at the tail of the last message");
         assert!(
-            has_moim,
-            "MOIM should be in message before latest assistant message"
+            !msgs[..4].iter().any(|m| m
+                .content
+                .iter()
+                .any(|c| c.as_text().is_some_and(|t| t.contains("<info-msg>")))),
+            "MOIM must not touch the history"
         );
     }
 
