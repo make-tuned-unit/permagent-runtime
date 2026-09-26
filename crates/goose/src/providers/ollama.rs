@@ -69,14 +69,17 @@ pub struct OllamaProvider {
 const OLLAMA_SERVER_DEFAULT_NUM_CTX: usize = 4096;
 
 /// Where a [`ServedWindow`] came from, so the refusal can say which knob to
-/// turn.
+/// turn, and so [`auto_num_ctx`] knows whose choice it would be overriding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServedWindowSource {
     /// The model's Modelfile sets `num_ctx` (e.g. `qwen25-16k:latest`,
     /// `minicpm5-2b-q8:latest`); Ollama loads it at that size.
     Modelfile,
-    /// No Modelfile `num_ctx`: the server default applies — Ollama's 4096, or
-    /// the `OLLAMA_CONTEXT_LENGTH` configured here to mirror the server's.
+    /// No Modelfile `num_ctx`, and the `OLLAMA_CONTEXT_LENGTH` configured here
+    /// says what the server was started with: a server-wide window somebody
+    /// chose, usually to save memory — as deliberate as a Modelfile's.
+    ServerConfigured,
+    /// No Modelfile `num_ctx` and nothing configured: Ollama's own 4096.
     ServerDefault,
 }
 
@@ -101,6 +104,19 @@ pub struct ServedWindow {
     /// The model's trained context length (`model_info.*.context_length`),
     /// the most a native request may ask for.
     pub trained: Option<usize>,
+    /// What the model costs in memory, when `/api/show` says enough to tell
+    /// (see [`ModelFootprint`]).
+    pub footprint: Option<ModelFootprint>,
+}
+
+/// What a local model costs in memory, from `/api/show`: its weights, and the
+/// K+V cache each token of context adds. [`auto_num_ctx`] sizes a window from
+/// it so a model is never asked to load with more context than the machine
+/// can hold beside its weights.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModelFootprint {
+    pub weight_bytes: u64,
+    pub kv_bytes_per_token: u64,
 }
 
 /// What `/api/show` tells us about a model's window.
@@ -141,6 +157,10 @@ impl RequestWindow {
             (OllamaTransport::OpenAiCompat, ServedWindowSource::Modelfile) => {
                 "the num_ctx its Modelfile sets"
             }
+            (OllamaTransport::OpenAiCompat, ServedWindowSource::ServerConfigured) => {
+                "the server-wide OLLAMA_CONTEXT_LENGTH configured here: its Modelfile sets no \
+                 num_ctx"
+            }
             (OllamaTransport::OpenAiCompat, ServedWindowSource::ServerDefault) => {
                 "Ollama's default window: its Modelfile sets no num_ctx and no \
                  larger context limit is configured for it here"
@@ -177,10 +197,10 @@ pub fn request_window(served: ServedWindow, requested: Option<usize>) -> Request
 }
 
 /// The most this app asks Ollama for on its own initiative (see
-/// [`auto_num_ctx`]) when nothing else sizes the window. The KV cache grows
-/// linearly with `num_ctx`; 32768 is what a 7–8B model can carry on a 16 GB
-/// Mac alongside everything else. A bigger machine raises it with
-/// `OLLAMA_MAX_NUM_CTX` (env or config); a smaller one lowers it.
+/// [`auto_num_ctx`]) when nothing else sizes the window and `OLLAMA_MAX_NUM_CTX`
+/// (env or config) is not set. An upper bound only: the memory ceiling for
+/// the model's own size ([`memory_num_ctx_ceiling`]) usually decides first
+/// for anything larger than a 7–8B model.
 const OLLAMA_DEFAULT_AUTO_NUM_CTX_CAP: usize = 32_768;
 
 fn resolve_ollama_auto_num_ctx_cap() -> usize {
@@ -188,6 +208,79 @@ fn resolve_ollama_auto_num_ctx_cap() -> usize {
         Ok(n) if n > 0 => n,
         _ => OLLAMA_DEFAULT_AUTO_NUM_CTX_CAP,
     }
+}
+
+/// The share of the Ollama host's memory a model's weights and KV cache may
+/// take together: Metal's default GPU working set on Apple silicon is about
+/// two thirds of RAM on the 8–36 GB machines this runs on, and the rest of
+/// the machine still has to run beside it.
+const OLLAMA_MODEL_MEMORY_SHARE: (u64, u64) = (2, 3);
+
+/// Held back from that share for Ollama's compute buffers and runtime.
+const OLLAMA_RUNTIME_RESERVE_BYTES: u64 = 1 << 30;
+
+/// Bytes one K or V element takes in Ollama's default f16 KV cache. A server
+/// run with `OLLAMA_KV_CACHE_TYPE=q8_0`/`q4_0` takes less, so this over-counts
+/// for it — the safe direction.
+const KV_CACHE_BYTES_PER_ELEMENT: u64 = 2;
+
+/// Pure: the most context a model of `footprint` can be loaded with in
+/// `memory_bytes` of host memory — [`OLLAMA_MODEL_MEMORY_SHARE`] of it, less
+/// the weights and [`OLLAMA_RUNTIME_RESERVE_BYTES`], divided by the KV cache
+/// per token — rounded down to a multiple of 1024. Zero when the weights
+/// alone leave no room.
+///
+/// A 16 GB Mac holds `qwen2.5-coder:7b` (Q4_K_M, ~4.7 GB of weights, 56 KiB
+/// of KV per token) at far more than 32768, but `qwen2.5-coder:14b` (~9 GB,
+/// 192 KiB per token) only at about 6k: at 32768 its 6 GB cache pushes it out
+/// of the working set, onto the CPU or refused outright.
+pub fn memory_num_ctx_ceiling(footprint: ModelFootprint, memory_bytes: u64) -> usize {
+    let (share, of) = OLLAMA_MODEL_MEMORY_SHARE;
+    let usable = memory_bytes / of * share;
+    let left = usable
+        .saturating_sub(footprint.weight_bytes)
+        .saturating_sub(OLLAMA_RUNTIME_RESERVE_BYTES);
+    let tokens = left / footprint.kv_bytes_per_token.max(1);
+    usize::try_from(tokens / 1024 * 1024).unwrap_or(usize::MAX)
+}
+
+/// How much memory the Ollama this client talks to has: `OLLAMA_HOST_MEMORY_GB`
+/// (env or config) when set — the only way to know it for an Ollama on
+/// another machine — else this machine's physical memory when Ollama runs
+/// here. `None` for a remote Ollama with nothing configured: its model is
+/// then sized by the trained length and the cap alone.
+fn resolve_ollama_host_memory_bytes(is_local_host: bool) -> Option<u64> {
+    let configured_gb = crate::config::Config::global()
+        .get_param::<u64>("OLLAMA_HOST_MEMORY_GB")
+        .ok()
+        .filter(|gb| *gb > 0);
+    if let Some(gb) = configured_gb {
+        return Some(gb.saturating_mul(1 << 30));
+    }
+    if is_local_host {
+        physical_memory_bytes()
+    } else {
+        None
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn physical_memory_bytes() -> Option<u64> {
+    // `sysconf` only reads system configuration; it has no preconditions.
+    let (pages, page_size) = unsafe {
+        (
+            libc::sysconf(libc::_SC_PHYS_PAGES),
+            libc::sysconf(libc::_SC_PAGESIZE),
+        )
+    };
+    let pages = u64::try_from(pages).ok().filter(|n| *n > 0)?;
+    let page_size = u64::try_from(page_size).ok().filter(|n| *n > 0)?;
+    pages.checked_mul(page_size)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn physical_memory_bytes() -> Option<u64> {
+    None
 }
 
 /// The `num_ctx` to ask for when this app configures none for the model
@@ -200,19 +293,29 @@ fn resolve_ollama_auto_num_ctx_cap() -> usize {
 /// Ollama's 4096 default, so the request went to `/v1` at 4096 and the
 /// worker's FIRST request (brief + tool schemas, 6,361 tokens) was refused
 /// before it was sent — for a model trained for 32768. Sizing from the
-/// model's own trained length (`/api/show`'s `model_info.*.context_length`),
-/// capped at `cap` for memory, lets the native endpoint serve it.
+/// model's own trained length (`/api/show`'s `model_info.*.context_length`)
+/// lets the native endpoint serve it.
+///
+/// What fits decides, never one number for every model: the trained length,
+/// `cap` (`OLLAMA_MAX_NUM_CTX`, else 32768), and — when the model's size
+/// and the host's memory are both known — [`memory_num_ctx_ceiling`]. Every
+/// request to the model then loads at this size, so a 14B on a 16 GB Mac is
+/// not loaded with a 32768 cache that will not fit beside its weights.
 ///
 /// `None` (leave the served window alone) when:
-/// - the Modelfile sets `num_ctx` — that is somebody's explicit choice for
-///   this model, and overriding it could exceed what they sized it for;
+/// - the Modelfile sets `num_ctx`, or `OLLAMA_CONTEXT_LENGTH` is configured
+///   for the server — both are somebody's explicit choice, usually to save
+///   memory, and overriding them could exceed what they sized it for;
 /// - the trained length is unknown — nothing to size from;
-/// - the capped size is no bigger than what is already served.
-pub fn auto_num_ctx(served: ServedWindow, cap: usize) -> Option<usize> {
+/// - what fits is no bigger than what is already served.
+pub fn auto_num_ctx(served: ServedWindow, cap: usize, memory_bytes: Option<u64>) -> Option<usize> {
     if served.source != ServedWindowSource::ServerDefault {
         return None;
     }
-    let wanted = served.trained?.min(cap);
+    let mut wanted = served.trained?.min(cap);
+    if let (Some(footprint), Some(memory_bytes)) = (served.footprint, memory_bytes) {
+        wanted = wanted.min(memory_num_ctx_ceiling(footprint, memory_bytes));
+    }
     (wanted > served.tokens).then_some(wanted)
 }
 
@@ -230,6 +333,108 @@ fn modelfile_num_ctx(show: &Value) -> Option<usize> {
             parts.next()?.parse::<usize>().ok()
         })
         .filter(|n| *n > 0)
+}
+
+/// A `model_info` count for the model's own architecture
+/// (`"qwen2.block_count": 28`), or the largest entry when it varies per layer
+/// (an array, as `head_count_kv` is for some architectures). Keyed by
+/// `general.architecture` so a vision tower's `*.vision.block_count` is
+/// never read as the language model's.
+fn architecture_count(
+    info: &serde_json::Map<String, Value>,
+    arch: &str,
+    name: &str,
+) -> Option<u64> {
+    let value = info.get(&format!("{arch}.{name}"))?;
+    value
+        .as_u64()
+        .or_else(|| value.as_array()?.iter().filter_map(Value::as_u64).max())
+        .filter(|n| *n > 0)
+}
+
+/// `details.parameter_size` (`"7.6B"`, `"494.03M"`) as a parameter count.
+fn parse_parameter_size(size: &str) -> Option<u64> {
+    let size = size.trim();
+    let (number, scale) = match size.chars().last()?.to_ascii_uppercase() {
+        'B' => (&size[..size.len() - 1], 1e9),
+        'M' => (&size[..size.len() - 1], 1e6),
+        'K' => (&size[..size.len() - 1], 1e3),
+        _ => (size, 1.0),
+    };
+    let value: f64 = number.trim().parse().ok()?;
+    (value.is_finite() && value > 0.0).then_some((value * scale).round() as u64)
+}
+
+/// Bits a weight takes at an Ollama `details.quantization_level`, block
+/// scales included (llama.cpp's own figures, rounded up), by prefix. An
+/// unknown level counts as f16, the size a model ships at before it is
+/// quantised: a size that cannot be read is counted big, never small.
+fn quantization_bits_per_weight(level: Option<&str>) -> f64 {
+    const BITS: &[(&str, f64)] = &[
+        ("F32", 32.0),
+        ("BF16", 16.0),
+        ("F16", 16.0),
+        ("Q8", 8.5),
+        ("Q6", 6.6),
+        ("Q5", 5.7),
+        ("Q4", 4.9),
+        ("IQ4", 4.9),
+        ("MXFP4", 4.9),
+        ("Q3", 4.0),
+        ("IQ3", 4.0),
+        ("Q2", 3.4),
+        ("IQ2", 3.4),
+        ("IQ1", 3.4),
+    ];
+    let level = level.unwrap_or_default().trim().to_ascii_uppercase();
+    BITS.iter()
+        .find(|(prefix, _)| level.starts_with(prefix))
+        .map_or(16.0, |(_, bits)| *bits)
+}
+
+/// What the model costs in memory (see [`ModelFootprint`]), from
+/// `/api/show`: the weights from `general.parameter_count` (else
+/// `details.parameter_size`) at `details.quantization_level`, and the f16
+/// K+V cache per token from the architecture's layer count, KV heads and
+/// head size. `None` when any of those is missing.
+fn model_footprint(show: &Value) -> Option<ModelFootprint> {
+    let info = show.get("model_info")?.as_object()?;
+    let arch = info.get("general.architecture")?.as_str()?;
+    let count = |name: &str| architecture_count(info, arch, name);
+    let layers = count("block_count")?;
+    let heads = count("attention.head_count")?;
+    let kv_heads = count("attention.head_count_kv").unwrap_or(heads);
+    let kv_per_head = match (
+        count("attention.key_length"),
+        count("attention.value_length"),
+    ) {
+        (Some(key), Some(value)) => key.saturating_add(value),
+        (Some(one), None) | (None, Some(one)) => one.saturating_mul(2),
+        (None, None) => count("embedding_length")?
+            .checked_div(heads)?
+            .saturating_mul(2),
+    };
+    let kv_bytes_per_token = layers
+        .saturating_mul(kv_heads)
+        .saturating_mul(kv_per_head)
+        .saturating_mul(KV_CACHE_BYTES_PER_ELEMENT);
+    let parameters = info
+        .get("general.parameter_count")
+        .and_then(Value::as_u64)
+        .or_else(|| {
+            show.pointer("/details/parameter_size")
+                .and_then(Value::as_str)
+                .and_then(parse_parameter_size)
+        })?;
+    let bits = quantization_bits_per_weight(
+        show.pointer("/details/quantization_level")
+            .and_then(Value::as_str),
+    );
+    let weight_bytes = (parameters as f64 * bits / 8.0) as u64;
+    (kv_bytes_per_token > 0 && weight_bytes > 0).then_some(ModelFootprint {
+        weight_bytes,
+        kv_bytes_per_token,
+    })
 }
 
 /// The trained context length, from `/api/show`'s `model_info`
@@ -262,32 +467,40 @@ fn show_is_remote(show: &Value) -> bool {
     })
 }
 
-/// The server default window this client should assume. `OLLAMA_CONTEXT_LENGTH`
-/// is the server's own variable name; setting it here (env or config) tells
-/// the client what the server was started with, which it cannot see.
-fn resolve_ollama_server_default_ctx() -> usize {
-    match crate::config::Config::global().get_param::<usize>("OLLAMA_CONTEXT_LENGTH") {
-        Ok(n) if n > 0 => n,
-        _ => OLLAMA_SERVER_DEFAULT_NUM_CTX,
-    }
+/// The server-wide window configured for this client, when there is one.
+/// `OLLAMA_CONTEXT_LENGTH` is the server's own variable name; setting it here
+/// (env or config) tells the client what the server was started with, which
+/// it cannot see. `None` means Ollama's own 4096 default applies.
+fn resolve_ollama_configured_server_ctx() -> Option<usize> {
+    crate::config::Config::global()
+        .get_param::<usize>("OLLAMA_CONTEXT_LENGTH")
+        .ok()
+        .filter(|n| *n > 0)
 }
 
-fn served_window_from_show(show: &Value, model: &str, server_default: usize) -> ShowWindow {
+fn served_window_from_show(
+    show: &Value,
+    model: &str,
+    configured_server_ctx: Option<usize>,
+) -> ShowWindow {
     if is_cloud_model_name(model) || show_is_remote(show) {
         return ShowWindow::Remote;
     }
     let trained = trained_context_length(show);
-    ShowWindow::Local(match modelfile_num_ctx(show) {
-        Some(tokens) => ServedWindow {
-            tokens,
-            source: ServedWindowSource::Modelfile,
-            trained,
-        },
-        None => ServedWindow {
-            tokens: server_default,
-            source: ServedWindowSource::ServerDefault,
-            trained,
-        },
+    let footprint = model_footprint(show);
+    let (tokens, source) = match (modelfile_num_ctx(show), configured_server_ctx) {
+        (Some(tokens), _) => (tokens, ServedWindowSource::Modelfile),
+        (None, Some(tokens)) => (tokens, ServedWindowSource::ServerConfigured),
+        (None, None) => (
+            OLLAMA_SERVER_DEFAULT_NUM_CTX,
+            ServedWindowSource::ServerDefault,
+        ),
+    };
+    ShowWindow::Local(ServedWindow {
+        tokens,
+        source,
+        trained,
+        footprint,
     })
 }
 
@@ -823,7 +1036,7 @@ impl OllamaProvider {
         let window = served_window_from_show(
             response.payload.as_ref()?,
             model,
-            resolve_ollama_server_default_ctx(),
+            resolve_ollama_configured_server_ctx(),
         );
         if let Ok(mut cache) = self.served_windows.lock() {
             cache.insert(model.to_string(), window);
@@ -846,8 +1059,13 @@ impl OllamaProvider {
     /// Ollama cannot be asked: `/v1`, unguarded, as before.
     pub async fn request_window(&self, model_config: &ModelConfig) -> Option<RequestWindow> {
         let served = self.served_context_window(&model_config.model_name).await?;
-        let requested = resolve_ollama_num_ctx(model_config)
-            .or_else(|| auto_num_ctx(served, resolve_ollama_auto_num_ctx_cap()));
+        let requested = resolve_ollama_num_ctx(model_config).or_else(|| {
+            auto_num_ctx(
+                served,
+                resolve_ollama_auto_num_ctx_cap(),
+                resolve_ollama_host_memory_bytes(self.is_local_host),
+            )
+        });
         Some(request_window(served, requested))
     }
 
@@ -1572,6 +1790,7 @@ mod tests {
             tokens,
             source,
             trained,
+            footprint: None,
         }
     }
 
@@ -1596,7 +1815,7 @@ mod tests {
         });
         assert_eq!(modelfile_num_ctx(&show), Some(16_384));
         assert_eq!(
-            served_window_from_show(&show, "qwen25-16k:latest", 4096),
+            served_window_from_show(&show, "qwen25-16k:latest", None),
             ShowWindow::Local(served(16_384, ServedWindowSource::Modelfile, Some(32_768)))
         );
     }
@@ -1609,7 +1828,7 @@ mod tests {
         assert_eq!(modelfile_num_ctx(&show), None);
         assert_eq!(trained_context_length(&show), Some(32_768));
         assert_eq!(
-            served_window_from_show(&show, "qwen2.5:7b", OLLAMA_SERVER_DEFAULT_NUM_CTX),
+            served_window_from_show(&show, "qwen2.5:7b", None),
             ShowWindow::Local(served(
                 4096,
                 ServedWindowSource::ServerDefault,
@@ -1632,7 +1851,7 @@ mod tests {
             "model_info": {}
         });
         assert_eq!(
-            served_window_from_show(&cloud_show, "my-alias:latest", 4096),
+            served_window_from_show(&cloud_show, "my-alias:latest", None),
             ShowWindow::Remote
         );
         // The tag alone is enough, whatever /api/show says.
@@ -1644,7 +1863,7 @@ mod tests {
         ] {
             assert!(is_cloud_model_name(model), "{model}");
             assert_eq!(
-                served_window_from_show(&json!({}), model, 4096),
+                served_window_from_show(&json!({}), model, None),
                 ShowWindow::Remote,
                 "{model}"
             );
@@ -1695,9 +1914,9 @@ mod tests {
         let cap = OLLAMA_DEFAULT_AUTO_NUM_CTX_CAP;
         // The reported case: qwen2.5-coder:7b, served at 4096, trained 32768.
         let coder = served(4096, ServedWindowSource::ServerDefault, Some(32_768));
-        assert_eq!(auto_num_ctx(coder, cap), Some(32_768));
+        assert_eq!(auto_num_ctx(coder, cap, None), Some(32_768));
         assert_eq!(
-            request_window(coder, auto_num_ctx(coder, cap)),
+            request_window(coder, auto_num_ctx(coder, cap, None)),
             RequestWindow {
                 tokens: 32_768,
                 transport: OllamaTransport::Native,
@@ -1706,22 +1925,178 @@ mod tests {
         );
         // A long-context model is capped, not loaded at 128k.
         let long = served(4096, ServedWindowSource::ServerDefault, Some(131_072));
-        assert_eq!(auto_num_ctx(long, cap), Some(cap));
-        assert_eq!(auto_num_ctx(long, 16_384), Some(16_384));
+        assert_eq!(auto_num_ctx(long, cap, None), Some(cap));
+        assert_eq!(auto_num_ctx(long, 16_384, None), Some(16_384));
         // Nothing bigger to ask for: trained no larger than served, a cap no
         // larger than served, or an unknown trained length.
         let small = served(4096, ServedWindowSource::ServerDefault, Some(4096));
-        assert_eq!(auto_num_ctx(small, cap), None);
-        assert_eq!(auto_num_ctx(coder, 4096), None);
+        assert_eq!(auto_num_ctx(small, cap, None), None);
+        assert_eq!(auto_num_ctx(coder, 4096, None), None);
         let unknown = served(4096, ServedWindowSource::ServerDefault, None);
-        assert_eq!(auto_num_ctx(unknown, cap), None);
+        assert_eq!(auto_num_ctx(unknown, cap, None), None);
         // A Modelfile num_ctx is somebody's explicit choice: left alone.
         let modelfile = served(16_384, ServedWindowSource::Modelfile, Some(32_768));
-        assert_eq!(auto_num_ctx(modelfile, cap), None);
+        assert_eq!(auto_num_ctx(modelfile, cap, None), None);
         // A server started with a bigger OLLAMA_CONTEXT_LENGTH already
         // serves enough.
-        let big_default = served(65_536, ServedWindowSource::ServerDefault, Some(131_072));
-        assert_eq!(auto_num_ctx(big_default, cap), None);
+        let big_default = served(65_536, ServedWindowSource::ServerConfigured, Some(131_072));
+        assert_eq!(auto_num_ctx(big_default, cap, None), None);
+        // And one started with a SMALLER one chose that size, usually to
+        // save memory: it is not raised to the trained length or the cap
+        // either. Before, a configured 8192 on a model trained for 131072
+        // was loaded at 32768 on every request.
+        let small_default = served(8_192, ServedWindowSource::ServerConfigured, Some(131_072));
+        assert_eq!(auto_num_ctx(small_default, cap, None), None);
+        assert_eq!(auto_num_ctx(small_default, cap, Some(64 << 30)), None);
+    }
+
+    /// `/api/show` for `qwen2.5-coder:14b` (Q4_K_M): 48 layers, 8 KV heads of
+    /// 128 (5120 / 40), 14.8B parameters, trained for 32768, no Modelfile
+    /// num_ctx.
+    fn qwen25_coder_14b_show() -> Value {
+        json!({
+            "details": {
+                "family": "qwen2",
+                "parameter_size": "14.8B",
+                "quantization_level": "Q4_K_M"
+            },
+            "model_info": {
+                "general.architecture": "qwen2",
+                "general.parameter_count": 14_770_033_664u64,
+                "qwen2.block_count": 48,
+                "qwen2.context_length": 32_768,
+                "qwen2.embedding_length": 5_120,
+                "qwen2.attention.head_count": 40,
+                "qwen2.attention.head_count_kv": 8
+            }
+        })
+    }
+
+    /// `/api/show` for `qwen2.5-coder:7b` (Q4_K_M): 28 layers, 4 KV heads of
+    /// 128 (3584 / 28), 7.6B parameters, trained for 32768.
+    fn qwen25_coder_7b_show() -> Value {
+        json!({
+            "details": { "parameter_size": "7.6B", "quantization_level": "Q4_K_M" },
+            "model_info": {
+                "general.architecture": "qwen2",
+                "general.parameter_count": 7_615_616_512u64,
+                "qwen2.block_count": 28,
+                "qwen2.context_length": 32_768,
+                "qwen2.embedding_length": 3_584,
+                "qwen2.attention.head_count": 28,
+                "qwen2.attention.head_count_kv": 4
+            }
+        })
+    }
+
+    #[test]
+    fn a_models_memory_footprint_is_read_from_api_show() {
+        let footprint = model_footprint(&qwen25_coder_14b_show()).expect("14b footprint");
+        // 48 layers x 8 KV heads x (128 + 128) x 2 bytes.
+        assert_eq!(footprint.kv_bytes_per_token, 196_608);
+        // 14.8B weights at ~4.9 bits: about 9 GB.
+        assert!(
+            (8_900_000_000..9_200_000_000).contains(&footprint.weight_bytes),
+            "{footprint:?}"
+        );
+        let small = model_footprint(&qwen25_coder_7b_show()).expect("7b footprint");
+        assert_eq!(small.kv_bytes_per_token, 57_344);
+        // Explicit key/value lengths win over embedding / heads, and a
+        // per-layer KV-head list counts its largest entry.
+        let explicit = model_footprint(&json!({
+            "details": { "quantization_level": "Q8_0" },
+            "model_info": {
+                "general.architecture": "gemma3",
+                "general.parameter_count": 1_000_000_000u64,
+                "gemma3.block_count": 10,
+                "gemma3.attention.head_count": 8,
+                "gemma3.attention.head_count_kv": [2, 4, 4],
+                "gemma3.attention.key_length": 256,
+                "gemma3.attention.value_length": 256,
+                "gemma3.embedding_length": 1_024,
+                "gemma3.vision.block_count": 99
+            }
+        }))
+        .expect("footprint");
+        assert_eq!(explicit.kv_bytes_per_token, 10 * 4 * 512 * 2);
+        assert_eq!(explicit.weight_bytes, 1_062_500_000);
+        // Nothing to size from: no footprint, never a guess.
+        assert_eq!(model_footprint(&qwen25_7b_show()), None);
+        assert_eq!(model_footprint(&json!({})), None);
+        // The parameter size from `details` stands in for a missing count;
+        // an unknown quantisation is counted at f16.
+        assert_eq!(parse_parameter_size("7.6B"), Some(7_600_000_000));
+        assert_eq!(parse_parameter_size("494.03M"), Some(494_030_000));
+        assert_eq!(parse_parameter_size("big"), None);
+        assert_eq!(quantization_bits_per_weight(Some("Q4_K_M")), 4.9);
+        assert_eq!(quantization_bits_per_weight(Some("IQ4_XS")), 4.9);
+        assert_eq!(quantization_bits_per_weight(Some("BF16")), 16.0);
+        assert_eq!(quantization_bits_per_weight(None), 16.0);
+    }
+
+    /// The reported case: an unconfigured 14B on a 16 GB Mac is not loaded
+    /// with a 32768 cache (~6 GB on top of ~9 GB of weights), but at what
+    /// fits beside its weights; the 7B that motivated sizing at all still
+    /// gets its full trained 32768; and a machine too small for the weights
+    /// alone gets nothing raised.
+    #[test]
+    fn the_auto_window_is_capped_by_what_fits_in_memory() {
+        let cap = OLLAMA_DEFAULT_AUTO_NUM_CTX_CAP;
+        let sixteen_gb = 16u64 << 30;
+        let ShowWindow::Local(coder_14b) =
+            served_window_from_show(&qwen25_coder_14b_show(), "qwen2.5-coder:14b", None)
+        else {
+            panic!("a local model");
+        };
+        assert_eq!(coder_14b.source, ServedWindowSource::ServerDefault);
+        let sized = auto_num_ctx(coder_14b, cap, Some(sixteen_gb)).expect("raised above 4096");
+        assert_eq!(sized, 6_144);
+        assert_eq!(sized % 1024, 0);
+        // More memory, more room: capped by the trained length again.
+        assert_eq!(
+            auto_num_ctx(coder_14b, cap, Some(64u64 << 30)),
+            Some(32_768)
+        );
+        // Unknown memory (a remote Ollama with nothing configured): the
+        // trained length and the cap alone, as before.
+        assert_eq!(auto_num_ctx(coder_14b, cap, None), Some(32_768));
+
+        let ShowWindow::Local(coder_7b) =
+            served_window_from_show(&qwen25_coder_7b_show(), "qwen2.5-coder:7b", None)
+        else {
+            panic!("a local model");
+        };
+        assert_eq!(auto_num_ctx(coder_7b, cap, Some(sixteen_gb)), Some(32_768));
+        // 8 GB: the 7B's weights leave no room for more than it is served.
+        assert_eq!(auto_num_ctx(coder_7b, cap, Some(8u64 << 30)), None);
+        assert_eq!(
+            memory_num_ctx_ceiling(coder_7b.footprint.expect("footprint"), 8u64 << 30),
+            0
+        );
+    }
+
+    /// `OLLAMA_CONTEXT_LENGTH` configured here is the server's own window,
+    /// not Ollama's default: a Modelfile still wins over it, and it is
+    /// recorded as configured so nothing sizes past it.
+    #[test]
+    fn a_configured_server_window_is_not_the_default() {
+        let show = json!({ "model_info": { "llama.context_length": 131_072 } });
+        assert_eq!(
+            served_window_from_show(&show, "llama3.1:8b", Some(8_192)),
+            ShowWindow::Local(served(
+                8_192,
+                ServedWindowSource::ServerConfigured,
+                Some(131_072)
+            ))
+        );
+        let with_modelfile = json!({
+            "parameters": QWEN25_16K_PARAMETERS,
+            "model_info": { "qwen2.context_length": 32_768 }
+        });
+        assert_eq!(
+            served_window_from_show(&with_modelfile, "qwen25-16k:latest", Some(8_192)),
+            ShowWindow::Local(served(16_384, ServedWindowSource::Modelfile, Some(32_768)))
+        );
     }
 
     /// No slack above the window: a prose prompt of 4,097 real tokens must
@@ -1777,7 +2152,7 @@ mod tests {
         let payload = json!({
             "model": "qwen2.5:7b",
             "messages": [
-                { "role": "system", "content": "You are Henry." },
+                { "role": "system", "content": "You are the agent." },
                 { "role": "user", "content": [
                     { "type": "text", "text": "what is this" },
                     { "type": "image_url", "image_url": { "url": "data:image/png;base64,QUJD" } }
@@ -1806,7 +2181,7 @@ mod tests {
         let messages = body["messages"].as_array().unwrap();
         assert_eq!(
             messages[0],
-            json!({ "role": "system", "content": "You are Henry." })
+            json!({ "role": "system", "content": "You are the agent." })
         );
         assert_eq!(messages[1]["content"], "what is this");
         assert_eq!(messages[1]["images"], json!(["QUJD"]));
@@ -1950,7 +2325,7 @@ mod tests {
             .unwrap()
             .with_context_limit(Some(32_768));
         // ~15k tokens: over 4096, inside 32768.
-        let system = "Henry tool inventory line. ".repeat(3_000);
+        let system = "Agent tool inventory line. ".repeat(3_000);
         let messages = vec![Message::user().with_text("Reply with the single word: ok")];
         let mut stream = provider
             .stream(&model_config, "", &system, &messages, &[])
@@ -2035,6 +2410,125 @@ mod tests {
         }
     }
 
+    /// A server-wide `OLLAMA_CONTEXT_LENGTH` configured here is left alone
+    /// end to end: the model is trained for 131072 and nothing else sizes
+    /// it, but the request stays on `/v1` at the configured 8192 instead of
+    /// loading the model at 32768 on the native endpoint.
+    #[tokio::test]
+    async fn a_configured_server_window_is_never_overridden() {
+        let _guard = env_lock::lock_env([
+            ("GOOSE_INPUT_LIMIT", None::<&str>),
+            ("GOOSE_CONTEXT_LIMIT", None::<&str>),
+            ("OLLAMA_CONTEXT_LENGTH", Some("8192")),
+            ("OLLAMA_MAX_NUM_CTX", None::<&str>),
+            ("OLLAMA_HOST_MEMORY_GB", None::<&str>),
+        ]);
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/show"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({ "model_info": { "llama.context_length": 131_072 } })),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string("data: [DONE]\n\n"),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let provider = provider_at(server.uri());
+        let mut model_config = ModelConfig::new("llama3.1:8b").unwrap();
+        model_config.context_limit = None;
+        assert_eq!(
+            provider.request_context_window(&model_config).await,
+            Some(8_192)
+        );
+        let messages = vec![Message::user().with_text("hi")];
+        let mut stream = provider
+            .stream(&model_config, "", "A short system prompt.", &messages, &[])
+            .await
+            .expect("a request inside the configured window is sent");
+        while let Some(item) = stream.next().await {
+            item.expect("stream item");
+        }
+    }
+
+    /// The reported case end to end: an unconfigured `qwen2.5-coder:14b` on a
+    /// 16 GB host goes native with the num_ctx that fits beside its weights,
+    /// not the 32768 cap.
+    #[tokio::test]
+    async fn stream_sizes_a_large_model_to_the_hosts_memory() {
+        let _guard = env_lock::lock_env([
+            ("GOOSE_INPUT_LIMIT", None::<&str>),
+            ("GOOSE_CONTEXT_LIMIT", None::<&str>),
+            ("OLLAMA_CONTEXT_LENGTH", None::<&str>),
+            ("OLLAMA_MAX_NUM_CTX", None::<&str>),
+            ("OLLAMA_HOST_MEMORY_GB", Some("16")),
+        ]);
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/show"))
+            .and(body_string_contains("qwen2.5-coder:14b"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(qwen25_coder_14b_show()))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/chat"))
+            .and(body_string_contains("\"num_ctx\":6144"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/x-ndjson")
+                    .set_body_string(concat!(
+                        r#"{"model":"qwen2.5-coder:14b","message":{"role":"assistant","content":"ok"},"done":false}"#,
+                        "\n",
+                        r#"{"model":"qwen2.5-coder:14b","message":{"role":"assistant","content":""},"done":true,"done_reason":"stop","prompt_eval_count":5000,"eval_count":1}"#,
+                        "\n"
+                    )),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let provider = provider_at(server.uri());
+        let mut model_config = ModelConfig::new("qwen2.5-coder:14b").unwrap();
+        model_config.context_limit = None;
+        assert_eq!(
+            provider.request_context_window(&model_config).await,
+            Some(6_144)
+        );
+        // ~5k tokens: over 4096, inside 6144.
+        let system = "Worker brief and tool schema line. ".repeat(700);
+        let messages = vec![Message::user().with_text("Begin.")];
+        let mut stream = provider
+            .stream(&model_config, "", &system, &messages, &[])
+            .await
+            .expect("a request inside the memory-sized window is sent");
+        while let Some(item) = stream.next().await {
+            item.expect("stream item");
+        }
+    }
+
     /// Nothing can make the window larger — the model was only trained for
     /// the 4096 it is served with — so `/v1` at 4096, and a request over it
     /// is refused BEFORE it is posted, so Ollama never cuts it.
@@ -2067,7 +2561,7 @@ mod tests {
 
         let provider = provider_at(server.uri());
         let model_config = ModelConfig::new("qwen2.5:7b").unwrap();
-        let system = "Henry tool inventory line. ".repeat(3_000);
+        let system = "Agent tool inventory line. ".repeat(3_000);
         let messages = vec![Message::user().with_text("Reply with the single word: ok")];
         match provider
             .stream(&model_config, "", &system, &messages, &[])
@@ -2111,7 +2605,7 @@ mod tests {
 
         let provider = provider_at(server.uri());
         let model_config = ModelConfig::new("qwen3-coder:480b-cloud").unwrap();
-        let system = "Henry tool inventory line. ".repeat(3_000);
+        let system = "Agent tool inventory line. ".repeat(3_000);
         let messages = vec![Message::user().with_text("hi")];
         let mut stream = provider
             .stream(&model_config, "", &system, &messages, &[])

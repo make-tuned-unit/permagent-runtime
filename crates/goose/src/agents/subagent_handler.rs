@@ -212,7 +212,7 @@ fn get_agent_messages(params: SubagentRunParams) -> AgentMessagesFuture {
 
         let subagent_prompt =
             build_subagent_prompt(&agent, &task_config, &session_id, system_instructions).await?;
-        agent.override_system_prompt(subagent_prompt.clone()).await;
+        agent.override_system_prompt(subagent_prompt).await;
 
         let user_message = Message::user().with_text(user_task);
 
@@ -230,9 +230,9 @@ fn get_agent_messages(params: SubagentRunParams) -> AgentMessagesFuture {
             &agent,
             &task_config,
             &session_id,
-            &subagent_prompt,
             &user_message,
             compact_worker_profile,
+            persona_override.as_ref().map(|(block, _)| block.as_str()),
         )
         .await?;
         let mut conversation = Conversation::new_unvalidated(vec![user_message.clone()]);
@@ -455,46 +455,86 @@ pub(crate) fn first_request_refusal_message(
 /// Run the provider's pre-send window check on the worker's first request
 /// (see [`crate::providers::base::Provider::preflight_request`]), and for a
 /// provider whose window is known, remember how big that request's fixed
-/// part (system prompt + tool schemas) was, for routing to size the next
-/// local dispatch against
+/// part (system prompt + tool schemas) was for this worker's surface, for
+/// routing to size the next local dispatch of the same surface against
 /// ([`crate::cost_router::fallback::record_worker_first_request_overhead`]).
 ///
-/// The system prompt checked is the subagent template the run installs;
-/// the agent may append hints to it, so this is a floor, and the send's own
-/// preflight still refuses whatever this lets through.
+/// The request checked is the one the reply loop's first send builds:
+/// system prompt and tools from the same `Agent::prepare_tools_and_prompt`
+/// the loop calls, so the saved skills, the project hints (`.goosehints`,
+/// `AGENTS.md`), the model-identity line, the model-family overlay and the
+/// live-status block are all counted — the subagent template alone left
+/// every one of them out, so the check passed requests the send refused.
+/// Building it acknowledges the informational briefings its prompt carries
+/// (as the first turn always has); the first turn then builds it again
+/// without them, so what is checked is never smaller than what is sent.
+/// Only the per-turn info message extensions add to the history is left
+/// out: computing it advances their per-turn state. The send's own check
+/// still refuses whatever this lets through.
 async fn preflight_first_request(
     agent: &Agent,
     task_config: &TaskConfig,
     session_id: &str,
-    system: &str,
     user_message: &Message,
     compact_worker_profile: bool,
+    persona_block: Option<&str>,
 ) -> Result<()> {
     let provider = &task_config.provider;
     let model_config = provider.get_model_config();
-    let tools: Vec<_> = agent
-        .list_tools(session_id, None)
+    // A provider that cannot say what window it serves has nothing to judge
+    // the request against (its `preflight_request` answers `Ok` too), so a
+    // cloud worker's request is not built twice.
+    let Some(window) = provider.request_context_window(&model_config).await else {
+        return Ok(());
+    };
+    let working_dir = match agent
+        .config
+        .session_manager
+        .get_session(session_id, false)
         .await
-        .into_iter()
-        .filter(super::reply_parts::is_tool_visible_to_model)
-        .collect();
-    let window = provider.request_context_window(&model_config).await;
-    if window.is_some() {
-        if let Ok(counter) = crate::token_counter::create_token_counter().await {
-            let tools_json = serde_json::to_string(&tools).unwrap_or_default();
-            let overhead = counter
-                .count_tokens(system)
-                .saturating_add(counter.count_tokens(&tools_json));
-            crate::cost_router::fallback::record_worker_first_request_overhead(
-                compact_worker_profile,
-                overhead,
-            );
+    {
+        Ok(session) => session.working_dir,
+        Err(e) => {
+            debug!("worker first-request check skipped: no session {session_id}: {e}");
+            return Ok(());
         }
+    };
+    // Not a verdict when the request cannot be built here: the reply loop
+    // builds it again and reports its own error.
+    let (tools, _toolshim_tools, system_prompt) = match agent
+        .prepare_tools_and_prompt(session_id, &working_dir)
+        .await
+    {
+        Ok(prepared) => prepared,
+        Err(e) => {
+            debug!("worker first-request check skipped: the request could not be built: {e}");
+            return Ok(());
+        }
+    };
+    let system = system_prompt.render();
+    if let Ok(counter) = crate::token_counter::create_token_counter().await {
+        let tools_json = serde_json::to_string(&tools).unwrap_or_default();
+        let overhead = counter
+            .count_tokens(&system)
+            .saturating_add(counter.count_tokens(&tools_json));
+        let project_hints = crate::cost_router::fallback::worker_project_hints(&working_dir);
+        let surface = crate::cost_router::fallback::WorkerSurface {
+            compact_profile: compact_worker_profile,
+            persona_block,
+            extensions: &task_config.extensions,
+            provider: provider.get_name(),
+            model: &model_config.model_name,
+            project_hints: &project_hints,
+        };
+        crate::cost_router::fallback::record_worker_first_request_overhead(
+            &surface.key(),
+            overhead,
+        );
     }
     let preflight = provider
         .preflight_request(
             &model_config,
-            system,
+            &system,
             std::slice::from_ref(user_message),
             &tools,
         )
@@ -506,7 +546,7 @@ async fn preflight_first_request(
                 session_id,
                 provider = provider.get_name(),
                 model = %model_config.model_name,
-                window = ?window,
+                window,
                 reason = "first_request_exceeds_window",
                 "worker's first request does not fit its model's window; ending the attempt \
                  before any turn so the local\u{2192}cloud fallback can take it"
@@ -561,8 +601,8 @@ pub fn create_tool_notification(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_subagent_agent, create_tool_notification, runtime_outcome_error,
-        SUBAGENT_TOOL_REQUEST_TYPE,
+        build_subagent_agent, create_tool_notification, preflight_first_request,
+        runtime_outcome_error, SUBAGENT_TOOL_REQUEST_TYPE,
     };
     use crate::agents::{AgentRunnerConfig, AgentRuntimeOutcome, GoosePlatform};
     use crate::config::permission::PermissionManager;
@@ -730,6 +770,170 @@ mod tests {
             .expect("a failed runtime must propagate an error")
             .to_string(),
             "Subagent runtime failed"
+        );
+    }
+
+    /// Stands in for a local model whose window the project hints push the
+    /// worker's first request past: it knows its window, and its pre-send
+    /// check refuses any system prompt that carries [`HINTS_MARKER`].
+    struct HintSensitiveProvider {
+        model_config: crate::model::ModelConfig,
+        seen_system: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    }
+
+    const HINTS_MARKER: &str = "SUBAGENT-HANDLER-TEST-PROJECT-HINTS";
+
+    #[async_trait::async_trait]
+    impl crate::providers::base::Provider for HintSensitiveProvider {
+        fn get_name(&self) -> &str {
+            "hint-sensitive-mock"
+        }
+
+        fn get_model_config(&self) -> crate::model::ModelConfig {
+            self.model_config.clone()
+        }
+
+        async fn stream(
+            &self,
+            _model_config: &crate::model::ModelConfig,
+            _session_id: &str,
+            _system: &str,
+            _messages: &[crate::conversation::message::Message],
+            _tools: &[rmcp::model::Tool],
+        ) -> Result<crate::providers::base::MessageStream, crate::providers::errors::ProviderError>
+        {
+            Err(crate::providers::errors::ProviderError::ExecutionError(
+                "the pre-send check must not send anything".to_string(),
+            ))
+        }
+
+        async fn request_context_window(
+            &self,
+            _model_config: &crate::model::ModelConfig,
+        ) -> Option<usize> {
+            Some(4096)
+        }
+
+        async fn preflight_request(
+            &self,
+            _model_config: &crate::model::ModelConfig,
+            system: &str,
+            _messages: &[crate::conversation::message::Message],
+            _tools: &[rmcp::model::Tool],
+        ) -> Result<(), crate::providers::errors::ProviderError> {
+            *self.seen_system.lock().unwrap() = Some(system.to_string());
+            if system.contains(HINTS_MARKER) {
+                Err(
+                    crate::providers::errors::ProviderError::ContextLengthExceeded(
+                        "{\"n_prompt_tokens\": 6361, \"n_ctx\": 4096}".to_string(),
+                    ),
+                )
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    /// The reported gap: the worker's pre-send check measured the rendered
+    /// subagent template, while the reply loop's first send also carries the
+    /// project hints, saved skills, model line and overlay. A project whose
+    /// `AGENTS.md` pushes the real first request past a local window passed
+    /// the check, and the send was then refused inside the reply loop. The
+    /// check now judges the prompt the loop builds, and the overhead routing
+    /// reads for this worker's surface counts the hints too.
+    #[tokio::test]
+    async fn the_first_request_check_measures_the_prompt_the_reply_loop_sends() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        std::fs::create_dir(&project).unwrap();
+        let hints = format!(
+            "{HINTS_MARKER}\n{}",
+            "Run the whole test suite before every commit. ".repeat(400)
+        );
+        std::fs::write(project.join("AGENTS.md"), &hints).unwrap();
+        let sm = std::sync::Arc::new(crate::session::SessionManager::new(
+            tmp.path().join("sessions"),
+        ));
+        let session = sm
+            .create_session(
+                project.clone(),
+                "first-request check".to_string(),
+                crate::session::SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let config = AgentRunnerConfig::new(
+            sm,
+            PermissionManager::instance(),
+            None,
+            GooseMode::Auto,
+            true,
+            GoosePlatform::GooseCli,
+        );
+        let agent = build_subagent_agent(config);
+        let seen_system = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let provider: std::sync::Arc<dyn crate::providers::base::Provider> =
+            std::sync::Arc::new(HintSensitiveProvider {
+                model_config: crate::model::ModelConfig::new_or_fail("hint-sensitive-local"),
+                seen_system: seen_system.clone(),
+            });
+        agent
+            .update_provider(provider.clone(), &session.id)
+            .await
+            .unwrap();
+        agent
+            .override_system_prompt("You are a goal worker. Do the task you are given.".to_string())
+            .await;
+        let task_config = crate::agents::subagent_task_config::TaskConfig::new(
+            provider,
+            &session.id,
+            &session.working_dir,
+            Vec::new(),
+        );
+        let persona = "Persona block for the first-request check test.";
+
+        let error = preflight_first_request(
+            &agent,
+            &task_config,
+            &session.id,
+            &crate::conversation::message::Message::user().with_text("Goal: fix the flaky test"),
+            true,
+            Some(persona),
+        )
+        .await
+        .expect_err("the project hints push the real first request past the window");
+        assert!(error.to_string().contains("context_exceeded"), "{error}");
+        let system = seen_system
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("the check judged a system prompt");
+        assert!(
+            system.contains("You are a goal worker."),
+            "the worker's own template is still the base: {system}"
+        );
+        assert!(
+            system.contains(HINTS_MARKER),
+            "the check must judge the project hints the send carries: {system}"
+        );
+
+        let project_hints =
+            crate::cost_router::fallback::worker_project_hints(&session.working_dir);
+        let surface = crate::cost_router::fallback::WorkerSurface {
+            compact_profile: true,
+            persona_block: Some(persona),
+            extensions: &[],
+            provider: "hint-sensitive-mock",
+            model: "hint-sensitive-local",
+            project_hints: &project_hints,
+        };
+        let overhead = crate::cost_router::fallback::worker_first_request_overhead(&surface.key())
+            .expect("measured for this worker's surface");
+        let counter = crate::token_counter::create_token_counter().await.unwrap();
+        assert!(
+            overhead > counter.count_tokens(&hints),
+            "the measured overhead ({overhead}) must count the hints the prompt carries"
         );
     }
 

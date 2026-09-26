@@ -130,6 +130,27 @@
 //! `{"key": "...", "request": {...}}`, one line per unmatched replay
 //! lookup, append-only, written even when the miss error is later
 //! propagated and the run aborts.
+//!
+//! `<dir>/probes.jsonl` records the answers the pipeline acts on before a
+//! request is ever streamed, one JSON object per line, so replay takes the
+//! same branches the recording did:
+//!
+//! ```json
+//! {"kind": "request_window", "model": "<model name>", "window": 4096}
+//! {"kind": "preflight_refusal", "key": "<cassette key>", "model": "<model name>",
+//!  "detail": "<the ContextLengthExceeded text, secrets redacted>"}
+//! ```
+//!
+//! `request_window` is what [`Provider::request_context_window`] answered for
+//! a model (`null` when it could not say): dispatch routing reads it to keep
+//! a goal off a local model too small for the worker's first request.
+//! `preflight_refusal` is a request [`Provider::preflight_request`] refused
+//! before it could reach `stream` — a worker whose first request did not fit
+//! ends there with `context_exceeded`, and nothing is streamed, so without
+//! this line a replay would stream that request, miss, and never take the
+//! local-to-cloud fallback the recording took. A later answer for the same
+//! model or key replaces an earlier one. A cassette without this file (an
+//! older recording) replays as before: no window, no refusal.
 
 use std::collections::HashMap;
 use std::fs::OpenOptions;
@@ -157,6 +178,7 @@ pub const PERMAGENT_PROVIDER_CASSETTE_ENV: &str = "PERMAGENT_PROVIDER_CASSETTE";
 
 const CASSETTE_FILE_NAME: &str = "cassette.jsonl";
 const MISSES_FILE_NAME: &str = "misses.jsonl";
+const PROBES_FILE_NAME: &str = "probes.jsonl";
 
 /// Parsed value of [`PERMAGENT_PROVIDER_CASSETTE_ENV`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -278,6 +300,33 @@ struct CassetteMissLine {
 struct StoredTurn {
     message: Message,
     usage: ProviderUsage,
+}
+
+/// One line of `<dir>/probes.jsonl` (see the module doc's "On-disk format").
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum CassetteProbeLine {
+    /// What `request_context_window` answered for `model`.
+    RequestWindow {
+        model: String,
+        window: Option<usize>,
+    },
+    /// A request `preflight_request` refused with `ContextLengthExceeded`
+    /// before it reached `stream`, keyed like a turn ([`cassette_key`]).
+    PreflightRefusal {
+        key: String,
+        model: String,
+        detail: String,
+    },
+}
+
+/// The recorded probe answers, as replay serves them.
+#[derive(Default)]
+struct RecordedProbes {
+    /// Model name -> the window it was served in (`None`: could not say).
+    windows: HashMap<String, Option<usize>>,
+    /// Cassette key -> the `ContextLengthExceeded` detail it was refused with.
+    refusals: HashMap<String, String>,
 }
 
 // ── Hashing / redaction: shared recursive JSON walkers ──────────────────────
@@ -489,6 +538,35 @@ fn load_turns(path: &Path) -> Result<(HashMap<String, StoredTurn>, Option<Casset
     Ok((out, meta))
 }
 
+/// Loads `<dir>/probes.jsonl` (see [`CassetteProbeLine`]). A missing file is
+/// an older recording, with nothing to replay.
+fn load_probes(path: &Path) -> Result<RecordedProbes> {
+    let mut probes = RecordedProbes::default();
+    if !path.exists() {
+        return Ok(probes);
+    }
+    let file = std::fs::File::open(path)
+        .with_context(|| format!("opening cassette probes {}", path.display()))?;
+    for (line_no, line) in BufReader::new(file).lines().enumerate() {
+        let line = line.with_context(|| format!("reading {}:{}", path.display(), line_no + 1))?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let parsed: CassetteProbeLine = serde_json::from_str(trimmed)
+            .with_context(|| format!("parsing {}:{}", path.display(), line_no + 1))?;
+        match parsed {
+            CassetteProbeLine::RequestWindow { model, window } => {
+                probes.windows.insert(model, window);
+            }
+            CassetteProbeLine::PreflightRefusal { key, detail, .. } => {
+                probes.refusals.insert(key, detail);
+            }
+        }
+    }
+    Ok(probes)
+}
+
 // ── The decorator ────────────────────────────────────────────────────────
 
 enum CassetteProviderMode {
@@ -500,9 +578,12 @@ enum CassetteProviderMode {
         /// locality) and stamped onto every recorded line.
         meta: CassetteProviderMeta,
         path: PathBuf,
+        /// `<dir>/probes.jsonl`: window answers and pre-send refusals.
+        probes_path: PathBuf,
     },
     Replay {
         records: HashMap<String, StoredTurn>,
+        probes: RecordedProbes,
         cost_tier: crate::session::CostTier,
         data_locality: crate::sovereignty::DataLocality,
         misses_path: PathBuf,
@@ -535,6 +616,7 @@ impl CassetteProvider {
                 inner,
                 meta,
                 path: dir.join(CASSETTE_FILE_NAME),
+                probes_path: dir.join(PROBES_FILE_NAME),
             },
         }))
     }
@@ -549,6 +631,7 @@ impl CassetteProvider {
     ) -> Result<Arc<dyn Provider>> {
         let path = dir.join(CASSETTE_FILE_NAME);
         let (records, meta) = load_turns(&path)?;
+        let probes = load_probes(&dir.join(PROBES_FILE_NAME))?;
         if records.is_empty() {
             anyhow::bail!(
                 "cassette replay: {} has no recorded turns -- record one first with \
@@ -570,6 +653,7 @@ impl CassetteProvider {
             model_config,
             mode: CassetteProviderMode::Replay {
                 records,
+                probes,
                 cost_tier,
                 data_locality,
                 misses_path: dir.join(MISSES_FILE_NAME),
@@ -626,7 +710,9 @@ impl Provider for CassetteProvider {
     ) -> Result<MessageStream, ProviderError> {
         let key = cassette_key(&model_config.model_name, system, messages, tools);
         match &self.mode {
-            CassetteProviderMode::Record { inner, meta, path } => {
+            CassetteProviderMode::Record {
+                inner, meta, path, ..
+            } => {
                 let stream = inner
                     .stream(model_config, session_id, system, messages, tools)
                     .await?;
@@ -763,16 +849,42 @@ impl Provider for CassetteProvider {
         }
     }
 
-    /// Replay serves whatever was recorded, with no window of its own.
+    /// Record forwards the question and writes the answer to
+    /// `probes.jsonl`; replay answers what was recorded for the model, and
+    /// `None` (as before) when nothing was. Routing decides on this number
+    /// whether a goal stays on a local model, so a replay that could not
+    /// answer it would route differently from the run it replays.
     async fn request_context_window(&self, model_config: &ModelConfig) -> Option<usize> {
         match &self.mode {
-            CassetteProviderMode::Record { inner, .. } => {
-                inner.request_context_window(model_config).await
+            CassetteProviderMode::Record {
+                inner, probes_path, ..
+            } => {
+                let window = inner.request_context_window(model_config).await;
+                let line = CassetteProbeLine::RequestWindow {
+                    model: model_config.model_name.clone(),
+                    window,
+                };
+                if let Err(err) = append_line(probes_path, &line) {
+                    tracing::warn!(
+                        "cassette: failed to record the window of {}: {err}",
+                        model_config.model_name
+                    );
+                }
+                window
             }
-            CassetteProviderMode::Replay { .. } => None,
+            CassetteProviderMode::Replay { probes, .. } => probes
+                .windows
+                .get(&model_config.model_name)
+                .copied()
+                .flatten(),
         }
     }
 
+    /// Record forwards the check and writes a `ContextLengthExceeded`
+    /// refusal to `probes.jsonl` under the request's cassette key: the
+    /// refused request never reaches `stream`, so this is the only trace of
+    /// it. Replay refuses exactly the requests the recording refused, with
+    /// the same text, and lets every other one through to `stream`.
     async fn preflight_request(
         &self,
         model_config: &ModelConfig,
@@ -781,12 +893,32 @@ impl Provider for CassetteProvider {
         tools: &[Tool],
     ) -> Result<(), ProviderError> {
         match &self.mode {
-            CassetteProviderMode::Record { inner, .. } => {
-                inner
+            CassetteProviderMode::Record {
+                inner, probes_path, ..
+            } => {
+                let verdict = inner
                     .preflight_request(model_config, system, messages, tools)
-                    .await
+                    .await;
+                if let Err(ProviderError::ContextLengthExceeded(detail)) = &verdict {
+                    let key = cassette_key(&model_config.model_name, system, messages, tools);
+                    let line = CassetteProbeLine::PreflightRefusal {
+                        key: key.clone(),
+                        model: model_config.model_name.clone(),
+                        detail: redact_secrets(detail),
+                    };
+                    if let Err(err) = append_line(probes_path, &line) {
+                        tracing::warn!("cassette: failed to record refusal {key}: {err}");
+                    }
+                }
+                verdict
             }
-            CassetteProviderMode::Replay { .. } => Ok(()),
+            CassetteProviderMode::Replay { probes, .. } => {
+                let key = cassette_key(&model_config.model_name, system, messages, tools);
+                match probes.refusals.get(&key) {
+                    Some(detail) => Err(ProviderError::ContextLengthExceeded(detail.clone())),
+                    None => Ok(()),
+                }
+            }
         }
     }
 
@@ -1202,6 +1334,160 @@ mod tests {
         assert_eq!(
             replaying.data_locality(),
             crate::sovereignty::DataLocality::Cloud
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A local model that knows its window and whose pre-send check refuses
+    /// one request, as `OllamaProvider` does for a worker's first request
+    /// that does not fit.
+    struct WindowedProvider {
+        model_config: ModelConfig,
+        window: usize,
+        refused_system: &'static str,
+        preflights: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl Provider for WindowedProvider {
+        fn get_name(&self) -> &str {
+            "windowed-mock"
+        }
+
+        fn get_model_config(&self) -> ModelConfig {
+            self.model_config.clone()
+        }
+
+        fn cost_tier(&self) -> crate::session::CostTier {
+            crate::session::CostTier::LocalFree
+        }
+
+        fn data_locality(&self) -> crate::sovereignty::DataLocality {
+            crate::sovereignty::DataLocality::Local
+        }
+
+        async fn stream(
+            &self,
+            _model_config: &ModelConfig,
+            _session_id: &str,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<MessageStream, ProviderError> {
+            let message = text_message(Role::Assistant, "done");
+            let usage = ProviderUsage::new(self.model_config.model_name.clone(), Usage::default());
+            Ok(stream_from_single_message(message, usage))
+        }
+
+        async fn request_context_window(&self, _model_config: &ModelConfig) -> Option<usize> {
+            Some(self.window)
+        }
+
+        async fn preflight_request(
+            &self,
+            _model_config: &ModelConfig,
+            system: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<(), ProviderError> {
+            self.preflights.fetch_add(1, Ordering::SeqCst);
+            if system == self.refused_system {
+                Err(ProviderError::ContextLengthExceeded(format!(
+                    "this request is about 6361 tokens (\"n_prompt_tokens\": 6361) but the \
+                     model runs in a {window} token window (\"n_ctx\": {window})",
+                    window = self.window
+                )))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    /// The reported gap: record passed the window probe and the pre-send
+    /// check through to the real provider, but replay answered `None` and
+    /// `Ok(())`. A recorded run whose worker's first request was refused
+    /// before `stream` (so never recorded as a turn) then streamed it on
+    /// replay and missed, instead of ending with the `context_exceeded` the
+    /// cloud fallback acts on; and a recording whose routing moved a goal
+    /// off a too-small local model kept it there on replay. Replay now
+    /// answers both from the recording, without calling any provider.
+    #[tokio::test]
+    async fn replay_reproduces_the_recorded_window_and_pre_send_refusals() {
+        let dir = scratch_dir("probes");
+        let preflights = Arc::new(AtomicUsize::new(0));
+        let inner = Arc::new(WindowedProvider {
+            model_config: ModelConfig::new_or_fail("windowed-local"),
+            window: 4096,
+            refused_system: "a worker system prompt too big for the window",
+            preflights: preflights.clone(),
+        });
+        let cfg = inner.model_config.clone();
+        let refused = [user("the worker's first request")];
+        let fits = [user("a small request")];
+        let expect_refusal = |verdict: Result<(), ProviderError>| match verdict {
+            Err(ProviderError::ContextLengthExceeded(detail)) => {
+                assert!(detail.contains("\"n_ctx\": 4096"), "{detail}")
+            }
+            other => panic!("expected the recorded refusal, got {other:?}"),
+        };
+
+        {
+            let recording = CassetteProvider::wrap_for_record(inner, dir.clone()).unwrap();
+            assert_eq!(recording.request_context_window(&cfg).await, Some(4096));
+            expect_refusal(
+                recording
+                    .preflight_request(
+                        &cfg,
+                        "a worker system prompt too big for the window",
+                        &refused,
+                        &[],
+                    )
+                    .await,
+            );
+            recording
+                .preflight_request(&cfg, "sys", &fits, &[])
+                .await
+                .expect("a request that fits is not refused");
+            recording
+                .complete(&cfg, "sess-1", "sys", &fits, &[])
+                .await
+                .unwrap();
+        }
+        assert_eq!(preflights.load(Ordering::SeqCst), 2);
+
+        let replaying =
+            CassetteProvider::for_replay("mock".to_string(), cfg.clone(), dir.clone()).unwrap();
+        assert_eq!(
+            replaying.request_context_window(&cfg).await,
+            Some(4096),
+            "replay answers the window the recording was served in"
+        );
+        expect_refusal(
+            replaying
+                .preflight_request(
+                    &cfg,
+                    "a worker system prompt too big for the window",
+                    &refused,
+                    &[],
+                )
+                .await,
+        );
+        replaying
+            .preflight_request(&cfg, "sys", &fits, &[])
+            .await
+            .expect("only the recorded refusal is replayed");
+        // A model the recording never probed: no window, as before.
+        assert_eq!(
+            replaying
+                .request_context_window(&ModelConfig::new_or_fail("never-probed"))
+                .await,
+            None
+        );
+        assert_eq!(
+            preflights.load(Ordering::SeqCst),
+            2,
+            "replay must never call a real provider"
         );
 
         let _ = std::fs::remove_dir_all(&dir);

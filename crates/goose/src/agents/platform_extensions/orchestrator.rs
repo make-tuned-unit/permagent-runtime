@@ -6116,18 +6116,296 @@ fn local_route_window_shortfall(
         .then_some((tokens, window))
 }
 
-/// The window a local route's provider will really serve its requests in
-/// (`Provider::request_context_window`), built the same way
-/// `InternalSubagentEngine::spawn` builds the worker's provider. `None`
-/// when the provider cannot be built or cannot tell.
-async fn local_route_request_window(route: &crate::cost_router::RoleModel) -> Option<usize> {
-    let model_config = crate::model::ModelConfig::new(&route.model)
-        .ok()?
-        .with_canonical_limits(&route.provider);
-    let provider = crate::providers::create(&route.provider, model_config.clone(), Vec::new())
-        .await
-        .ok()?;
-    provider.request_context_window(&model_config).await
+/// Pure: whether this dispatch's local route would repeat a request the same
+/// local model already refused for its window — the previous attempt ended
+/// `context_exceeded` (the worker's pre-send check found its first request
+/// too big for the window, or a later send overflowed it), and this dispatch
+/// resolved to that same provider/model again, or the previous attempt's
+/// model is not on record.
+///
+/// Whatever role the route came through. R48b's
+/// `should_fallback_to_coordinator_tier` only acts on a goal whose recorded
+/// routing choice was `local`, so a local model reached through the
+/// mechanical, edit or review role repeated the refused attempt until the
+/// attempt cap parked the goal, and never reached the cloud tier. The
+/// attempt count is not consulted: a refused first request is a
+/// zero-progress attempt, whose count may already have been forgiven. A
+/// different local model is left to the size check, which judges its own
+/// window.
+fn local_route_repeats_a_context_refusal(
+    prior_last_error: Option<&str>,
+    prior_route: Option<(&str, &str)>,
+    route: (&str, &str),
+) -> bool {
+    prior_last_error.and_then(classify_worker_fallback_reason)
+        == Some(WorkerFallbackReason::ContextExceeded)
+        && prior_route.is_none_or(|prior| prior == route)
+}
+
+/// What the local-window fit check found for a local route (see
+/// [`local_route_first_request_fit`]).
+struct LocalRouteFit {
+    /// The brief the worker would be sent on this route, when the check
+    /// built it: sent as is when the route stands, so it is built once.
+    brief: Option<String>,
+    /// `Some((first_request_tokens, window))` when the route's window cannot
+    /// hold the worker's first request ([`local_route_window_shortfall`]).
+    shortfall: Option<(usize, usize)>,
+}
+
+/// The local-window fit check for a local `route`, at the end of
+/// `dispatch_goal_fn`'s routing block. The worker's first request is sized
+/// as the fixed part its own pre-send check last measured for exactly the
+/// surface this dispatch would hand it
+/// ([`crate::cost_router::fallback::WorkerSurface`]: the compact profile a
+/// local route runs, its persona, its extensions after grants and the goal's
+/// scope, the route's provider and model, the project's hints) plus the
+/// brief it would really be sent ([`build_goal_worker_brief`], and the lines
+/// `InternalSubagentEngine::spawn` appends to it). The window is the one the
+/// route's provider really serves (`Provider::request_context_window`, the
+/// probe the worker's refusal uses), the provider built the way
+/// `InternalSubagentEngine::spawn` builds it.
+///
+/// No verdict, and no brief, when this surface has not been measured yet or
+/// anything else is unknown: the worker's own pre-send check guards then,
+/// and ends a first request that does not fit with the `context_exceeded`
+/// the next dispatch acts on.
+#[allow(clippy::too_many_arguments)]
+async fn local_route_first_request_fit(
+    context: &PlatformExtensionContext,
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card: &crate::cards::Card,
+    project: &crate::projects::Project,
+    root_path: &str,
+    escalation_state: Option<&crate::cost_router::GoalEscalationState>,
+    extension_grants: Option<&[String]>,
+    persona_block: Option<&str>,
+    route: &crate::cost_router::RoleModel,
+) -> LocalRouteFit {
+    let no_verdict = LocalRouteFit {
+        brief: None,
+        shortfall: None,
+    };
+    // The extensions the engine arm hands an in-process worker on this
+    // route: the compact profile a local route runs adds nothing back to the
+    // narrowed set. A malformed scope fails the dispatch further down.
+    let Ok(dispatch_scope) =
+        super::dispatch_scope::extension_scope_from_metadata(&card.metadata_json)
+    else {
+        return no_verdict;
+    };
+    let extensions = goal_worker_extensions_for_dispatch(
+        parent_extensions_fn(context),
+        extension_grants,
+        dispatch_scope.as_deref(),
+    );
+    // The same directory `dispatch_goal_fn` cuts the worker's worktree from.
+    let Some(working_dir) = project
+        .root_path
+        .as_ref()
+        .map(PathBuf::from)
+        .or_else(|| context.session.as_ref().map(|s| s.working_dir.clone()))
+    else {
+        return no_verdict;
+    };
+    let Ok(model_config) = crate::model::ModelConfig::new(&route.model)
+        .map(|model_config| model_config.with_canonical_limits(&route.provider))
+    else {
+        return no_verdict;
+    };
+    let Ok(provider) = crate::providers::create(&route.provider, model_config, Vec::new()).await
+    else {
+        return no_verdict;
+    };
+    // Named from the provider the worker will hold, as the worker names it.
+    let model_config = provider.get_model_config();
+    let project_hints = crate::cost_router::fallback::worker_project_hints(&working_dir);
+    let surface = crate::cost_router::fallback::WorkerSurface {
+        compact_profile: true,
+        persona_block,
+        extensions: &extensions,
+        provider: provider.get_name(),
+        model: &model_config.model_name,
+        project_hints: &project_hints,
+    };
+    let Some(overhead) =
+        crate::cost_router::fallback::worker_first_request_overhead(&surface.key())
+    else {
+        return no_verdict;
+    };
+    let Ok(counter) = crate::token_counter::create_token_counter().await else {
+        return no_verdict;
+    };
+    // An in-process worker never gets the read-only board bridge.
+    let brief = build_goal_worker_brief(
+        pool,
+        card,
+        project,
+        root_path,
+        escalation_state,
+        true,
+        false,
+    )
+    .await;
+    // The engine appends its standing lines to the brief. The worktree is
+    // named at spawn, after its session exists; a stand-in of the same shape
+    // counts the same.
+    let worktree = working_dir
+        .parent()
+        .unwrap_or(working_dir.as_path())
+        .join(goal_engine::GOAL_WORKTREES_DIR)
+        .join("00000000_0");
+    let first_request = overhead
+        .saturating_add(counter.count_tokens(&brief))
+        .saturating_add(counter.count_tokens(goal_engine::COMMIT_ONLY_BRIEF))
+        .saturating_add(counter.count_tokens(&goal_engine::worktree_scope_brief(&worktree)));
+    let window = provider.request_context_window(&model_config).await;
+    LocalRouteFit {
+        brief: Some(brief),
+        shortfall: local_route_window_shortfall(window, Some(first_request)),
+    }
+}
+
+/// The goal brief a dispatched worker is sent as its first message, before
+/// the engine appends its own standing lines (`goal_engine::COMMIT_ONLY_BRIEF`,
+/// and `goal_engine::worktree_scope_brief` for an in-process worker), for the
+/// worker prompt profile `compact_worker_profile`. `bridge_available`: whether
+/// this worker gets the read-only board bridge, which the digest's wording
+/// depends on.
+///
+/// One builder for both of its readers, so they can never disagree: the brief
+/// `dispatch_goal_fn` sends, and the local-window fit check in its routing
+/// block ([`local_route_first_request_fit`]), which sizes the worker's first
+/// request from the brief the worker will really get. Sized from the goal's
+/// title and description alone, that check left out the role brief, the code
+/// map, the digest, the retry context and prior-attempt summary, the
+/// assumptions ledger and the engine's standing lines — enough to push a first
+/// request it had passed past the window, on every re-dispatch alike.
+async fn build_goal_worker_brief(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card: &crate::cards::Card,
+    project: &crate::projects::Project,
+    root_path: &str,
+    escalation_state: Option<&crate::cost_router::GoalEscalationState>,
+    compact_worker_profile: bool,
+    bridge_available: bool,
+) -> String {
+    let mut instructions = format!(
+        "Goal: {}\n\nDescription: {}\nProject: {}\nProject root: {}",
+        card.title, card.description, project.name, root_path
+    );
+    // Specialist role brief (metadata_json.dispatch_role, set by goal_advance's
+    // `role` argument or a decision effect such as review-fail → debugger).
+    // Prepended so the worker reads mandate-then-task; unknown/absent roles
+    // dispatch unroled rather than failing.
+    if let Some(role_block) = super::role_brief::role_brief_from_metadata(&card.metadata_json) {
+        instructions = format!("{role_block}\n\n{instructions}");
+    }
+    // Verify-loop escalation (the #739 ACTION): `escalation_state` is
+    // resolved by `dispatch_goal_fn` ahead of its routing-resolution block
+    // (R48i), which needs it too. On an escalated RE-dispatch, carry the prior
+    // (weaker) attempt's diff + verify failure forward as context (R2) so
+    // the stronger model continues the fix rather than restarting cold.
+    if let Some(handoff) = escalation_state
+        .filter(|s| s.is_escalated())
+        .and_then(|s| s.handoff.as_ref())
+    {
+        instructions = format!("{instructions}\n\n{handoff}");
+    }
+
+    // Publish sequence (#457): when the project declares ordered post-push
+    // steps (`metadata_json.publish_sequence`), tell the worker up front
+    // that a git push is NOT live and what remains — so it never reports
+    // "pushed" as "deployed/live".
+    let publish_steps = publish_sequence::parse_publish_sequence(&project.metadata_json);
+    if let Some(block) = publish_sequence::dispatch_instructions_block(&publish_steps) {
+        instructions = format!("{instructions}\n\n{block}");
+    }
+
+    // Code map (#471, wired 2026-08-10): the project's indexed code map was
+    // stored in the Brain and then read by NOTHING on this path — every
+    // worker re-derived the repo's shape with ls/grep/file reads on every
+    // dispatch, which is exactly the token burn the index exists to avoid.
+    // External-CLI workers have no Brain access, so injection here is the
+    // ONLY way the map can reach them. Bounded: a whole-tree map can be far
+    // larger than the exploration it replaces, so oversized maps are cut at
+    // a line boundary and say so. Best-effort — an absent Brain or unindexed
+    // project changes nothing.
+    let mut assumptions: Vec<super::dispatch_brief::Assumption> = Vec::new();
+    if let Some((block, generated_at)) =
+        code_map_instructions_block(&project.id, &format!("{} {}", card.title, card.description))
+            .await
+    {
+        // R48c: a compact-profile worker gets the code map bounded further
+        // than the existing line-boundary cut — see `bound_compact_block`'s
+        // doc comment. A no-op when the block already fits, and always a
+        // no-op for the default profile (byte-identical to before this
+        // lane).
+        let block = if compact_worker_profile {
+            bound_compact_block(
+                &block,
+                COMPACT_CODE_MAP_MAX_LINES,
+                COMPACT_CODE_MAP_MAX_CHARS,
+            )
+        } else {
+            block
+        };
+        instructions = format!("{instructions}\n\n{block}");
+        // The map is the one memory-derived claim in a normal brief: it was
+        // written by an `index-code` run at some past moment and nothing
+        // revalidates it at dispatch. It goes in the ledger with its date.
+        assumptions.push(super::dispatch_brief::Assumption {
+            claim: "the codebase map above still describes the tree".to_string(),
+            source: format!("Brain memory 'code:{}:map'", project.id),
+            dated: generated_at,
+        });
+    }
+
+    // Project context digest (a3's B2): sibling-goal status + the project's
+    // notes field, ~400 tokens, staleness-labeled. Two blind spots close here.
+    // A worker that cannot see the board duplicates or contradicts work already
+    // in flight — the board was reachable as a TOOL in-process and by nothing at
+    // all out here. And `project.notes` was a column no code path read, so the
+    // one place a user writes durable project-level standing instructions never
+    // reached the agent doing the work. Small and linked-not-inlined by design:
+    // ten siblings, a notes excerpt, and the name of the bridge tool that
+    // answers live (see `dispatch_digest`). Best-effort — a DB hiccup costs the
+    // digest, never the dispatch.
+    //
+    // The digest's wording depends on `bridge_available`: whether THIS worker
+    // will actually get the read-only bridge (see the caller).
+    if let Some(block) =
+        super::dispatch_digest::load_dispatch_digest(pool, project, &card.id, bridge_available)
+            .await
+    {
+        // R48c, wired 2026-09-21: the compact profile bounds the digest the
+        // same way it bounds the code map above. The bounds and their test
+        // landed in the R48c lane but this call site never applied them, so
+        // `COMPACT_DIGEST_MAX_*` were referenced only from the test that
+        // called `bound_compact_block` directly — the test proved the helper,
+        // not the brief. `clippy --lib` calling them dead code is what
+        // surfaced it. A no-op when the digest already fits, and always a
+        // no-op for the default profile.
+        let block = if compact_worker_profile {
+            bound_compact_block(&block, COMPACT_DIGEST_MAX_LINES, COMPACT_DIGEST_MAX_CHARS)
+        } else {
+            block
+        };
+        instructions = format!("{instructions}\n\n{block}");
+    }
+
+    // Loads the goal's RLM namespace from permagent.db (migrating any legacy
+    // `metadata_json.rlm_state` blob) before the sync brief assembly reads it.
+    instructions =
+        super::dispatch_brief::with_retry_context_hydrated(pool, instructions, card, project).await;
+
+    // Assumptions ledger, LAST so it can honestly speak about the whole brief:
+    // "everything else here is confirmed". Without it, a Brain-recalled claim
+    // arrives in the same voice as a verified instruction — the shape
+    // `retrospect`'s module doc records as costing −9.2pp, because the worker
+    // obeys a stale fact instead of noticing it is stale. Absent entirely when
+    // nothing in the brief was recalled.
+    super::dispatch_brief::with_assumptions(instructions, &assumptions)
 }
 
 // ── R55a: the mid-attempt half of the local→cloud fallback ────────────────
@@ -8027,6 +8305,9 @@ pub(crate) async fn dispatch_goal_fn(
     // `worker_fallback_used` guardrail on the claim and to increment the
     // `fallbacks` receipt counter alongside `routed_local`/`routed_cloud`.
     let mut worker_fallback_applied: Option<WorkerFallbackReason> = None;
+    // The brief the local-window fit check below built for a local route
+    // (`local_route_first_request_fit`), sent as is when the route stands.
+    let mut prebuilt_compact_brief: Option<String> = None;
     if is_internal_route {
         // Resolve the worker's workflow role → its model (#730 wiring): the
         // hand-CONFIGURED mapping wins; otherwise the recommender-DERIVED
@@ -8389,49 +8670,79 @@ pub(crate) async fn dispatch_goal_fn(
         // (brief + tool schemas, 6,361 tokens) was refused before it was
         // sent — zero turns, the goal's whole wall budget spent, then an
         // escalation. Checked LAST, after every precedence above (an
-        // explicit pin included: no pin can make a window bigger): whatever
-        // resolved, if it is a local model whose window — as its provider
-        // really serves it (`Provider::request_context_window`, the same
-        // probe the refusal used) — cannot hold the worker's first request
-        // with room to work, this dispatch goes to the cloud tier the
+        // explicit pin included: no pin can make a window bigger), and for
+        // whichever role resolved a local model — mechanical, edit and review
+        // as much as `local`. This dispatch goes to the cloud tier the
         // existing local→cloud fallback uses, as a `context_exceeded`
-        // fallback. The first-request size is the last measured worker
-        // overhead (system prompt + tools; measured by the worker's own
-        // pre-send check) plus this goal's own text. Before any worker has
-        // been measured, or when the window cannot be known, nothing is
-        // decided here and the worker's pre-send check is the guard: it
-        // ends the attempt at once with a `context_exceeded` the next
-        // dispatch's `should_fallback_to_coordinator_tier` acts on.
+        // fallback, when either
+        // - the previous attempt already ended `context_exceeded` on this
+        //   same local model (`local_route_repeats_a_context_refusal`): R48b
+        //   above only acts on a goal whose recorded routing choice was
+        //   `local`, so a mechanical-role route to the same model repeated
+        //   the refusal until the attempt cap parked the goal; or
+        // - the worker's first request cannot fit the window the model is
+        //   really served in (`local_route_first_request_fit`), sized as what
+        //   the worker's own pre-send check measured for exactly this worker
+        //   surface — never another worker's tool set — plus the brief this
+        //   goal would really send. Before this surface has been measured, or
+        //   when the window cannot be known, nothing is decided here and the
+        //   worker's pre-send check is the guard: it ends the attempt at once
+        //   with the `context_exceeded` the next dispatch acts on.
         let local_resolved = resolved
             .as_ref()
             .map(|(rm, _)| rm.clone())
             .filter(|rm| crate::cost_router::is_local_provider(&rm.provider));
         if let Some(local) = local_resolved {
-            // A local route resolves to the compact worker profile
-            // (`worker_prompt_profile`), so its measurement is the one read.
-            let overhead = crate::cost_router::fallback::worker_first_request_overhead(true);
-            let counter = if overhead.is_some() {
-                crate::token_counter::create_token_counter().await.ok()
-            } else {
+            let prior_route = card
+                .metadata_json
+                .pointer("/capability_snapshot/model_routing/provider")
+                .and_then(serde_json::Value::as_str)
+                .zip(
+                    card.metadata_json
+                        .pointer("/capability_snapshot/model_routing/model")
+                        .and_then(serde_json::Value::as_str),
+                );
+            let refused_before = local_route_repeats_a_context_refusal(
+                card.metadata_json
+                    .get("last_error")
+                    .and_then(|v| v.as_str()),
+                prior_route,
+                (local.provider.as_str(), local.model.as_str()),
+            );
+            let shortfall = if refused_before {
                 None
-            };
-            let first_request = overhead.zip(counter).map(|(overhead, counter)| {
-                overhead
-                    .saturating_add(counter.count_tokens(&card.title))
-                    .saturating_add(counter.count_tokens(&card.description))
-            });
-            // Only probe the provider when there is something to judge.
-            let window = if first_request.is_some() {
-                local_route_request_window(&local).await
             } else {
-                None
+                let fit = local_route_first_request_fit(
+                    context,
+                    &pool,
+                    &card,
+                    &project,
+                    root_path,
+                    escalation_state.as_ref(),
+                    worker_cfg.and_then(|worker| worker.extension_grants.as_deref()),
+                    persona_override.as_ref().map(|(block, _)| block.as_str()),
+                    &local,
+                )
+                .await;
+                prebuilt_compact_brief = fit.brief;
+                fit.shortfall
             };
-            if let Some((tokens, window)) = local_route_window_shortfall(window, first_request) {
+            if refused_before || shortfall.is_some() {
                 if let Some(hit) = resolve_dispatch_role_model(
                     crate::cost_router::WorkflowRole::Orchestrate,
                     &derived,
                     policy,
                 ) {
+                    let detail = match shortfall {
+                        Some((tokens, window)) => format!(
+                            "first request ~{tokens} tokens; {}/{} is served in {window}",
+                            local.provider, local.model
+                        ),
+                        None => format!(
+                            "the previous attempt's request did not fit {}/{}'s window",
+                            local.provider, local.model
+                        ),
+                    };
                     tracing::info!(
                         target: "permagentd::brain",
                         card_id,
@@ -8439,28 +8750,27 @@ pub(crate) async fn dispatch_goal_fn(
                         from_model = %local.model,
                         to_provider = %hit.0.provider,
                         to_model = %hit.0.model,
-                        first_request_tokens = tokens,
-                        window,
+                        first_request_tokens = ?shortfall.map(|(tokens, _)| tokens),
+                        window = ?shortfall.map(|(_, window)| window),
                         reason = WorkerFallbackReason::ContextExceeded.as_str(),
-                        "worker_fallback from={} to={} reason={}: the local model's served \
-                         window cannot hold the worker's first request",
-                        crate::cost_router::WorkflowRole::Local.as_str(),
+                        "worker_fallback from={} to={} reason={}: {}",
+                        role.map(|r| r.as_str()).unwrap_or("unrouted"),
                         crate::cost_router::WorkflowRole::Orchestrate.as_str(),
                         WorkerFallbackReason::ContextExceeded.as_str(),
+                        detail,
                     );
                     role = Some(crate::cost_router::WorkflowRole::Orchestrate);
                     resolved = Some(hit);
                     routing_choice = Some(RoutingChoice {
                         tier: crate::cost_router::WorkflowRole::Orchestrate,
                         reason: format!(
-                            "worker_fallback: {} (first request ~{tokens} tokens; {}/{} is \
-                             served in {window})",
-                            WorkerFallbackReason::ContextExceeded.as_str(),
-                            local.provider,
-                            local.model
+                            "worker_fallback: {} ({detail})",
+                            WorkerFallbackReason::ContextExceeded.as_str()
                         ),
                     });
                     worker_fallback_applied = Some(WorkerFallbackReason::ContextExceeded);
+                    // Another model now, so another profile and brief.
+                    prebuilt_compact_brief = None;
                 }
             }
         }
@@ -8516,89 +8826,10 @@ pub(crate) async fn dispatch_goal_fn(
         "dispatch worker prompt profile resolved",
     );
 
-    // Build instructions
-    let mut instructions = format!(
-        "Goal: {}\n\nDescription: {}\nProject: {}\nProject root: {}",
-        card.title, card.description, project.name, root_path
-    );
-    // Specialist role brief (metadata_json.dispatch_role, set by goal_advance's
-    // `role` argument or a decision effect such as review-fail → debugger).
-    // Prepended so the worker reads mandate-then-task; unknown/absent roles
-    // dispatch unroled rather than failing.
-    if let Some(role_block) = super::role_brief::role_brief_from_metadata(&card.metadata_json) {
-        instructions = format!("{role_block}\n\n{instructions}");
-    }
-    // Verify-loop escalation (the #739 ACTION): `escalation_state` was
-    // resolved earlier (R48i — needed ahead of the routing-resolution block
-    // above, not just here). On an escalated RE-dispatch, carry the prior
-    // (weaker) attempt's diff + verify failure forward as context (R2) so
-    // the stronger model continues the fix rather than restarting cold.
-    if let Some(handoff) = escalation_state
-        .as_ref()
-        .filter(|s| s.is_escalated())
-        .and_then(|s| s.handoff.as_ref())
-    {
-        instructions = format!("{instructions}\n\n{handoff}");
-    }
-
-    // Publish sequence (#457): when the project declares ordered post-push
-    // steps (`metadata_json.publish_sequence`), tell the worker up front
-    // that a git push is NOT live and what remains — so it never reports
-    // "pushed" as "deployed/live".
-    let publish_steps = publish_sequence::parse_publish_sequence(&project.metadata_json);
-    if let Some(block) = publish_sequence::dispatch_instructions_block(&publish_steps) {
-        instructions = format!("{instructions}\n\n{block}");
-    }
-
-    // Code map (#471, wired 2026-08-10): the project's indexed code map was
-    // stored in the Brain and then read by NOTHING on this path — every
-    // worker re-derived the repo's shape with ls/grep/file reads on every
-    // dispatch, which is exactly the token burn the index exists to avoid.
-    // External-CLI workers have no Brain access, so injection here is the
-    // ONLY way the map can reach them. Bounded: a whole-tree map can be far
-    // larger than the exploration it replaces, so oversized maps are cut at
-    // a line boundary and say so. Best-effort — an absent Brain or unindexed
-    // project changes nothing.
-    let mut assumptions: Vec<super::dispatch_brief::Assumption> = Vec::new();
-    if let Some((block, generated_at)) =
-        code_map_instructions_block(&project.id, &format!("{} {}", card.title, card.description))
-            .await
-    {
-        // R48c: a compact-profile worker gets the code map bounded further
-        // than the existing line-boundary cut — see `bound_compact_block`'s
-        // doc comment. A no-op when the block already fits, and always a
-        // no-op for the default profile (byte-identical to before this
-        // lane).
-        let block = if compact_worker_profile {
-            bound_compact_block(
-                &block,
-                COMPACT_CODE_MAP_MAX_LINES,
-                COMPACT_CODE_MAP_MAX_CHARS,
-            )
-        } else {
-            block
-        };
-        instructions = format!("{instructions}\n\n{block}");
-        // The map is the one memory-derived claim in a normal brief: it was
-        // written by an `index-code` run at some past moment and nothing
-        // revalidates it at dispatch. It goes in the ledger with its date.
-        assumptions.push(super::dispatch_brief::Assumption {
-            claim: "the codebase map above still describes the tree".to_string(),
-            source: format!("Brain memory 'code:{}:map'", project.id),
-            dated: generated_at,
-        });
-    }
-
-    // Project context digest (a3's B2): sibling-goal status + the project's
-    // notes field, ~400 tokens, staleness-labeled. Two blind spots close here.
-    // A worker that cannot see the board duplicates or contradicts work already
-    // in flight — the board was reachable as a TOOL in-process and by nothing at
-    // all out here. And `project.notes` was a column no code path read, so the
-    // one place a user writes durable project-level standing instructions never
-    // reached the agent doing the work. Small and linked-not-inlined by design:
-    // ten siblings, a notes excerpt, and the name of the bridge tool that
-    // answers live (see `dispatch_digest`). Best-effort — a DB hiccup costs the
-    // digest, never the dispatch.
+    // Build instructions (see `build_goal_worker_brief`). A local route's
+    // window check in the routing block above has already built this brief
+    // for the compact profile such a route runs; that one is sent as is,
+    // rather than built a second time.
     //
     // The digest's wording depends on whether THIS worker will actually get the
     // read-only bridge: telling a codex worker to "call `board_query`" names a
@@ -8610,39 +8841,21 @@ pub(crate) async fn dispatch_goal_fn(
         }
         _ => false,
     };
-    if let Some(block) =
-        super::dispatch_digest::load_dispatch_digest(&pool, &project, &card.id, bridge_available)
+    let instructions = match prebuilt_compact_brief {
+        Some(brief) if compact_worker_profile => brief,
+        _ => {
+            build_goal_worker_brief(
+                &pool,
+                &card,
+                &project,
+                root_path,
+                escalation_state.as_ref(),
+                compact_worker_profile,
+                bridge_available,
+            )
             .await
-    {
-        // R48c, wired 2026-09-21: the compact profile bounds the digest the
-        // same way it bounds the code map above. The bounds and their test
-        // landed in the R48c lane but this call site never applied them, so
-        // `COMPACT_DIGEST_MAX_*` were referenced only from the test that
-        // called `bound_compact_block` directly — the test proved the helper,
-        // not the brief. `clippy --lib` calling them dead code is what
-        // surfaced it. A no-op when the digest already fits, and always a
-        // no-op for the default profile.
-        let block = if compact_worker_profile {
-            bound_compact_block(&block, COMPACT_DIGEST_MAX_LINES, COMPACT_DIGEST_MAX_CHARS)
-        } else {
-            block
-        };
-        instructions = format!("{instructions}\n\n{block}");
-    }
-
-    // Loads the goal's RLM namespace from permagent.db (migrating any legacy
-    // `metadata_json.rlm_state` blob) before the sync brief assembly reads it.
-    instructions =
-        super::dispatch_brief::with_retry_context_hydrated(&pool, instructions, &card, &project)
-            .await;
-
-    // Assumptions ledger, LAST so it can honestly speak about the whole brief:
-    // "everything else here is confirmed". Without it, a Brain-recalled claim
-    // arrives in the same voice as a verified instruction — the shape
-    // `retrospect`'s module doc records as costing −9.2pp, because the worker
-    // obeys a stale fact instead of noticing it is stale. Absent entirely when
-    // nothing in the brief was recalled.
-    instructions = super::dispatch_brief::with_assumptions(instructions, &assumptions);
+        }
+    };
 
     // Working dir + baseline commit at dispatch time (recorded beside
     // dispatched_at so a commit-producing worker's changes can be diffed
@@ -39854,6 +40067,233 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         // Unknown first request (no worker measured yet): the worker's own
         // pre-send check guards instead.
         assert_eq!(local_route_window_shortfall(Some(4096), None), None);
+    }
+
+    /// The reported gap: a goal whose tier was `mechanical`, mapped to a
+    /// local model, ended its attempt `context_exceeded` — and R48b's
+    /// fallback ignored it, because the recorded routing choice was
+    /// `mechanical`, not `local`, so every re-dispatch sent the goal back to
+    /// the same local model until the attempt cap parked it. The window rule
+    /// acts on the resolved local model, whatever role reached it.
+    #[test]
+    fn a_local_route_that_already_overflowed_this_model_falls_back_whatever_its_role() {
+        let refused = "-32603: subagent failed: context_exceeded (prompt 9000 tokens > limit \
+                       8192); use goal_advance dispatch instead";
+        let route = ("ollama", "qwen2.5-coder:7b");
+        // R48b alone never fires for it: the prior tier was not `local`.
+        assert_eq!(
+            should_fallback_to_coordinator_tier(Some(refused), 1, false, false),
+            None
+        );
+        // The window rule does, for the same model...
+        assert!(local_route_repeats_a_context_refusal(
+            Some(refused),
+            Some(route),
+            route
+        ));
+        // ...and when the previous attempt's model is not on record.
+        assert!(local_route_repeats_a_context_refusal(
+            Some(refused),
+            None,
+            route
+        ));
+        // A different local model is judged by its own window instead.
+        assert!(!local_route_repeats_a_context_refusal(
+            Some(refused),
+            Some(("ollama", "qwen25-32k:latest")),
+            route
+        ));
+        // Anything but a context refusal, or no prior error, changes nothing.
+        assert!(!local_route_repeats_a_context_refusal(
+            Some("verify failed: 2 tests failing"),
+            Some(route),
+            route
+        ));
+        assert!(!local_route_repeats_a_context_refusal(
+            None,
+            Some(route),
+            route
+        ));
+    }
+
+    /// The reported gap: the routing-time estimate of a local worker's first
+    /// request was the overhead last measured on WHICHEVER worker ran last,
+    /// plus this goal's title and description. It left out the rest of the
+    /// brief — here a re-dispatch's failing check output — so a goal whose
+    /// real first request cannot fit an 8192 window was kept on the local
+    /// model and refused. The check now reads the overhead measured for this
+    /// dispatch's own worker surface and adds the brief the worker is really
+    /// sent, and a surface nobody has measured gets no verdict at all.
+    #[tokio::test]
+    async fn the_local_window_check_sizes_the_brief_the_worker_is_really_sent() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        // A model trained for 8192 and served at it: no configured limit can
+        // make its window any larger.
+        Mock::given(method("POST"))
+            .and(path("/api/show"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "parameters": "num_ctx 8192",
+                "model_info": { "llama.context_length": 8192 }
+            })))
+            .mount(&server)
+            .await;
+        let ollama_host = server.uri();
+        let _guard = env_lock::lock_env([
+            ("OLLAMA_HOST", Some(ollama_host.as_str())),
+            ("GOOSE_INPUT_LIMIT", None::<&str>),
+            ("GOOSE_CONTEXT_LIMIT", None::<&str>),
+            ("OLLAMA_CONTEXT_LENGTH", None::<&str>),
+            ("OLLAMA_MAX_NUM_CTX", None::<&str>),
+            ("PERMAGENT_PROVIDER_CASSETTE", None::<&str>),
+        ]);
+
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().join("sessions"),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+        let project_root = tmp.path().join("project");
+        std::fs::create_dir(&project_root).unwrap();
+        std::fs::write(
+            project_root.join("AGENTS.md"),
+            "Run the parser tests before committing.",
+        )
+        .unwrap();
+        let project = crate::projects::create_project(
+            &pool,
+            crate::projects::CreateProject {
+                name: "Window fit test".to_string(),
+                slug: None,
+                description: None,
+                root_path: Some(project_root.to_string_lossy().into_owned()),
+                site_url: None,
+                repo_url: None,
+                notes: None,
+                tags: None,
+            },
+        )
+        .await
+        .unwrap();
+        cards::seed_goal_columns(&pool, &project.id).await.unwrap();
+        let ready = cards::get_goal_column(&pool, &project.id, "ready")
+            .await
+            .unwrap()
+            .unwrap();
+        // A re-dispatch: the failing check output rides in the brief, not in
+        // the goal's title or description.
+        let check_output =
+            "FAILED parser::tests::nested_quotes - assertion `left == right` failed\n".repeat(120);
+        let card = cards::create_card(
+            &pool,
+            cards::CreateCard {
+                project_id: project.id.clone(),
+                title: "Fix the flaky parser test".to_string(),
+                description: Some("The nested-quotes case fails intermittently.".to_string()),
+                card_type: Some("goal".to_string()),
+                column_id: Some(ready.id.clone()),
+                created_by: None,
+                metadata_json: Some(serde_json::json!({
+                    "attempt_count": 1,
+                    "last_error": "verify failed: 1 test failing",
+                    "last_check_output": check_output,
+                })),
+            },
+        )
+        .await
+        .unwrap();
+        let context = PlatformExtensionContext {
+            extension_manager: None,
+            session_manager: sm.clone(),
+            session: None,
+        };
+        let route = crate::cost_router::RoleModel {
+            provider: "ollama".to_string(),
+            model: "window-fit-test:latest".to_string(),
+        };
+        let persona = "Persona block for the window fit test.";
+
+        // What this worker's own pre-send check would have recorded for
+        // exactly the surface this dispatch hands it.
+        let provider = crate::providers::create(
+            &route.provider,
+            crate::model::ModelConfig::new(&route.model)
+                .unwrap()
+                .with_canonical_limits(&route.provider),
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+        let extensions =
+            goal_worker_extensions_for_dispatch(parent_extensions_fn(&context), None, None);
+        let project_hints = crate::cost_router::fallback::worker_project_hints(&project_root);
+        let surface_key = crate::cost_router::fallback::WorkerSurface {
+            compact_profile: true,
+            persona_block: Some(persona),
+            extensions: &extensions,
+            provider: provider.get_name(),
+            model: &provider.get_model_config().model_name,
+            project_hints: &project_hints,
+        }
+        .key();
+        // An 8192 window leaves 6144 for the first request.
+        crate::cost_router::fallback::record_worker_first_request_overhead(&surface_key, 5_000);
+        let counter = crate::token_counter::create_token_counter().await.unwrap();
+        let title_and_description =
+            counter.count_tokens(&card.title) + counter.count_tokens(&card.description);
+        assert!(
+            crate::cost_router::fallback::local_window_fits_first_request(
+                8192,
+                5_000 + title_and_description
+            ),
+            "the old estimate (overhead + title + description) fits, so it kept the goal local"
+        );
+
+        let root_path = project.root_path.as_deref().unwrap_or("(not specified)");
+        let fit = local_route_first_request_fit(
+            &context,
+            &pool,
+            &card,
+            &project,
+            root_path,
+            None,
+            None,
+            Some(persona),
+            &route,
+        )
+        .await;
+        let brief = fit.brief.expect("a measured surface gets its brief built");
+        assert!(
+            brief.contains("FAILED parser::tests::nested_quotes"),
+            "the brief the worker is sent carries the failing check output: {brief}"
+        );
+        let (tokens, window) = fit
+            .shortfall
+            .expect("the real first request cannot fit the window");
+        assert_eq!(window, 8192);
+        assert!(
+            tokens >= 5_000 + counter.count_tokens(&brief),
+            "the estimate counts the whole brief: {tokens}"
+        );
+
+        // Another worker's surface is never judged by this measurement: an
+        // unmeasured surface gets no verdict, and no brief is built for it.
+        let other = local_route_first_request_fit(
+            &context,
+            &pool,
+            &card,
+            &project,
+            root_path,
+            None,
+            None,
+            Some("Persona block of a worker nobody has measured."),
+            &route,
+        )
+        .await;
+        assert!(other.brief.is_none());
+        assert_eq!(other.shortfall, None);
     }
 
     /// A pre-send context refusal on a worker's first request ends the
