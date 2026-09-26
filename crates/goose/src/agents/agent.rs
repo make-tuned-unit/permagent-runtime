@@ -3125,7 +3125,7 @@ impl Agent {
                 // Carry the hold's count and extension authorizer into physical
                 // retries. Exhausting the count requires a new one-attempt grant.
                 // Unpaid work keeps the provider's retry policy unchanged.
-                let mut stream = match crate::cost_router::authorized_attempts::with_reservation_attempts(
+                let (stream_result, transport_rejection_safe) = crate::cost_router::authorized_attempts::with_reservation_attempts_evidence(
                     Arc::clone(&session_manager),
                     invocation.invocation_id.clone(),
                     invocation.attempts_reserved,
@@ -3139,8 +3139,8 @@ impl Agent {
                         invocation.reserved_output_tokens,
                     ),
                 )
-                .await
-                {
+                .await;
+                let mut stream = match stream_result {
                     Ok(stream) => stream,
                     Err(error) => {
                         // stream_split can fail after handing work to a remote
@@ -3218,6 +3218,7 @@ impl Agent {
                 // a transient error must not silent-switch (the user already
                 // saw a partial answer). Billing/auth still announce.
                 let mut stream_committed = false;
+                let mut rejected_without_usage = false;
                 let mut exit_chat = false;
                 // Lane R19a: a pre-first-byte provider stall gets exactly one
                 // retry of the identical request. This bounds it to one per
@@ -3242,6 +3243,11 @@ impl Agent {
                     stream_outcome.observe_frame(next.is_err());
                     if let Ok((Some(ref response), _)) = next {
                         stream_outcome.observe_message(response);
+                    }
+                    if let Err(error) = &next {
+                        rejected_without_usage = crate::cost_router::authorized_attempts::is_unbilled_rate_rejection(
+                            error, transport_rejection_safe, stream_committed, first_byte_stall_retried,
+                        );
                     }
                     match next {
                         Ok((response, usage)) => {
@@ -4575,11 +4581,14 @@ impl Agent {
                             break;
                         }
                     } else if let Some(reservation_id) = invocation.reservation_id.as_deref() {
-                        // A dispatched call without authoritative usage cannot
-                        // be safely released: it may have been billed remotely.
-                        session_manager
-                            .mark_provider_invocation_unknown(reservation_id)
-                            .await?;
+                        if rejected_without_usage {
+                            // An explicit rate-limit rejection before output is
+                            // not an unknown bill. Earlier ambiguous transport
+                            // attempts keep this false, preserving their hold.
+                            session_manager.release_provider_invocation(reservation_id).await?;
+                        } else {
+                            session_manager.mark_provider_invocation_unknown(reservation_id).await?;
+                        }
                     }
                 } else if let Some(usage) = terminal_usage.as_ref() {
                     self.update_session_metrics_for_invocation(

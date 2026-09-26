@@ -28,13 +28,15 @@
 //! function that took the hold.
 
 use std::future::Future;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
 use crate::session::{CostReservationOutcome, SessionManager};
 
 struct AttemptAuthorization {
     granted: AtomicU32,
+    transport_attempts: AtomicU32,
+    ambiguous_transport_failure: AtomicBool,
     extension: Option<(Arc<SessionManager>, String)>,
     extension_lock: tokio::sync::Mutex<()>,
     #[cfg(test)]
@@ -45,6 +47,8 @@ impl AttemptAuthorization {
     fn new(attempts: u32, extension: Option<(Arc<SessionManager>, String)>) -> Arc<Self> {
         Arc::new(Self {
             granted: AtomicU32::new(attempts),
+            transport_attempts: AtomicU32::new(0),
+            ambiguous_transport_failure: AtomicBool::new(false),
             extension,
             extension_lock: tokio::sync::Mutex::new(()),
             #[cfg(test)]
@@ -111,6 +115,65 @@ pub(crate) async fn with_reservation_attempts<F: Future>(
     }
 }
 
+/// Preserve transport evidence after the authorization scope ends. A later
+/// explicit pre-reply rejection can release the hold only if no earlier
+/// physical attempt in that hold might have been billed.
+pub(crate) async fn with_reservation_attempts_evidence<F: Future>(
+    manager: Arc<SessionManager>,
+    invocation_id: String,
+    attempts: Option<u32>,
+    future: F,
+) -> (F::Output, bool) {
+    let Some(attempts) = attempts else {
+        return (future.await, false);
+    };
+    let authorization = AttemptAuthorization::new(attempts, Some((manager, invocation_id)));
+    let output = AUTHORIZED_ATTEMPTS
+        .scope(Arc::clone(&authorization), future)
+        .await;
+    let known_transport = authorization.transport_attempts.load(Ordering::Acquire) > 0
+        && !authorization
+            .ambiguous_transport_failure
+            .load(Ordering::Acquire);
+    (output, known_transport)
+}
+
+/// Release only a rejected invocation with no output or ambiguous stream retry.
+pub(crate) fn is_unbilled_rate_rejection(
+    error: &crate::providers::errors::ProviderError,
+    transport_rejection_safe: bool,
+    stream_committed: bool,
+    first_byte_stall_retried: bool,
+) -> bool {
+    matches!(
+        error,
+        crate::providers::errors::ProviderError::RateLimitExceeded { .. }
+    ) && transport_rejection_safe
+        && !stream_committed
+        && !first_byte_stall_retried
+}
+
+pub(crate) fn record_transport_attempt() {
+    let _ = AUTHORIZED_ATTEMPTS.try_with(|a| a.transport_attempts.fetch_add(1, Ordering::Relaxed));
+}
+
+pub(crate) fn record_transport_failure(error: &crate::providers::errors::ProviderError) {
+    use crate::providers::errors::ProviderError;
+    // Do not infer non-billing from an absent usage row, a timeout, or a 5xx.
+    let rejected = matches!(
+        error,
+        ProviderError::RateLimitExceeded { .. }
+            | ProviderError::Authentication(_)
+            | ProviderError::ContextLengthExceeded(_)
+            | ProviderError::EndpointNotFound(_)
+            | ProviderError::CreditsExhausted { .. }
+    );
+    if !rejected {
+        let _ = AUTHORIZED_ATTEMPTS
+            .try_with(|a| a.ambiguous_transport_failure.store(true, Ordering::Release));
+    }
+}
+
 /// Extend by one only when needed. Serialize the database grant and count
 /// update, rechecking after the lock so concurrent checks cannot double-extend.
 pub(crate) async fn authorize_attempt(next_attempt: u32) -> Result<(), String> {
@@ -152,6 +215,75 @@ pub(crate) fn extension_calls() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn rejection_evidence(errors: Vec<crate::providers::errors::ProviderError>) -> bool {
+        let authorization = AttemptAuthorization::new(2, None);
+        AUTHORIZED_ATTEMPTS
+            .scope(Arc::clone(&authorization), async {
+                for error in errors {
+                    record_transport_attempt();
+                    record_transport_failure(&error);
+                }
+            })
+            .await;
+        authorization.transport_attempts.load(Ordering::Acquire) > 0
+            && !authorization
+                .ambiguous_transport_failure
+                .load(Ordering::Acquire)
+    }
+
+    #[tokio::test]
+    async fn explicit_rate_rejections_do_not_strand_the_hold() {
+        use crate::providers::errors::ProviderError;
+        assert!(
+            rejection_evidence(vec![
+                ProviderError::RateLimitExceeded {
+                    details: "TPM limit".into(),
+                    retry_delay: None,
+                },
+                ProviderError::RateLimitExceeded {
+                    details: "TPM limit".into(),
+                    retry_delay: None,
+                }
+            ])
+            .await
+        );
+    }
+
+    #[tokio::test]
+    async fn a_timeout_before_rate_rejection_keeps_the_hold_unknown() {
+        use crate::providers::errors::ProviderError;
+        assert!(
+            !rejection_evidence(vec![
+                ProviderError::NetworkError("timeout after dispatch".into()),
+                ProviderError::RateLimitExceeded {
+                    details: "TPM limit".into(),
+                    retry_delay: None
+                },
+            ])
+            .await
+        );
+        assert!(!rejection_evidence(vec![]).await);
+    }
+
+    #[test]
+    fn output_or_stalled_stream_prevents_rejection_release() {
+        use crate::providers::errors::ProviderError;
+        let rate = ProviderError::RateLimitExceeded {
+            details: "TPM".into(),
+            retry_delay: None,
+        };
+        assert!(is_unbilled_rate_rejection(&rate, true, false, false));
+        assert!(!is_unbilled_rate_rejection(&rate, false, false, false));
+        assert!(!is_unbilled_rate_rejection(&rate, true, true, false));
+        assert!(!is_unbilled_rate_rejection(&rate, true, false, true));
+        assert!(!is_unbilled_rate_rejection(
+            &ProviderError::NetworkError("timeout".into()),
+            true,
+            false,
+            false
+        ));
+    }
 
     #[tokio::test]
     async fn no_scope_means_no_reservation_governs_the_call() {

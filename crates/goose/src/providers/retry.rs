@@ -362,9 +362,11 @@ impl<P: Provider> ProviderRetry for P {
         let mut auth_retried = false;
 
         loop {
+            crate::cost_router::authorized_attempts::record_transport_attempt();
             return match operation().await {
                 Ok(result) => Ok(result),
                 Err(error) => {
+                    crate::cost_router::authorized_attempts::record_transport_failure(&error);
                     // Auth retry is separate from transient-error retries: we get
                     // at most 1 credential refresh, independent of max_retries.
                     if matches!(error, ProviderError::Authentication(_)) && !auth_retried {
