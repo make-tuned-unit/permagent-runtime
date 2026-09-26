@@ -1743,19 +1743,23 @@ mod tests {
     }
 
     #[test]
-    fn henry_status_is_the_one_auto_height_builtin() {
+    fn only_the_one_line_strips_are_auto_height_builtins() {
+        // The agent status strip and the week headline are single-line strips
+        // that must follow their content; every other builtin keeps its h.
+        const AUTO_HEIGHT: [&str; 2] = ["henry_status", "week_headline"];
         let manifests = builtin_card_manifests();
-        let henry = manifests
+        for card_type in AUTO_HEIGHT {
+            let strip = manifests.iter().find(|m| m.card_type == card_type).unwrap();
+            assert!(
+                strip.auto_height,
+                "{card_type}: a one-line strip must follow its content, not stretch"
+            );
+            assert_eq!(manifest_to_json(strip)["autoHeight"], true);
+        }
+        for other in manifests
             .iter()
-            .find(|m| m.card_type == "henry_status")
-            .unwrap();
-        assert!(
-            henry.auto_height,
-            "a one-line status strip must follow its content, not stretch"
-        );
-        let v = manifest_to_json(henry);
-        assert_eq!(v["autoHeight"], true);
-        for other in manifests.iter().filter(|m| m.card_type != "henry_status") {
+            .filter(|m| !AUTO_HEIGHT.contains(&m.card_type.as_str()))
+        {
             assert!(
                 !other.auto_height,
                 "{} should not be auto-height",

@@ -1038,7 +1038,7 @@ mod tests {
 
         // A PUT to a different layout must snapshot "timeline" as previous.
         let after = one_card_layout("council");
-        put_layout(Json(PutLayoutBody {
+        let _saved = put_layout(Json(PutLayoutBody {
             cards: after.cards.clone(),
         }))
         .await
@@ -1066,7 +1066,7 @@ mod tests {
         tokio::fs::write(layout_path(), serde_json::to_string_pretty(&a).unwrap())
             .await
             .unwrap();
-        put_layout(Json(PutLayoutBody {
+        let _saved = put_layout(Json(PutLayoutBody {
             cards: b.cards.clone(),
         }))
         .await
