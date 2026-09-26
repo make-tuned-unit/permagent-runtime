@@ -596,36 +596,114 @@ pub fn local_window_fits_first_request(window: usize, first_request_tokens: usiz
     first_request_tokens <= local_request_budget(window)
 }
 
-/// The fixed part of a dispatched worker's first request — system prompt
-/// and tool schemas, in o200k tokens — as last measured on a worker run
-/// against a provider whose window is known, per prompt profile (index 0:
-/// default, 1: compact). Zero means "not measured yet in this process".
-/// Written by the worker's pre-send check (`subagent_handler`), read by
-/// dispatch routing, which runs before the worker exists and so cannot
-/// measure its tool surface itself.
-static WORKER_FIRST_REQUEST_OVERHEAD: [std::sync::atomic::AtomicUsize; 2] = [
-    std::sync::atomic::AtomicUsize::new(0),
-    std::sync::atomic::AtomicUsize::new(0),
-];
+/// Which dispatched worker a first-request measurement belongs to: everything
+/// that decides the worker's system prompt and tool schemas before its goal
+/// brief is added. That is its prompt profile, its persona block, the
+/// extensions it was handed (each with its tool allowlist), the provider and
+/// model that serve it (the prompt names the model, and the model family
+/// picks its own overlay), and the project hints loaded from the directory it
+/// works in ([`worker_project_hints`]).
+///
+/// Why: one process-wide "last measured" number judged every goal against
+/// whichever worker happened to run last. A worker with broad
+/// `extension_grants` measured at ~14k sent a narrowly scoped worker (~5k) to
+/// the paid tier though it fit the free local model, and a small measurement
+/// let a broad worker through to a refusal. Both sides build this: dispatch
+/// routing from what it is about to hand the worker, and the worker's own
+/// pre-send check (`subagent_handler`) from what it was handed.
+#[derive(Clone, Copy)]
+pub struct WorkerSurface<'a> {
+    pub compact_profile: bool,
+    pub persona_block: Option<&'a str>,
+    pub extensions: &'a [crate::agents::ExtensionConfig],
+    pub provider: &'a str,
+    pub model: &'a str,
+    pub project_hints: &'a str,
+}
 
-/// Remember a measured worker first-request overhead (see
-/// [`WORKER_FIRST_REQUEST_OVERHEAD`]). Zero is ignored.
-pub fn record_worker_first_request_overhead(compact_profile: bool, tokens: usize) {
-    if tokens > 0 {
-        WORKER_FIRST_REQUEST_OVERHEAD[usize::from(compact_profile)]
-            .store(tokens, std::sync::atomic::Ordering::Relaxed);
+impl WorkerSurface<'_> {
+    /// The surface as a stable key. Extensions are sorted by name and tool
+    /// lists sorted, so the order a list was built in never changes it.
+    pub fn key(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let mut described: Vec<String> = self
+            .extensions
+            .iter()
+            .map(|extension| {
+                let mut tools = extension.available_tools().to_vec();
+                tools.sort();
+                format!("{}[{}]", extension.name(), tools.join(","))
+            })
+            .collect();
+        described.sort();
+        described.dedup();
+        let described = described.join("\n");
+        let profile = if self.compact_profile {
+            "compact"
+        } else {
+            "default"
+        };
+        let mut hasher = Sha256::new();
+        for part in [
+            profile,
+            self.persona_block.unwrap_or_default(),
+            self.provider,
+            self.model,
+            self.project_hints,
+            described.as_str(),
+        ] {
+            hasher.update(part.as_bytes());
+            hasher.update([0u8]);
+        }
+        format!("{profile}:{}", hex::encode(&hasher.finalize()[..8]))
     }
 }
 
-/// The last measured worker first-request overhead for a profile, `None`
-/// before any worker has been measured in this process.
-pub fn worker_first_request_overhead(compact_profile: bool) -> Option<usize> {
-    match WORKER_FIRST_REQUEST_OVERHEAD[usize::from(compact_profile)]
-        .load(std::sync::atomic::Ordering::Relaxed)
-    {
-        0 => None,
-        n => Some(n),
+/// The project hints (`.goosehints`, `AGENTS.md`, ...) a worker working in
+/// `dir` loads into its system prompt, read with the same loader the prompt
+/// builder uses, for [`WorkerSurface::project_hints`]. Routing reads them
+/// from the project checkout and the worker from its goal worktree: the same
+/// files at the same commit, so the same text.
+pub fn worker_project_hints(dir: &std::path::Path) -> String {
+    crate::hints::load_hint_files(
+        dir,
+        &crate::hints::get_context_filenames(),
+        &crate::hints::build_gitignore(dir),
+    )
+}
+
+/// The fixed part of a dispatched worker's first request — the system prompt
+/// the reply loop really sends and its tool schemas, everything but the goal
+/// brief — in o200k tokens, as last measured on a worker run against a
+/// provider whose window is known, per worker surface ([`WorkerSurface`]).
+/// Written by the worker's pre-send check (`subagent_handler`), read by
+/// dispatch routing, which runs before the worker exists and so cannot
+/// measure it itself; routing adds the goal's own brief to it.
+static WORKER_FIRST_REQUEST_OVERHEAD: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, usize>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+/// Remember a measured worker first-request overhead for one worker surface
+/// ([`WorkerSurface::key`]; see [`WORKER_FIRST_REQUEST_OVERHEAD`]). Zero is
+/// ignored.
+pub fn record_worker_first_request_overhead(surface: &str, tokens: usize) {
+    if tokens == 0 {
+        return;
     }
+    if let Ok(mut measured) = WORKER_FIRST_REQUEST_OVERHEAD.lock() {
+        measured.insert(surface.to_string(), tokens);
+    }
+}
+
+/// The last measured first-request overhead of a worker with this surface
+/// ([`WorkerSurface::key`]), `None` before one has been measured in this
+/// process — never another surface's number.
+pub fn worker_first_request_overhead(surface: &str) -> Option<usize> {
+    WORKER_FIRST_REQUEST_OVERHEAD
+        .lock()
+        .ok()?
+        .get(surface)
+        .copied()
 }
 
 /// Pure: whether `target` can take a request of `request_tokens` (system
@@ -2534,5 +2612,139 @@ mod tests {
             !msg.contains("dropped"),
             "a rate limit is not a dropped stream: {msg}"
         );
+    }
+
+    fn builtin_extension(name: &str, tools: &[&str]) -> crate::agents::ExtensionConfig {
+        crate::agents::ExtensionConfig::Builtin {
+            name: name.to_string(),
+            description: String::new(),
+            display_name: None,
+            timeout: None,
+            bundled: None,
+            available_tools: tools.iter().map(|tool| tool.to_string()).collect(),
+        }
+    }
+
+    /// A worker surface with everything but the extensions fixed, for the
+    /// tests below.
+    fn surface<'a>(
+        persona_block: &'a str,
+        extensions: &'a [crate::agents::ExtensionConfig],
+    ) -> WorkerSurface<'a> {
+        WorkerSurface {
+            compact_profile: true,
+            persona_block: Some(persona_block),
+            extensions,
+            provider: "ollama",
+            model: "qwen2.5-coder:7b",
+            project_hints: "### Project Hints\nRun the tests.",
+        }
+    }
+
+    /// The key names a worker's surface, not the order its extension list
+    /// happened to be built in — and every input that changes the worker's
+    /// system prompt or tools changes the key.
+    #[test]
+    fn a_worker_surface_key_names_the_surface_not_the_list_order() {
+        let both = [
+            builtin_extension("developer", &["shell", "edit"]),
+            builtin_extension("orchestrator", &["goal_advance", "board_query"]),
+        ];
+        let base = surface("persona", &both).key();
+        // Same surface, other order (of extensions and of tool allowlists).
+        let reordered = [
+            builtin_extension("orchestrator", &["board_query", "goal_advance"]),
+            builtin_extension("developer", &["edit", "shell"]),
+        ];
+        assert_eq!(base, surface("persona", &reordered).key());
+        // Any real difference is a different surface.
+        let developer_only = [builtin_extension("developer", &["shell", "edit"])];
+        let narrower_tools = [
+            builtin_extension("developer", &["shell", "edit"]),
+            builtin_extension("orchestrator", &["goal_advance"]),
+        ];
+        for other in [
+            WorkerSurface {
+                compact_profile: false,
+                ..surface("persona", &both)
+            },
+            surface("another persona", &both),
+            WorkerSurface {
+                persona_block: None,
+                ..surface("persona", &both)
+            },
+            surface("persona", &developer_only),
+            surface("persona", &narrower_tools),
+            WorkerSurface {
+                provider: "lmstudio",
+                ..surface("persona", &both)
+            },
+            WorkerSurface {
+                model: "qwen2.5-coder:14b",
+                ..surface("persona", &both)
+            },
+            WorkerSurface {
+                project_hints: "### Project Hints\nRun the tests. Then run them again.",
+                ..surface("persona", &both)
+            },
+        ] {
+            assert_ne!(base, other.key());
+        }
+    }
+
+    /// The reported case: a broad worker measured at 14k must not decide the
+    /// routing of a narrow worker that measured 5k, in either direction, and
+    /// a surface nobody measured has no number at all. Before the per-surface
+    /// key, the second record overwrote the first for every worker.
+    #[test]
+    fn a_worker_first_request_overhead_is_kept_per_surface() {
+        let broad_extensions = [
+            builtin_extension("developer", &[]),
+            builtin_extension("memory", &[]),
+            builtin_extension("fetch", &[]),
+        ];
+        let narrow_extensions = [builtin_extension("developer", &[])];
+        let broad = surface("fallback test: broad persona", &broad_extensions).key();
+        let narrow = surface("fallback test: narrow persona", &narrow_extensions).key();
+        let unmeasured = surface("fallback test: never measured", &narrow_extensions).key();
+        record_worker_first_request_overhead(&broad, 14_000);
+        record_worker_first_request_overhead(&narrow, 5_000);
+        record_worker_first_request_overhead(&narrow, 0);
+        assert_eq!(worker_first_request_overhead(&broad), Some(14_000));
+        assert_eq!(
+            worker_first_request_overhead(&narrow),
+            Some(5_000),
+            "a zero measurement is ignored, and another surface's never applies"
+        );
+        assert_eq!(worker_first_request_overhead(&unmeasured), None);
+        // The narrow worker's goal fits a 16384 window; judged by the broad
+        // worker's number it would not have.
+        assert!(local_window_fits_first_request(16_384, 5_000 + 400));
+        assert!(!local_window_fits_first_request(16_384, 14_000 + 400));
+    }
+
+    /// The hints in a worker's surface are the ones its prompt builder loads
+    /// from the directory it works in, so a goal worktree and the project
+    /// checkout it was cut from name the same surface, and a project with a
+    /// different `AGENTS.md` does not.
+    #[test]
+    fn worker_project_hints_are_what_the_prompt_builder_loads() {
+        let tmp = tempfile::tempdir().unwrap();
+        let checkout = tmp.path().join("checkout");
+        let worktree = tmp.path().join("worktree");
+        let other = tmp.path().join("other");
+        for dir in [&checkout, &worktree, &other] {
+            std::fs::create_dir(dir).unwrap();
+        }
+        std::fs::write(checkout.join("AGENTS.md"), "Run the unit tests first.").unwrap();
+        std::fs::write(worktree.join("AGENTS.md"), "Run the unit tests first.").unwrap();
+        std::fs::write(other.join("AGENTS.md"), "Never touch the migrations.").unwrap();
+        let checkout_hints = worker_project_hints(&checkout);
+        assert!(
+            checkout_hints.contains("Run the unit tests first."),
+            "{checkout_hints}"
+        );
+        assert_eq!(checkout_hints, worker_project_hints(&worktree));
+        assert_ne!(checkout_hints, worker_project_hints(&other));
     }
 }
