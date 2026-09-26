@@ -6,6 +6,7 @@ import { SBT_CONTRACT } from '../../config/chain';
 import { duration, ease, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
+import { pressable } from '../common/pressable';
 
 import { Tooltip } from '../common/Tooltip';
 // ── External link helper ─────────────────────────────────────────
@@ -247,6 +248,7 @@ function LinkRow({ label, value, href }: { label: string; value: string; href?: 
 
   return (
     <div
+      {...(clickable ? pressable(handleClick, { label: `${label}: ${value}` }) : {})}
       style={{
         display: 'flex',
         justifyContent: 'space-between',
@@ -254,7 +256,6 @@ function LinkRow({ label, value, href }: { label: string; value: string; href?: 
         lineHeight: 1.6,
         cursor: clickable ? 'pointer' : 'default',
       }}
-      onClick={handleClick}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >

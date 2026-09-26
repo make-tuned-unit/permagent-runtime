@@ -3,6 +3,7 @@ import { FiStar, FiX, FiLayers, FiTrash2, FiCornerUpLeft } from 'react-icons/fi'
 import { font, radius } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
+import { pressableEnterOnly } from '../common/pressable';
 import { api, type BrowserBookmark, type BrowserTabSet } from '../../lib/api';
 import {
   isBookmarked,
@@ -130,8 +131,12 @@ export function BookmarksBar({
   }, [bookmarks, currentUrl, currentTitle, persistBookmarks]);
 
   const handleRemoveBookmark = useCallback(
-    (url: string, e: React.MouseEvent) => {
-      e.stopPropagation();
+    // `e` is optional: a keyboard Enter on the pressable affordance has no
+    // mouse event to stop, and there's nothing to stop propagation to that
+    // way (the outer chip's Enter only fires from ITS OWN focus, not this
+    // nested one's).
+    (url: string, e?: React.MouseEvent) => {
+      e?.stopPropagation();
       persistBookmarks(removeBookmark(bookmarks, url), bookmarks);
     },
     [bookmarks, persistBookmarks],
@@ -158,8 +163,9 @@ export function BookmarksBar({
   );
 
   const handleDeleteSet = useCallback(
-    (name: string, e: React.MouseEvent) => {
-      e.stopPropagation();
+    // `e` optional for the same reason as `handleRemoveBookmark` above.
+    (name: string, e?: React.MouseEvent) => {
+      e?.stopPropagation();
       if (armedDelete === name) {
         persistTabSets(removeTabSet(tabSets, name), tabSets);
         setArmedDelete(null);
@@ -256,8 +262,15 @@ export function BookmarksBar({
                 <span className="truncate max-w-[140px]">{b.title || b.url}</span>
                 <Tooltip content="Remove bookmark">
                   <span
+                    {...pressableEnterOnly(() => handleRemoveBookmark(b.url), {
+                      label: `Remove bookmark: ${b.title || b.url}`,
+                      className: 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100',
+                    })}
+                    // Override the shared primitive's onClick: this affordance
+                    // is nested inside the bookmark chip's own Button, so a
+                    // mouse click must stop here (handleRemoveBookmark does
+                    // it) or it also fires the chip's onNavigate underneath.
                     onClick={(e) => handleRemoveBookmark(b.url, e)}
-                    className="opacity-0 group-hover:opacity-100"
                     style={{
                       color: colors.textMuted,
                       borderRadius: radius.xs,
@@ -409,8 +422,17 @@ export function BookmarksBar({
                     </span>
                     <Tooltip content={armedDelete === set.name ? 'Click again to delete' : 'Delete set'}>
                       <span
+                        {...pressableEnterOnly(() => handleDeleteSet(set.name), {
+                          label: armedDelete === set.name
+                            ? `Confirm delete of tab set: ${set.name}`
+                            : `Delete tab set: ${set.name}`,
+                          className: armedDelete === set.name ? '' : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100',
+                        })}
+                        // Same override as the bookmark chip's remove
+                        // affordance above: this is nested in the set's own
+                        // Button (which restores the set), so the click must
+                        // stop here.
                         onClick={(e) => handleDeleteSet(set.name, e)}
-                        className={armedDelete === set.name ? '' : 'opacity-0 group-hover:opacity-100'}
                         style={
                           armedDelete === set.name
                             ? { background: dangerWash(colors), color: colors.danger, borderRadius: radius.xs, padding: 2 }

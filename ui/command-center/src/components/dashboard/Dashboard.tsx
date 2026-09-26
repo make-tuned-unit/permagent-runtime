@@ -31,6 +31,7 @@ import { comingSoonCards, DASHBOARD_TEMPLATES } from './templates';
 import { useDashboardLayoutPreviewEvent, clearDashboardLayoutPreview } from './dashboardLayoutPreviewEvent';
 
 import { Tooltip } from '../common/Tooltip';
+import { pressable } from '../common/pressable';
 type SaveState = 'idle' | 'saving' | 'saved' | 'error';
 
 function persistAndNotify(
@@ -639,7 +640,7 @@ export function Dashboard() {
       {/* Add card placeholder — edit mode only */}
       {isEditMode && (
         <div
-          onClick={() => setShowPicker(true)}
+          {...pressable(() => setShowPicker(true))}
           style={{
             marginTop: space.xxl,
             height: 80, borderRadius: radius.lg,

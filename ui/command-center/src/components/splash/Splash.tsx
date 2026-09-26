@@ -27,6 +27,18 @@ export function Splash({ onDone }: Props) {
     return () => { clearTimeout(t1); clearTimeout(t2); clearTimeout(t3); };
   }, []);
 
+  // R4: the splash is click-anywhere-to-skip (a plain div, not a button — the
+  // whole screen dismisses, there's no single "control" to name), but a
+  // keyboard user had no way to skip it at all before this. Escape matches
+  // the app's other full-screen dismissals.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setPhase('out');
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
+
   useEffect(() => {
     if (phase === 'out') {
       const timer = setTimeout(onDone, reduceMotion ? 0 : duration.smooth);

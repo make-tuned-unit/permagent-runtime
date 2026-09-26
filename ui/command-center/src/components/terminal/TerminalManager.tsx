@@ -6,6 +6,7 @@ import { registerDropZone } from '../../lib/native-drag-drop';
 import { resolvePtyInjection } from './terminalDrop';
 import { duration, ease, font, textSize } from '../../styles/tokens';
 import { Button } from '../common/Button';
+import { pressableEnterOnly } from '../common/pressable';
 import { useGlass } from '../common/Glass';
 import { CycleTabsButton } from '../build/CycleTabsButton';
 import { nextPaneTabId, usePaneTabCycling } from '../build/paneTabCycling';
@@ -645,10 +646,15 @@ export const TerminalManager = forwardRef<TerminalManagerHandle, TerminalManager
                 <FiTerminal size={11} />
                 <span className="truncate max-w-[140px]">{tab.label}</span>
                 <span
+                  {...pressableEnterOnly(() => handleCloseTab(tab.id), {
+                    label: `Close terminal tab: ${tab.label}`,
+                    className: `ml-1 rounded p-0.5 ${
+                      closingTabId === tab.id ? '' : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100'
+                    }`,
+                  })}
+                  // Nested in the tab's own Button (which selects it); the
+                  // click must stop here rather than also selecting the tab.
                   onClick={(e) => handleCloseTab(tab.id, e)}
-                  className={`ml-1 rounded p-0.5 ${
-                    closingTabId === tab.id ? '' : 'opacity-0 group-hover:opacity-100'
-                  }`}
                   style={{
                     transition: `background-color ${duration.fast}ms ${ease.smooth}, color ${duration.fast}ms ${ease.smooth}`,
                     ...(closingTabId === tab.id

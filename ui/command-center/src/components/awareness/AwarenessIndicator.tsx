@@ -3,6 +3,7 @@ import { api } from '../../lib/api';
 import { relativeTimeAgo } from '../../lib/time-decay';
 import { font, space } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
+import { pressable } from '../common/pressable';
 
 interface DigestSummary {
   project_name: string | null;
@@ -62,7 +63,7 @@ export function AwarenessIndicator({ onOpenInspection }: Props) {
 
   if (event_count === 0 && !project_name) {
     return (
-      <div onClick={onOpenInspection} style={containerStyle}>
+      <div {...pressable(onOpenInspection, { label: 'Open activity inspection' })} style={containerStyle}>
         <span style={dotStyle('#64748b')} />
         <span style={textStyle(colors)}>No recent activity</span>
       </div>
@@ -81,7 +82,7 @@ export function AwarenessIndicator({ onOpenInspection }: Props) {
   const isActive = event_count > 0 && !stale;
 
   return (
-    <div onClick={onOpenInspection} style={containerStyle}>
+    <div {...pressable(onOpenInspection, { label: 'Open activity inspection' })} style={containerStyle}>
       <span style={dotStyle(isActive ? colors.cyan : '#64748b')} />
       <span style={textStyle(colors)}>{label}</span>
     </div>

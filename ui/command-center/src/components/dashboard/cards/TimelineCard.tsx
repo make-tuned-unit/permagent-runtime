@@ -27,6 +27,7 @@ import { DecisionInbox } from '../decisions/DecisionInbox';
 import { useBrowserNavigate } from '../../../hooks/useBrowserNavigate';
 
 import { Tooltip } from '../../common/Tooltip';
+import { pressable } from '../../common/pressable';
 interface JournalItem {
   id: string;
   ts: string;
@@ -374,7 +375,7 @@ function TimelineRow({ item, isLast, onOpenDecisions }: {
     <Tooltip content={onClick ? 'View evidence' : undefined}>
       <div
         data-card-row=""
-        onClick={onClick}
+        {...(onClick ? pressable(onClick, { label: `View evidence: ${item.title}` }) : {})}
         onMouseEnter={() => setHover(true)}
         onMouseLeave={() => { setHover(false); setPressed(false); }}
         onPointerDown={() => onClick && setPressed(true)}

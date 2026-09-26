@@ -5,6 +5,7 @@ import type { ThemeColors } from '../../styles/useTheme';
 import { duration, ease, font, radius, space, textSize, type } from '../../styles/tokens';
 import { useGlass } from '../common/Glass';
 import { Tooltip } from '../common/Tooltip';
+import { pressableEnterOnly } from '../common/pressable';
 import { useCommandCenter } from '../../lib/store';
 import { WAKE_DEAF_HINT, readVoiceVerdict, type useVoice, type VoiceVerdict } from '../../hooks/useVoice';
 
@@ -489,7 +490,13 @@ export function VoiceOrb({
     <Tooltip content="Click anywhere to end the conversation">
       <div
         data-testid="voice-orb-takeover"
-        onClick={onExit}
+        {...pressableEnterOnly(onExit, { label: 'End voice conversation' })}
+        // No `.pa-pressable` here: this row IS the full-bleed `inset: 0`
+        // takeover, and the shared press-dip (`transform: scale(0.97)`)
+        // would shrink the whole screen off its edges instead of dipping a
+        // control inside it. Role/tabIndex/Enter still come from the
+        // primitive; the global `:focus-visible` outline still applies.
+        className=""
         style={{
           position: 'absolute',
           inset: 0,

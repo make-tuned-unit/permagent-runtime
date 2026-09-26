@@ -70,6 +70,16 @@ describe('Splash', () => {
     expect(onDone).toHaveBeenCalledTimes(1);
   });
 
+  it('R4 dagK-pressable: Escape skips straight to the exit phase, for a keyboard user with no way to click', async () => {
+    const onDone = vi.fn();
+    act(() => { root.render(<Splash onDone={onDone} />); });
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    await advance(500);
+    expect(onDone).toHaveBeenCalledTimes(1);
+  });
+
   it('default motion: the orb runs the thinking loop', () => {
     act(() => { root.render(<Splash onDone={() => {}} />); });
     const img = container.querySelector('img');

@@ -3,6 +3,7 @@ import { FiPlus, FiX, FiGlobe, FiExternalLink } from 'react-icons/fi';
 import { font, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
+import { pressableEnterOnly } from '../common/pressable';
 import { CycleTabsButton } from '../build/CycleTabsButton';
 import { CHROME_GEOM, chromeBareVars, dangerWash } from './browserChrome';
 
@@ -92,10 +93,15 @@ export function BrowserTabs({
               </span>
               {tabs.length > 1 && (
                 <span
+                  {...pressableEnterOnly(() => onCloseTab(tab.id), {
+                    label: `Close tab: ${tab.label || 'New Tab'}`,
+                    className: `ml-1 rounded p-0.5 transition-colors ${
+                      closingTabId === tab.id ? '' : 'opacity-0 group-hover:opacity-100 focus-visible:opacity-100'
+                    }`,
+                  })}
+                  // Nested in the tab's own Button (which selects it); the
+                  // click must stop here rather than also selecting the tab.
                   onClick={(e) => onCloseTab(tab.id, e)}
-                  className={`ml-1 rounded p-0.5 transition-colors ${
-                    closingTabId === tab.id ? '' : 'opacity-0 group-hover:opacity-100'
-                  }`}
                   style={
                     closingTabId === tab.id
                       ? { background: dangerWash(colors), color: colors.danger }

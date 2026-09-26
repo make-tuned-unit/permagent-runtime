@@ -7,6 +7,7 @@ import { wireEventType } from '../../lib/wireEvent';
 import { useCommandCenter } from '../../lib/store';
 import { useTheme } from '../../styles/useTheme';
 import { useGlass } from '../common/Glass';
+import { pressable } from '../common/pressable';
 
 interface ActivityMemory {
   id: string;
@@ -291,10 +292,17 @@ export function InspectionPanel({ onClose }: Props) {
           const type = wireEventType(event) || '?';
           const isExpanded = expandedEvent === i;
           return (
-            <div key={i} onClick={() => setExpandedEvent(isExpanded ? null : i)} style={{
-              padding: '4px 0', borderBottom: `1px solid ${colors.border}`,
-              cursor: 'pointer',
-            }}>
+            <div
+              key={i}
+              {...pressable(() => setExpandedEvent(isExpanded ? null : i), {
+                label: `${isExpanded ? 'Collapse' : 'Expand'} event: ${type}`,
+              })}
+              aria-expanded={isExpanded}
+              style={{
+                padding: '4px 0', borderBottom: `1px solid ${colors.border}`,
+                cursor: 'pointer',
+              }}
+            >
               <div style={{ display: 'flex', alignItems: 'center', gap: space.sm }}>
                 <span style={{ color: colors.textDim, fontFamily: font.mono, fontSize: 10, width: 56, flexShrink: 0 }}>{ts}</span>
                 <span style={{
@@ -347,10 +355,19 @@ export function InspectionPanel({ onClose }: Props) {
         </button>
         {memoriesOpen && (
           <div id="inspection-memories" style={{ maxHeight: 200, overflow: 'auto', padding: '0 16px 8px' }}>
-            {memories.map(m => (
-              <div key={m.id} onClick={() => setExpandedMemory(expandedMemory === m.id ? null : m.id)} style={{
-                padding: '4px 0', borderBottom: `1px solid ${colors.border}`, cursor: 'pointer',
-              }}>
+            {memories.map(m => {
+              const isMemoryExpanded = expandedMemory === m.id;
+              return (
+              <div
+                key={m.id}
+                {...pressable(() => setExpandedMemory(isMemoryExpanded ? null : m.id), {
+                  label: `${isMemoryExpanded ? 'Collapse' : 'Expand'} memory: ${m.content.split('\n')[0]}`,
+                })}
+                aria-expanded={isMemoryExpanded}
+                style={{
+                  padding: '4px 0', borderBottom: `1px solid ${colors.border}`, cursor: 'pointer',
+                }}
+              >
                 <div style={{ display: 'flex', alignItems: 'center', gap: space.sm }}>
                   {m.wing && (
                     <span style={{ padding: '0 4px', borderRadius: 2, fontSize: 10, background: colors.cyanSoft, color: colors.cyan }}>
@@ -361,13 +378,14 @@ export function InspectionPanel({ onClose }: Props) {
                     {m.content.split('\n')[0]}
                   </span>
                 </div>
-                {expandedMemory === m.id && (
+                {isMemoryExpanded && (
                   <pre style={{ margin: '4px 0 4px 0', fontSize: 10, color: colors.textDim, fontFamily: font.mono, whiteSpace: 'pre-wrap' }}>
                     {m.content}
                   </pre>
                 )}
               </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
