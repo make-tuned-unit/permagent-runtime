@@ -454,7 +454,8 @@ export class DecisionConflictError extends Error {
  */
 export interface DecisionsClient {
   list(opts?: { all?: boolean }): Promise<DecisionsResponse>;
-  answer(id: string, body: AnswerBody): Promise<AnswerOutcome>;
+  /** `keepalive`: the request must outlive the page (a hold flushed on exit). */
+  answer(id: string, body: AnswerBody, opts?: { keepalive?: boolean }): Promise<AnswerOutcome>;
   history(): Promise<DecisionHistoryResponse>;
   /** L2 digest for a goal-bound decision; null when none recorded yet. */
   evidence(projectId: string, goalId: string): Promise<EvidenceDigestData | null>;

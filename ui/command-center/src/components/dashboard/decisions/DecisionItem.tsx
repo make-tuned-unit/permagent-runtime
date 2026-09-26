@@ -20,7 +20,7 @@ import { font, radius, space, type } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { Button } from '../../common/Button';
 import { Tooltip } from '../../common/Tooltip';
-import type { DecisionPlan, VerdictAction } from './decisionEffects';
+import { returnTarget, type DecisionPlan, type VerdictAction } from './decisionEffects';
 import { SHORTCUT_ROWS } from './DecisionReview.keymap';
 
 export { pushedRejectWarning, toolArgumentsText } from './decisionEffects';
@@ -98,12 +98,15 @@ export function DecisionActionBar({
   const ghosts = orderGhosts(plan.actions.filter(a => roleOf(a) === 'ghost'), !!primaryAction);
   const fieldRequired = fieldAction?.field === 'input' || fieldAction?.field === 'edit';
   const canSubmitField = !fieldRequired || !!fieldText.trim();
+  // The review's Return reads the same helper, so the ↩ keycap and the key
+  // cannot point at different controls.
+  const returnId = returnTarget(plan, fieldAction)?.id ?? null;
 
   const verdictButton = (a: VerdictAction) => {
     const role = roleOf(a);
     const isField = fieldAction?.id === a.id;
     const label = isField ? (a.fieldSubmitLabel ?? a.label) : a.label;
-    const showReturn = role === 'primary' && (isField || a.returnDefault);
+    const showReturn = a.id === returnId;
     const style: CSSProperties = role === 'danger'
       ? ({
         '--pa-btn-fg': colors.danger, '--pa-btn-fg-hover': colors.danger,

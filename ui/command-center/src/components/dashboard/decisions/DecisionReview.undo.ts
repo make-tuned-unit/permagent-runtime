@@ -5,14 +5,32 @@
  * comes back on Undo or Z.
  *
  * Closing the inbox is a commit, not a cancel: anything still held is sent
- * immediately on unmount, so a verdict is never silently lost.
+ * immediately on unmount, so a verdict is never silently lost. Leaving the
+ * page is the same, except React never unmounts on a reload or navigation:
+ * `pagehide` sends what is held as `keepalive` requests, which the browser
+ * finishes after the page is gone. Quitting the app fires no page event at
+ * all, so every hold is also stored (DecisionReview.heldStore) until it is
+ * undone or its send settles, and the next page sends what a gone one left.
+ * The page merely going hidden (minimised, covered) is not leaving: the hold
+ * keeps its full Undo window and sends as usual.
+ *
+ * `onCommit` fires the moment a hold ends in a send, whatever ended it, so
+ * the caller can retire the Undo it offered: after that there is nothing left
+ * to undo.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { forgetHold, rememberHold, UNDO_MS } from './DecisionReview.heldStore';
 import type { AnswerBody } from './types';
-import type { AnswerResult } from './useDecisions';
+import type { AnswerOptions, AnswerResult } from './useDecisions';
 
-/** Matches the toast's own lifetime (NotificationHost TOAST_MS). */
-export const UNDO_MS = 6000;
+export { UNDO_MS };
+
+/**
+ * In-flight `keepalive` bodies share a 64 KiB quota, and fetch rejects past
+ * it. What does not fit stays held and stored: its timer sends it if the page
+ * lives on, the next page if it does not.
+ */
+const KEEPALIVE_BUDGET = 60 * 1024;
 
 interface Held {
   id: string;
@@ -22,7 +40,9 @@ interface Held {
 }
 
 export interface HeldAnswerCallbacks {
-  send: (id: string, body: AnswerBody) => Promise<AnswerResult>;
+  send: (id: string, body: AnswerBody, opts?: AnswerOptions) => Promise<AnswerResult>;
+  /** The hold is over and the answer is on its way; Undo can no longer help. */
+  onCommit?: (id: string, label: string) => void;
   /** Sent and accepted (effect_error may still be set). */
   onSent?: (id: string, result: Extract<AnswerResult, { ok: true }>, label: string) => void;
   /** 409: someone else resolved it first. */
@@ -43,30 +63,37 @@ export function useHeldAnswers(callbacks: HeldAnswerCallbacks) {
     setHidden(prev => { if (!prev.has(id)) return prev; const next = new Set(prev); next.delete(id); return next; });
   }, []);
 
-  const commit = useCallback(async (id: string) => {
+  const commit = useCallback(async (id: string, opts?: AnswerOptions) => {
     const entry = held.current.get(id);
     if (!entry) return;
     clearTimeout(entry.timer);
     held.current.delete(id);
     order.current = order.current.filter(x => x !== id);
+    cb.current.onCommit?.(id, entry.label);
+    // The stored copy goes only once the send settles: a page that dies
+    // before then leaves it for the next page to send (or find landed).
     try {
-      const result = await cb.current.send(id, entry.body);
+      const result = await (opts ? cb.current.send(id, entry.body, opts) : cb.current.send(id, entry.body));
+      forgetHold(id);
       if (result.ok) {
         cb.current.onSent?.(id, result, entry.label);
       } else {
         cb.current.onConflict?.(id, entry.label);
       }
     } catch (error) {
+      forgetHold(id);
       unhide(id);
       cb.current.onFailed?.(id, error, entry.label);
     }
   }, [unhide]);
 
-  const hold = useCallback((id: string, body: AnswerBody, label: string) => {
+  /** `title` names the decision if a later page has to send this for us. */
+  const hold = useCallback((id: string, body: AnswerBody, label: string, title = label) => {
     const existing = held.current.get(id);
     if (existing) clearTimeout(existing.timer);
     const timer = setTimeout(() => { void commit(id); }, UNDO_MS);
     held.current.set(id, { id, body, label, timer });
+    rememberHold(id, body, label, title);
     order.current = [...order.current.filter(x => x !== id), id];
     setHidden(prev => new Set(prev).add(id));
   }, [commit]);
@@ -80,6 +107,7 @@ export function useHeldAnswers(callbacks: HeldAnswerCallbacks) {
     clearTimeout(entry.timer);
     held.current.delete(target);
     order.current = order.current.filter(x => x !== target);
+    forgetHold(target);
     unhide(target);
     return target;
   }, [unhide]);
@@ -95,6 +123,21 @@ export function useHeldAnswers(callbacks: HeldAnswerCallbacks) {
       return changed ? next : prev;
     });
   }, []);
+
+  useEffect(() => {
+    // Leaving the page: send what is still held, as requests that outlive it.
+    const flush = () => {
+      let budget = KEEPALIVE_BUDGET;
+      for (const [id, entry] of [...held.current]) {
+        const size = new TextEncoder().encode(JSON.stringify(entry.body)).length;
+        if (size > budget) continue;
+        budget -= size;
+        void commit(id, { keepalive: true });
+      }
+    };
+    window.addEventListener('pagehide', flush);
+    return () => window.removeEventListener('pagehide', flush);
+  }, [commit]);
 
   useEffect(() => () => {
     // Unmount = the inbox closed: send what is still held, now.

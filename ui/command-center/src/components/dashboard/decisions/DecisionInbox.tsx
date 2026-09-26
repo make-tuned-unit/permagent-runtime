@@ -29,7 +29,7 @@ import {
   DecisionReview, LoadingShape, REVIEW_PAD_X, ReviewActionBar, ReviewHeader,
   useDecisionReviewState,
 } from './DecisionReview';
-import { handledLinkLabel, handledSentence, handledSummary } from './DecisionInbox.handled';
+import { handledHistoryFilter, handledLinkLabel, handledSentence, handledSummary } from './DecisionInbox.handled';
 import { ageLabel } from './decisionEvidence';
 import { usePersona } from '../../settings/useSettings';
 import { useOrchestratorName } from '../../world/shared/useOrchestratorName';
@@ -152,7 +152,7 @@ export function DecisionInbox({ inbox, onClose, placement = 'center' }: Props) {
             variant="bare"
             type="button"
             data-testid="handled-link"
-            onClick={() => { void openHistory(handled.count > 0 ? 'agent' : 'all'); }}
+            onClick={() => { void openHistory(handledHistoryFilter(handled)); }}
             style={quietLink(colors)}
           >
             {handledLinkLabel(handled)} ›
@@ -169,6 +169,7 @@ export function DecisionInbox({ inbox, onClose, placement = 'center' }: Props) {
               failed={historyError}
               onRetry={loadHistory}
               filter={historyFilter}
+              since={handled.sinceIso}
               onShowAll={() => setHistoryFilter('all')}
               agentName={agentName}
             />
@@ -190,7 +191,7 @@ export function DecisionInbox({ inbox, onClose, placement = 'center' }: Props) {
                 title="Nothing needs you"
                 detail={handledSentence(handled, agentName) ?? `${goals} goal${goals === 1 ? '' : 's'} in flight.`}
               />
-              {handled.count > 0 && (
+              {handledHistoryFilter(handled) === 'agent' && (
                 <Button colors={colors} variant="ghost" type="button" onClick={() => { void openHistory('agent'); }}>
                   Review what {agentName} did
                 </Button>
@@ -210,12 +211,21 @@ function isAgentActed(item: HistoryItem): boolean {
   return item.acted_by === 'henry-policy' || item.acted_by === 'system' || item.tier === 1;
 }
 
-/** Read-only audit list: every resolved decision, or only the agent's own. */
-function HistoryList({ items, failed, onRetry, filter, onShowAll, agentName }: {
+/** When the agent acted inside the header's window (none = any time). */
+function inWindow(item: HistoryItem, since: string | null): boolean {
+  if (!since) return true;
+  const at = Date.parse(item.resolved_at ?? item.audit_created_at);
+  return !Number.isFinite(at) || at >= Date.parse(since);
+}
+
+/** Read-only audit list: every resolved decision, or only the agent's own
+ *  inside the window the header link counted. */
+function HistoryList({ items, failed, onRetry, filter, since, onShowAll, agentName }: {
   items: HistoryItem[] | null;
   failed: boolean;
   onRetry: () => void;
   filter: 'agent' | 'all';
+  since: string | null;
   onShowAll: () => void;
   agentName: string;
 }) {
@@ -234,7 +244,7 @@ function HistoryList({ items, failed, onRetry, filter, onShowAll, agentName }: {
   if (items === null) {
     return <SkeletonText lines={6} />;
   }
-  const rows = filter === 'agent' ? items.filter(isAgentActed) : items;
+  const rows = filter === 'agent' ? items.filter(item => isAgentActed(item) && inWindow(item, since)) : items;
   if (rows.length === 0) {
     return <StateBlock tone="empty" compact title="Nothing here yet." />;
   }

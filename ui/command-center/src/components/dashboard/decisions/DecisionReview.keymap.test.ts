@@ -29,6 +29,16 @@ describe('review keymap (U14)', () => {
     expect(commandForKey({ key: '1', altKey: true, target: div() })).toBeNull();
   });
 
+  it('ignores auto-repeat for everything but J/K, so a held key answers one decision, not a run of them', () => {
+    const t = div();
+    for (const key of ['1', '0', 'Enter', 'h', 'z', '/', '?']) {
+      expect(commandForKey({ key, repeat: true, target: t })).toBeNull();
+    }
+    expect(commandForKey({ key: 'z', metaKey: true, repeat: true, target: t })).toBeNull();
+    expect(commandForKey({ key: 'j', repeat: true, target: t })).toEqual({ type: 'next' });
+    expect(commandForKey({ key: 'ArrowLeft', repeat: true, target: t })).toEqual({ type: 'prev' });
+  });
+
   it('works from a focused button, but leaves Return to the button itself', () => {
     const button = document.createElement('button');
     expect(commandForKey({ key: '1', target: button })).toEqual({ type: 'verdict', key: '1' });

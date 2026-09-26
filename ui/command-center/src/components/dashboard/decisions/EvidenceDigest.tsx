@@ -62,17 +62,27 @@ function OpenTranscriptButton({ sessionId }: { sessionId: string }) {
 }
 
 /**
+ * Facts the caller already knows from the decision itself (a park's attempts
+ * or time used). Each one REPLACES the digest's figure for the same thing:
+ * the row states every fact once ("3 attempts · 3 attempts" was the defect).
+ */
+export interface LeadFacts {
+  attempts?: number;
+  /** Already human, e.g. "4 min". */
+  timeUsed?: string;
+}
+
+/**
  * `compact` is the decision inbox's inline digest (⑥): one fact row
  * ("1 attempt · 4 min · 0 commits"), the check summary and the changed files,
  * with no raw disclosure — the sheet's "Open full evidence…" is that level.
  * The default (full) layout is GoalDetailModal's and is unchanged.
  */
-export function EvidenceDigest({ projectId, goalId, compact = false, leadFacts = [] }: {
+export function EvidenceDigest({ projectId, goalId, compact = false, leadFacts = {} }: {
   projectId: string;
   goalId: string;
   compact?: boolean;
-  /** Facts the caller already knows (e.g. time used, from the decision). */
-  leadFacts?: string[];
+  leadFacts?: LeadFacts;
 }) {
   const { colors } = useTheme();
   const [state, setState] = useState<
@@ -108,7 +118,8 @@ export function EvidenceDigest({ projectId, goalId, compact = false, leadFacts =
     );
   }
   if (state.kind === 'none') {
-    if (compact && leadFacts.length > 0) return <FactRow facts={leadFacts} />;
+    const known = compactFacts(null, null, leadFacts);
+    if (compact && known.length > 0) return <FactRow facts={known} />;
     return (
       <div style={{ marginTop: compact ? 0 : space.xl, fontSize: compact ? textSize.small : textSize.caption, color: compact ? colors.textMuted : colors.textDim, fontFamily: font.body }}>
         No verification evidence has been recorded for this item yet.
@@ -147,15 +158,13 @@ function FactRow({ facts }: { facts: string[] }) {
 
 const COMPACT_FILES = 5;
 
-function CompactEvidence({ digest, dispatch, leadFacts }: {
-  digest: EvidenceDigestData | null;
-  dispatch: DispatchEvidenceData | null;
-  leadFacts: string[];
-}) {
-  const { colors } = useTheme();
-  const facts = [...leadFacts];
-  if (digest) {
-    facts.push(plural(digest.costs.attempt_count, 'attempt'));
+/** The one fact row, each fact once: the decision's own figure wins. */
+function compactFacts(digest: EvidenceDigestData | null, dispatch: DispatchEvidenceData | null, lead: LeadFacts): string[] {
+  const facts: string[] = [];
+  const attempts = lead.attempts ?? digest?.costs.attempt_count;
+  if (attempts != null) facts.push(plural(attempts, 'attempt'));
+  if (lead.timeUsed) facts.push(`${lead.timeUsed} used`);
+  else if (digest) {
     const took = minutesBetween(digest.started_at, digest.finished_at);
     if (took) facts.push(took);
   }
@@ -163,6 +172,16 @@ function CompactEvidence({ digest, dispatch, leadFacts }: {
   const files = dispatch?.files_changed ?? digest?.diff.files_changed;
   if (files != null) facts.push(`${plural(files, 'file')} changed`);
   if (digest?.costs.cost_usd != null) facts.push(formatUsd(digest.costs.cost_usd));
+  return facts;
+}
+
+function CompactEvidence({ digest, dispatch, leadFacts }: {
+  digest: EvidenceDigestData | null;
+  dispatch: DispatchEvidenceData | null;
+  leadFacts: LeadFacts;
+}) {
+  const { colors } = useTheme();
+  const facts = compactFacts(digest, dispatch, leadFacts);
   const perFile = digest?.diff.per_file ?? [];
   const cs = digest?.checks_summary;
   return (

@@ -130,7 +130,7 @@ function publish(): void {
   subscribers.forEach((fn) => fn());
 }
 
-function push(n: Omit<AppNotification, 'id' | 'ts' | 'read'>): void {
+function push(n: Omit<AppNotification, 'id' | 'ts' | 'read'>): string {
   const item: AppNotification = {
     ...n,
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -167,6 +167,19 @@ function push(n: Omit<AppNotification, 'id' | 'ts' | 'read'>): void {
       }
     } catch { /* webview without the plugin — in-app only */ }
   }
+  return item.id;
+}
+
+/** Retire a toast's inline action once it can no longer do anything (an Undo
+ *  whose held answer has already been sent): the card keeps its place with
+ *  the new text and loses the button, so it never offers a dead control. */
+export function retireToastAction(id: string, text: { title?: string; body?: string }): void {
+  if (!state.items.some((i) => i.id === id)) return;
+  state = {
+    ...state,
+    items: state.items.map((i) => (i.id === id ? { ...i, ...text, action: undefined } : i)),
+  };
+  publish();
 }
 
 export function markAllRead(): void {
@@ -444,13 +457,16 @@ async function connect(): Promise<void> {
  *  took, and silencing it would leave them with a control that visibly failed
  *  (the shake/tint) and no explanation why. Used by `Button.tsx`'s failure
  *  path; not the default, so a caller pushing an ambient system toast still
- *  respects the preference exactly as before. */
+ *  respects the preference exactly as before.
+ *
+ *  Returns the toast's id (null when the preference silenced it), which
+ *  `retireToastAction` takes once the toast's action can no longer work. */
 export function toast(
   title: string,
   body = '',
   onActivate?: () => void,
   opts?: { tone?: AppNotification['tone']; action?: AppNotification['action']; force?: boolean },
-): void {
-  if (!opts?.force && !getNotificationPrefs().system) return;
-  push({ kind: 'system', title, body, onActivate, tone: opts?.tone, action: opts?.action });
+): string | null {
+  if (!opts?.force && !getNotificationPrefs().system) return null;
+  return push({ kind: 'system', title, body, onActivate, tone: opts?.tone, action: opts?.action });
 }

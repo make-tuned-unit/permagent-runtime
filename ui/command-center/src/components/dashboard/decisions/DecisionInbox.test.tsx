@@ -18,7 +18,7 @@ vi.mock('./client', () => ({
 import { getThemedColors } from '../../../styles/tokens';
 import { DecisionInbox } from './DecisionInbox';
 import type { useDecisions } from './useDecisions';
-import type { DecisionsResponse } from './types';
+import type { DecisionsResponse, HistoryItem } from './types';
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -90,15 +90,25 @@ describe('DecisionInbox states (R2)', () => {
     expect(document.body.textContent).not.toContain('Checking with');
   });
 
-  it('empty is a calm StateBlock with the handled summary and a way to review it', async () => {
+  it('empty is a calm StateBlock with the agent\'s handled summary and a way to review it', async () => {
     const loadHistory = vi.fn().mockResolvedValue([]);
-    render(makeInbox({ data: { ...emptyInbox, handled_count: 4 }, loadHistory }));
+    const since = new Date(); since.setHours(0, 0, 0, 0);
+    render(makeInbox({ data: { ...emptyInbox, handled_count: 40, handled: { count: 4, since: since.toISOString() } }, loadHistory }));
     expect(document.body.textContent).toContain('Nothing needs you');
-    expect(document.body.textContent).toContain('Nova has handled 4 items so far.');
+    expect(document.body.textContent).toContain('Nova handled 4 items since 12 AM.');
     expect(document.body.textContent).not.toMatch(/overnight/);
     const review = Array.from(document.body.querySelectorAll('button')).find(b => b.textContent === 'Review what Nova did')!;
     await act(async () => { review.click(); });
     expect(loadHistory).toHaveBeenCalledTimes(1);
+  });
+
+  // The legacy total counts the user's own answers (and expiries) too; it
+  // used to read "Nova has handled 4 items so far".
+  it('empty never credits the agent with the any-actor legacy total', () => {
+    render(makeInbox({ data: { ...emptyInbox, handled_count: 4 } }));
+    expect(document.body.textContent).not.toContain('Nova has handled');
+    expect(Array.from(document.body.querySelectorAll('button')).some(b => b.textContent === 'Review what Nova did')).toBe(false);
+    expect(document.body.textContent).toContain('0 goals in flight.');
   });
 
   it('with nothing handled, empty says how much is in flight', () => {
@@ -121,9 +131,33 @@ describe('the header handled link (U18)', () => {
     expect(document.body.textContent).toContain('What Nova did');
   });
 
-  it('falls back to "N handled" with no window', () => {
-    render(makeInbox({ data: { ...emptyInbox, handled_count: 7 } }));
-    expect(document.body.querySelector('[data-testid="handled-link"]')!.textContent).toBe('7 handled ›');
+  // Was "7 handled ›" opening "What Nova did" (agent-only rows): the count
+  // and the list it opened disagreed whenever the user had answered anything.
+  it('falls back to "N resolved" with no window, and opens everything', async () => {
+    const mine = { id: 'mine', seq: 1, headline: 'Answered by you', acted_by: 'user', tier: 2, answer: 'approve', created_at: '2026-01-01', outcome: '' } as unknown as HistoryItem;
+    const loadHistory = vi.fn().mockResolvedValue([mine]);
+    render(makeInbox({ data: { ...emptyInbox, handled_count: 7 }, loadHistory }));
+    const link = document.body.querySelector('[data-testid="handled-link"]') as HTMLButtonElement;
+    expect(link.textContent).toBe('7 resolved ›');
+    await act(async () => { link.click(); });
+    expect(document.body.textContent).not.toContain('What Nova did');
+    expect(document.body.textContent).toContain('Answered by you');
+  });
+
+  it('the windowed agent view lists what the agent did inside the window it counted', async () => {
+    const since = new Date(); since.setHours(0, 0, 0, 0);
+    const row = (id: string, resolved: Date) => ({
+      id, seq: 1, headline: `Row ${id}`, acted_by: 'system', tier: 2, answer: 'approve',
+      created_at: resolved.toISOString(), resolved_at: resolved.toISOString(), audit_created_at: resolved.toISOString(), outcome: '',
+    }) as unknown as HistoryItem;
+    const before = new Date(since.getTime() - 3_600_000);
+    const after = new Date(since.getTime() + 60_000);
+    const loadHistory = vi.fn().mockResolvedValue([row('old', before), row('new', after)]);
+    render(makeInbox({ data: { ...emptyInbox, handled_count: 9, handled: { count: 1, since: since.toISOString() } }, loadHistory }));
+    await act(async () => { (document.body.querySelector('[data-testid="handled-link"]') as HTMLButtonElement).click(); });
+    expect(document.body.textContent).toContain('What Nova did');
+    expect(document.body.textContent).toContain('Row new');
+    expect(document.body.textContent).not.toContain('Row old');
   });
 
   it('a failed history read is an error, not an empty record', async () => {

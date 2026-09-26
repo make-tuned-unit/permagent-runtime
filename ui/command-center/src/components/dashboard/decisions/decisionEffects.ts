@@ -92,8 +92,8 @@ function primary(id: string, label: string, effect: string, body: AnswerBody | n
 function ghost(id: string, label: string, effect: string, key: string | null, body: AnswerBody | null, extra: Partial<Draft> = {}): Draft {
   return { id, label, effect, role: 'ghost', key, body, ...extra };
 }
-function danger(id: string, label: string, effect: string, body: AnswerBody | null, confirm: VerdictAction['confirm']): Draft {
-  return { id, label, effect, role: 'danger', key: null, body, confirm };
+function danger(id: string, label: string, effect: string, body: AnswerBody | null, confirm: VerdictAction['confirm'], doneLabel?: string): Draft {
+  return { id, label, effect, role: 'danger', key: null, body, confirm, doneLabel };
 }
 
 const APPROVE: AnswerBody = { answer: 'approve' };
@@ -129,7 +129,7 @@ function localActions(d: Decision, agentName: string, canCancelGoal: boolean): D
           title: 'Cancel this goal?',
           consequence: `${agentName} stops working on it for good and the worker is shut down. Its branch and history stay viewable, but the goal can't be resumed.`,
           confirmLabel: 'Cancel goal',
-        }));
+        }, 'Goal cancelled'));
       }
       return actions;
     }
@@ -146,9 +146,10 @@ function localActions(d: Decision, agentName: string, canCancelGoal: boolean): D
         return ghost(`choice:${opt.id}`, opt.label, effect, String(index + 1), { answer: 'choice', choice_id: opt.id }, { doneLabel: opt.label });
       });
       if (!check) {
-        optionActions.push(ghost('reject', 'None of these', d.goal_id
-          ? `Records that none fit; ${agentName} pauses this goal.`
-          : 'Records that none of the options fit.', '0', REJECT, { doneLabel: 'None of these' }));
+        // The daemon has no effect arm for a rejected choice (only a command
+        // approval's): the answer is the whole outcome, goal-bound or not.
+        optionActions.push(ghost('reject', 'None of these', 'Records that none of the options fit. Nothing else changes.',
+          '0', REJECT, { doneLabel: 'None of these' }));
       }
       return optionActions;
     }
@@ -160,7 +161,7 @@ function localActions(d: Decision, agentName: string, canCancelGoal: boolean): D
             title: `Delete this ${object}?`,
             consequence: `This permanently deletes the ${object}${d.goal_title ? ` “${d.goal_title}”` : ''}. It can't be undone.`,
             confirmLabel: `Delete ${object}`,
-          }),
+          }, 'Deleted'),
           ghost('reject', "Don't delete", 'Nothing is deleted.', '3', REJECT, { doneLabel: 'Kept' }),
         ];
       }
@@ -246,7 +247,7 @@ function localActions(d: Decision, agentName: string, canCancelGoal: boolean): D
           title: 'Merge these people?',
           consequence: `${asText(payload?.duplicate_name) ?? 'The duplicate'} is folded into ${asText(payload?.survivor_name) ?? 'the other record'} and then deleted. This can't be undone.`,
           confirmLabel: 'Merge people',
-        }),
+        }, 'Merged'),
         ghost('reject', 'Keep separate', 'Nothing changes.', '3', REJECT, { doneLabel: 'Kept separate' }),
       ];
     case 'person_delete_proposal':
@@ -255,7 +256,7 @@ function localActions(d: Decision, agentName: string, canCancelGoal: boolean): D
           title: 'Delete this person?',
           consequence: `${asText(payload?.display_name) ?? "This person"}'s record is permanently deleted. This can't be undone.`,
           confirmLabel: 'Delete person',
-        }),
+        }, 'Deleted'),
         ghost('reject', 'Keep', 'Nothing changes.', '3', REJECT, { doneLabel: 'Kept' }),
       ];
     case 'capability_gap':
@@ -298,6 +299,73 @@ export function decisionPlan(d: Decision, agentName = 'Your agent', canCancelGoa
     actions,
     later: { label: 'Later', effect: drafts === null ? `${agentName} can't act on an answer to this yet. ${laterEffect}` : laterEffect, key: 'H' },
     answerable: drafts !== null,
+  };
+}
+
+/**
+ * The control that carries the ↩ keycap, so Return does exactly what that
+ * control does: an open field's send button while one is open (it becomes the
+ * one primary), else the plan's reversible primary. Null = Return is inert.
+ */
+export function returnTarget(plan: DecisionPlan, fieldAction: VerdictAction | null): VerdictAction | null {
+  return fieldAction ?? plan.actions.find(a => a.returnDefault) ?? null;
+}
+
+/**
+ * What committing a goal unblock's Reject does when the daemon's `effects`
+ * map does not say. The daemon's own sentence wins whenever it sends one: it
+ * knows both its reject arm and the goal's state. This fallback promises
+ * nothing it can't back on every daemon: the narrowed arm (D8) cancels only
+ * a goal parked on this decision and otherwise just records the answer, but
+ * the earlier arm cancels any goal that isn't already finished, parked or not.
+ */
+export const UNBLOCK_REJECT_EFFECT =
+  "Rejecting can cancel this goal for good — it does when the goal is parked on this decision — and a cancelled goal can't be resumed.";
+
+/**
+ * How a staged (spoken, uncommitted) verdict gets committed (D29). Every
+ * staged approve or reject is shown with its Discard, whatever commits it:
+ *  - `barAction`: the bar button carrying the same answer — a danger one
+ *    included, which still asks through ConfirmDialog;
+ *  - `rowAction`: no button carries it (a goal unblock has no Reject, a
+ *    command approval has no plain reject), so the staged row offers its own;
+ *  - neither: this surface can't answer the kind yet; it can only be discarded.
+ */
+export interface StagedCommit {
+  answer: 'approve' | 'reject';
+  barAction: VerdictAction | null;
+  rowAction: VerdictAction | null;
+}
+
+export function stagedCommit(d: Decision, plan: DecisionPlan): StagedCommit | null {
+  const answer = d.staged_answer?.answer;
+  if (answer !== 'approve' && answer !== 'reject') return null;
+  const barAction = plan.actions.find(a => a.body?.answer === answer && a.role !== 'danger')
+    ?? plan.actions.find(a => a.body?.answer === answer)
+    ?? null;
+  if (barAction || !plan.answerable) return { answer, barAction, rowAction: null };
+  const doneLabel = answer === 'approve' ? 'Approved' : 'Rejected';
+  const fromDaemon = d.effects && typeof d.effects === 'object' ? asText(d.effects[answer]) : null;
+  if (d.kind === 'unblock' && d.goal_id && answer === 'reject') {
+    // It can cancel the goal, so it confirms first and is never held for
+    // undo. The sentence is the daemon's when it sends one (it describes the
+    // arm that will actually run), never a local promise it may not keep.
+    const effect = fromDaemon ?? UNBLOCK_REJECT_EFFECT;
+    return {
+      answer, barAction: null,
+      rowAction: {
+        id: 'staged', label: 'Commit reject…', effect,
+        role: 'danger', key: null, returnDefault: false, body: { answer }, doneLabel,
+        confirm: { title: 'Commit the staged Reject?', consequence: effect, confirmLabel: 'Reject' },
+      },
+    };
+  }
+  return {
+    answer, barAction: null,
+    rowAction: {
+      id: 'staged', label: `Commit ${answer}`, effect: fromDaemon ?? 'Records your answer.',
+      role: 'ghost', key: null, returnDefault: false, body: { answer }, doneLabel,
+    },
   };
 }
 
