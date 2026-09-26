@@ -8850,6 +8850,10 @@ pub(crate) async fn dispatch_goal_fn(
     // signals `maybe_forgive_zero_progress_attempt` needs to decide whether
     // this attempt made any progress at all.
     let tracker_session_id = session_id.clone();
+    // dagK Q2: this attempt's own number, stamped into the `worker_plan`
+    // metadata write below alongside `tracker_session_id` — `next_attempt` is
+    // `Copy`, so this is a cheap value capture, not a clone of shared state.
+    let tracker_attempt = next_attempt;
     // Harness loop, Lane V (V1) / V2: an owned copy of "was this dispatch
     // reached through a headless Auto policy with landing switched on" — not
     // the policy's own borrowed lifetime, which cannot cross into this
@@ -8969,6 +8973,31 @@ pub(crate) async fn dispatch_goal_fn(
                             tracker_card_id,
                             e
                         ),
+                    }
+                    // dagK Q2 ("Worker's plan"): a sibling of the evidence
+                    // write above — same card, same best-effort semantics.
+                    // `ev.worker_plan` is only ever `Some` when
+                    // `worker_first_plan`/`worker_plan_from_message` actually
+                    // found a plan-shaped turn; otherwise this is skipped
+                    // entirely so GoalDetailModal renders nothing rather than
+                    // an empty or fabricated plan.
+                    if let Some(text) = ev.worker_plan.clone() {
+                        let plan = serde_json::json!({
+                            "text": text,
+                            "attempt": tracker_attempt,
+                            "session_id": tracker_session_id,
+                            "captured_at": chrono::Utc::now().to_rfc3339(),
+                        });
+                        if let Err(e) =
+                            cards::set_goal_worker_plan(&tracker_pool, &tracker_card_id, plan).await
+                        {
+                            tracing::warn!(
+                                target: "permagentd::brain",
+                                "Failed to persist worker plan for card {}: {}",
+                                tracker_card_id,
+                                e
+                            );
+                        }
                     }
                     // Lane R21d (A23 Q2 #2): decide, BEFORE the completion
                     // handler below (`handle_goal_completion` →

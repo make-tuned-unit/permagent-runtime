@@ -164,6 +164,49 @@ pub fn restore_awaiting_context_state() {
     librarian_state::set_entities_awaiting_context(ledger.needs_context.len());
 }
 
+// ── dagK Q3: cross-crate seams for the "awaiting your context" routes ───────
+// (`goose-server/src/routes/librarian/awaiting.rs`). `ledger_path`/
+// `load_ledger_from`/`save_ledger_to` stay private — nothing outside this
+// module should touch the raw sidecar path directly — these are the
+// sanctioned reads/writes for a route to use instead.
+
+/// Loads the sidecar ledger fresh from disk. Missing/corrupt reads as empty
+/// (same tolerance as every other reader of this file), never an error — a
+/// route showing an empty "awaiting your context" list is honest; refusing to
+/// load the page is not.
+pub fn load_ledger() -> EntityLedger {
+    match ledger_path() {
+        Some(path) => load_ledger_from(&path),
+        None => EntityLedger::default(),
+    }
+}
+
+/// Persists the ledger and refreshes the live `entities_awaiting_context`
+/// count in the SAME call, so a route that clears a `needs_context` entry can
+/// never update one without the other drifting out of sync (the same
+/// guarantee `restore_awaiting_context_state`/the sweep's own persist step
+/// already gives the nightly path).
+pub fn save_ledger_and_refresh_count(ledger: &EntityLedger) -> std::io::Result<()> {
+    let path = ledger_path().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "HOME is not set; cannot locate the Librarian entity ledger",
+        )
+    })?;
+    save_ledger_to(&path, ledger)?;
+    librarian_state::set_entities_awaiting_context(ledger.needs_context.len());
+    Ok(())
+}
+
+/// The same content-addressed id the sweep derives internally
+/// (`spectral::core::entity_id::entity_id`), exposed so a route can compute a
+/// stable id for a [`NeedsContext`] entry — which carries no id of its own —
+/// and resolve `POST /api/librarian/awaiting/{id}/answer`'s path segment back
+/// to the `(entity_type, canonical)` pair that produced it.
+pub fn needs_context_id(entity_type: &str, canonical: &str) -> String {
+    spectral::core::entity_id::entity_id(entity_type, canonical).to_string()
+}
+
 // ── Evidence fingerprint ────────────────────────────────────────────────────
 
 /// Hash of the evidence keys (order-independent, deduped). Sixteen bytes of

@@ -2164,6 +2164,23 @@ pub async fn set_goal_execution_receipt(
     set_goal_metadata_key_atomic(pool, card_id, "execution_receipt", receipt).await
 }
 
+/// dagK Q2 ("Worker's plan"): writes ONLY the `worker_plan` metadata key on a
+/// goal card — the worker's own first plan-shaped assistant turn, captured by
+/// `goal_engine::worker_first_plan` / `worker_plan_from_message` and shaped as
+/// `{ text, attempt, session_id, captured_at }` by the orchestrator's
+/// completion tracker, right beside its `set_goal_dispatch_evidence` call.
+/// Never moves cards, never touches protected keys. Mirrors
+/// [`set_goal_dispatch_evidence`]; only ever called when a plan was actually
+/// captured — absent otherwise, so `GoalDetailModal` renders nothing rather
+/// than a guess.
+pub async fn set_goal_worker_plan(
+    pool: &Pool<Sqlite>,
+    card_id: &str,
+    plan: serde_json::Value,
+) -> Result<(), String> {
+    set_goal_metadata_key_atomic(pool, card_id, "worker_plan", plan).await
+}
+
 /// Atomically patch one narrow, non-lifecycle metadata key while preserving
 /// all other goal metadata. This is shared by completion evidence and receipt
 /// writers because those writes frequently race with verifier/program writes.
@@ -3601,6 +3618,13 @@ mod tests {
         set_goal_execution_receipt(&pool, &goal.id, serde_json::json!({"state": "Completed"}))
             .await
             .unwrap();
+        set_goal_worker_plan(
+            &pool,
+            &goal.id,
+            serde_json::json!({"text": "Add a regression test, then fix the root cause."}),
+        )
+        .await
+        .unwrap();
         let after = get_card(&pool, &goal.id).await.unwrap().unwrap();
         assert_eq!(after.metadata_json["program_receipts"][0]["gate"], "old");
         assert_eq!(after.metadata_json["program_transition"]["digest"], "keep");
@@ -3609,6 +3633,44 @@ mod tests {
             after.metadata_json["execution_receipt"]["state"],
             "Completed"
         );
+        assert_eq!(
+            after.metadata_json["worker_plan"]["text"],
+            "Add a regression test, then fix the root cause."
+        );
+    }
+
+    /// dagK Q2: `set_goal_worker_plan` writes ONLY the `worker_plan` key —
+    /// evidence and the receipt from an earlier point in the same attempt must
+    /// both survive it, mirroring the other narrow metadata writers.
+    #[tokio::test]
+    async fn set_goal_worker_plan_preserves_other_goal_metadata() {
+        let pool = test_pool().await;
+        let goal = make_goal(&pool).await;
+        set_goal_dispatch_evidence(&pool, &goal.id, serde_json::json!({"files_changed": 3}))
+            .await
+            .unwrap();
+
+        set_goal_worker_plan(
+            &pool,
+            &goal.id,
+            serde_json::json!({
+                "text": "I'll reproduce the bug with a failing test first, then patch it.",
+                "attempt": 1,
+                "session_id": "sess-1",
+                "captured_at": "2026-09-26T00:00:00Z",
+            }),
+        )
+        .await
+        .unwrap();
+
+        let after = get_card(&pool, &goal.id).await.unwrap().unwrap();
+        assert_eq!(after.metadata_json["dispatch_evidence"]["files_changed"], 3);
+        assert_eq!(
+            after.metadata_json["worker_plan"]["text"],
+            "I'll reproduce the bug with a failing test first, then patch it."
+        );
+        assert_eq!(after.metadata_json["worker_plan"]["attempt"], 1);
+        assert_eq!(after.metadata_json["worker_plan"]["session_id"], "sess-1");
     }
 
     #[tokio::test]
