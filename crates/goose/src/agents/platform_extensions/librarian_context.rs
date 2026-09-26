@@ -313,9 +313,12 @@ async fn fetch_projects(
     Ok(items)
 }
 
-/// Decisions: user-answered decisions whose headline/detail share the
-/// memory's terms, newest first, rendered with the same prose formatters
-/// `decision_inbox::learn` uses when it ingests decisions as memories.
+/// Decisions: user-answered decisions whose headline/detail — or the title of
+/// the goal they are about — share the memory's terms, newest first, rendered
+/// with the same prose formatters `decision_inbox::learn` uses when it ingests
+/// decisions as memories. Goal park and review headlines are title-free (D1),
+/// so the goal title is both matched and rendered: without it every park of
+/// one kind reads identically and none can be found by what the goal was.
 async fn fetch_decisions(
     pool: &Pool<Sqlite>,
     terms: &[String],
@@ -323,14 +326,19 @@ async fn fetch_decisions(
     let mut sql = String::from(
         "SELECT id, kind, goal_id, project_id, tier, headline, detail, payload_json, rank, \
                 status, answer, answer_note, answer_choice_id, answer_input, acted_by, \
-                created_at, resolved_at \
-         FROM decisions WHERE status = 'answered' AND acted_by = 'jesse' AND (",
+                created_at, resolved_at, goal_title \
+         FROM (SELECT d.*, c.title AS goal_title \
+               FROM decisions d LEFT JOIN cards c ON c.id = d.goal_id) \
+         WHERE status = 'answered' AND acted_by = 'jesse' AND (",
     );
     for i in 0..terms.len() {
         if i > 0 {
             sql.push_str(" OR ");
         }
-        sql.push_str("LOWER(headline) LIKE ? OR LOWER(detail) LIKE ?");
+        sql.push_str(
+            "LOWER(headline) LIKE ? OR LOWER(detail) LIKE ? \
+             OR LOWER(COALESCE(goal_title, '')) LIKE ?",
+        );
     }
     sql.push_str(") ORDER BY resolved_at DESC LIMIT ?");
 
@@ -338,7 +346,7 @@ async fn fetch_decisions(
     let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
     for term in terms {
         let pattern = format!("%{}%", term);
-        q = q.bind(pattern.clone()).bind(pattern);
+        q = q.bind(pattern.clone()).bind(pattern.clone()).bind(pattern);
     }
     let rows = q.bind(MAX_DECISION_HITS).fetch_all(pool).await?;
 
@@ -369,10 +377,14 @@ async fn fetch_decisions(
                 staged_answer: None,
             };
             let answer_text = answered_decision_answer_text(&decision);
+            let goal_title: Option<String> = r.get("goal_title");
             ContextItem {
                 source_ref: format!("decision:{}", decision.id),
                 text: decision_memory_content(
-                    &decision.headline,
+                    &crate::decisions::headline_with_goal(
+                        &decision.headline,
+                        goal_title.as_deref(),
+                    ),
                     &answer_text,
                     decision.answer_note.as_deref(),
                 ),
@@ -952,6 +964,51 @@ mod tests {
         assert!(ctx.source_refs.contains(&"chat:sess-1".to_string()));
         assert!(ctx.source_refs.contains(&"decision:d-jesse".to_string()));
         assert!(ctx.source_refs.contains(&"journal:j-in".to_string()));
+    }
+
+    /// Inbox fix group: a goal park's headline is title-free (D1), so the
+    /// decision must be found — and rendered — by the goal it was about.
+    #[tokio::test]
+    async fn a_title_free_goal_decision_is_found_and_named_by_its_goal() {
+        let pool = test_pool().await;
+        let card = crate::cards::create_card(
+            &pool,
+            crate::cards::CreateCard {
+                project_id: crate::projects::PERSONAL_PROJECT_ID.to_string(),
+                title: "Install solar panels".to_string(),
+                description: None,
+                card_type: None,
+                column_id: None,
+                created_by: None,
+                metadata_json: None,
+            },
+        )
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO decisions \
+             (id, kind, goal_id, tier, headline, detail, payload_json, status, answer, \
+              acted_by, resolved_at) \
+             VALUES ('d-park', 'unblock', ?, 1, \
+                     'Goal ran out of time and needs your direction', \
+                     'Goal parked: wallclock cap exhausted', '{\"reason\":\"wallclock_cap\"}', \
+                     'answered', 'approve', 'jesse', strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+        )
+        .bind(&card.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let items = fetch_decisions(&pool, &["solar".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(items.len(), 1, "matched by the goal's title");
+        assert_eq!(items[0].source_ref, "decision:d-park");
+        assert!(
+            items[0].text.contains("Install solar panels"),
+            "rendered with the goal's title: {}",
+            items[0].text
+        );
     }
 
     #[tokio::test]

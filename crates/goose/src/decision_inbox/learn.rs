@@ -292,15 +292,30 @@ pub async fn ingest_answered_decision(
 
     let slug = decision_project_slug(pool, decision).await?;
     let answer_text = answered_decision_answer_text(decision);
+    let goal_title = crate::decisions::goal_title_of(pool, decision.goal_id.as_deref()).await;
+    let question = answered_decision_question(decision, goal_title.as_deref());
     let answered = AnsweredDecision {
         project_slug: &slug,
         wing: &slug,
         decision_id: &decision.id,
-        question: &decision.headline,
+        question: &question,
         answer: &answer_text,
         note: decision.answer_note.as_deref(),
     };
     ingest_decision(brain, &answered).await.map(Some)
+}
+
+/// The question an answered decision's memory records: its headline, plus the
+/// title of the goal it is about. Goal park and review headlines are
+/// title-free (Decision Inbox D1 — the inbox joins the title in at read time),
+/// so without the title every "Goal ran out of time and needs your direction
+/// → approve" memory would read the same, and no recall could tie the user's
+/// answer to the goal it was about.
+pub(crate) fn answered_decision_question(
+    decision: &crate::decisions::Decision,
+    goal_title: Option<&str>,
+) -> String {
+    crate::decisions::headline_with_goal(&decision.headline, goal_title)
 }
 
 /// Resolve the project slug for a decision row — used as both key part and
@@ -750,6 +765,30 @@ mod tests {
         // Degrades gracefully when no revision was recorded.
         let d = answered_row("edit", None, None, serde_json::json!({ "draft": "x" }));
         assert_eq!(answered_decision_answer_text(&d), "(no revision recorded)");
+    }
+
+    /// Inbox fix group: goal park headlines are title-free (D1), so an
+    /// answered decision's memory must name the goal itself — three goals
+    /// parked on their wall budget used to leave three identical memories.
+    #[test]
+    fn an_answered_goal_decision_remembers_which_goal_it_was_about() {
+        let mut d = answered_row("approve", None, None, serde_json::json!({}));
+        d.goal_id = Some("g-1".to_string());
+        d.headline = "Goal ran out of time and needs your direction".to_string();
+        let question = answered_decision_question(&d, Some("Add CSV export"));
+        assert_eq!(
+            question,
+            "Goal ran out of time and needs your direction (goal: Add CSV export)"
+        );
+        assert!(decision_memory_content(&question, "approve", None).contains("Add CSV export"));
+        // A decision with no goal (or whose headline already names it) keeps
+        // its headline as it is.
+        assert_eq!(answered_decision_question(&d, None), d.headline);
+        d.headline = "Approve \"Add CSV export\"".to_string();
+        assert_eq!(
+            answered_decision_question(&d, Some("Add CSV export")),
+            d.headline
+        );
     }
 
     // ── correction prose (edit-as-training) ──

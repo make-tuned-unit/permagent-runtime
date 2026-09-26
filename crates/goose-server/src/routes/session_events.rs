@@ -129,8 +129,12 @@ fn format_sse_event(seq: u64, json: &str) -> String {
 /// in character automatically. `detail` already carries attribution, evidence
 /// refs, and (for choices) option consequences (decision sink), so it is the
 /// richest single field to seed.
+///
+/// `goal_title` is the decision's goal card title: goal park and review
+/// headlines are title-free (D1), so the summary line names the goal itself.
 fn format_decision_discussion_block(
     d: &permagent::decisions::Decision,
+    goal_title: Option<&str>,
     evidence_block: Option<&str>,
 ) -> String {
     let mut b = String::from(
@@ -140,7 +144,10 @@ it. Open the conversation in character: briefly recap what the decision is about
 proposed and why, then ask what their question or concern is. Do not give a generic \
 \"what would you like to discuss?\" opener.\n\nDecision under discussion:\n",
     );
-    b.push_str(&format!("- Summary: {}\n", d.headline));
+    b.push_str(&format!(
+        "- Summary: {}\n",
+        permagent::decisions::headline_with_goal(&d.headline, goal_title)
+    ));
     b.push_str(&format!("- Type: {}\n", d.kind));
     b.push_str(&format!("- Status: {}\n", d.status));
     if let Some(ref goal) = d.goal_id {
@@ -776,23 +783,26 @@ pub async fn session_reply(
                                 // Load the goal's deterministic completion evidence
                                 // (if any) so Henry reviews ground truth, not a
                                 // stale local checkout.
-                                let evidence_block = match decision.goal_id.as_deref() {
+                                let goal_card = match decision.goal_id.as_deref() {
                                     Some(goal_id) => permagent::cards::get_card(&pool, goal_id)
                                         .await
                                         .ok()
-                                        .flatten()
-                                        .and_then(|c| {
-                                            c.metadata_json.get("dispatch_evidence").cloned()
-                                        })
-                                        .as_ref()
-                                        .and_then(permagent::agents::platform_extensions::orchestrator::format_dispatch_evidence_full),
+                                        .flatten(),
                                     None => None,
                                 };
+                                let evidence_block = goal_card
+                                    .as_ref()
+                                    .and_then(|c| {
+                                        c.metadata_json.get("dispatch_evidence").cloned()
+                                    })
+                                    .as_ref()
+                                    .and_then(permagent::agents::platform_extensions::orchestrator::format_dispatch_evidence_full);
                                 agent
                                     .extend_system_prompt(
                                         "discuss_decision".to_string(),
                                         format_decision_discussion_block(
                                             &decision,
+                                            goal_card.as_ref().map(|c| c.title.as_str()),
                                             evidence_block.as_deref(),
                                         ),
                                     )
@@ -1102,4 +1112,45 @@ pub fn control_routes(state: Arc<AppState>) -> Router {
         )
         .route("/sessions/{id}/cancel", post(session_cancel))
         .with_state(state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Inbox fix group: goal headlines are title-free (D1), so the
+    /// discuss-decision block must name the goal, or the agent opens the
+    /// conversation not knowing which goal the user is asking about.
+    #[test]
+    fn the_discussion_block_names_the_goal() {
+        let d = permagent::decisions::Decision {
+            id: "d-1".to_string(),
+            kind: "unblock".to_string(),
+            goal_id: Some("g-1".to_string()),
+            project_id: None,
+            tier: 1,
+            headline: "Goal ran out of time and needs your direction".to_string(),
+            detail: "Goal g-1 parked: wallclock cap exhausted".to_string(),
+            payload: serde_json::json!({"reason": "wallclock_cap"}),
+            rank: None,
+            status: "open".to_string(),
+            answer: None,
+            answer_note: None,
+            answer_choice_id: None,
+            answer_input: None,
+            acted_by: None,
+            created_at: "2026-09-26T00:00:00.000Z".to_string(),
+            resolved_at: None,
+            staged_answer: None,
+        };
+        let block = format_decision_discussion_block(&d, Some("Add CSV export"), None);
+        assert!(
+            block.contains(
+                "- Summary: Goal ran out of time and needs your direction (goal: Add CSV export)"
+            ),
+            "{block}"
+        );
+        let block = format_decision_discussion_block(&d, None, None);
+        assert!(block.contains("- Summary: Goal ran out of time and needs your direction\n"));
+    }
 }

@@ -426,18 +426,26 @@ pub fn entry_from_event(event: &PermagentEvent) -> Option<NewEntry> {
 }
 
 /// Best-effort title upgrade from the referenced durable store: card title for
-/// goals, decision headline for decisions. Lookup failure (deleted referent,
-/// any DB error) keeps the placeholder title — the row must never be lost to
-/// enrichment.
+/// goals, decision headline for decisions — with the goal's title added, since
+/// goal park and review headlines are title-free (Decision Inbox D1) and would
+/// otherwise read identically for every goal. Lookup failure (deleted
+/// referent, any DB error) keeps the placeholder title — the row must never be
+/// lost to enrichment.
 async fn enrich_title(pool: &Pool<Sqlite>, entry: &mut NewEntry) {
     let (sql, id) = match (entry.ref_kind.as_deref(), entry.ref_id.as_deref()) {
-        (Some("goal"), Some(id)) => ("SELECT title FROM cards WHERE id = ?", id),
-        (Some("decision"), Some(id)) => ("SELECT headline FROM decisions WHERE id = ?", id),
+        (Some("goal"), Some(id)) => ("SELECT title, NULL FROM cards WHERE id = ?", id),
+        (Some("decision"), Some(id)) => (
+            "SELECT d.headline, c.title FROM decisions d \
+             LEFT JOIN cards c ON c.id = d.goal_id WHERE d.id = ?",
+            id,
+        ),
         _ => return,
     };
     if let Ok(Some(row)) = sqlx::query(sql).bind(id).fetch_optional(pool).await {
         if let Ok(label) = row.try_get::<String, _>(0) {
             if !label.is_empty() {
+                let goal_title = row.try_get::<Option<String>, _>(1).ok().flatten();
+                let label = crate::decisions::headline_with_goal(&label, goal_title.as_deref());
                 entry.title = truncate(&label, TITLE_MAX);
             }
         }
@@ -867,6 +875,51 @@ mod tests {
         let skipped = events::stream_chunk("s", "tok", true);
         assert!(!record_event(&pool, &skipped).await.unwrap());
         assert_eq!(page(&pool, None, 10, None, None).await.unwrap().len(), 1);
+    }
+
+    /// Inbox fix group: goal park headlines are title-free (D1), so a
+    /// decision row's journal title names the goal — every park of one kind
+    /// used to read "Goal ran out of time and needs your direction".
+    #[tokio::test]
+    async fn record_event_names_the_goal_a_decision_is_about() {
+        let pool = test_pool().await;
+        let card = crate::cards::create_card(
+            &pool,
+            crate::cards::CreateCard {
+                project_id: crate::projects::PERSONAL_PROJECT_ID.to_string(),
+                title: "Add CSV export".to_string(),
+                description: None,
+                card_type: None,
+                column_id: None,
+                created_by: None,
+                metadata_json: None,
+            },
+        )
+        .await
+        .unwrap();
+        let d = crate::decisions::create_decision(
+            &pool,
+            crate::decisions::NewDecision {
+                kind: "unblock".to_string(),
+                goal_id: Some(card.id.clone()),
+                project_id: Some(crate::projects::PERSONAL_PROJECT_ID.to_string()),
+                headline: Some("Goal ran out of time and needs your direction".to_string()),
+                detail: Some("Goal parked: wallclock cap exhausted".to_string()),
+                payload: serde_json::json!({"reason": "wallclock_cap"}),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let e = events::decision_created(&d.id, "unblock", 1);
+        assert!(record_event(&pool, &e).await.unwrap());
+        let items = page(&pool, None, 10, None, None).await.unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            items[0].title,
+            "Goal ran out of time and needs your direction (goal: Add CSV export)"
+        );
     }
 
     #[test]

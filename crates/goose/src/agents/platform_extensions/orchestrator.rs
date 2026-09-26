@@ -13673,10 +13673,16 @@ async fn headless_escalate_policy(
     .map_err(|e| e.to_string())?;
     if choice.is_none() || count >= i64::from(cap) || blocked > 0 {
         tx.rollback().await.map_err(|e| e.to_string())?;
+        // Not a landing refusal: the worker stopped to ask something only the
+        // user can answer, so the park carries no cause and the inbox explains
+        // it from this reason — never as "the work is finished".
         park_refused_goal(
-            pool, &card,
+            pool,
+            &card,
             "escalated without a headless-resolvable option (human-only choice, retry cap, or open unblock)",
-        ).await;
+            None,
+        )
+        .await;
         return Ok(false);
     }
     // Park/resume own their transactions. Record the pending retry BEFORE
@@ -18830,17 +18836,30 @@ async fn park_refused_auto_land(
         );
     }
 
-    park_refused_goal(pool, card, reason).await;
+    park_refused_goal(
+        pool,
+        card,
+        reason,
+        Some(decisions::UnblockCause::AutoLandRefused),
+    )
+    .await;
 }
 
 /// Shared Y10b/Y13 park/unblock rail: retain the work and leave a human-only
 /// unblock. Also used when an answered review cannot land, and by the Y13
 /// headless escalate policy when it parks instead of answering.
 /// The caller owns any still-open review decision; never supersede an answered one.
+///
+/// `cause` is what the caller knows about the park, recorded as the unblock's
+/// structured cause — which the inbox trusts over the text. Only a landing
+/// refusal is [`decisions::UnblockCause::AutoLandRefused`] ("the work is
+/// finished"); an escalated question or a worktree that could not be
+/// inspected passes `None`, and the inbox explains it from `reason`.
 pub(crate) async fn park_refused_goal(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     card: &cards::Card,
     reason: &str,
+    cause: Option<decisions::UnblockCause>,
 ) {
     // One open unblock per goal, same dedupe every other park path uses.
     match decisions::find_open_decision_for_goal(pool, &card.id, "unblock").await {
@@ -18850,7 +18869,7 @@ pub(crate) async fn park_refused_goal(
             let headline = "Goal is blocked and needs your direction".to_string();
             let payload = match serde_json::to_value(decisions::UnblockPayload {
                 reason: decisions::UnblockReason::Stuck,
-                cause: Some(decisions::UnblockCause::AutoLandRefused),
+                cause,
                 ..Default::default()
             }) {
                 Ok(payload) => payload,
@@ -18858,8 +18877,7 @@ pub(crate) async fn park_refused_goal(
                     tracing::error!(
                         target: "permagentd::brain",
                         goal_id = %card.id,
-                        "headless Auto: could not build the auto-land refusal payload for goal \
-                         '{}' ({e})",
+                        "could not build the park payload for goal '{}' ({e})",
                         card.title
                     );
                     serde_json::json!({ "reason": "stuck" })
@@ -18882,8 +18900,8 @@ pub(crate) async fn park_refused_goal(
                 tracing::error!(
                     target: "permagentd::brain",
                     goal_id = %card.id,
-                    "headless Auto: goal '{}' refused auto-land but its unblock decision could \
-                     not be created — the parked goal will NOT appear in the Decision Inbox: {e}",
+                    "goal '{}' is being parked but its unblock decision could not be created \
+                     — the parked goal will NOT appear in the Decision Inbox: {e}",
                     card.title
                 );
                 record_decision_create_failure(pool, &card.id, "unblock", &e).await;
@@ -18911,8 +18929,7 @@ pub(crate) async fn park_refused_goal(
         Err(e) => tracing::error!(
             target: "permagentd::brain",
             goal_id = %card.id,
-            "headless Auto: goal '{}' refused auto-land but could not be parked ({e}) — it \
-             stays in Review",
+            "goal '{}' could not be parked ({e}) — it stays where it was",
             card.title
         ),
     }
@@ -18925,6 +18942,12 @@ pub(crate) async fn park_refused_goal(
 /// timeout is a signal to ask the user for direction, never a silent retry.
 /// Reuses the wall-clock exhaustion park machinery so the decision lands in the
 /// inbox identically to a budget park.
+///
+/// This is the per-attempt timeout ([`goal_transition::TimeoutPark::AttemptBound`]).
+/// A caller parking a still-running goal for any other reason — a stall, the
+/// run's own time limit, a shutdown — uses [`handle_goal_timeout_for`] and
+/// names it, so the inbox never explains that park as the goal running out of
+/// its own time.
 pub async fn handle_goal_timeout(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     card_id: &str,
@@ -18932,6 +18955,33 @@ pub async fn handle_goal_timeout(
     secs: u64,
     grace_deadline: Option<std::time::Instant>,
     calling_session_id: Option<&str>,
+) -> Result<(), String> {
+    handle_goal_timeout_for(
+        pool,
+        card_id,
+        project_id,
+        secs,
+        grace_deadline,
+        calling_session_id,
+        goal_transition::TimeoutPark::AttemptBound,
+    )
+    .await
+}
+
+/// [`handle_goal_timeout`] for a named [`goal_transition::TimeoutPark`]. The
+/// park's last error starts with `park.error_prefix()`, which is how
+/// `goal_transition::infer_exhaustion_cause` and the inbox summary tell a
+/// per-attempt timeout (`secs` is that attempt's bound) from a park the run
+/// imposed from outside (`secs` is only the run's elapsed time, or 0 for a
+/// shutdown — never a per-attempt budget).
+pub async fn handle_goal_timeout_for(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card_id: &str,
+    project_id: &str,
+    secs: u64,
+    grace_deadline: Option<std::time::Instant>,
+    calling_session_id: Option<&str>,
+    park: goal_transition::TimeoutPark,
 ) -> Result<(), String> {
     let card = cards::get_card(pool, card_id)
         .await?
@@ -19039,10 +19089,14 @@ pub async fn handle_goal_timeout(
     // QA 2026-09-25: a quarantined checkpoint left real work uncommitted in
     // the worktree on purpose — say so, and where, so the park reason never
     // reads as "nothing to salvage" while that work is still sitting there.
+    // The marker is `goal_transition::QUARANTINED_WORK_MARKER`, which the
+    // park's structured salvage facts read back: the inbox then says the
+    // held-back changes are kept for the user, never "no changes worth keeping".
     let salvage_note = match checkpoint {
         WorkerCheckpoint::Quarantined { reason, worktree } => format!(
-            "{salvage_note}; uncommitted changes NOT checkpointed — the credential guard flagged \
-             them ({reason}); left uncommitted in {worktree}, worktree kept for a human"
+            "{salvage_note}; {} — the credential guard flagged them ({reason}); left \
+             uncommitted in {worktree}, worktree kept for a human",
+            goal_transition::QUARANTINED_WORK_MARKER
         ),
         WorkerCheckpoint::Nothing | WorkerCheckpoint::Committed => salvage_note,
     };
@@ -19051,7 +19105,7 @@ pub async fn handle_goal_timeout(
         spent_secs: secs,
         cap_secs: secs,
     };
-    let last_error = format!("worker exceeded its time bound; salvage: {salvage_note}");
+    let last_error = format!("{}; salvage: {salvage_note}", park.error_prefix());
     let decision_id = goal_transition::exhaust_and_park(
         pool,
         card_id,
@@ -20475,14 +20529,17 @@ async fn drain_dispatched_goals_with(
                     }
                     // Best-effort, same as the cap-expiry park below: a no-op
                     // if the card already left `in_progress`, so this never
-                    // double-parks or fights a genuine retry.
-                    let _ = handle_goal_timeout(
+                    // double-parks or fights a genuine retry. A stall, not a
+                    // per-attempt timeout: `start.elapsed()` is the drain's
+                    // own clock, never a budget the goal had.
+                    let _ = handle_goal_timeout_for(
                         pool,
                         &card_id,
                         &project_id,
                         start.elapsed().as_secs(),
                         None,
                         Some(coordinator_session_id),
+                        goal_transition::TimeoutPark::Stalled,
                     )
                     .await;
                     stalled += 1;
@@ -20572,13 +20629,14 @@ async fn drain_dispatched_goals_with(
                         // pre-existing park, with the cloud tier stamped for
                         // whenever a human unblocks it.
                         stamp_local_fallback_to_cloud(pool, &card_id, "stall").await;
-                        let _ = handle_goal_timeout(
+                        let _ = handle_goal_timeout_for(
                             pool,
                             &card_id,
                             &project_id,
                             elapsed.as_secs(),
                             None,
                             Some(coordinator_session_id),
+                            goal_transition::TimeoutPark::Stalled,
                         )
                         .await;
                         stalled += 1;
@@ -20747,14 +20805,16 @@ async fn drain_dispatched_goals_with(
         // poll and here), so this never double-parks. A `requeued` card that
         // was never restarted is `ready`, so this is a no-op for it too — it
         // is counted, not silently dropped, which is what the summary line
-        // and the eval's own post-run audit read.
-        let _ = handle_goal_timeout(
+        // and the eval's own post-run audit read. `cap` is the drain's own
+        // limit, not the goal's, so the park says the run stopped it.
+        let _ = handle_goal_timeout_for(
             pool,
             &card_id,
             &project_id,
             cap.as_secs(),
             None,
             Some(coordinator_session_id),
+            goal_transition::TimeoutPark::RunTimeLimit,
         )
         .await;
     }
@@ -20851,13 +20911,16 @@ pub async fn park_dispatched_goals_now(
                 "SIGTERM park sweep skipped_in_flight: a completion handler is already running"
             );
         } else {
-            let _ = handle_goal_timeout(
+            // A shutdown, not a timeout: the `0` is no budget at all, and
+            // the park must never read "each attempt gets 0 seconds".
+            let _ = handle_goal_timeout_for(
                 pool,
                 &card_id,
                 &project_id,
                 0,
                 grace_deadline,
                 Some(coordinator_session_id),
+                goal_transition::TimeoutPark::Shutdown,
             )
             .await;
             timed_out += 1;
@@ -28616,7 +28679,9 @@ async fn maybe_hold_review(
             .as_deref()
             .is_some_and(|plan| plan.starts_with("could not inspect the goal worktree:"))
         {
-            park_refused_goal(pool, card, &plan).await;
+            // The goal is not done (see the reply below), so this park is no
+            // landing refusal: no cause, and the inbox reads it from `plan`.
+            park_refused_goal(pool, card, &plan, None).await;
             if let Some(kill) = take_goal_worker(&card.id) {
                 kill.kill();
             }
@@ -56756,6 +56821,137 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
                 && last_error.contains(&current.to_string_lossy().to_string()),
             "the park reason must name the quarantine and where the work is: {last_error}"
         );
+    }
+
+    /// Inbox fix group: the park's inbox summary must carry the quarantine
+    /// too. The structured salvage facts used to read only the receipt note
+    /// ("no commits past the dispatch baseline"), so the user was told the
+    /// goal "made no changes worth keeping" while its real, held-back work sat
+    /// uncommitted in the kept worktree.
+    #[tokio::test]
+    async fn a_quarantined_timeout_park_never_reads_as_no_changes() {
+        let pool = test_pool().await;
+        let (card, _tmp, _prior, current) = qa0925_stale_evidence_goal(&pool).await;
+        std::fs::write(current.join(".env"), "API_KEY=Sup3rS3cretValue123\n").unwrap();
+
+        handle_goal_timeout(&pool, &card.id, &card.project_id, 240, None, None)
+            .await
+            .unwrap();
+
+        let d = decisions::find_open_decision_for_goal(&pool, &card.id, "unblock")
+            .await
+            .unwrap()
+            .expect("the timeout parks the goal with an unblock");
+        let summary = decisions::present_decision(&d).summary.unwrap_or_default();
+        assert!(
+            !summary.contains("no changes worth keeping"),
+            "held-back work is not 'no changes': {summary}"
+        );
+        assert!(summary.contains("kept for you to check"), "{summary}");
+    }
+
+    /// Inbox fix group: `handle_goal_timeout` is one funnel for the
+    /// per-attempt bound AND for parks the run imposes from outside — a
+    /// stall, the run's own time limit, a shutdown (whose `secs` is 0). Only
+    /// the first is the goal running out of its own time; the others used to
+    /// be summarised as "each attempt gets 0 seconds, and this one used all
+    /// of it".
+    #[tokio::test]
+    async fn parks_the_run_imposes_are_never_per_attempt_timeouts() {
+        let pool = test_pool().await;
+        for (park, secs, opening) in [
+            (
+                goal_transition::TimeoutPark::Shutdown,
+                0,
+                "Paused because the run shut down",
+            ),
+            (
+                goal_transition::TimeoutPark::Stalled,
+                182,
+                "Paused because the run found its worker stalled",
+            ),
+            (
+                goal_transition::TimeoutPark::RunTimeLimit,
+                900,
+                "Paused because the run reached its own time limit",
+            ),
+        ] {
+            let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+            handle_goal_timeout_for(&pool, &card.id, &card.project_id, secs, None, None, park)
+                .await
+                .unwrap();
+            let d = decisions::find_open_decision_for_goal(&pool, &card.id, "unblock")
+                .await
+                .unwrap()
+                .expect("a run-imposed park still files an unblock");
+            assert!(d.payload.get("cause").is_none(), "{park:?}: {}", d.payload);
+            assert_eq!(
+                d.headline,
+                "Goal was stopped before it finished and needs your direction"
+            );
+            let summary = decisions::present_decision(&d).summary.unwrap_or_default();
+            assert!(summary.starts_with(opening), "{park:?}: {summary}");
+            assert!(
+                !summary.contains("each attempt gets"),
+                "{park:?}: {summary}"
+            );
+        }
+
+        // The per-attempt bound itself is still exactly that.
+        let card = setup_goal_in_state(&pool, "in_progress", 1).await;
+        handle_goal_timeout(&pool, &card.id, &card.project_id, 240, None, None)
+            .await
+            .unwrap();
+        let d = decisions::find_open_decision_for_goal(&pool, &card.id, "unblock")
+            .await
+            .unwrap()
+            .expect("a per-attempt timeout files an unblock");
+        assert_eq!(d.payload["cause"], "attempt_timeout");
+        assert!(decisions::present_decision(&d)
+            .summary
+            .unwrap_or_default()
+            .starts_with("Ran out of time: each attempt gets 4 min"));
+    }
+
+    /// Inbox fix group: `park_refused_goal` is the shared park rail, and
+    /// only a landing refusal may record `AutoLandRefused` ("the work is
+    /// finished"). The headless escalation park and the hold path's
+    /// uninspectable-worktree park both parked work that was NOT finished.
+    #[tokio::test]
+    async fn only_a_landing_refusal_park_says_the_work_is_finished() {
+        let pool = test_pool().await;
+        let cases = [
+            (
+                "escalated without a headless-resolvable option (human-only choice, retry cap, \
+                 or open unblock)",
+                None,
+                "The worker asked something only you can answer, so the goal is paused.",
+            ),
+            (
+                "could not inspect the goal worktree: permission denied; commit and declare \
+                 done again",
+                None,
+                "Its work couldn't be checked, so the goal was paused before it was done.",
+            ),
+            (
+                "the goal branch could not be verified before landing",
+                Some(decisions::UnblockCause::AutoLandRefused),
+                "The work is finished, but it wasn't allowed to land on its own.",
+            ),
+        ];
+        for (reason, cause, expected) in cases {
+            let card = setup_goal_in_state(&pool, "review", 1).await;
+            park_refused_goal(&pool, &card, reason, cause).await;
+            let d = decisions::find_open_decision_for_goal(&pool, &card.id, "unblock")
+                .await
+                .unwrap()
+                .expect("the park files an unblock");
+            assert_eq!(
+                decisions::present_decision(&d).summary.as_deref(),
+                Some(expected),
+                "{reason}"
+            );
+        }
     }
 
     // ── R27b (harness loop, "A26 analysis" section 1 Q2/Q3, lever 3):

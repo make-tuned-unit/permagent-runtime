@@ -1845,25 +1845,101 @@ pub fn exhaustion_headline(exhaustion: &BudgetExhaustion) -> &'static str {
 }
 
 /// The last-error prefix `orchestrator::handle_goal_timeout` writes when one
-/// attempt overran the worker's per-attempt time bound. The only way to tell
-/// that park apart from a whole-goal wall budget park without changing its
-/// caller: both arrive as `BudgetExhaustion::Wallclock`.
+/// attempt overran the worker's per-attempt time bound. How that park is told
+/// apart from a whole-goal wall budget park: both arrive as
+/// `BudgetExhaustion::Wallclock`. The parks the run imposes from outside carry
+/// their own prefixes ([`TimeoutPark::error_prefix`]).
 const ATTEMPT_TIMEOUT_ERROR_PREFIX: &str = "worker exceeded its time bound";
 
+/// The clause `orchestrator::handle_goal_timeout` appends to a park's salvage
+/// note when the credential guard quarantined the worker's uncommitted
+/// changes: real work, left uncommitted in the kept worktree for a human.
+pub const QUARANTINED_WORK_MARKER: &str = "uncommitted changes NOT checkpointed";
+
+/// Why `orchestrator::handle_goal_timeout_for` is parking a goal that is still
+/// running. The handler is one funnel for four different stops, and all four
+/// arrive as `BudgetExhaustion::Wallclock` with the handler's `secs` as both
+/// spent and cap — but only [`TimeoutPark::AttemptBound`] is the worker
+/// running out of its own time. For the others `secs` is the run's elapsed
+/// time (or 0 for a shutdown), never a per-attempt budget, and the park must
+/// not be explained as one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimeoutPark {
+    /// The worker hit its own per-attempt time bound (`GoalOutcome::TimedOut`).
+    AttemptBound,
+    /// A headless run found the worker stalled and parked the goal.
+    Stalled,
+    /// A headless run reached its own time cap with the goal still running.
+    RunTimeLimit,
+    /// The run was shutting down (SIGTERM/SIGINT) with the goal still running.
+    Shutdown,
+}
+
+impl TimeoutPark {
+    /// The last-error prefix each park records. Lowercase ASCII, so it can be
+    /// found in lowercased decision text too.
+    pub fn error_prefix(self) -> &'static str {
+        match self {
+            Self::AttemptBound => ATTEMPT_TIMEOUT_ERROR_PREFIX,
+            Self::Stalled => "the run parked this goal after its worker stalled",
+            Self::RunTimeLimit => {
+                "the run reached its own time limit while this goal's worker was still running"
+            }
+            Self::Shutdown => "the run shut down while this goal's worker was still running",
+        }
+    }
+
+    /// Which park a recorded last error came from (it starts with the prefix).
+    pub fn of_last_error(last_error: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|park| last_error.starts_with(park.error_prefix()))
+    }
+
+    /// Which park a decision's headline/detail quotes, anywhere in `text`.
+    pub fn in_text(text: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|park| text.contains(park.error_prefix()))
+    }
+
+    const ALL: [TimeoutPark; 4] = [
+        Self::AttemptBound,
+        Self::Stalled,
+        Self::RunTimeLimit,
+        Self::Shutdown,
+    ];
+}
+
+/// Headline for a park the run imposed from outside: the goal did not run out
+/// of time, so [`exhaustion_headline`]'s "ran out of time" would be false.
+fn stopped_by_run_headline(last_error: Option<&str>) -> Option<&'static str> {
+    match last_error.and_then(TimeoutPark::of_last_error)? {
+        TimeoutPark::AttemptBound => None,
+        TimeoutPark::Stalled | TimeoutPark::RunTimeLimit | TimeoutPark::Shutdown => {
+            Some("Goal was stopped before it finished and needs your direction")
+        }
+    }
+}
+
 /// D2: pick the specific cause for a budget park when the caller did not
-/// name one.
+/// name one. A wall-clock park the run imposed from outside (a stall, the
+/// run's own time limit, a shutdown) gets no cause: none describes it, and
+/// its last-error prefix is what the inbox explains it from.
 pub fn infer_exhaustion_cause(
     exhaustion: &BudgetExhaustion,
     last_error: Option<&str>,
 ) -> Option<decisions::UnblockCause> {
     match exhaustion {
-        BudgetExhaustion::Wallclock { .. } => Some(
-            if last_error.is_some_and(|e| e.starts_with(ATTEMPT_TIMEOUT_ERROR_PREFIX)) {
-                decisions::UnblockCause::AttemptTimeout
-            } else {
-                decisions::UnblockCause::WallBudget
-            },
-        ),
+        BudgetExhaustion::Wallclock { .. } => {
+            match last_error.and_then(TimeoutPark::of_last_error) {
+                Some(TimeoutPark::AttemptBound) => Some(decisions::UnblockCause::AttemptTimeout),
+                Some(TimeoutPark::Stalled | TimeoutPark::RunTimeLimit | TimeoutPark::Shutdown) => {
+                    None
+                }
+                None => Some(decisions::UnblockCause::WallBudget),
+            }
+        }
         _ => None,
     }
 }
@@ -1871,6 +1947,13 @@ pub fn infer_exhaustion_cause(
 /// D2: structured salvage facts for this park, read from the goal's
 /// `salvage_receipt` — but only when the park's own last error quotes that
 /// receipt's note, so a receipt left by an earlier park is never reused.
+///
+/// `commits_past_baseline` counts commits NOT yet landed: 0 for both "no
+/// commits" and "already on the trunk", which the inbox tells apart by
+/// `outcome`. A missing dispatch baseline measured nothing and stays `None`.
+/// The quarantine clause `handle_goal_timeout` appends after the receipt's
+/// note is carried as its own flag, so a park whose real changes were held
+/// back never reads as "no changes".
 pub fn salvage_facts_for_park(
     metadata: &serde_json::Value,
     last_error: Option<&str>,
@@ -1895,6 +1978,7 @@ pub fn salvage_facts_for_park(
     Some(decisions::SalvageFacts {
         outcome,
         commits_past_baseline,
+        uncommitted_work_quarantined: last_error.contains(QUARANTINED_WORK_MARKER),
     })
 }
 
@@ -1916,7 +2000,9 @@ pub async fn exhaust_and_park_with_cause(
         Some(existing) => existing.id,
         None => {
             let (spent, cap) = exhaustion.spent_and_cap();
-            let headline = exhaustion_headline(&exhaustion).to_string();
+            let headline = stopped_by_run_headline(last_error)
+                .unwrap_or_else(|| exhaustion_headline(&exhaustion))
+                .to_string();
             let detail = format!(
                 "Goal {} parked: {}. Last error: {}",
                 card_id,
@@ -3815,6 +3901,417 @@ mod tests {
             answer_and_apply(&pool, &id, "reject", crate::decisions::ACTOR_HENRY).await;
         assert!(effect.unwrap().contains("stays parked"));
         assert_eq!(state_of(&pool, &other.id).await, "failed");
+    }
+
+    /// An open unblock filed for a goal that is still running — an
+    /// interactive worker's `escalate` question, a stalled-gate check.
+    async fn unblock_for(pool: &Pool<Sqlite>, goal_id: &str) -> String {
+        create_decision(
+            pool,
+            NewDecision {
+                kind: "unblock".to_string(),
+                goal_id: Some(goal_id.to_string()),
+                project_id: Some(PERSONAL_PROJECT_ID.to_string()),
+                headline: Some("Should the worker switch the database?".to_string()),
+                detail: Some("Should the worker switch the database?".to_string()),
+                payload: serde_json::json!({"reason": "stuck"}),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+        .id
+    }
+
+    /// Inbox fix group: rejecting a goal-bound unblock cancels the goal ONLY
+    /// when the goal is paused on that decision. A running goal's unblock is a
+    /// worker's question; "no" is an answer to record, never a reason to
+    /// cancel the goal and kill its live worker.
+    #[tokio::test]
+    async fn rejecting_an_unblock_a_goal_is_not_paused_on_never_cancels_it() {
+        let pool = test_pool().await;
+        let running = goal_in_state(&pool, "in_progress", 1).await;
+        let question = unblock_for(&pool, &running.id).await;
+        let (effect, _) =
+            answer_and_apply(&pool, &question, "reject", crate::decisions::ACTOR_JESSE).await;
+        assert!(
+            effect.unwrap().contains("not paused on this decision"),
+            "a running goal's reject is recorded only"
+        );
+        assert_eq!(state_of(&pool, &running.id).await, "in_progress");
+
+        // A parked goal paused on a DIFFERENT, still-open unblock: the stale
+        // one's reject is recorded, and the goal waits on the open one.
+        let parked = goal_in_state(&pool, "in_progress", 1).await;
+        let stale = unblock_for(&pool, &parked.id).await;
+        park_goal(&pool, &parked.id, crate::decisions::ACTOR_SYSTEM, "parked")
+            .await
+            .unwrap();
+        let current = unblock_for(&pool, &parked.id).await;
+        let (effect, _) =
+            answer_and_apply(&pool, &stale, "reject", crate::decisions::ACTOR_JESSE).await;
+        assert!(effect.unwrap().contains("not paused on this decision"));
+        assert_eq!(state_of(&pool, &parked.id).await, "failed");
+        let open = crate::decisions::get_decision(&pool, &current)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(open.status, "open", "the goal's real question stays open");
+    }
+
+    /// Answer as the chat `answer_decisions` tool does: the agent actor, the
+    /// chat-relay audit principal, a declared session.
+    async fn answer_via_chat(
+        pool: &Pool<Sqlite>,
+        decision_id: &str,
+        answer: &str,
+    ) -> crate::decisions_effects::EffectResult {
+        let (answered, proof) = crate::decisions::answer_decision_as_session(
+            pool,
+            decision_id,
+            &DecisionAnswer {
+                answer: answer.to_string(),
+                ..Default::default()
+            },
+            crate::decisions::ACTOR_HENRY,
+            crate::decisions_effects::CHAT_RELAY_PRINCIPAL,
+            "chat-session-under-test",
+        )
+        .await
+        .unwrap();
+        match crate::decisions_effects::apply_answered_effect_now(pool, &answered, proof)
+            .await
+            .unwrap()
+        {
+            crate::decisions_effects::AnsweredEffect::Ran(result) => result.unwrap(),
+            _ => panic!("an unblock's effect runs inline"),
+        }
+    }
+
+    /// Inbox fix group: the user's verdict relayed through chat gets exactly
+    /// the effect of the same tap in the inbox — the reject-cancel (D8) and
+    /// the wall-clock reset (D7) used to key on `acted_by == jesse`, which the
+    /// chat tool (acting as the agent) never is.
+    #[tokio::test]
+    async fn a_verdict_relayed_through_chat_has_the_inbox_effect() {
+        let pool = test_pool().await;
+        let goal = goal_in_state(&pool, "in_progress", 3).await;
+        let id = exhaust_and_park(
+            &pool,
+            &goal.id,
+            &goal.title,
+            PERSONAL_PROJECT_ID,
+            BudgetExhaustion::AttemptCap { spent: 3, cap: 3 },
+            None,
+        )
+        .await
+        .unwrap();
+        let (effect, _) = answer_via_chat(&pool, &id, "reject").await;
+        assert_eq!(effect.as_deref(), Some("goal cancelled at your request"));
+        assert_eq!(state_of(&pool, &goal.id).await, "cancelled");
+        let outbox: String =
+            sqlx::query_scalar("SELECT status FROM effect_outbox WHERE claim_key = ?")
+                .bind(crate::decisions::effect_outbox_claim_key(&id, "unblock").unwrap())
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(outbox, "applied", "the shared path settles the outbox row");
+
+        let timed_out = goal_in_state(&pool, "in_progress", 1).await;
+        let long_ago = (chrono::Utc::now() - chrono::Duration::hours(2)).to_rfc3339();
+        set_meta(
+            &pool,
+            &timed_out.id,
+            "$.first_dispatched_at",
+            serde_json::json!(long_ago),
+        )
+        .await;
+        set_meta(
+            &pool,
+            &timed_out.id,
+            "$.budget",
+            serde_json::json!({"wallclock_cap_secs": 600}),
+        )
+        .await;
+        let id = exhaust_and_park(
+            &pool,
+            &timed_out.id,
+            &timed_out.title,
+            PERSONAL_PROJECT_ID,
+            BudgetExhaustion::Wallclock {
+                spent_secs: 7200,
+                cap_secs: 600,
+            },
+            Some("worker crashed"),
+        )
+        .await
+        .unwrap();
+        let (effect, _) = answer_via_chat(&pool, &id, "approve").await;
+        assert!(effect.unwrap().contains("wall-clock budget restarted"));
+        let card = crate::cards::get_card(&pool, &timed_out.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(card.metadata_json.get("first_dispatched_at").is_none());
+        assert!(check_budget(&pool, &card.metadata_json)
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    /// Inbox fix group: `exhaust_and_park` dedupes a wall-budget park onto
+    /// any open unblock and keeps THAT decision's payload. The reset used to
+    /// key on the answered decision's reason, so approving a reused worker
+    /// question (reason `stuck`) raised the attempt cap but left the spent
+    /// clock — and the next dispatch re-parked the goal at once.
+    #[tokio::test]
+    async fn approving_a_deduped_wall_budget_park_still_restarts_the_clock() {
+        let pool = test_pool().await;
+        let goal = goal_in_state(&pool, "in_progress", 1).await;
+        let question = unblock_for(&pool, &goal.id).await;
+        let long_ago = (chrono::Utc::now() - chrono::Duration::hours(2)).to_rfc3339();
+        set_meta(
+            &pool,
+            &goal.id,
+            "$.first_dispatched_at",
+            serde_json::json!(long_ago),
+        )
+        .await;
+        set_meta(
+            &pool,
+            &goal.id,
+            "$.budget",
+            serde_json::json!({"wallclock_cap_secs": 600}),
+        )
+        .await;
+        let card = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let exhaustion = check_budget(&pool, &card.metadata_json)
+            .await
+            .unwrap()
+            .unwrap();
+        let id = exhaust_and_park(
+            &pool,
+            &goal.id,
+            &goal.title,
+            PERSONAL_PROJECT_ID,
+            exhaustion,
+            Some("worker crashed"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(id, question, "the park reused the open worker question");
+
+        let (effect, _) =
+            answer_and_apply(&pool, &id, "approve", crate::decisions::ACTOR_JESSE).await;
+        assert!(effect.unwrap().contains("wall-clock budget restarted"));
+        let card = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            check_budget(&pool, &card.metadata_json)
+                .await
+                .unwrap()
+                .is_none(),
+            "the next dispatch must not re-park on the old clock"
+        );
+    }
+
+    /// Inbox fix group: approving a token-budget park must lift the token
+    /// budget. `check_budget` sums every worker session the goal has used, so
+    /// raising only the attempt cap re-parked the goal on its next dispatch
+    /// while the copy promised it would wake with more attempts.
+    #[tokio::test]
+    async fn approving_a_token_budget_park_grants_a_fresh_allowance() {
+        let pool = test_pool().await;
+        let goal = goal_in_state(&pool, "in_progress", 1).await;
+        let session = format!("token-park-worker-{}", uuid::Uuid::new_v4());
+        sqlx::query(
+            "INSERT INTO sessions (id, working_dir, accumulated_total_tokens) \
+             VALUES (?, '/tmp', 120000)",
+        )
+        .bind(&session)
+        .execute(&pool)
+        .await
+        .unwrap();
+        set_meta(
+            &pool,
+            &goal.id,
+            "$.worker_session_id",
+            serde_json::json!(session),
+        )
+        .await;
+        set_meta(
+            &pool,
+            &goal.id,
+            "$.budget",
+            serde_json::json!({"token_budget": 100000}),
+        )
+        .await;
+        let card = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let exhaustion = check_budget(&pool, &card.metadata_json)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(exhaustion, BudgetExhaustion::TokenBudget { .. }));
+        let id = exhaust_and_park(
+            &pool,
+            &goal.id,
+            &goal.title,
+            PERSONAL_PROJECT_ID,
+            exhaustion,
+            None,
+        )
+        .await
+        .unwrap();
+        let d = crate::decisions::get_decision(&pool, &id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            crate::decisions::present_decision(&d).effects["approve"],
+            "Wakes the goal with a fresh token allowance and more attempts."
+        );
+
+        let (effect, _) =
+            answer_and_apply(&pool, &id, "approve", crate::decisions::ACTOR_JESSE).await;
+        assert!(effect
+            .unwrap()
+            .contains("a fresh allowance of 100000 tokens"));
+        let card = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(goal_budget(&card.metadata_json).token_budget, Some(220000));
+        assert!(
+            check_budget(&pool, &card.metadata_json)
+                .await
+                .unwrap()
+                .is_none(),
+            "the next dispatch must not re-park on the spent tokens"
+        );
+    }
+
+    /// Inbox fix group: a merge-conflict unblock is filed after the goal
+    /// completed. Neither answer wakes or cancels anything, and the copy must
+    /// not say they do.
+    #[tokio::test]
+    async fn a_merge_conflict_unblock_promises_only_what_its_answers_do() {
+        let pool = test_pool().await;
+        let goal = goal_in_state(&pool, "complete", 1).await;
+        let payload = serde_json::json!({"reason": "stuck", "cause": "merge_conflict"});
+        let effects = crate::decisions_effects::answer_effects("unblock", &payload, true);
+        assert!(
+            !effects["approve"].contains("Wakes"),
+            "{}",
+            effects["approve"]
+        );
+        assert!(
+            !effects["reject"].contains("Cancels"),
+            "{}",
+            effects["reject"]
+        );
+        for answer in ["approve", "reject"] {
+            let id = create_decision(
+                &pool,
+                NewDecision {
+                    kind: "unblock".to_string(),
+                    goal_id: Some(goal.id.clone()),
+                    project_id: Some(PERSONAL_PROJECT_ID.to_string()),
+                    headline: Some("Goal work could not land and needs a manual merge".to_string()),
+                    detail: Some("could not be fast-forwarded onto trunk".to_string()),
+                    payload: payload.clone(),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap()
+            .id;
+            answer_and_apply(&pool, &id, answer, crate::decisions::ACTOR_JESSE).await;
+            assert_eq!(state_of(&pool, &goal.id).await, "complete", "{answer}");
+        }
+    }
+
+    /// Inbox fix group: the salvage outcomes that are NOT "no changes" keep
+    /// their meaning in the structured facts — already landed stays 0 unlanded
+    /// commits under its own outcome, a missing baseline measured nothing, and
+    /// a quarantine clause after the receipt note is carried as a flag.
+    #[test]
+    fn salvage_facts_keep_landed_unmeasured_and_quarantined_work_apart() {
+        let landed_note = "3 commit(s) past the rolling redispatch baseline, but the branch \
+                           tip is already an ancestor of the project's trunk — nothing left to land";
+        let meta = serde_json::json!({"salvage_receipt": {
+            "outcome": "salvage_skipped_already_landed", "note": landed_note
+        }});
+        let facts = salvage_facts_for_park(
+            &meta,
+            Some(&format!(
+                "worker exceeded its time bound; salvage: {landed_note}"
+            )),
+        )
+        .unwrap();
+        assert_eq!(facts.outcome, "salvage_skipped_already_landed");
+        assert_eq!(facts.commits_past_baseline, Some(0));
+
+        let note = "no dispatch baseline recorded — nothing to salvage";
+        let meta = serde_json::json!({"salvage_receipt": {
+            "outcome": "salvage_skipped_no_baseline", "note": note
+        }});
+        let facts =
+            salvage_facts_for_park(&meta, Some(&format!("timed out; salvage: {note}"))).unwrap();
+        assert_eq!(facts.commits_past_baseline, None, "nothing was measured");
+
+        let note = "no commits past the dispatch baseline — nothing to salvage";
+        let meta = serde_json::json!({"salvage_receipt": {
+            "outcome": "salvage_skipped_no_commits", "note": note
+        }});
+        let facts = salvage_facts_for_park(
+            &meta,
+            Some(&format!(
+                "worker exceeded its time bound; salvage: {note}; {QUARANTINED_WORK_MARKER} — \
+                 the credential guard flagged them (.env); left uncommitted in /tmp/wt, \
+                 worktree kept for a human"
+            )),
+        )
+        .unwrap();
+        assert!(facts.uncommitted_work_quarantined);
+    }
+
+    /// Inbox fix group: a wall-clock park the run imposed from outside is
+    /// classified by its own last-error prefix, never as a per-attempt timeout.
+    #[test]
+    fn run_imposed_wall_clock_parks_have_no_timeout_cause() {
+        let wall = BudgetExhaustion::Wallclock {
+            spent_secs: 0,
+            cap_secs: 0,
+        };
+        for park in [
+            TimeoutPark::Stalled,
+            TimeoutPark::RunTimeLimit,
+            TimeoutPark::Shutdown,
+        ] {
+            let last_error = format!("{}; salvage: nothing", park.error_prefix());
+            assert_eq!(infer_exhaustion_cause(&wall, Some(&last_error)), None);
+            assert_eq!(TimeoutPark::of_last_error(&last_error), Some(park));
+        }
+        let attempt = format!(
+            "{}; salvage: nothing",
+            TimeoutPark::AttemptBound.error_prefix()
+        );
+        assert_eq!(
+            infer_exhaustion_cause(&wall, Some(&attempt)),
+            Some(crate::decisions::UnblockCause::AttemptTimeout)
+        );
+        assert_eq!(
+            infer_exhaustion_cause(&wall, Some("worker crashed")),
+            Some(crate::decisions::UnblockCause::WallBudget)
+        );
     }
 
     /// Lane R21d (A23 Q2 #2): pure truth table for `attempt_made_zero_progress`

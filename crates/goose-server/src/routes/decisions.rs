@@ -21,6 +21,7 @@ use axum::{
     Json, Router,
 };
 use permagent::decisions::{self, AnswerError, DecisionAnswer};
+use permagent::decisions_effects::AnsweredEffect;
 use permagent::goal_state::GoalAction;
 use permagent::goal_transition::{self, GuardError, TransitionEffects};
 use permagent::permission::permission_confirmation::PrincipalType;
@@ -304,55 +305,38 @@ pub(crate) async fn apply_jesse_answer(
     // Execute the gated effect. The decision is already answered and audited;
     // an effect failure — or a follow-on warning after a committed effect —
     // is reported (and audit-logged), not silently dropped.
-    let claim_key = decisions::effect_outbox_claim_key(&decision.id, &decision.kind);
-    let inline_owns_effect = match claim_key.as_deref() {
-        Some(key) => decisions::claim_effect_outbox(&pool, key)
+    //
+    // A durable effect runs through `apply_answered_effect_now`, the one path
+    // the chat `answer_decisions` tool takes too, so the user's verdict has
+    // the same effect whichever channel carried it (the wall-clock reset, the
+    // reject-cancel of a paused goal). It claims the outbox row, applies the
+    // effect, settles the row and audit-records any failure itself.
+    let (effect, effect_error) =
+        match permagent::decisions_effects::apply_answered_effect_now(&pool, &decision, proof)
             .await
-            .map_err(internal)?,
-        None => true,
-    };
-    let effect_result = if inline_owns_effect {
-        execute_effect(&pool, &decision, proof).await
-    } else {
-        Ok((None, None))
-    };
-    let (effect, effect_error) = match effect_result {
-        Ok((effect, warning)) => {
-            if inline_owns_effect {
-                if let Some(ref claim_key) = claim_key {
-                    if let Err(e) = decisions::mark_effect_outbox_applied(&pool, claim_key).await {
-                        tracing::error!(
-                            "Decision {} effect outbox could not be marked applied: {}",
-                            decision.id,
-                            e
-                        );
+            .map_err(internal)?
+        {
+            AnsweredEffect::Ran(Ok((effect, warning))) => (effect, warning),
+            AnsweredEffect::Ran(Err(e)) => (None, Some(e.to_string())),
+            AnsweredEffect::ClaimedByDrain => (None, None),
+            // Tool approvals, session gates and the other inline kinds: the
+            // arms below, with this route recording their failures.
+            AnsweredEffect::NotDurable(proof) => {
+                match execute_effect(&pool, &decision, proof).await {
+                    Ok((effect, warning)) => {
+                        if let Some(ref w) = warning {
+                            record_effect_failure(&pool, &decision, w).await;
+                        }
+                        (effect, warning)
+                    }
+                    Err(e) => {
+                        let msg = e.to_string();
+                        record_effect_failure(&pool, &decision, &msg).await;
+                        (None, Some(msg))
                     }
                 }
             }
-            if let Some(ref w) = warning {
-                record_effect_failure(&pool, &decision, w).await;
-            }
-            (effect, warning)
-        }
-        Err(e) => {
-            let msg = e.to_string();
-            if inline_owns_effect {
-                if let Some(ref claim_key) = claim_key {
-                    if let Err(mark_err) =
-                        decisions::mark_effect_outbox_failed(&pool, claim_key, &msg).await
-                    {
-                        tracing::error!(
-                            "Decision {} effect outbox could not be marked failed: {}",
-                            decision.id,
-                            mark_err
-                        );
-                    }
-                }
-            }
-            record_effect_failure(&pool, &decision, &msg).await;
-            (None, Some(msg))
-        }
-    };
+        };
 
     // Tool-confirmation bridge: a `tool_approval` decision has no goal-state
     // effect above — its real effect is delivering the approve/reject back to the

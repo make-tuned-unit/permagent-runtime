@@ -69,7 +69,11 @@ pub async fn stage_spoken_verdict(
     permagent::decisions::stage_answer(pool, decision_id, verdict, None, "voice")
         .await
         .map_err(|e| e.to_string())?;
-    Ok(staged_reply(verdict, &decision.headline))
+    // Goal park headlines are title-free (D1): with two goals parked, the
+    // bare headline would read back identically for both, so the reply names
+    // the goal the verdict was staged on.
+    let subject = permagent::decisions::decision_subject(pool, &decision).await;
+    Ok(staged_reply(verdict, &subject))
 }
 
 #[cfg(test)]
@@ -178,6 +182,52 @@ mod tests {
         assert_eq!(
             after.staged_answer.as_ref().map(|s| s.staged_via.as_str()),
             Some("voice")
+        );
+    }
+
+    /// Inbox fix group: goal headlines are title-free (D1), so the spoken
+    /// read-back must name the goal, or two staged verdicts on two goals read
+    /// back as the same sentence.
+    #[tokio::test]
+    async fn the_staged_reply_names_the_goal_the_verdict_is_for() {
+        let pool = test_pool().await;
+        let goal = permagent::cards::create_card(
+            &pool,
+            permagent::cards::CreateCard {
+                project_id: permagent::projects::PERSONAL_PROJECT_ID.to_string(),
+                title: "Rotate the staging key".to_string(),
+                description: None,
+                card_type: None,
+                column_id: None,
+                created_by: None,
+                metadata_json: None,
+            },
+        )
+        .await
+        .unwrap();
+        let d = permagent::decisions::create_decision(
+            &pool,
+            permagent::decisions::NewDecision {
+                kind: "risk_gate".to_string(),
+                goal_id: Some(goal.id.clone()),
+                project_id: Some(permagent::projects::PERSONAL_PROJECT_ID.to_string()),
+                headline: Some("Allow a shell command to run".to_string()),
+                detail: Some("cc_shell: rm -rf ./build".to_string()),
+                payload: serde_json::json!({
+                    "action_class": "cc_shell",
+                    "description": "remove the build directory",
+                    "requested_by": "voice",
+                }),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let spoken = stage_spoken_verdict(&pool, &d.id, "approve").await.unwrap();
+        assert!(
+            spoken.contains("Rotate the staging key"),
+            "the reply must say which goal: {spoken}"
         );
     }
 }
