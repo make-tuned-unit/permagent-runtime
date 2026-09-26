@@ -935,7 +935,15 @@ pub const DUE_DISMISSED_KEY: &str = "dueDismissedAt";
 pub const POST_SCHEDULED_FOR_KEY: &str = "scheduledFor";
 
 /// Metadata key holding a `social_post`'s lifecycle status:
-/// `"draft"` | `"scheduled"` | `"posted"`.
+/// `"draft"` | `"scheduled"` | `"posted"` | `"publish_failed"`.
+///
+/// `publish_failed` is the state a `draft` (or another `publish_failed`
+/// retry) lands in when the publisher call itself errors — Postiz down, the
+/// channel disconnected, a bad upload. Before this status existed the failure
+/// had nowhere to go: `approve_post` `?`-propagated the error straight out of
+/// the request handler and the card was left silently on `draft`, so
+/// Calendar's "Needs attention" filter (which only knew about failed media
+/// generation) never caught it (2026-09-25 finding).
 ///
 /// Same rationale as [`POST_SCHEDULED_FOR_KEY`]: metadata rather than a column
 /// so the field can land without a migration and be withdrawn cheaply. Not a
@@ -943,7 +951,7 @@ pub const POST_SCHEDULED_FOR_KEY: &str = "scheduledFor";
 pub const POST_STATUS_KEY: &str = "postStatus";
 
 /// Accepted `postStatus` values for [`POST_STATUS_KEY`].
-const POST_STATUSES: &[&str] = &["draft", "scheduled", "posted"];
+const POST_STATUSES: &[&str] = &["draft", "scheduled", "posted", "publish_failed"];
 
 /// `social_post` format: `"text"` | `"carousel"` | `"reel"` | `"compose"`.
 pub const POST_FORMAT_KEY: &str = "format";
@@ -968,6 +976,15 @@ pub const POST_MEDIA_FEEDBACK_KEY: &str = "mediaFeedback";
 pub const POST_PUBLISHER_POST_ID_KEY: &str = "publisherPostId";
 /// Postiz integration id the post was scheduled against.
 pub const POST_PUBLISHER_INTEGRATION_KEY: &str = "publisherIntegrationId";
+/// The error from the most recent failed publish attempt, verbatim. Present
+/// only while [`POST_STATUS_KEY`] is `"publish_failed"`; cleared (set to JSON
+/// null) the moment a later attempt succeeds — never left around to be
+/// mistaken for the current state once the post is actually scheduled.
+pub const POST_LAST_PUBLISH_ERROR_KEY: &str = "lastPublishError";
+/// RFC-3339 instant of the most recent publish attempt, success or failure.
+/// Pairs with [`POST_LAST_PUBLISH_ERROR_KEY`] so the Calendar can say WHEN a
+/// publish failed, not just that it did; cleared alongside it on success.
+pub const POST_LAST_PUBLISH_ATTEMPT_AT_KEY: &str = "lastPublishAttemptAt";
 
 /// Keys the Grow media job owns. HTTP and agent patches keep the existing
 /// values so a stale calendar poll cannot wipe a finished still.
@@ -1105,8 +1122,9 @@ pub fn assert_ready_to_schedule(metadata: &serde_json::Value) -> Result<(), Stri
 /// Validate social-post scheduling metadata before it is written.
 ///
 /// `scheduled_for`, when present, must parse as RFC-3339. `status`, when
-/// present, must be one of `draft` / `scheduled` / `posted`. Either argument
-/// may be `None` (partial updates); absent fields are not checked.
+/// present, must be one of `draft` / `scheduled` / `posted` / `publish_failed`.
+/// Either argument may be `None` (partial updates); absent fields are not
+/// checked.
 pub fn validate_post_metadata(
     scheduled_for: Option<&str>,
     status: Option<&str>,
@@ -1114,7 +1132,7 @@ pub fn validate_post_metadata(
     if let Some(status) = status {
         if !POST_STATUSES.contains(&status) {
             return Err(format!(
-                "postStatus must be one of \"draft\", \"scheduled\", or \"posted\", got '{status}'"
+                "postStatus must be one of \"draft\", \"scheduled\", \"posted\", or \"publish_failed\", got '{status}'"
             ));
         }
     }
@@ -2344,6 +2362,7 @@ mod tests {
             validate_post_metadata(Some("2026-08-15T18:00:00+00:00"), Some("scheduled")).is_ok()
         );
         assert!(validate_post_metadata(None, Some("posted")).is_ok());
+        assert!(validate_post_metadata(None, Some("publish_failed")).is_ok());
     }
 
     #[test]

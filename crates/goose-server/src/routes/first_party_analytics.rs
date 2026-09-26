@@ -290,6 +290,38 @@ struct FirstPartyStats {
     bounce_rate: Option<f64>,
     pages_per_session: Option<f64>,
     top_entry_pages: Vec<NamedCount>,
+    /// The window the figures above cover, so the UI can label a delta ("vs
+    /// Aug 1–30") instead of a bare percentage.
+    period: PeriodMeta,
+    /// The equivalent immediately-preceding window's headline metrics, for
+    /// the Analytics tile's delta chip (dagK grow-deltas, 2026-09-26: neither
+    /// this route nor the connector one used to return a prior-period figure
+    /// at all, so Reach could only ever show a snapshot). `None` when this
+    /// project's entire recorded history sits inside the CURRENT window —
+    /// there is no prior period to compare against yet, which the UI must
+    /// render as "no prior period", never as a fabricated zero.
+    previous_period: Option<PreviousPeriod>,
+}
+
+/// See [`FirstPartyStats::period`].
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PeriodMeta {
+    /// RFC-3339 UTC instant the current window starts (inclusive).
+    start: String,
+    /// RFC-3339 UTC instant the current window ends (exclusive — ~now).
+    end: String,
+    /// The window length in days. Mirrors `period_days`, repeated here so a
+    /// caller reading only `period` still has it.
+    days: u32,
+}
+
+/// See [`FirstPartyStats::previous_period`].
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PreviousPeriod {
+    pageviews: i64,
+    device_signatures: i64,
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -798,6 +830,82 @@ async fn has_any_events(pool: &Pool<Sqlite>, project_id: &str) -> bool {
     .await
     .map(|n| n > 0)
     .unwrap_or(false)
+}
+
+/// `[start, end)` for the current window (ending at `now`) and the equivalent
+/// immediately-preceding window of the same length.
+///
+/// Both are computed in UTC with a fixed-duration day count — `chrono::Duration`,
+/// never a calendar month — so a window that spans a local DST transition or a
+/// month boundary still shifts by exactly the number of days it covers, rather
+/// than drifting by an hour or landing on the wrong day. `now` is a parameter
+/// so this is unit-tested without depending on the wall clock.
+pub(crate) fn period_and_previous_window(
+    now: chrono::DateTime<chrono::Utc>,
+    days: u32,
+) -> (
+    (chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>),
+    (chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>),
+) {
+    let end = now;
+    let start = end - chrono::Duration::days(days as i64);
+    // The previous window ends exactly where the current one starts, so the
+    // two windows tile the timeline with no gap and no overlap.
+    let previous_end = start;
+    let previous_start = previous_end - chrono::Duration::days(days as i64);
+    ((start, end), (previous_start, previous_end))
+}
+
+/// The previous window's pageviews and device signatures, or `None` when the
+/// project has no event recorded before the CURRENT period even started —
+/// there is genuinely no prior period yet (e.g. analytics went live inside
+/// this same window), which is a different, honester state than "the prior
+/// period was quiet" (a real, countable zero). Bot rows are excluded on the
+/// same `includeBots` toggle as every other figure this route returns.
+async fn previous_period_stats(
+    pool: &Pool<Sqlite>,
+    project_id: &str,
+    previous_start: chrono::DateTime<chrono::Utc>,
+    previous_end: chrono::DateTime<chrono::Utc>,
+    including_bots: bool,
+) -> Option<PreviousPeriod> {
+    // Fixed fragment chosen from two literals, never user input — same
+    // pattern as `bot_filter` throughout this file.
+    let bot_filter = if including_bots {
+        ""
+    } else {
+        " AND is_bot = 0"
+    };
+    let has_prior_history: bool = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(format!(
+        "SELECT count(*) FROM analytics_events
+          WHERE project_id = ?1 AND created_at < ?2{bot_filter} LIMIT 1"
+    )))
+    .bind(project_id)
+    .bind(previous_end.to_rfc3339())
+    .fetch_one(pool)
+    .await
+    .map(|n| n > 0)
+    .unwrap_or(false);
+    if !has_prior_history {
+        return None;
+    }
+
+    let (pageviews, device_signatures): (i64, i64) = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT coalesce(sum(kind = 'pageview'), 0),
+                count(DISTINCT CASE WHEN kind = 'pageview' THEN visitor_hash END)
+           FROM analytics_events
+          WHERE project_id = ?1 AND created_at >= ?2 AND created_at < ?3{bot_filter}"
+    )))
+    .bind(project_id)
+    .bind(previous_start.to_rfc3339())
+    .bind(previous_end.to_rfc3339())
+    .fetch_one(pool)
+    .await
+    .unwrap_or((0, 0));
+    Some(PreviousPeriod {
+        pageviews,
+        device_signatures,
+    })
 }
 
 // ── Protected handlers ───────────────────────────────────────────────────────
@@ -1368,6 +1476,9 @@ async fn first_party_stats(
     let enabled = config.is_some();
     let days = q.days.unwrap_or(30).clamp(1, 365);
     let since = format!("-{days} days");
+    let now = chrono::Utc::now();
+    let ((period_start, _period_end), (previous_start, previous_end)) =
+        period_and_previous_window(now, days);
 
     // Bots are excluded from EVERY figure by default. On a site with 50
     // prerendered SEO pages, crawler traffic is a large share of all requests
@@ -1666,6 +1777,24 @@ async fn first_party_stats(
     // and a growing backlog looked identical from the UI.
     let last_drain_at = config.as_ref().and_then(|c| c.last_drain_at.clone());
     let drain_lag = config.as_ref().and_then(drain_lag_events);
+
+    // Period-over-period delta (dagK grow-deltas, 2026-09-26): computed from
+    // the same `analytics_events` table with the window shifted back by its
+    // own length — never a second, differently-shaped query, and never
+    // fabricated when there is nothing to shift back into.
+    let previous_period = previous_period_stats(
+        &pool,
+        &project.id,
+        previous_start,
+        previous_end,
+        including_bots,
+    )
+    .await;
+    let period = PeriodMeta {
+        start: period_start.to_rfc3339(),
+        end: now.to_rfc3339(),
+        days,
+    };
     Ok(Json(FirstPartyStats {
         enabled,
         receiving,
@@ -1691,6 +1820,8 @@ async fn first_party_stats(
         bounce_rate,
         pages_per_session,
         top_entry_pages,
+        period,
+        previous_period,
     }))
 }
 
@@ -2193,6 +2324,53 @@ mod tests {
         );
         // Not a URL: pass through untouched so the request fails loudly.
         assert_eq!(strip_cursor_params("not a url"), "not a url");
+    }
+
+    // ── Period-over-period window math (dagK grow-deltas, 2026-09-26) ────────
+    //
+    // Pure — no DB, no clock — so the arithmetic behind the Analytics delta
+    // chip is pinned directly rather than only through a seeded-rows round
+    // trip. `chrono::Duration::days` is fixed-length, so neither a local DST
+    // transition nor a short month can shift these windows by anything other
+    // than exactly `days`.
+
+    #[test]
+    fn period_and_previous_window_tiles_with_no_gap_or_overlap() {
+        use chrono::TimeZone;
+        // 2026-03-08 is a US "spring forward" DST date; the function works in
+        // UTC throughout, so that transition must not perturb the math.
+        let now = chrono::Utc.with_ymd_and_hms(2026, 3, 8, 12, 0, 0).unwrap();
+        let ((start, end), (prev_start, prev_end)) = period_and_previous_window(now, 30);
+        assert_eq!(end, now);
+        assert_eq!(end - start, chrono::Duration::days(30));
+        assert_eq!(
+            prev_end, start,
+            "the previous window must end exactly where the current one starts \
+             — no gap, no overlap"
+        );
+        assert_eq!(prev_end - prev_start, chrono::Duration::days(30));
+    }
+
+    #[test]
+    fn period_and_previous_window_crosses_a_month_boundary_cleanly() {
+        use chrono::TimeZone;
+        let now = chrono::Utc.with_ymd_and_hms(2026, 3, 1, 0, 0, 0).unwrap();
+        let ((start, _end), (prev_start, prev_end)) = period_and_previous_window(now, 7);
+        // Mar 1 minus 7 days is Feb 22; the previous window's start is
+        // another 7 days back, Feb 15 — crossing clean from March into
+        // February with no drift.
+        assert_eq!(
+            start.date_naive(),
+            chrono::NaiveDate::from_ymd_opt(2026, 2, 22).unwrap()
+        );
+        assert_eq!(
+            prev_end.date_naive(),
+            chrono::NaiveDate::from_ymd_opt(2026, 2, 22).unwrap()
+        );
+        assert_eq!(
+            prev_start.date_naive(),
+            chrono::NaiveDate::from_ymd_opt(2026, 2, 15).unwrap()
+        );
     }
 
     async fn request(
@@ -2969,6 +3147,12 @@ mod tests {
         assert_eq!(stats["enabled"], serde_json::json!(false));
         assert_eq!(stats["receiving"], serde_json::json!(false));
         assert_eq!(stats["pageviews"], serde_json::json!(0));
+        // A project with no events at all has no prior period to compare
+        // against — null, never a fabricated zero (or a fabricated "flat").
+        assert_eq!(stats["previousPeriod"], serde_json::json!(null));
+        assert_eq!(stats["period"]["days"], serde_json::json!(30));
+        assert!(stats["period"]["start"].as_str().is_some());
+        assert!(stats["period"]["end"].as_str().is_some());
 
         // Unknown project 404s.
         let (status, _) = request(
@@ -3310,5 +3494,150 @@ mod tests {
         // A GROUP BY name would report 1 here and a 100% conversion rate.
         assert_eq!(f["steps"][1]["sessions"], serde_json::json!(0));
         assert_eq!(f["conversionRate"], serde_json::json!(0.0));
+    }
+
+    /// The stats route's `previousPeriod`, seeded with real rows: a pageview
+    /// inside the CURRENT window, one inside the equivalent PRECEDING window,
+    /// and one older still that must not leak into either — the shifted
+    /// window has to be bounded on both sides, not "everything before now".
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn previous_period_is_the_bounded_prior_window_not_all_of_history() {
+        let root = crate::test_support::test_root();
+        let home = tempfile::tempdir().unwrap();
+        let _guard = env_lock::lock_env([
+            ("HOME", Some(home.path().to_str().unwrap())),
+            ("PERMAGENT_PATH_ROOT", Some(root.to_str().unwrap())),
+        ]);
+        let (app, _collect_app, pool, _state) = test_app().await;
+        let project = seed_project(&pool, "fp-previous-period").await;
+        let now = chrono::Utc::now();
+
+        // Current window (?days=7): 2 days ago.
+        insert_event(
+            &pool,
+            &project.id,
+            "pageview",
+            "/pricing",
+            None,
+            Some("s-now"),
+            "v-now",
+            &now_minus(now, chrono::Duration::days(2)),
+            0,
+        )
+        .await;
+        // Previous window (7–14 days ago): 10 days ago.
+        insert_event(
+            &pool,
+            &project.id,
+            "pageview",
+            "/pricing",
+            None,
+            Some("s-prev"),
+            "v-prev",
+            &now_minus(now, chrono::Duration::days(10)),
+            0,
+        )
+        .await;
+        // Older than the previous window entirely: 40 days ago. Must not be
+        // counted as "previous" — that would be reporting all-time history
+        // relabeled as one window, not the equivalent preceding period.
+        insert_event(
+            &pool,
+            &project.id,
+            "pageview",
+            "/pricing",
+            None,
+            Some("s-old"),
+            "v-old",
+            &now_minus(now, chrono::Duration::days(40)),
+            0,
+        )
+        .await;
+
+        let (status, stats) = request(
+            &app,
+            "GET",
+            &format!(
+                "/api/projects/{}/analytics/first_party/stats?days=7",
+                project.id
+            ),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            stats["pageviews"],
+            serde_json::json!(1),
+            "only the 2-days-ago row is in the current 7-day window"
+        );
+        assert_eq!(stats["period"]["days"], serde_json::json!(7));
+        let previous = &stats["previousPeriod"];
+        assert!(
+            !previous.is_null(),
+            "history exists before this window, so a previous period must be reported"
+        );
+        assert_eq!(
+            previous["pageviews"],
+            serde_json::json!(1),
+            "only the 10-days-ago row falls in the 7-14-days-ago previous window; \
+             the 40-days-ago row must not leak in: {stats}"
+        );
+        assert_eq!(previous["deviceSignatures"], serde_json::json!(1));
+    }
+
+    /// A project whose entire recorded history sits inside the current window
+    /// has no prior period to compare against — `null`, distinct from a
+    /// previous period that genuinely had zero traffic.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn previous_period_is_null_when_all_history_is_inside_the_current_window() {
+        let root = crate::test_support::test_root();
+        let home = tempfile::tempdir().unwrap();
+        let _guard = env_lock::lock_env([
+            ("HOME", Some(home.path().to_str().unwrap())),
+            ("PERMAGENT_PATH_ROOT", Some(root.to_str().unwrap())),
+        ]);
+        let (app, _collect_app, pool, _state) = test_app().await;
+        let project = seed_project(&pool, "fp-previous-period-none").await;
+        let now = chrono::Utc::now();
+
+        insert_event(
+            &pool,
+            &project.id,
+            "pageview",
+            "/pricing",
+            None,
+            Some("s-now"),
+            "v-now",
+            &now_minus(now, chrono::Duration::days(2)),
+            0,
+        )
+        .await;
+
+        let (status, stats) = request(
+            &app,
+            "GET",
+            &format!(
+                "/api/projects/{}/analytics/first_party/stats?days=7",
+                project.id
+            ),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(stats["pageviews"], serde_json::json!(1));
+        assert_eq!(
+            stats["previousPeriod"],
+            serde_json::json!(null),
+            "no event predates this window, so there is no prior period yet: {stats}"
+        );
+    }
+
+    /// RFC-3339 timestamp `offset` before `now`, in the same millisecond
+    /// format [`stamp`] uses — kept separate from `stamp` because these tests
+    /// need an arbitrary `Duration` offset, not a small integer seconds count.
+    fn now_minus(now: chrono::DateTime<chrono::Utc>, offset: chrono::Duration) -> String {
+        (now - offset).format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()
     }
 }

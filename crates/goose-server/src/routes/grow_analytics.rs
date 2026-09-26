@@ -19,9 +19,9 @@
 //! Auth: bearer-token middleware (merged into the protected group).
 
 use crate::analytics::{
-    api_key_secret_key, connection_from_metadata, fetch_stats, normalize_base_url,
-    validate_connection, AnalyticsConnection, AnalyticsError, AnalyticsProvider, StatsPeriod,
-    METADATA_KEY,
+    api_key_secret_key, connection_from_metadata, fetch_stats, fetch_stats_for_window,
+    normalize_base_url, validate_connection, AnalyticsConnection, AnalyticsError,
+    AnalyticsProvider, StatsPeriod, METADATA_KEY,
 };
 use crate::state::AppState;
 use axum::{
@@ -96,6 +96,31 @@ struct TestConnectionResponse {
     error: Option<String>,
 }
 
+/// The window `visitors`/`pageviews` cover — mirrors `PeriodMeta` in
+/// `routes::first_party_analytics`, the self-hosted stats route's equivalent.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PeriodMeta {
+    /// `YYYY-MM-DD`, inclusive.
+    start: String,
+    /// `YYYY-MM-DD`, inclusive (unlike the first-party route's RFC-3339
+    /// instants, the connector only ever deals in whole provider-side days).
+    end: String,
+    days: u32,
+}
+
+/// The equivalent immediately-preceding window's headline metrics, for the
+/// Analytics tile's delta chip. `None` whenever there is nothing honest to
+/// report — not connected, the current fetch itself failed (nothing to
+/// compare against), or the shifted-window fetch failed — never a fabricated
+/// number standing in for a real one.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PreviousPeriodStats {
+    visitors: Option<u64>,
+    pageviews: Option<u64>,
+}
+
 /// Stats for the funnel/tiles. Fetch failures (provider down, bad key,
 /// sovereign refusal) are expected states the UI must render honestly, so
 /// they ride a 200 with `error` set rather than an opaque 5xx.
@@ -108,6 +133,9 @@ struct StatsResponse {
     visitors: Option<u64>,
     pageviews: Option<u64>,
     error: Option<String>,
+    /// `None` only when `connected` is `false` — there is no window to name.
+    period: Option<PeriodMeta>,
+    previous_period: Option<PreviousPeriodStats>,
 }
 
 impl StatsResponse {
@@ -119,6 +147,8 @@ impl StatsResponse {
             visitors: None,
             pageviews: None,
             error: None,
+            period: None,
+            previous_period: None,
         }
     }
 }
@@ -337,12 +367,47 @@ async fn get_stats(
         return Ok(Json(StatsResponse::not_connected()));
     };
     let provider = Some(conn.provider);
+    let key = stored_api_key(&project.id);
 
-    let fetched = match stored_api_key(&project.id) {
+    let today = chrono::Utc::now().date_naive();
+    let period_start = today - chrono::Duration::days(period.days() as i64);
+    let period_meta = PeriodMeta {
+        start: period_start.to_string(),
+        end: today.to_string(),
+        days: period.days(),
+    };
+
+    let fetched = match &key {
         None => Err(AnalyticsError::InvalidConfig(
             "no API key stored — reconnect analytics".to_string(),
         )),
-        Some(key) => fetch_stats(http_client(), &conn, &key, period).await,
+        Some(key) => fetch_stats(http_client(), &conn, key, period).await,
+    };
+
+    // Period-over-period delta (dagK grow-deltas, 2026-09-26): only worth
+    // asking for once the current fetch itself succeeded — with no current
+    // figure there is nothing to compare it against, and a second, unrelated
+    // failure would only muddy the one `error` this response carries. Any
+    // failure on the shifted-window fetch collapses to `None`: it is a SECOND
+    // network round-trip to the same provider, and it must never turn an
+    // otherwise-successful stats fetch into an error response, nor stand in a
+    // fabricated number for the one that failed.
+    let previous_period = if fetched.is_ok() {
+        match &key {
+            Some(key) => {
+                let (prev_start, prev_end) = crate::analytics::previous_window(period, today);
+                fetch_stats_for_window(http_client(), &conn, key, prev_start, prev_end)
+                    .await
+                    .ok()
+                    .map(|s| PreviousPeriodStats {
+                        visitors: s.visitors,
+                        pageviews: s.pageviews,
+                    })
+            }
+            None => None,
+        }
+    } else {
+        None
     };
 
     Ok(Json(match fetched {
@@ -353,6 +418,8 @@ async fn get_stats(
             visitors: stats.visitors,
             pageviews: stats.pageviews,
             error: None,
+            period: Some(period_meta),
+            previous_period,
         },
         Err(e) => StatsResponse {
             connected: true,
@@ -361,6 +428,8 @@ async fn get_stats(
             visitors: None,
             pageviews: None,
             error: Some(e.to_string()),
+            period: Some(period_meta),
+            previous_period: None,
         },
     }))
 }
@@ -694,5 +763,148 @@ mod tests {
         let (status, _) = request(&app, "DELETE", &conn_uri, None).await;
         assert_eq!(status, StatusCode::OK);
         permagent::sovereignty::invalidate_global_mode_cache();
+    }
+
+    /// End-to-end through the real route: a successful current-period fetch
+    /// also carries `period` metadata and a `previousPeriod` fetched from the
+    /// equivalent shifted window (dagK grow-deltas, 2026-09-26).
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn stats_route_reports_period_and_previous_period_on_success() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let root = crate::test_support::test_root();
+        let home = tempfile::tempdir().unwrap();
+        let _guard = env_lock::lock_env([
+            ("HOME", Some(home.path().to_str().unwrap())),
+            ("PERMAGENT_PATH_ROOT", Some(root.to_str().unwrap())),
+            ("SOVEREIGN_MODE", Some("false")),
+        ]);
+        permagent::sovereignty::invalidate_global_mode_cache();
+        let (app, pool) = test_app().await;
+        let project = seed_project(&pool, "PeriodDelta").await;
+
+        let server = MockServer::start().await;
+        // Current period: the ordinary `period=30d` request `fetch_stats` sends.
+        Mock::given(method("GET"))
+            .and(path("/api/v1/stats/aggregate"))
+            .and(query_param("period", "30d"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"results":{"visitors":{"value":100},"pageviews":{"value":200}}}"#,
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+        // Previous period: the explicit shifted-range request
+        // `fetch_stats_for_window` sends, distinguished by `period=custom`.
+        Mock::given(method("GET"))
+            .and(path("/api/v1/stats/aggregate"))
+            .and(query_param("period", "custom"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"results":{"visitors":{"value":80},"pageviews":{"value":150}}}"#,
+            ))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let conn_uri = format!("/api/projects/{}/analytics/connection", project.id);
+        let (status, body) = request(
+            &app,
+            "PUT",
+            &conn_uri,
+            Some(serde_json::json!({
+                "provider": "plausible",
+                "baseUrl": server.uri(),
+                "siteId": "example.com",
+                "apiKey": "k",
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+
+        let stats_uri = format!("/api/projects/{}/analytics/stats?period=30d", project.id);
+        let (status, body) = request(&app, "GET", &stats_uri, None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["connected"], serde_json::json!(true));
+        assert_eq!(body["visitors"], serde_json::json!(100));
+        assert_eq!(body["pageviews"], serde_json::json!(200));
+        assert_eq!(body["error"], serde_json::json!(null));
+        assert_eq!(body["period"]["days"], serde_json::json!(30));
+        assert!(body["period"]["start"].as_str().is_some());
+        assert!(body["period"]["end"].as_str().is_some());
+        let previous = &body["previousPeriod"];
+        assert_eq!(
+            previous["visitors"],
+            serde_json::json!(80),
+            "unexpected body: {body}"
+        );
+        assert_eq!(previous["pageviews"], serde_json::json!(150));
+    }
+
+    /// A provider that only answers the current-period request (no mock for
+    /// the shifted one) must still return the current figures — the second
+    /// call is best-effort and its absence/failure must not fail the whole
+    /// response, only leave `previousPeriod` null.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn previous_period_failure_never_fails_the_current_stats() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let root = crate::test_support::test_root();
+        let home = tempfile::tempdir().unwrap();
+        let _guard = env_lock::lock_env([
+            ("HOME", Some(home.path().to_str().unwrap())),
+            ("PERMAGENT_PATH_ROOT", Some(root.to_str().unwrap())),
+            ("SOVEREIGN_MODE", Some("false")),
+        ]);
+        permagent::sovereignty::invalidate_global_mode_cache();
+        let (app, pool) = test_app().await;
+        let project = seed_project(&pool, "PeriodDeltaPartial").await;
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/stats/aggregate"))
+            .and(query_param("period", "30d"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"results":{"visitors":{"value":10},"pageviews":{"value":20}}}"#,
+            ))
+            .mount(&server)
+            .await;
+        // No mock for `period=custom` — wiremock 404s it, which
+        // `fetch_stats_for_window` must turn into a plain `None`, not an
+        // error response for the whole route.
+        Mock::given(method("GET"))
+            .and(path("/api/v1/stats/aggregate"))
+            .and(query_param("period", "custom"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
+        let conn_uri = format!("/api/projects/{}/analytics/connection", project.id);
+        request(
+            &app,
+            "PUT",
+            &conn_uri,
+            Some(serde_json::json!({
+                "provider": "plausible",
+                "baseUrl": server.uri(),
+                "siteId": "example.com",
+                "apiKey": "k",
+            })),
+        )
+        .await;
+
+        let stats_uri = format!("/api/projects/{}/analytics/stats?period=30d", project.id);
+        let (status, body) = request(&app, "GET", &stats_uri, None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["visitors"], serde_json::json!(10));
+        assert_eq!(body["error"], serde_json::json!(null));
+        assert_eq!(
+            body["previousPeriod"],
+            serde_json::json!(null),
+            "a failed shifted-window fetch must not be fabricated: {body}"
+        );
     }
 }

@@ -13,6 +13,7 @@
 //!   DELETE /api/projects/:project_id/cards/:card_id        — Hard delete card
 //!   POST   /api/projects/:project_id/cards/:card_id/cancel — Cancel a goal (kills worker, terminal)
 //!   POST   /api/projects/:project_id/cards/reorder         — Batch reorder cards
+//!   POST   /api/projects/:project_id/cards/:card_id/publish/retry — Retry a failed publish (postStatus publish_failed only)
 //!
 //! Dated to-dos, for the dashboard's cross-project due list:
 //!   GET    /api/cards/due                                       — Every dated, unfinished to-do, soonest first
@@ -952,6 +953,28 @@ async fn approve_social_post_handler(
     Ok(Json(CardResponse::from(card)))
 }
 
+/// Retry a publish that previously failed (`postStatus === "publish_failed"`).
+/// Same submission path `/approve` uses; refused (400) for any other status,
+/// same as `/approve` refusing anything but `draft`.
+async fn retry_publish_handler(
+    State(state): State<Arc<AppState>>,
+    Path((project_id, card_id)): Path<(String, String)>,
+) -> Result<Json<CardResponse>, (StatusCode, String)> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let project = projects::get_project_by_id_or_slug(&pool, &project_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or((StatusCode::NOT_FOUND, "Project not found".to_string()))?;
+    let card = grow_media::retry_publish(&pool, &project.id, &card_id)
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(CardResponse::from(card)))
+}
+
 async fn retry_social_media_handler(
     State(state): State<Arc<AppState>>,
     Path((project_id, card_id)): Path<(String, String)>,
@@ -1059,6 +1082,10 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route(
             "/api/projects/{project_id}/cards/{card_id}/approve",
             post(approve_social_post_handler),
+        )
+        .route(
+            "/api/projects/{project_id}/cards/{card_id}/publish/retry",
+            post(retry_publish_handler),
         )
         .route(
             "/api/projects/{project_id}/cards/{card_id}/media/retry",

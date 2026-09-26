@@ -10,7 +10,9 @@ import type { CSSProperties } from 'react';
 import { font, radius, space, textSize } from '../../styles/tokens';
 import type { ThemeColors } from '../../styles/tokens';
 import { apiFetch } from '../../lib/api';
+import { AnimatedNumber } from '../common/AnimatedNumber';
 import { Button } from '../common/Button';
+import { Chip } from '../common/Chip';
 import type { Project } from '../projects/types';
 import { FunnelPanel } from './FunnelPanel';
 import { growCard, growLabel } from './growChrome';
@@ -26,6 +28,44 @@ import {
   type FirstPartyStats,
   type LoadState,
 } from './growTypes';
+
+/**
+ * Period-over-period comparison for one headline figure (dagK grow-deltas,
+ * 2026-09-26). `direction: 'unknown'` — never a fabricated 'flat' — is what a
+ * missing `previous` (no prior period, or nothing live yet) must produce; a
+ * `previous` of exactly 0 has no percentage form (division by zero), so `pct`
+ * stays null there even though the direction ('up', since anything beats
+ * zero) is still known.
+ */
+export interface DeltaResult {
+  direction: 'up' | 'down' | 'flat' | 'unknown';
+  pct: number | null;
+}
+
+export function computeDelta(current: number | null, previous: number | null | undefined): DeltaResult {
+  if (current == null || previous == null) return { direction: 'unknown', pct: null };
+  if (current === previous) return { direction: 'flat', pct: 0 };
+  const direction = current > previous ? 'up' : 'down';
+  if (previous === 0) return { direction, pct: null };
+  return { direction, pct: ((current - previous) / previous) * 100 };
+}
+
+/** The delta chip's label and tone — one function, so a tile never disagrees
+ *  with its own arithmetic (R5: one state vocabulary per concept). */
+function deltaChipText(delta: DeltaResult): string {
+  if (delta.direction === 'unknown') return 'no prior period';
+  if (delta.direction === 'flat') return 'flat vs prior period';
+  const arrow = delta.direction === 'up' ? '▲' : '▼';
+  if (delta.pct == null) return `${arrow} new`;
+  const rounded = Math.round(Math.abs(delta.pct));
+  return `${arrow} ${rounded}%`;
+}
+
+function deltaChipTone(delta: DeltaResult): 'success' | 'danger' | 'neutral' {
+  if (delta.direction === 'up') return 'success';
+  if (delta.direction === 'down') return 'danger';
+  return 'neutral';
+}
 
 // ── Analytics lens — growth funnel + metric tiles ────────────────────────────
 //
@@ -191,16 +231,23 @@ export function GrowAnalytics({
   // the metric that answers "is this working", push setup/config metrics
   // below it. Reach is the one number here backed by a live source; the other
   // three either restate what the user already knows (posts published) or are
-  // permanently "—" until a provider goal or channel is configured. A
-  // period-over-period delta ("+12% vs last 30d") belongs beside Reach too,
-  // but neither `AnalyticsStatsData` nor the first-party stats route returns a
-  // prior-period figure yet — faking one would violate the "never faked" rule
-  // in the banner above, so it's left out rather than invented. Flagged for
-  // Flagged for follow-up: add a `previousPeriod` field to both stats routes so this can lead
-  // with a real trend, not just a snapshot.
+  // permanently "—" until a provider goal or channel is configured.
+  //
+  // Period-over-period delta (dagK grow-deltas, 2026-09-26): both stats
+  // routes now return `previousPeriod` — the equivalent preceding window,
+  // computed server-side from the same tables/provider, `null` when there is
+  // genuinely no prior period rather than a faked flat 0%. Read from whichever
+  // source is live, same as `pageviews` itself just above.
+  const previousPageviews = fpLive
+    ? (fpStats?.previousPeriod?.pageviews ?? null)
+    : connected
+      ? (stats?.previousPeriod?.pageviews ?? null)
+      : null;
+  const reachDelta = computeDelta(pageviews, previousPageviews);
+  const periodDays = fpLive ? (fpStats?.period.days ?? null) : connected ? (stats?.periodDays ?? null) : null;
   const leadTile = {
     label: 'REACH (30D)',
-    value: pageviews != null ? pageviews.toLocaleString() : '—',
+    value: pageviews,
     sub: pageviews != null
       ? `pageviews · ${fpLive ? 'self-hosted' : providerLabel}`
       : liveHint(`not exposed by ${providerLabel}`, 'awaiting analytics'),
@@ -313,7 +360,25 @@ export function GrowAnalytics({
           first (UX_BENCHMARK_RESEARCH §8). The setup/config tiles follow at
           the previous size. */}
       <div data-testid="metric-tile-lead" style={{ ...growCard(colors, { r: CARD_R, pad: CARD_PAD }), marginBottom: space.xl }}>
-        <div style={{ fontFamily: font.display, fontSize: textSize.heading, fontWeight: 700, color: colors.text, fontVariantNumeric: 'tabular-nums' }}>{leadTile.value}</div>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: space.md, flexWrap: 'wrap' }}>
+          <div style={{ fontFamily: font.display, fontSize: textSize.heading, fontWeight: 700, color: colors.text, fontVariantNumeric: 'tabular-nums' }}>
+            {leadTile.value != null ? <AnimatedNumber value={leadTile.value} /> : '—'}
+          </div>
+          {/* R8/R6: the one live number gets a delta, honestly — "no prior
+              period" muted rather than a fabricated flat 0% (dagK grow-deltas,
+              2026-09-26). */}
+          {leadTile.value != null && (
+            <Chip
+              kind="count"
+              tone={deltaChipTone(reachDelta)}
+              quiet={reachDelta.direction === 'unknown'}
+              data-testid="reach-delta"
+              title={periodDays ? `vs the prior ${periodDays}-day period` : undefined}
+            >
+              {deltaChipText(reachDelta)}
+            </Chip>
+          )}
+        </div>
         <div style={{ ...growLabel(colors), marginTop: space.xs }}>{leadTile.label}</div>
         <div style={{ fontSize: textSize.caption, color: colors.textDim, marginTop: space.xs / 2 }}>{leadTile.sub}</div>
       </div>
