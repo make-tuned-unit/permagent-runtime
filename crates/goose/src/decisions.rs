@@ -3269,7 +3269,8 @@ pub fn summarize_decision(
                     "The goal stopped making progress after a spending check.".to_string()
                 }
                 (_, Some(UnblockCause::NoProgress)) => {
-                    "Two attempts in a row changed nothing, so it was stopped before spending more.".to_string()
+                    "Two attempts in a row changed nothing, so it was stopped before spending more."
+                        .to_string()
                 }
                 ("attempt_cap", None) => match cap {
                     Some(c) => format!(

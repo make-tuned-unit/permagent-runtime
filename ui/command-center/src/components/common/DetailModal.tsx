@@ -323,6 +323,7 @@ export function DetailModal({
                 one control every modal in the app ships was the cursor. */}
             <button
               className="pa-btn"
+              aria-label="Close"
               onClick={onClose}
               style={{
                 '--pa-btn-fg': colors.textMuted,

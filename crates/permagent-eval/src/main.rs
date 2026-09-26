@@ -2709,6 +2709,20 @@ fn cmd_regrade(args: RegradeArgs) -> Result<()> {
                 continue;
             }
             examined += 1;
+            // A judge failure or timeout produced no task verdict. Regrading
+            // provider availability must not turn missing evidence into a fail.
+            let category = task.get("category").and_then(|v| v.as_str()).unwrap_or("");
+            let oracle_exit = task
+                .get("oracle_exit")
+                .and_then(|v| v.as_i64())
+                .and_then(|exit| i32::try_from(exit).ok());
+            if task.get("oracle_timed_out").and_then(|v| v.as_bool()) == Some(true)
+                || oracle_exit.is_none()
+                || permagent_eval::swebench::is_judge_infra_exit(category, oracle_exit)
+            {
+                kept_errored += 1;
+                continue;
+            }
             let task_id = task
                 .get("task_id")
                 .and_then(|v| v.as_str())
@@ -4339,6 +4353,42 @@ nodes:
     /// with `oracle_exit: 0` promotes to `pass`, a marker naming the tier's
     /// own provider stays `errored`, and a non-tier-provider marker with a
     /// nonzero `oracle_exit` promotes to `fail`.
+    #[test]
+    fn regrade_preserves_missing_judge_verdicts() {
+        let dir = tempfile::tempdir().unwrap();
+        let runs_dir = dir.path().join("runs");
+        let mut tasks = Vec::new();
+        for id in ["infra", "timeout", "missing-exit"] {
+            regrade_write_run_dir(&runs_dir, "dschat", id, 1, "", None);
+            let mut task = regrade_errored_task_json(id, 2);
+            task["category"] = serde_json::json!("swe-bench");
+            task["note"] = serde_json::json!("judge did not produce a verdict");
+            if id == "timeout" {
+                task["oracle_timed_out"] = serde_json::json!(true);
+                task["oracle_exit"] = serde_json::json!(0);
+            } else if id == "missing-exit" {
+                task["oracle_exit"] = serde_json::Value::Null;
+            }
+            tasks.push(task);
+        }
+        let record = dir.path().join("before.json");
+        let out = dir.path().join("after.json");
+        fs::write(
+            &record,
+            serde_json::to_vec(&regrade_record_json(tasks.clone())).unwrap(),
+        )
+        .unwrap();
+        cmd_regrade(RegradeArgs {
+            record,
+            runs_dir,
+            tier: "dschat".to_string(),
+            out: out.clone(),
+        })
+        .unwrap();
+        let actual: serde_json::Value = serde_json::from_slice(&fs::read(out).unwrap()).unwrap();
+        assert_eq!(actual["tiers"][0]["tasks"], serde_json::json!(tasks));
+    }
+
     #[test]
     fn regrade_applies_the_k15_rule_from_existing_run_dirs() {
         let dir = tempfile::tempdir().unwrap();

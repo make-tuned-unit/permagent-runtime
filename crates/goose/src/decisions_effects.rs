@@ -442,6 +442,9 @@ async fn apply_check_approval(
         serde_json::json!(false),
     );
     patch.insert("budget".to_string(), serde_json::Value::Object(budget));
+    // Human command approval explicitly resumes the parked goal. Clear the
+    // stale breaker state so dispatch can actually retry the approved check.
+    goal_transition::clear_zero_progress_on_human_unblock(&mut patch, acted_by);
     goal_transition::advance_goal_checked(
         pool,
         goal_id,
@@ -3544,6 +3547,87 @@ mod tests {
         )
         .await
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn command_approval_clears_the_parked_goals_progress_breaker() {
+        let pool = test_pool().await;
+        crate::cards::seed_goal_columns(&pool, PERSONAL_PROJECT_ID)
+            .await
+            .unwrap();
+        let col = crate::cards::get_goal_column(&pool, PERSONAL_PROJECT_ID, "parked")
+            .await
+            .unwrap()
+            .unwrap();
+        let goal = crate::cards::create_card(
+            &pool,
+            crate::cards::CreateCard {
+                project_id: PERSONAL_PROJECT_ID.to_string(),
+                title: "Run an approved check".to_string(),
+                description: Some("Retry after command approval".to_string()),
+                card_type: Some("goal".to_string()),
+                column_id: Some(col.id),
+                created_by: None,
+                metadata_json: Some(serde_json::json!({
+                    "goal_state": "parked", "attempt_count": 2,
+                    (goal_transition::ZERO_PROGRESS_STREAK_METADATA_KEY): 2,
+                    (goal_transition::ZERO_PROGRESS_ESCALATION_USED_METADATA_KEY): true,
+                    "zero_progress": {"streak": 2}
+                })),
+            },
+        )
+        .await
+        .unwrap();
+        let decision = decisions::create_decision(&pool, NewDecision {
+            kind: "choice".to_string(), goal_id: Some(goal.id.clone()),
+            project_id: Some(PERSONAL_PROJECT_ID.to_string()),
+            headline: Some("Allow this check?".to_string()),
+            payload: serde_json::json!({
+                "question": "Allow this check?",
+                "proposal": decisions::PROPOSAL_CHECK_APPROVAL,
+                "options": [
+                    {"id": decisions::CHECK_APPROVAL_ONCE, "label": "Allow once"},
+                    {"id": decisions::CHECK_APPROVAL_DENY, "label": "Deny"}
+                ],
+                "check_approval": {
+                    "command": "cargo test", "cwd": "/tmp", "first_token": "cargo",
+                    "reason": "Needs approval", "tier": "user", "project_id": PERSONAL_PROJECT_ID
+                }
+            }), ..Default::default()
+        }).await.unwrap();
+        let (decision, proof) = decisions::answer_decision(
+            &pool,
+            &decision.id,
+            &DecisionAnswer {
+                answer: "choice".to_string(),
+                choice_id: Some(decisions::CHECK_APPROVAL_ONCE.to_string()),
+                ..Default::default()
+            },
+            ACTOR_JESSE,
+        )
+        .await
+        .unwrap();
+        apply_decision_effect(&pool, &decision, proof, "choice")
+            .await
+            .unwrap();
+        assert_eq!(goal_state_of(&pool, &goal.id).await, "ready");
+        let resumed = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap();
+        for key in [
+            goal_transition::ZERO_PROGRESS_STREAK_METADATA_KEY,
+            goal_transition::ZERO_PROGRESS_ESCALATION_USED_METADATA_KEY,
+            "zero_progress",
+        ] {
+            assert!(
+                resumed
+                    .metadata_json
+                    .get(key)
+                    .is_none_or(serde_json::Value::is_null),
+                "{key}"
+            );
+        }
     }
 
     #[tokio::test]
