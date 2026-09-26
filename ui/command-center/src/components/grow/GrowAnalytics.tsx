@@ -196,7 +196,7 @@ export function GrowAnalytics({
   // but neither `AnalyticsStatsData` nor the first-party stats route returns a
   // prior-period figure yet — faking one would violate the "never faked" rule
   // in the banner above, so it's left out rather than invented. Flagged for
-  // Jesse: add a `previousPeriod` field to both stats routes so this can lead
+  // Flagged for follow-up: add a `previousPeriod` field to both stats routes so this can lead
   // with a real trend, not just a snapshot.
   const leadTile = {
     label: 'REACH (30D)',

@@ -387,6 +387,17 @@ export function MemoryPanel({ goto: _goto }: { goto?: (key: string) => void }) {
   // removed (2026-08 finish-the-settings ruling): no backing subsystem reads
   // them. What remains is real: the Brain view, and the Librarian's nightly
   // pruning setting (on the Librarian's own page), the live retention control.
+  // The persona's own configured name — same pattern as ToolsPanel's "What
+  // your agent can use" fix: falls back to "your agent" rather than blocking
+  // the section on a slow or failed identity read. Optional-chained call
+  // (not a bare `api.getIdentity()`) so a test double that only stubs the
+  // methods it exercises doesn't crash this panel on mount.
+  const [personaName, setPersonaName] = useState<string | null>(null);
+  useEffect(() => {
+    api.getIdentity?.()
+      .then(id => { if (id.first_name?.trim()) setPersonaName(id.first_name.trim()); })
+      .catch(() => {});
+  }, []);
   return (
     <div>
       <H1 sub="What your agent remembers about you, your projects, and the people in your world.">Memory</H1>
@@ -404,9 +415,9 @@ export function MemoryPanel({ goto: _goto }: { goto?: (key: string) => void }) {
           pruning, on the Librarian&apos;s own page — the button above lands on it.
         </div>
       </Section>
-      <Section title="What Henry learns from">
+      <Section title={`What ${personaName ?? 'your agent'} learns from`}>
         <div style={{ fontSize: textSize.caption, color: colors.textMuted, marginBottom: space.md, lineHeight: 1.5 }}>
-          Every kind of thing Henry can turn into a memory, and whether it
+          Every kind of thing {personaName ?? 'your agent'} can turn into a memory, and whether it
           actually has — goals, decisions, cards, projects, meetings, growth
           actions, finance, and more. A source reading &quot;not yet&quot; has
           nothing wrong with it; it just hasn&apos;t fed anything yet.

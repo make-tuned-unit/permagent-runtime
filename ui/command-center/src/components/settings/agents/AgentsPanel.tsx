@@ -1000,8 +1000,8 @@ export function AgentsPanel({ goto }: PanelProps) {
  * previously sent the user hunting through five panes for a control they could
  * not find because the row it belonged to was filtered away.
  */
-/** Every row shows its on/off state the same way, in the same place — Jesse's
- *  1440px review: Scheduler, the Watcher and the Financier had no gate chip
+/** Every row shows its on/off state the same way, in the same place — ruling
+ *  2026-09-25's 1440px review: Scheduler, the Watcher and the Financier had no gate chip
  *  at all, so "switched on" and "has no switch" looked identical (blank).
  *  `gate: null` means the worker has no switch to flip, which is a fact worth
  *  saying — "Always on" — not a reason to render nothing. This is the ONE

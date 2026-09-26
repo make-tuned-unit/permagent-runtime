@@ -396,8 +396,8 @@ export function GoalDetailModal({
         <div style={{ display: 'flex', flexDirection: 'column', gap: space.xxl }}>
           {card.description && (
             <div>
-              {/* Benchmark follow-up (dagK, Devin plan-first pattern): Jesse's
-                  ruling — don't invent a "Plan" from data that isn't one. This
+              {/* Benchmark follow-up (dagK, Devin plan-first pattern): ruling
+                  2026-09-25 — don't invent a "Plan" from data that isn't one. This
                   IS the goal's brief, so it gets the section label the rest of
                   the modal uses; a real "Worker's plan" section (below) shows
                   only when a genuine plan artifact exists, which none does

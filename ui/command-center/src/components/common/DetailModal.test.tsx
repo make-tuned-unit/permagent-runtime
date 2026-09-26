@@ -233,3 +233,29 @@ it('gets a Tooltip (and the tabIndex=-1 stop for it) once the title is actually 
   const title = document.getElementById(dialog().getAttribute('aria-labelledby')!)!;
   expect(title.getAttribute('tabindex')).toBe('-1');
 });
+
+it('re-observes the title span after it clamps, instead of leaving the ResizeObserver watching the node the Tooltip swap detached', () => {
+  // Once `titleClamped` flips true the render swaps `titleEl` (a bare span)
+  // for `<Tooltip>{titleEl}</Tooltip>` at the SAME JSX slot — a type change,
+  // so React unmounts the original span and Tooltip mounts a fresh clone.
+  // The measuring effect must re-run and re-`observe()` that new node, or a
+  // later resize that would un-clamp the title is never seen again.
+  const observed: Element[] = [];
+  class FakeResizeObserver {
+    constructor(_cb: () => void) {}
+    observe(el: Element) { observed.push(el); }
+    disconnect() {}
+  }
+  const prevRO = (globalThis as Record<string, unknown>).ResizeObserver;
+  (globalThis as Record<string, unknown>).ResizeObserver = FakeResizeObserver;
+
+  stubEveryElementBox(40, 20); // clipped -> titleClamped flips true on mount
+  render(<button>Inside</button>);
+
+  const liveTitle = document.getElementById(dialog().getAttribute('aria-labelledby')!)!;
+  expect(observed.length, 'the effect must reattach once the span remounts under Tooltip').toBeGreaterThanOrEqual(2);
+  expect(observed[0]).not.toBe(liveTitle);
+  expect(observed[observed.length - 1], 'the most recent observe() must target the node actually in the DOM').toBe(liveTitle);
+
+  (globalThis as Record<string, unknown>).ResizeObserver = prevRO;
+});

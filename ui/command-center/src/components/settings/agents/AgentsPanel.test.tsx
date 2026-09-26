@@ -261,7 +261,7 @@ describe('AgentsPanel', () => {
 
     expect(container.querySelector('[data-testid="worker-row-strix"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="gate-chip-strix"]')?.textContent).toBe('off');
-    // Every row shows its on/off state the same way (Jesse's 1440px review,
+    // Every row shows its on/off state the same way (ruling 2026-09-25's 1440px review,
     // round 3) — a worker with no switch at all reads "Always on" rather than
     // showing nothing, which used to be indistinguishable from a daemon that
     // forgot to serialise the gate.
@@ -295,7 +295,7 @@ describe('AgentsPanel', () => {
   });
 
   /** Focuses a `live-status-<id>` pill and reads its Tooltip's content — the
-   *  raw daemon text lives ONLY there now (Jesse's 1440px review, round 3):
+   *  raw daemon text lives ONLY there now (ruling 2026-09-25's 1440px review, round 3):
    *  the chip itself shows one of five plain words, never the raw value. */
   async function liveStatusTooltip(id: string): Promise<string> {
     const pill = container.querySelector(`[data-testid="live-status-${id}"]`) as HTMLElement;
@@ -686,7 +686,7 @@ describe('AgentsPanel', () => {
     expect((empty?.textContent ?? '').toLowerCase()).not.toMatch(/\bthis agent did nothing\b/);
   });
 
-  // Jesse's 1440px review of the real daemon: worker rows were printing the
+  // Ruling 2026-09-25's 1440px review of the real daemon: worker rows were printing the
   // FULL engineering paragraph (Scheduler's guardrail internals, Git
   // Steward's config keys, ...), because the roster had no separate short
   // field. ST1 round 2: a curated/first-sentence `summary` is the row's
@@ -839,7 +839,7 @@ describe('AgentsPanel', () => {
     });
   });
 
-  // Jesse's 1440px review, round 3: (1) the status column leaked raw daemon
+  // Ruling 2026-09-25's 1440px review, round 3: (1) the status column leaked raw daemon
   // internals — mapped and gated behind a Tooltip above; (2) three workers
   // with no gate had NO on/off chip at all, which read as "we don't know",
   // not "always on"; (3) "recipe" survived into the UI via daemon-authored

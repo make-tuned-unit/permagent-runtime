@@ -6,8 +6,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import { pressable, pressableEnterOnly } from './pressable';
 
-function fakeKeyEvent(key: string) {
-  return { key, preventDefault: vi.fn() } as unknown as Parameters<ReturnType<typeof pressable>['onKeyDown']>[0];
+function fakeKeyEvent(key: string, opts: { fromChild?: boolean } = {}) {
+  const currentTarget = {};
+  const target = opts.fromChild ? {} : currentTarget;
+  return {
+    key, target, currentTarget, preventDefault: vi.fn(),
+  } as unknown as Parameters<ReturnType<typeof pressable>['onKeyDown']>[0];
 }
 
 describe('pressable', () => {
@@ -75,5 +79,27 @@ describe('pressable', () => {
     expect(onActivate).not.toHaveBeenCalled();
     props.onKeyDown(fakeKeyEvent('Enter'));
     expect(onActivate).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores a keydown that bubbled up from a nested interactive child, so it does not steal the child\'s own Enter/Space', () => {
+    const onActivate = vi.fn();
+    const props = pressable(onActivate);
+    const enter = fakeKeyEvent('Enter', { fromChild: true });
+    props.onKeyDown(enter);
+    expect(onActivate).not.toHaveBeenCalled();
+    expect(enter.preventDefault).not.toHaveBeenCalled();
+
+    const space = fakeKeyEvent(' ', { fromChild: true });
+    props.onKeyDown(space);
+    expect(onActivate).not.toHaveBeenCalled();
+    expect(space.preventDefault).not.toHaveBeenCalled();
+  });
+
+  it('pressableEnterOnly also ignores a bubbled Enter from a nested child (its own documented use case)', () => {
+    const onActivate = vi.fn();
+    const props = pressableEnterOnly(onActivate);
+    const enter = fakeKeyEvent('Enter', { fromChild: true });
+    props.onKeyDown(enter);
+    expect(onActivate).not.toHaveBeenCalled();
   });
 });
