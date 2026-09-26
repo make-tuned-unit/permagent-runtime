@@ -15,7 +15,15 @@ case "$ARCH" in
   *)      echo "ERROR: unsupported arch $ARCH" >&2; exit 1 ;;
 esac
 
-RELEASE_DIR="$ROOT/target/release"
+# Match the explicitly selected Cargo target when building an isolated release.
+# Cargo interprets a relative CARGO_TARGET_DIR from the build working directory;
+# these release scripts build from the repository root.
+TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target}"
+case "$TARGET_DIR" in
+  /*) ;;
+  *) TARGET_DIR="$ROOT/$TARGET_DIR" ;;
+esac
+RELEASE_DIR="$TARGET_DIR/release"
 SRC="$RELEASE_DIR/permagentd"
 BIN_DIR="$TAURI_DIR/binaries"
 DST="$BIN_DIR/permagentd-$TRIPLE"
