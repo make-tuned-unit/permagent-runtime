@@ -1551,6 +1551,23 @@ async fn get_memory_growth(State(state): State<Arc<AppState>>) -> Json<CardData>
 /// What was happening ~1 month ago (§3 `on_this_week`), read from the
 /// durable activity journal. No fabricated "similar week" when the journal
 /// simply has nothing from that window (P12).
+/// Plain-words label for an `activity_journal` row's `kind` (R3: no internal
+/// identifiers in user copy) — the same closed vocabulary
+/// `activity_journal::KNOWN_KINDS` defines, worded for a reader instead of a
+/// filter chip.
+fn human_activity_kind(kind: &str) -> &'static str {
+    match kind {
+        "goal_state_changed" => "Goal update",
+        "decision_created" => "Decision raised",
+        "decision_resolved" => "Decision resolved",
+        "librarian_describe_completed" => "Librarian run",
+        "proactive_nudge" => "Proactive nudge",
+        "task_failed" => "Task failed",
+        "a2a_message" => "Agent message",
+        _ => "Activity",
+    }
+}
+
 async fn get_on_this_week(State(state): State<Arc<AppState>>) -> Json<CardData> {
     let Ok(pool) = state.session_manager().pool_clone().await else {
         return Json(CardData::note(
@@ -1582,7 +1599,10 @@ async fn get_on_this_week(State(state): State<Arc<AppState>>) -> Json<CardData> 
         .take(5)
         .map(|i| CardCell {
             label: i.title.clone(),
-            value: i.kind.clone(),
+            // Never the raw journal `kind` (R3: no internal identifiers in
+            // user copy) — a plain-words label for the same closed vocabulary
+            // `activity_journal::KNOWN_KINDS` defines.
+            value: human_activity_kind(&i.kind).to_string(),
             ..Default::default()
         })
         .collect();
@@ -1596,6 +1616,19 @@ async fn get_on_this_week(State(state): State<Arc<AppState>>) -> Json<CardData> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn human_activity_kind_never_leaks_the_raw_identifier() {
+        for kind in permagent::activity_journal::KNOWN_KINDS {
+            let label = human_activity_kind(kind);
+            assert!(
+                !label.contains('_'),
+                "{kind} -> {label} still looks internal"
+            );
+        }
+        assert_eq!(human_activity_kind("goal_state_changed"), "Goal update");
+        assert_eq!(human_activity_kind("made_up_kind"), "Activity");
+    }
 
     #[test]
     fn card_type_serializes_as_type_key() {
