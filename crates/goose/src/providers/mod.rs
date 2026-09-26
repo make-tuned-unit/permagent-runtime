@@ -69,4 +69,6 @@ pub use init::{
     cleanup_provider, create, create_with_default_model, create_with_named_model,
     get_from_registry, inventory_identity, providers, refresh_custom_providers,
 };
+#[cfg(test)]
+pub(crate) use retry::ProviderRetry;
 pub use retry::{retry_operation, RetryConfig};

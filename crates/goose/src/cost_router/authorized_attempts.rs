@@ -266,7 +266,7 @@ mod tests {
     async fn transport_rejections_release_durable_holds_but_timeouts_and_accepted_requests_do_not()
     {
         use crate::providers::errors::ProviderError;
-        use crate::providers::retry::{ProviderRetry, RetryConfig};
+        use crate::providers::{ProviderRetry, RetryConfig};
         for scenario in [
             "rejected",
             "timeout_then_rejected",
