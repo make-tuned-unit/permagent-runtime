@@ -92,6 +92,56 @@ async fn the_growth_action_lifecycle_holds_through_the_router() {
     .await
     .unwrap();
 
+    // A failed/cancelled harness exit must not mark unimplemented work done.
+    let unfinished = growth_store::upsert_suggested(
+        &pool,
+        &project.id,
+        &seed("Instrument missing CTA visibility"),
+    )
+    .await
+    .unwrap();
+    let complete_uri = format!(
+        "/api/projects/{}/growth-actions/{}/complete-from-harness",
+        project.id, unfinished.id
+    );
+    let response = app
+        .clone()
+        .oneshot(req("POST", &complete_uri, None))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["implemented"], false);
+    assert_eq!(body["verified"], false);
+    assert_eq!(body["identity"]["status"], growth_store::STATUS_SUGGESTED);
+    let stored = growth_store::get(&pool, &project.id, &unfinished.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.status, growth_store::STATUS_SUGGESTED);
+    assert!(stored.verified_at.is_none());
+
+    // Explicit human status remains deliberate; a later failed verification
+    // callback cannot silently undo it either.
+    growth_store::set_status(
+        &pool,
+        &project.id,
+        &unfinished.id,
+        growth_store::STATUS_DONE,
+        None,
+    )
+    .await
+    .unwrap();
+    let response = app
+        .clone()
+        .oneshot(req("POST", &complete_uri, None))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["verified"], false);
+    assert_eq!(body["identity"]["status"], growth_store::STATUS_DONE);
+
     // ── A finished experiment: verified, measured, judged ──
     let action = growth_store::upsert_suggested(&pool, &project.id, &seed("Add FAQPage schema"))
         .await

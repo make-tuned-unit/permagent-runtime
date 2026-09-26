@@ -369,4 +369,39 @@ async fn verifying_an_action_files_it_with_its_commit_and_says_so() {
         Some("2026-08-12T00:00:00Z"),
         "a refused reopen must not have written anything"
     );
+    // The automatic harness completion seam has the same evidence requirement:
+    // a real landed commit advances the action; terminal exit alone cannot.
+    let harness_repo = tmp.path().join("harness-repo");
+    std::fs::create_dir_all(&harness_repo).unwrap();
+    let harness_project = projects::create_project(
+        &pool,
+        CreateProject {
+            name: "Harness completion".into(),
+            root_path: Some(harness_repo.to_string_lossy().to_string()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let harness_action =
+        growth_store::upsert_suggested(&pool, &harness_project.id, &seed("Harness FAQ schema"))
+            .await
+            .unwrap();
+    let landed = repo_with_a_matching_commit(&harness_repo);
+    let response = permagent_daemon::routes::growth_actions::routes(state.clone())
+        .oneshot(req(
+            "POST",
+            &format!(
+                "/api/projects/{}/growth-actions/{}/complete-from-harness",
+                harness_project.id, harness_action.id
+            ),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let completed = body_json(response).await;
+    assert_eq!(completed["implemented"], true);
+    assert_eq!(completed["verified"], true);
+    assert_eq!(completed["identity"]["verifiedCommit"], landed);
 }

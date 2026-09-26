@@ -2175,7 +2175,7 @@ export const api = {
     }),
 
   /** After a coding harness launched from a growth Action exits: try git/content
-   *  verify, else mark the action implemented so measurement can start. */
+   *  verification; an unverified exit leaves the action unchanged. */
   completeGrowthActionFromHarness: (projectId: string, actionId: string) =>
     apiFetch<{
       implemented: boolean;

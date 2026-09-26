@@ -2906,9 +2906,9 @@ struct CompleteFromHarnessResponse {
 }
 
 /// A coding harness launched from this action has exited. Try to confirm the
-/// change in git/content; if that cannot, mark the action implemented so the
-/// user can still verify and measurement can start. Never treat the agent's
-/// own "I did it" line as verification.
+/// change in git/content. An exit (including a failed or cancelled run) is
+/// not evidence of implementation; leave the action's state unchanged until
+/// verification succeeds or the user explicitly marks it done.
 async fn complete_from_harness(
     State(state): State<Arc<AppState>>,
     Path((project_id, action_id)): Path<(String, String)>,
@@ -2991,35 +2991,12 @@ async fn complete_from_harness(
         }
     }
 
-    let has_target = action.target_metric.is_some() && action.target_dir.is_some();
-    let updated = if has_target && action.status != growth_store::STATUS_DONE {
-        growth_store::set_status(
-            &pool,
-            &project.id,
-            &action.id,
-            growth_store::STATUS_DONE,
-            None,
-        )
-        .await
-        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
-        .unwrap_or(action)
-    } else {
-        action
-    };
-    permagent::events::emit(permagent::events::project_changed(
-        &project.id,
-        "growth_actions",
-    ));
     Ok(Json(CompleteFromHarnessResponse {
-        implemented: has_target,
+        implemented: false,
         verified: false,
-        identity: identity_of(&pool, &updated).await,
+        identity: identity_of(&pool, &action).await,
         checks: outcome.checks,
-        reason: Some(if has_target {
-            "The coding agent finished. Nothing in git confirmed the change yet, so this is marked implemented — verify it when you can see the work, and measurement starts from there.".into()
-        } else {
-            "The coding agent finished, but this action has no pre-registered metric so it cannot be marked implemented.".into()
-        }),
+        reason: Some("The coding session ended, but verification did not confirm the change. The action remains unchanged; inspect the work and retry or explicitly mark it implemented when ready.".into()),
     }))
 }
 
