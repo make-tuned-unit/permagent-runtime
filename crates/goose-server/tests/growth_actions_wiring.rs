@@ -230,12 +230,11 @@ async fn the_growth_action_lifecycle_holds_through_the_router() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     assert_eq!(body_json(resp).await["status"], "archived");
-    assert!(
-        growth_store::board(&pool, &project.id)
-            .await
-            .unwrap()
-            .is_empty(),
-        "archiving is what takes an action off the board"
+    let active = growth_store::board(&pool, &project.id).await.unwrap();
+    assert_eq!(active.len(), 1, "archiving takes this action off the board");
+    assert_eq!(
+        active[0].id, unfinished.id,
+        "the earlier manually completed action remains on the board"
     );
 
     // ── Archiving something nothing has happened to: refused, with a reason ──
@@ -344,10 +343,14 @@ async fn the_growth_action_lifecycle_holds_through_the_router() {
             .map(|a| a["title"].as_str().unwrap_or_default().to_string())
             .collect()
     };
-    assert!(
-        titles("actions").is_empty(),
-        "everything on this project is filed, dismissed or measured: {:?}",
-        titles("actions")
+    assert_eq!(
+        titles("actions"),
+        vec!["Instrument missing CTA visibility"],
+        "the manually completed action remains available on the active board"
+    );
+    assert_eq!(
+        board["actions"][0]["identity"]["status"],
+        growth_store::STATUS_DONE
     );
     // The verified-then-judged action from the top of this test was archived,
     // so it is on the shelf rather than in Tracking — and its frozen baseline
