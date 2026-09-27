@@ -23,6 +23,8 @@
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use std::path::Path;
+use std::process::Command;
 use tower::ServiceExt;
 
 use permagent::growth::store::{self as growth_store, ActionSeed};
@@ -73,6 +75,20 @@ fn seed(title: &str) -> ActionSeed {
     }
 }
 
+fn git(dir: &Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn the_growth_action_lifecycle_holds_through_the_router() {
     let tmp = tempfile::tempdir().unwrap();
@@ -121,6 +137,77 @@ async fn the_growth_action_lifecycle_holds_through_the_router() {
     assert_eq!(stored.status, growth_store::STATUS_SUGGESTED);
     assert!(stored.verified_at.is_none());
 
+    // A later, unrelated commit used to pass the broad git check for an
+    // action whose recommendation names no file. Terminal exit did not prove
+    // that this action launched a goal or produced that commit.
+    let unrelated_repo = tmp.path().join("unrelated-repo");
+    std::fs::create_dir_all(&unrelated_repo).unwrap();
+    git(&unrelated_repo, &["init", "--initial-branch=main"]);
+    git(
+        &unrelated_repo,
+        &["config", "user.email", "test@permagent.local"],
+    );
+    git(&unrelated_repo, &["config", "user.name", "Growth Test"]);
+    let unrelated_project = projects::create_project(
+        &pool,
+        CreateProject {
+            name: "Unrelated commit".into(),
+            root_path: Some(unrelated_repo.to_string_lossy().to_string()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let unrelated_action = growth_store::upsert_suggested(
+        &pool,
+        &unrelated_project.id,
+        &seed("Improve event detail navigation"),
+    )
+    .await
+    .unwrap();
+    std::fs::write(
+        unrelated_repo.join("README.md"),
+        "Unrelated documentation\n",
+    )
+    .unwrap();
+    git(&unrelated_repo, &["add", "README.md"]);
+    git(
+        &unrelated_repo,
+        &["commit", "-m", "Update unrelated documentation"],
+    );
+    let since = format!("--since={}", unrelated_action.created_at);
+    assert!(
+        !git(&unrelated_repo, &["log", &since, "--format=%H"]).is_empty(),
+        "the later commit must be visible to the old broad git check"
+    );
+    let response = app
+        .clone()
+        .oneshot(req(
+            "POST",
+            &format!(
+                "/api/projects/{}/growth-actions/{}/complete-from-harness",
+                unrelated_project.id, unrelated_action.id
+            ),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let completion = body_json(response).await;
+    assert_eq!(completion["implemented"], false, "{completion}");
+    assert_eq!(completion["verified"], false, "{completion}");
+    assert_eq!(
+        completion["identity"]["status"],
+        growth_store::STATUS_SUGGESTED
+    );
+    let unchanged = growth_store::get(&pool, &unrelated_project.id, &unrelated_action.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(unchanged.verified_at.is_none());
+    assert!(unchanged.verified_commit.is_none());
+    assert!(unchanged.baseline_json.is_none());
+
     // Explicit human status remains deliberate; a later failed verification
     // callback cannot silently undo it either.
     growth_store::set_status(
@@ -158,6 +245,32 @@ async fn the_growth_action_lifecycle_holds_through_the_router() {
     )
     .await
     .unwrap();
+    let tracked_before = growth_store::get(&pool, &project.id, &action.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let response = app
+        .clone()
+        .oneshot(req(
+            "POST",
+            &format!(
+                "/api/projects/{}/growth-actions/{}/complete-from-harness",
+                project.id, action.id
+            ),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(body_json(response).await["implemented"], true);
+    let tracked_after = growth_store::get(&pool, &project.id, &action.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        tracked_after, tracked_before,
+        "an already-tracked callback is read-only"
+    );
     growth_store::set_status(
         &pool,
         &project.id,

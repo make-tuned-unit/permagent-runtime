@@ -369,39 +369,38 @@ async fn verifying_an_action_files_it_with_its_commit_and_says_so() {
         Some("2026-08-12T00:00:00Z"),
         "a refused reopen must not have written anything"
     );
-    // The automatic harness completion seam has the same evidence requirement:
-    // a real landed commit advances the action; terminal exit alone cannot.
-    let harness_repo = tmp.path().join("harness-repo");
-    std::fs::create_dir_all(&harness_repo).unwrap();
-    let harness_project = projects::create_project(
+    // Explicit Verify can still record a user-reviewed landed commit. The
+    // automatic terminal callback has no action-to-goal binding yet.
+    let manual_repo = tmp.path().join("manual-verify-repo");
+    std::fs::create_dir_all(&manual_repo).unwrap();
+    let manual_project = projects::create_project(
         &pool,
         CreateProject {
-            name: "Harness completion".into(),
-            root_path: Some(harness_repo.to_string_lossy().to_string()),
+            name: "Manual verification".into(),
+            root_path: Some(manual_repo.to_string_lossy().to_string()),
             ..Default::default()
         },
     )
     .await
     .unwrap();
-    let harness_action =
-        growth_store::upsert_suggested(&pool, &harness_project.id, &seed("Harness FAQ schema"))
+    let manual_action =
+        growth_store::upsert_suggested(&pool, &manual_project.id, &seed("Manual FAQ schema"))
             .await
             .unwrap();
-    let landed = repo_with_a_matching_commit(&harness_repo);
+    let landed = repo_with_a_matching_commit(&manual_repo);
     let response = permagent_daemon::routes::growth_actions::routes(state.clone())
         .oneshot(req(
             "POST",
             &format!(
-                "/api/projects/{}/growth-actions/{}/complete-from-harness",
-                harness_project.id, harness_action.id
+                "/api/projects/{}/growth-actions/{}/verify",
+                manual_project.id, manual_action.id
             ),
             None,
         ))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    let completed = body_json(response).await;
-    assert_eq!(completed["implemented"], true);
-    assert_eq!(completed["verified"], true);
-    assert_eq!(completed["identity"]["verifiedCommit"], landed);
+    let verified = body_json(response).await;
+    assert_eq!(verified["verified"], true);
+    assert_eq!(verified["identity"]["verifiedCommit"], landed);
 }

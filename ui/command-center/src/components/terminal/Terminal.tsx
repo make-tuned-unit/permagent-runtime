@@ -508,8 +508,14 @@ export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChan
         if (!ga) return;
         growthActionRef.current = undefined;
         daemonApi.completeGrowthActionFromHarness(ga.projectId, ga.actionId)
+          .then((result) => {
+            if (!result.implemented) {
+              term.writeln('\r\n\x1b[33mGrow action: completion not verified. Review the work, then use Verify in Grow when ready.\x1b[0m');
+            }
+          })
           .catch((err: unknown) => {
             console.debug('[terminal] growth-action complete failed:', err);
+            term.writeln('\r\n\x1b[33mGrow action: completion not verified. Check Grow and retry Verify when ready.\x1b[0m');
           });
       };
 

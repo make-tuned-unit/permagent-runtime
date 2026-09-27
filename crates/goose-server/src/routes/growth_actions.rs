@@ -2905,10 +2905,10 @@ struct CompleteFromHarnessResponse {
     reason: Option<String>,
 }
 
-/// A coding harness launched from this action has exited. Try to confirm the
-/// change in git/content. An exit (including a failed or cancelled run) is
-/// not evidence of implementation; leave the action's state unchanged until
-/// verification succeeds or the user explicitly marks it done.
+/// A coding harness launched from this action has exited. The callback does
+/// not carry a native goal or candidate commit, so it cannot bind a later git
+/// change to this action. Leave untracked actions unchanged until that
+/// evidence is available or the user explicitly verifies the change.
 async fn complete_from_harness(
     State(state): State<Arc<AppState>>,
     Path((project_id, action_id)): Path<(String, String)>,
@@ -2937,66 +2937,12 @@ async fn complete_from_harness(
         }));
     }
 
-    let outcome = growth_verify::verify(&pool, &project, &action, None, false).await;
-    if let Some(verified_by) = outcome.verified_by {
-        let metric_dir = parse_target(
-            action.target_metric.as_deref(),
-            action.target_dir.as_deref(),
-        )
-        .ok()
-        .flatten();
-        if let Some((metric, dir)) = metric_dir {
-            let verified_at = chrono::Utc::now();
-            let existing_baseline = action
-                .baseline_json
-                .as_deref()
-                .and_then(|raw| serde_json::from_str::<Baseline>(raw).ok());
-            let encoded = if existing_baseline.is_some() {
-                None
-            } else {
-                let fresh = sweep::snapshot_baseline(&pool, &project.id, metric, dir, verified_at)
-                    .await
-                    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-                Some(
-                    serde_json::to_string(&fresh)
-                        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?,
-                )
-            };
-            let stamped_at = verified_at.to_rfc3339();
-            let updated = growth_store::record_verification(
-                &pool,
-                &project.id,
-                &action.id,
-                growth_store::VerificationEvidence {
-                    baseline_json: encoded.as_deref(),
-                    commit: outcome.commit.as_deref(),
-                    detail: outcome.detail.as_deref(),
-                    ..growth_store::VerificationEvidence::new(verified_by, &stamped_at)
-                },
-            )
-            .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-            .ok_or((StatusCode::NOT_FOUND, "unknown action".to_string()))?;
-            permagent::events::emit(permagent::events::project_changed(
-                &project.id,
-                "growth_actions",
-            ));
-            return Ok(Json(CompleteFromHarnessResponse {
-                implemented: true,
-                verified: true,
-                identity: identity_of(&pool, &updated).await,
-                checks: outcome.checks,
-                reason: None,
-            }));
-        }
-    }
-
     Ok(Json(CompleteFromHarnessResponse {
         implemented: false,
         verified: false,
         identity: identity_of(&pool, &action).await,
-        checks: outcome.checks,
-        reason: Some("The coding session ended, but verification did not confirm the change. The action remains unchanged; inspect the work and retry or explicitly mark it implemented when ready.".into()),
+        checks: Vec::new(),
+        reason: Some("This terminal run is not linked to a verified landed change. Grow has not confirmed completion; review the work and use Verify when ready.".into()),
     }))
 }
 
