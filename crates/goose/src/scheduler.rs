@@ -4203,7 +4203,7 @@ mod scan_tool_text_tests {
     fn conversation(name: &str, request_id: &str, response_id: &str, text: &str) -> Conversation {
         Conversation::new_unvalidated(vec![
             Message::assistant()
-                .with_tool_request(request_id, Ok(CallToolRequestParams::new(name))),
+                .with_tool_request(request_id, Ok(CallToolRequestParams::new(name.to_string()))),
             Message::user().with_tool_response(
                 response_id,
                 Ok(CallToolResult::success(vec![Content::text(text)])),
