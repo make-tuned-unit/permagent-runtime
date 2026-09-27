@@ -914,6 +914,384 @@ mod tests {
     }
 }
 
+/// Sentinel around the scanner's own findings array. Present only when the
+/// scan tool could not write the ledger itself. The scheduler reads this from
+/// the tool result. Assistant prose is never parsed for totals.
+pub const SCAN_FINDINGS_START: &str = "\n__PERMAGENT_SCAN_FINDINGS__\n";
+pub const SCAN_FINDINGS_END: &str = "\n__END_PERMAGENT_SCAN_FINDINGS__\n";
+
+/// Rows the scanner produced that could not become cleanup items.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RejectedFinding {
+    pub id: String,
+    pub path: Option<String>,
+    pub reason: String,
+}
+
+/// What a structured save kept. `saved` includes contained and blocked rows;
+/// they stay visible and are not independently removable.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StructuredPersist {
+    pub saved: usize,
+    pub contained: usize,
+    pub blocked: usize,
+    pub rejected: Vec<RejectedFinding>,
+}
+
+pub fn embed_scan_findings_payload(findings_json: &str) -> String {
+    format!("{SCAN_FINDINGS_START}{findings_json}{SCAN_FINDINGS_END}")
+}
+
+/// The scanner JSON between the sentinels. `None` when the tool did not embed
+/// one (the ledger was already written, or this is ordinary prose).
+pub fn extract_scan_findings_payload(text: &str) -> Option<Vec<serde_json::Value>> {
+    let (_, rest) = text.split_once(SCAN_FINDINGS_START)?;
+    let (json, _) = rest.split_once(SCAN_FINDINGS_END)?;
+    serde_json::from_str(json.trim()).ok()
+}
+
+fn valid_run_id(run_id: &str) -> bool {
+    !run_id.is_empty()
+        && run_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+fn ledger_path(dir: &Path, run_id: &str) -> PathBuf {
+    dir.join(format!("{run_id}.json"))
+}
+
+/// A previous validated ledger for this run, if the file is the one the UI
+/// will trust. Returns the finding count.
+pub fn validated_ledger_count(dir: &Path, run_id: &str) -> Option<usize> {
+    existing_validated_persist(dir, run_id).map(|saved| saved.saved)
+}
+
+/// Read a validated ledger without writing. Corrupt, foreign, and unverified
+/// files are `None` so a later create refuses to replace them.
+fn existing_validated_persist(dir: &Path, run_id: &str) -> Option<StructuredPersist> {
+    if !valid_run_id(run_id) {
+        return None;
+    }
+    let value: serde_json::Value =
+        serde_json::from_slice(&fs::read(ledger_path(dir, run_id)).ok()?).ok()?;
+    if value.get("run_id").and_then(|v| v.as_str()) != Some(run_id) {
+        return None;
+    }
+    if value.get("validated").and_then(|v| v.as_bool()) != Some(true) {
+        return None;
+    }
+    let findings = value.get("findings").and_then(|v| v.as_array())?;
+    let rejected = value
+        .get("rejected")
+        .and_then(|v| serde_json::from_value(v.clone()).ok())
+        .unwrap_or_default();
+    Some(StructuredPersist {
+        saved: findings.len(),
+        contained: findings
+            .iter()
+            .filter(|row| row.get("contained_in").is_some())
+            .count(),
+        blocked: findings
+            .iter()
+            .filter(|row| row.get("blocked_reason").is_some())
+            .count(),
+        rejected,
+    })
+}
+
+/// Live name is unprefixed (`unprefixed_tools: true` on the storage_health
+/// platform extension). `public_tools` emits `{extension}__{tool}` when that
+/// flag is off. Any other prefix is a different tool and is not a scan result.
+pub fn is_storage_scan_tool(name: &str) -> bool {
+    const TOOL: &str = "scan_storage_health";
+    if name == TOOL {
+        return true;
+    }
+    match name.split_once("__") {
+        Some((extension, tool)) => {
+            extension == "storage_health" && tool == TOOL && !tool.contains("__")
+        }
+        None => false,
+    }
+}
+
+fn stamp_row(
+    row: &mut serde_json::Value,
+    home: &Path,
+    probe: &dyn super::inuse::action::ActivityProbe,
+    observed_at: &str,
+) -> Result<(), String> {
+    use super::inuse::action::{current_classification, validate_path};
+    let f: ScanFinding = serde_json::from_value(row.clone()).map_err(|e| e.to_string())?;
+    if f.id.is_empty() {
+        return Err("empty finding id".into());
+    }
+    if !row
+        .get("category")
+        .and_then(|v| v.as_str())
+        .is_some_and(|c| classify::ALL_CATEGORIES.contains(&c))
+    {
+        return Err("unknown or missing category".into());
+    }
+    if !row
+        .get("action_taken")
+        .is_none_or(serde_json::Value::is_null)
+    {
+        return Err("pre-actioned finding".into());
+    }
+    let path = PathBuf::from(&f.path);
+    validate_path(&f.finding_type, &path, home)?;
+    let mut c = current_classification(&f.finding_type, &path, f.size_bytes, probe)?;
+    // WHY: an agent must not erase a scanner's live-use observation while
+    // narrating it. Only the explicit action-time recheck may release it.
+    if f.category == classify::CAT_IN_USE {
+        c.category = classify::CAT_IN_USE;
+        c.recommendation = classify::category_label(classify::CAT_IN_USE).into();
+        c.consequence = f.consequence.or(Some(
+            "Scanner observed activity; recheck availability".into(),
+        ));
+    }
+    row["category"] = serde_json::json!(c.category);
+    row["recommendation"] = serde_json::json!(c.recommendation);
+    row["consequence"] = serde_json::json!(c.consequence);
+    row["observed_at"] = serde_json::json!(observed_at);
+    Ok(())
+}
+
+fn row_path(row: &serde_json::Value) -> PathBuf {
+    PathBuf::from(row.get("path").and_then(|v| v.as_str()).unwrap_or(""))
+}
+
+fn row_protected(row: &serde_json::Value) -> bool {
+    matches!(
+        row.get("category").and_then(|v| v.as_str()),
+        Some(classify::CAT_IN_USE | classify::CAT_MACOS)
+    )
+}
+
+/// Keep overlapping scanner rows. A nested or duplicate path is marked
+/// `contained_in` so it is listed once as included in its parent. An ancestor
+/// of an in-use or macOS-managed path is blocked instead of becoming a
+/// shortcut that would delete the protected child.
+fn relate_overlaps(rows: &mut [serde_json::Value]) {
+    let info: Vec<(usize, PathBuf, bool)> = rows
+        .iter()
+        .enumerate()
+        .map(|(i, row)| (i, row_path(row), row_protected(row)))
+        .collect();
+    for (i, path, protected) in &info {
+        if *protected {
+            continue;
+        }
+        if info
+            .iter()
+            .any(|(j, other, is_protected)| *is_protected && i != j && other == path)
+        {
+            rows[*i]["blocked_reason"] =
+                serde_json::json!("Same path as an in-use or protected item");
+        } else if info.iter().any(|(_, other, is_protected)| {
+            *is_protected && other != path && other.starts_with(path)
+        }) {
+            rows[*i]["blocked_reason"] = serde_json::json!("Contains an in-use or protected item");
+        }
+    }
+    for (i, path, _) in &info {
+        if rows[*i].get("blocked_reason").is_some() {
+            continue;
+        }
+        let mut container: Option<(usize, usize)> = None;
+        let mut exact = false;
+        for (j, other, _) in &info {
+            if i == j {
+                continue;
+            }
+            if path == other && *i > *j {
+                rows[*i]["contained_in"] = rows[*j]["id"].clone();
+                exact = true;
+                break;
+            }
+            if path != other && path.starts_with(other) {
+                let depth = other.components().count();
+                if container.is_none_or(|(_, found)| depth > found) {
+                    container = Some((*j, depth));
+                }
+            }
+        }
+        if !exact {
+            if let Some((j, _)) = container {
+                rows[*i]["contained_in"] = rows[j]["id"].clone();
+            }
+        }
+    }
+}
+
+enum CreateLedger {
+    Created,
+    /// The destination was already there. The temp file is dropped, so the
+    /// existing bytes — actioned, validated, or corrupt — stay as they are.
+    Present,
+}
+
+/// Create the ledger exactly once. There is no check-then-replace window:
+/// a Trash/Keep recorded after the first create cannot be overwritten by a
+/// later scan of the same run. A new scan uses a new session id.
+fn create_ledger(
+    dir: &Path,
+    run_id: &str,
+    ledger: &serde_json::Value,
+) -> anyhow::Result<CreateLedger> {
+    fs::create_dir_all(dir)?;
+    let dest = ledger_path(dir, run_id);
+    let mut pending = tempfile::NamedTempFile::new_in(dir)?;
+    use std::io::Write;
+    pending.write_all(&serde_json::to_vec_pretty(ledger)?)?;
+    pending.as_file().sync_all()?;
+    match pending.persist_noclobber(dest) {
+        Ok(_) => Ok(CreateLedger::Created),
+        Err(err) if err.error.kind() == std::io::ErrorKind::AlreadyExists => {
+            Ok(CreateLedger::Present)
+        }
+        Err(err) => Err(anyhow::Error::from(err.error)),
+    }
+}
+
+/// Empty input: nothing was found. Distinct from a scan whose rows all failed
+/// validation.
+const EMPTY_SCAN_MESSAGE: &str = "Scan complete — no cleanup candidates found";
+/// Every scanner row was kept out of the selectable list. Not an empty scan,
+/// and not a set of Trash targets.
+const ALL_REJECTED_MESSAGE: &str = "No actionable cleanup findings — scanned items were rejected.";
+
+/// Save the scanner's structured rows for this run, once.
+///
+/// Invalid rows are recorded in `rejected` and the rest are still saved.
+/// When every row is rejected, the ledger is still written: `findings` is
+/// empty and `rejected` keeps each reason. `validated` means that selectable
+/// subset was accepted (it may be empty). Rejected paths are not findings and
+/// are not safe to trash. A scan with no rows uses `EMPTY_SCAN_MESSAGE`
+/// instead, so the two outcomes stay distinct.
+/// A validated ledger for this run is reused and not rewritten, including
+/// when it already records Trash/Keep. A corrupt or unverified file is left
+/// untouched. Overlaps stay in the ledger and are marked so the action path
+/// cannot delete a parent that contains a protected child, or delete the
+/// same bytes twice.
+pub fn persist_structured_findings(
+    findings: &[ScanFinding],
+    run_id: &str,
+    dir: &Path,
+    home: &Path,
+    probe: &dyn super::inuse::action::ActivityProbe,
+) -> anyhow::Result<StructuredPersist> {
+    let rows = findings
+        .iter()
+        .map(serde_json::to_value)
+        .collect::<Result<Vec<_>, _>>()?;
+    persist_structured_values(&rows, run_id, dir, home, probe)
+}
+
+pub fn persist_structured_values(
+    findings: &[serde_json::Value],
+    run_id: &str,
+    dir: &Path,
+    home: &Path,
+    probe: &dyn super::inuse::action::ActivityProbe,
+) -> anyhow::Result<StructuredPersist> {
+    anyhow::ensure!(valid_run_id(run_id), "invalid run id");
+    if let Some(existing) = existing_validated_persist(dir, run_id) {
+        return Ok(existing);
+    }
+    let observed_at = chrono::Utc::now().to_rfc3339();
+    let mut kept: Vec<serde_json::Value> = Vec::new();
+    let mut rejected = Vec::new();
+    let mut ids = std::collections::HashSet::new();
+    for row in findings {
+        let id = row
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let path = row.get("path").and_then(|v| v.as_str()).map(str::to_owned);
+        if !id.is_empty() && !ids.insert(id.clone()) {
+            rejected.push(RejectedFinding {
+                id,
+                path,
+                reason: "duplicate finding id".into(),
+            });
+            continue;
+        }
+        let mut stamped = row.clone();
+        match stamp_row(&mut stamped, home, probe, &observed_at) {
+            Ok(()) => kept.push(stamped),
+            Err(reason) => rejected.push(RejectedFinding { id, path, reason }),
+        }
+    }
+    relate_overlaps(&mut kept);
+    let contained = kept
+        .iter()
+        .filter(|row| row.get("contained_in").is_some())
+        .count();
+    let blocked = kept
+        .iter()
+        .filter(|row| row.get("blocked_reason").is_some())
+        .count();
+    let saved = kept.len();
+    let ledger = serde_json::json!({
+        "run_id": run_id,
+        "created_at": observed_at,
+        "findings": kept,
+        "rejected": rejected.iter().map(|row| serde_json::json!({
+            "id": row.id, "path": row.path, "reason": row.reason,
+        })).collect::<Vec<_>>(),
+        "validated": true,
+        "message": if saved == 0 && !rejected.is_empty() {
+            ALL_REJECTED_MESSAGE
+        } else if saved == 0 {
+            EMPTY_SCAN_MESSAGE
+        } else {
+            "Scan complete"
+        },
+    });
+    let created = StructuredPersist {
+        saved,
+        contained,
+        blocked,
+        rejected,
+    };
+    match create_ledger(dir, run_id, &ledger)? {
+        CreateLedger::Created => Ok(created),
+        CreateLedger::Present => existing_validated_persist(dir, run_id).ok_or_else(|| {
+            anyhow::anyhow!("ledger already exists and is not a validated scan for this run")
+        }),
+    }
+}
+
+/// Phase 5 save for a `produces_findings` recipe.
+///
+/// A validated ledger the scanner already wrote wins. Otherwise the scanner
+/// payload embedded in the tool result is saved. Assistant `<findings>` tags
+/// are the last resort. Prose totals are never turned into findings.
+pub fn save_declared_storage_report(
+    assistant_output: &str,
+    tool_texts: &[String],
+    run_id: &str,
+    dir: &Path,
+    home: &Path,
+    probe: &dyn super::inuse::action::ActivityProbe,
+) -> anyhow::Result<usize> {
+    if let Some(count) = validated_ledger_count(dir, run_id) {
+        return Ok(count);
+    }
+    if let Some(rows) = tool_texts
+        .iter()
+        .rev()
+        .find_map(|text| extract_scan_findings_payload(text))
+    {
+        return persist_structured_values(&rows, run_id, dir, home, probe).map(|saved| saved.saved);
+    }
+    persist_report(assistant_output, run_id, dir, home, probe)
+}
+
 /// Validate a complete emitted ledger before making a new report visible.
 /// The previous run is never overwritten, including on extraction/write failure.
 pub fn persist_report(
@@ -923,14 +1301,7 @@ pub fn persist_report(
     home: &Path,
     probe: &dyn super::inuse::action::ActivityProbe,
 ) -> anyhow::Result<usize> {
-    use super::inuse::action::{current_classification, validate_path};
-    anyhow::ensure!(
-        !run_id.is_empty()
-            && run_id
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'),
-        "invalid run id"
-    );
+    anyhow::ensure!(valid_run_id(run_id), "invalid run id");
     let (_, rest) = output
         .split_once("<findings>")
         .ok_or_else(|| anyhow::anyhow!("missing findings"))?;
@@ -951,54 +1322,25 @@ pub fn persist_report(
             !f.id.is_empty() && ids.insert(f.id.clone()),
             "duplicate or empty finding id"
         );
-        anyhow::ensure!(
-            row.get("category")
-                .and_then(|v| v.as_str())
-                .is_some_and(|c| classify::ALL_CATEGORIES.contains(&c)),
-            "unknown or missing category"
-        );
-        anyhow::ensure!(
-            row.get("action_taken")
-                .is_none_or(serde_json::Value::is_null),
-            "pre-actioned finding"
-        );
+        stamp_row(row, home, probe, &observed_at).map_err(anyhow::Error::msg)?;
         let path = PathBuf::from(&f.path);
-        validate_path(&f.finding_type, &path, home).map_err(anyhow::Error::msg)?;
         anyhow::ensure!(
             !paths
                 .iter()
                 .any(|p| path.starts_with(p) || p.starts_with(&path)),
             "duplicate or overlapping paths"
         );
-        paths.push(path.clone());
-        let mut c = current_classification(&f.finding_type, &path, f.size_bytes, probe)
-            .map_err(anyhow::Error::msg)?;
-        // WHY: an agent must not erase a scanner's live-use observation while
-        // narrating it. Only the explicit action-time recheck may release it.
-        if f.category == classify::CAT_IN_USE {
-            c.category = classify::CAT_IN_USE;
-            c.recommendation = classify::category_label(classify::CAT_IN_USE).into();
-            c.consequence = f.consequence.or(Some(
-                "Scanner observed activity; recheck availability".into(),
-            ));
-        }
-        row["category"] = serde_json::json!(c.category);
-        row["recommendation"] = serde_json::json!(c.recommendation);
-        row["consequence"] = serde_json::json!(c.consequence);
-        row["observed_at"] = serde_json::json!(observed_at);
+        paths.push(path);
     }
     let count = rows.len();
     let ledger = serde_json::json!({
         "run_id": run_id, "created_at": observed_at, "findings": rows, "validated": true,
-        "message": if count == 0 { "Scan complete — no cleanup candidates found" } else { "Scan complete" },
+        "message": if count == 0 { EMPTY_SCAN_MESSAGE } else { "Scan complete" },
     });
-    fs::create_dir_all(dir)?;
-    let mut pending = tempfile::NamedTempFile::new_in(dir)?;
-    use std::io::Write;
-    pending.write_all(&serde_json::to_vec_pretty(&ledger)?)?;
-    pending.as_file().sync_all()?;
-    pending.persist_noclobber(dir.join(format!("{run_id}.json")))?;
-    Ok(count)
+    match create_ledger(dir, run_id, &ledger)? {
+        CreateLedger::Created => Ok(count),
+        CreateLedger::Present => anyhow::bail!("ledger already exists"),
+    }
 }
 
 #[cfg(test)]
@@ -1115,5 +1457,570 @@ mod st1_report_tests {
             &Idle
         )
         .is_err());
+    }
+}
+
+#[cfg(test)]
+mod structured_report_tests {
+    use super::*;
+    use crate::storage_health::inuse::action::ActivityProbe;
+    use crate::storage_health::inuse::ProcessRef;
+
+    struct Idle;
+    impl ActivityProbe for Idle {
+        fn check(&self, _: &Path) -> Result<Vec<ProcessRef>, String> {
+            Ok(Vec::new())
+        }
+    }
+
+    fn home_with(paths: &[(&str, &str)]) -> (tempfile::TempDir, PathBuf) {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().canonicalize().unwrap();
+        for (relative, kind) in paths {
+            let path = home.join(relative);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            match *kind {
+                "dir" => fs::create_dir_all(&path).unwrap(),
+                "file" => fs::write(&path, "fixture-bytes").unwrap(),
+                other => panic!("unknown fixture kind {other}"),
+            }
+        }
+        (temp, home)
+    }
+
+    fn finding(id: &str, kind: &str, path: &Path, category: &str) -> ScanFinding {
+        ScanFinding {
+            id: id.into(),
+            finding_type: kind.into(),
+            path: path.to_string_lossy().into_owned(),
+            size_bytes: 100,
+            age_days: None,
+            recommendation: classify::category_label(category).into(),
+            category: category.into(),
+            consequence: Some(format!("{id} consequence")),
+        }
+    }
+
+    #[test]
+    fn prose_without_structured_rows_does_not_invent_findings_or_replace_previous() {
+        let (temp, home) = home_with(&[("Library/Caches/App", "dir")]);
+        let dir = home.join("findings");
+        let previous = finding(
+            "app",
+            "app_cache",
+            &home.join("Library/Caches/App"),
+            classify::CAT_SAFE,
+        );
+        persist_structured_findings(&[previous], "previous", &dir, &home, &Idle).unwrap();
+        let before = fs::read(dir.join("previous.json")).unwrap();
+        let prose = "Your disk has 6.9 GB of cleanup opportunities across 13 items.";
+        assert!(save_declared_storage_report(prose, &[], "new-run", &dir, &home, &Idle).is_err());
+        assert!(!dir.join("new-run.json").exists());
+        assert_eq!(fs::read(dir.join("previous.json")).unwrap(), before);
+        let _ = temp;
+    }
+
+    #[test]
+    fn tool_payload_is_saved_when_the_assistant_only_wrote_prose() {
+        let (temp, home) = home_with(&[
+            ("Library/Caches/App", "dir"),
+            ("Library/Developer/Xcode/DerivedData/App-abc", "dir"),
+            (".cache/huggingface", "dir"),
+            ("Downloads/notes.iso", "file"),
+        ]);
+        let rows = vec![
+            finding(
+                "cache",
+                "app_cache",
+                &home.join("Library/Caches/App"),
+                classify::CAT_SAFE,
+            ),
+            finding(
+                "xcode",
+                "build_artifact",
+                &home.join("Library/Developer/Xcode/DerivedData/App-abc"),
+                classify::CAT_SAFE,
+            ),
+            finding(
+                "models",
+                "app_cache",
+                &home.join(".cache/huggingface"),
+                classify::CAT_REGENERABLE,
+            ),
+            finding(
+                "download",
+                "large_file",
+                &home.join("Downloads/notes.iso"),
+                classify::CAT_REVIEW,
+            ),
+        ];
+        let payload = embed_scan_findings_payload(&serde_json::to_string(&rows).unwrap());
+        let prose = "**Your disk has 6.9 GB of cleanup opportunities across 13 items.**";
+        let saved = save_declared_storage_report(
+            prose,
+            &[payload],
+            "run-1",
+            &home.join("findings"),
+            &home,
+            &Idle,
+        )
+        .unwrap();
+        assert_eq!(saved, 4);
+        let ledger: serde_json::Value =
+            serde_json::from_slice(&fs::read(home.join("findings/run-1.json")).unwrap()).unwrap();
+        assert_eq!(ledger["validated"], true);
+        assert_eq!(ledger["run_id"], "run-1");
+        let ids: Vec<_> = ledger["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, ["cache", "xcode", "models", "download"]);
+        assert_eq!(ledger["findings"][2]["category"], classify::CAT_REGENERABLE);
+        assert_eq!(ledger["findings"][3]["category"], classify::CAT_REVIEW);
+        assert!(prose.contains("6.9"));
+        assert!(!ledger.to_string().contains("6.9"));
+        let _ = temp;
+    }
+
+    #[test]
+    fn an_existing_validated_ledger_is_kept_when_the_assistant_omits_or_forges_tags() {
+        let (temp, home) = home_with(&[
+            ("Library/Caches/App", "dir"),
+            ("Library/Caches/Other", "dir"),
+        ]);
+        let dir = home.join("findings");
+        persist_structured_findings(
+            &[finding(
+                "app",
+                "app_cache",
+                &home.join("Library/Caches/App"),
+                classify::CAT_SAFE,
+            )],
+            "run-1",
+            &dir,
+            &home,
+            &Idle,
+        )
+        .unwrap();
+        let before = fs::read(dir.join("run-1.json")).unwrap();
+        let forged = format!(
+            "<findings>[{}]</findings>",
+            serde_json::to_string(&finding(
+                "other",
+                "app_cache",
+                &home.join("Library/Caches/Other"),
+                classify::CAT_SAFE,
+            ))
+            .unwrap()
+        );
+        assert_eq!(
+            save_declared_storage_report(&forged, &[], "run-1", &dir, &home, &Idle).unwrap(),
+            1
+        );
+        assert_eq!(fs::read(dir.join("run-1.json")).unwrap(), before);
+        let _ = temp;
+    }
+
+    #[test]
+    fn overlaps_stay_visible_and_in_use_ancestors_are_blocked() {
+        let (temp, home) = home_with(&[
+            ("proj/package.json", "file"),
+            ("proj/node_modules/pkg/package.json", "file"),
+            ("proj/node_modules/pkg/node_modules/keep", "file"),
+            ("repo/Cargo.toml", "file"),
+            ("repo/target/artifact", "file"),
+        ]);
+        fs::create_dir_all(home.join("proj/node_modules")).unwrap();
+        fs::create_dir_all(home.join("proj/node_modules/pkg/node_modules")).unwrap();
+        fs::create_dir_all(home.join("repo/target")).unwrap();
+        let parent = home.join("proj/node_modules");
+        let child = home.join("proj/node_modules/pkg/node_modules");
+        let target = home.join("repo/target");
+        let rows = [
+            finding("parent", "dev_cache", &parent, classify::CAT_SAFE),
+            finding("child", "dev_cache", &child, classify::CAT_IN_USE),
+            finding("target", "dev_cache", &target, classify::CAT_IN_USE),
+        ];
+        let saved =
+            persist_structured_findings(&rows, "overlap", &home.join("findings"), &home, &Idle)
+                .unwrap();
+        assert_eq!(saved.saved, 3);
+        assert_eq!(saved.blocked, 1);
+        assert_eq!(saved.contained, 1);
+        let ledger: serde_json::Value =
+            serde_json::from_slice(&fs::read(home.join("findings/overlap.json")).unwrap()).unwrap();
+        let by_id = |id: &str| {
+            ledger["findings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|row| row["id"] == id)
+                .unwrap()
+        };
+        assert_eq!(by_id("child")["category"], classify::CAT_IN_USE);
+        assert_eq!(by_id("child")["consequence"], "child consequence");
+        assert_eq!(by_id("child")["contained_in"], "parent");
+        assert!(by_id("child").get("blocked_reason").is_none());
+        assert_eq!(
+            by_id("parent")["blocked_reason"],
+            "Contains an in-use or protected item"
+        );
+        assert_eq!(by_id("parent")["category"], classify::CAT_SAFE);
+        assert_eq!(by_id("target")["category"], classify::CAT_IN_USE);
+        let _ = temp;
+    }
+
+    #[test]
+    fn a_bad_row_does_not_drop_the_rows_that_validated() {
+        let (temp, home) = home_with(&[("Library/Caches/App", "dir")]);
+        let good = finding(
+            "app",
+            "app_cache",
+            &home.join("Library/Caches/App"),
+            classify::CAT_SAFE,
+        );
+        let mut bad = good.clone();
+        bad.id = "home".into();
+        bad.path = home.to_string_lossy().into_owned();
+        let saved = persist_structured_findings(
+            &[good, bad],
+            "partial",
+            &home.join("findings"),
+            &home,
+            &Idle,
+        )
+        .unwrap();
+        assert_eq!(saved.saved, 1);
+        assert_eq!(saved.rejected.len(), 1);
+        assert_eq!(saved.rejected[0].id, "home");
+        let ledger: serde_json::Value =
+            serde_json::from_slice(&fs::read(home.join("findings/partial.json")).unwrap()).unwrap();
+        assert_eq!(ledger["findings"][0]["id"], "app");
+        assert_eq!(ledger["rejected"][0]["id"], "home");
+        assert_eq!(ledger["validated"], true);
+        assert_eq!(ledger["message"], "Scan complete");
+        let bytes = fs::read(home.join("findings/partial.json")).unwrap();
+        persist_structured_findings(
+            &[finding(
+                "other",
+                "app_cache",
+                &home.join("Library/Caches/App"),
+                classify::CAT_SAFE,
+            )],
+            "partial",
+            &home.join("findings"),
+            &home,
+            &Idle,
+        )
+        .unwrap();
+        assert_eq!(fs::read(home.join("findings/partial.json")).unwrap(), bytes);
+        let _ = temp;
+    }
+
+    #[test]
+    fn an_all_rejected_scan_keeps_reasons_and_is_not_an_empty_success() {
+        let (temp, home) = home_with(&[]);
+        let dir = home.join("findings");
+        let outside = finding(
+            "outside",
+            "app_cache",
+            &home.join("not-a-cache"),
+            classify::CAT_SAFE,
+        );
+        let mut invalid = outside.clone();
+        invalid.id = "blank".into();
+        invalid.path.clear();
+        let saved =
+            persist_structured_findings(&[outside, invalid], "all-rejected", &dir, &home, &Idle)
+                .unwrap();
+        assert_eq!(saved.saved, 0);
+        assert_eq!(saved.rejected.len(), 2);
+        let reasons: Vec<_> = saved
+            .rejected
+            .iter()
+            .map(|row| (row.id.as_str(), row.reason.as_str()))
+            .collect();
+        assert!(reasons.iter().any(|(id, _)| *id == "outside"));
+        assert!(reasons
+            .iter()
+            .any(|(id, reason)| *id == "blank" && !reason.is_empty()));
+        let ledger: serde_json::Value =
+            serde_json::from_slice(&fs::read(dir.join("all-rejected.json")).unwrap()).unwrap();
+        assert_eq!(ledger["validated"], true);
+        assert_eq!(ledger["findings"].as_array().unwrap().len(), 0);
+        assert_eq!(
+            ledger["message"],
+            "No actionable cleanup findings — scanned items were rejected."
+        );
+        assert_ne!(
+            ledger["message"],
+            "Scan complete — no cleanup candidates found"
+        );
+        let rejected = ledger["rejected"].as_array().unwrap();
+        assert_eq!(rejected.len(), 2);
+        assert!(rejected.iter().all(|row| {
+            row.get("id")
+                .and_then(|v| v.as_str())
+                .is_some_and(|id| !id.is_empty())
+                && row
+                    .get("reason")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|reason| !reason.is_empty())
+                && row.get("category").is_none()
+                && row.get("recommendation").is_none()
+        }));
+        let bytes = fs::read(dir.join("all-rejected.json")).unwrap();
+        let again = persist_structured_findings(
+            &[finding(
+                "other",
+                "app_cache",
+                &home.join("Library/Caches/Other"),
+                classify::CAT_SAFE,
+            )],
+            "all-rejected",
+            &dir,
+            &home,
+            &Idle,
+        )
+        .unwrap();
+        assert_eq!(again.saved, 0);
+        assert_eq!(again.rejected.len(), 2);
+        assert_eq!(fs::read(dir.join("all-rejected.json")).unwrap(), bytes);
+
+        let empty = persist_structured_findings(&[], "empty-scan", &dir, &home, &Idle).unwrap();
+        assert_eq!(empty.saved, 0);
+        assert!(empty.rejected.is_empty());
+        let empty_ledger: serde_json::Value =
+            serde_json::from_slice(&fs::read(dir.join("empty-scan.json")).unwrap()).unwrap();
+        assert_eq!(empty_ledger["validated"], true);
+        assert_eq!(empty_ledger["findings"].as_array().unwrap().len(), 0);
+        assert_eq!(empty_ledger["rejected"].as_array().unwrap().len(), 0);
+        assert_eq!(
+            empty_ledger["message"],
+            "Scan complete — no cleanup candidates found"
+        );
+        assert_ne!(empty_ledger["message"], ledger["message"]);
+        let _ = temp;
+    }
+
+    #[test]
+    fn an_actioned_ledger_is_not_replaced_by_a_later_scan() {
+        let (temp, home) = home_with(&[
+            ("Library/Caches/App", "dir"),
+            ("Library/Caches/Other", "dir"),
+        ]);
+        let dir = home.join("findings");
+        persist_structured_findings(
+            &[finding(
+                "app",
+                "app_cache",
+                &home.join("Library/Caches/App"),
+                classify::CAT_SAFE,
+            )],
+            "run-1",
+            &dir,
+            &home,
+            &Idle,
+        )
+        .unwrap();
+        let mut ledger: serde_json::Value =
+            serde_json::from_slice(&fs::read(dir.join("run-1.json")).unwrap()).unwrap();
+        ledger["findings"][0]["action_taken"] = serde_json::json!("trashed");
+        ledger["findings"][0]["size_recovered_bytes"] = serde_json::json!(100);
+        fs::write(
+            dir.join("run-1.json"),
+            serde_json::to_vec_pretty(&ledger).unwrap(),
+        )
+        .unwrap();
+        let before = fs::read(dir.join("run-1.json")).unwrap();
+        let again = persist_structured_findings(
+            &[finding(
+                "other",
+                "app_cache",
+                &home.join("Library/Caches/Other"),
+                classify::CAT_SAFE,
+            )],
+            "run-1",
+            &dir,
+            &home,
+            &Idle,
+        )
+        .unwrap();
+        assert_eq!(again.saved, 1);
+        assert_eq!(fs::read(dir.join("run-1.json")).unwrap(), before);
+        let ledger: serde_json::Value = serde_json::from_slice(&before).unwrap();
+        assert_eq!(ledger["findings"][0]["id"], "app");
+        assert_eq!(ledger["findings"][0]["action_taken"], "trashed");
+        let _ = temp;
+    }
+
+    #[test]
+    fn a_second_scan_of_the_same_run_keeps_the_first_validated_ledger() {
+        let (temp, home) = home_with(&[
+            ("Library/Caches/App", "dir"),
+            ("Library/Caches/Other", "dir"),
+        ]);
+        let dir = home.join("findings");
+        let first = persist_structured_findings(
+            &[finding(
+                "app",
+                "app_cache",
+                &home.join("Library/Caches/App"),
+                classify::CAT_SAFE,
+            )],
+            "run-1",
+            &dir,
+            &home,
+            &Idle,
+        )
+        .unwrap();
+        let before = fs::read(dir.join("run-1.json")).unwrap();
+        let again = persist_structured_findings(
+            &[finding(
+                "other",
+                "app_cache",
+                &home.join("Library/Caches/Other"),
+                classify::CAT_SAFE,
+            )],
+            "run-1",
+            &dir,
+            &home,
+            &Idle,
+        )
+        .unwrap();
+        assert_eq!(again, first);
+        assert_eq!(fs::read(dir.join("run-1.json")).unwrap(), before);
+        let _ = temp;
+    }
+
+    #[test]
+    fn a_corrupt_ledger_is_not_replaced() {
+        let (temp, home) = home_with(&[("Library/Caches/App", "dir")]);
+        let dir = home.join("findings");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("run-1.json");
+        fs::write(&path, b"{not-a-ledger").unwrap();
+        let before = fs::read(&path).unwrap();
+        assert!(persist_structured_findings(
+            &[finding(
+                "app",
+                "app_cache",
+                &home.join("Library/Caches/App"),
+                classify::CAT_SAFE,
+            )],
+            "run-1",
+            &dir,
+            &home,
+            &Idle,
+        )
+        .is_err());
+        assert_eq!(fs::read(&path).unwrap(), before);
+        let _ = temp;
+    }
+
+    #[test]
+    fn concurrent_scans_do_not_clobber_a_recorded_action_or_tear_the_first_create() {
+        let (temp, home) = home_with(&[
+            ("Library/Caches/App", "dir"),
+            ("Library/Caches/Other", "dir"),
+        ]);
+        let dir = home.join("findings");
+        persist_structured_findings(
+            &[finding(
+                "app",
+                "app_cache",
+                &home.join("Library/Caches/App"),
+                classify::CAT_SAFE,
+            )],
+            "actioned",
+            &dir,
+            &home,
+            &Idle,
+        )
+        .unwrap();
+        let actioned = dir.join("actioned.json");
+        let mut ledger: serde_json::Value =
+            serde_json::from_slice(&fs::read(&actioned).unwrap()).unwrap();
+        ledger["findings"][0]["action_taken"] = serde_json::json!("trashed");
+        ledger["findings"][0]["size_recovered_bytes"] = serde_json::json!(100);
+        fs::write(&actioned, serde_json::to_vec_pretty(&ledger).unwrap()).unwrap();
+        let before = fs::read(&actioned).unwrap();
+
+        let mut joins = Vec::new();
+        for n in 0..8 {
+            let dir = dir.clone();
+            let home = home.clone();
+            joins.push(std::thread::spawn(move || {
+                let other = home.join("Library/Caches/Other");
+                persist_structured_findings(
+                    &[finding(
+                        &format!("other-{n}"),
+                        "app_cache",
+                        &other,
+                        classify::CAT_SAFE,
+                    )],
+                    "actioned",
+                    &dir,
+                    &home,
+                    &Idle,
+                )
+            }));
+        }
+        for join in joins {
+            assert!(join.join().unwrap().is_ok());
+        }
+        assert_eq!(fs::read(&actioned).unwrap(), before);
+
+        let fresh_dir = dir.clone();
+        let fresh_home = home.clone();
+        let mut fresh = Vec::new();
+        for n in 0..8 {
+            let dir = fresh_dir.clone();
+            let home = fresh_home.clone();
+            fresh.push(std::thread::spawn(move || {
+                persist_structured_findings(
+                    &[finding(
+                        &format!("app-{n}"),
+                        "app_cache",
+                        &home.join("Library/Caches/App"),
+                        classify::CAT_SAFE,
+                    )],
+                    "fresh",
+                    &dir,
+                    &home,
+                    &Idle,
+                )
+            }));
+        }
+        for join in fresh {
+            assert!(join.join().unwrap().is_ok());
+        }
+        let created: serde_json::Value =
+            serde_json::from_slice(&fs::read(dir.join("fresh.json")).unwrap()).unwrap();
+        assert_eq!(created["validated"], true);
+        assert_eq!(created["run_id"], "fresh");
+        let rows = created["findings"].as_array().unwrap();
+        assert_eq!(rows.len(), 1);
+        let id = rows[0]["id"].as_str().unwrap();
+        assert!(id.starts_with("app-"), "{id}");
+        let _ = temp;
+    }
+
+    #[test]
+    fn scan_tool_names_are_only_the_unprefixed_and_extension_prefixed_forms() {
+        assert!(is_storage_scan_tool("scan_storage_health"));
+        assert!(is_storage_scan_tool("storage_health__scan_storage_health"));
+        for spoof in [
+            "evil__scan_storage_health",
+            "developer__scan_storage_health",
+            "scan_storage",
+            "scan_storage_health_extra",
+            "storage_health__other",
+            "storage_health__scan_storage_health__extra",
+        ] {
+            assert!(!is_storage_scan_tool(spoof), "{spoof}");
+        }
     }
 }
