@@ -1156,6 +1156,9 @@ fn comparison_compatible(
     }
     for (id, task) in current_tasks {
         let other = reference_tasks[id];
+        if task.not_run != other.not_run {
+            return Err("attempted task IDs");
+        }
         if task.harness_timeout_secs.is_none()
             || task
                 .headless_drain_secs
@@ -1224,12 +1227,7 @@ fn latency_evidence(
             continue;
         }
         if let Some((reference_first_tool, reference_wall)) = latency_medians(reference) {
-            if pass_rate(record)
-                .zip(pass_rate(reference))
-                .is_some_and(|(a, b)| a >= b)
-            {
-                compatible.push((reference_first_tool, reference_wall));
-            }
+            compatible.push((reference, reference_first_tool, reference_wall));
         } else {
             missing.push(format!(
                 "latency comparison {}: first_tool_ms or wall time missing",
@@ -1241,15 +1239,20 @@ fn latency_evidence(
         missing.push("compatible non-inferior paired latency reference".into());
         return unrated(missing);
     }
-    let best_first_tool = compatible
+    let Some(candidate_rate) = pass_rate(record) else {
+        return unrated(vec!["candidate pass rate".into()]);
+    };
+    if compatible
         .iter()
-        .map(|(first, _)| *first)
-        .min_by(f64::total_cmp)
-        .unwrap();
-    let best_wall = compatible
-        .iter()
-        .map(|(_, wall)| *wall)
-        .min_by(f64::total_cmp)
+        .any(|(reference, _, _)| pass_rate(reference).is_some_and(|rate| candidate_rate < rate))
+    {
+        return measured(false, false);
+    }
+    // Choose one real paired reference, by best wall time, so the first-tool
+    // and wall targets cannot be assembled from two different runs.
+    let (_, best_first_tool, best_wall) = compatible
+        .into_iter()
+        .min_by(|a, b| a.2.total_cmp(&b.2))
         .unwrap();
     measured(
         first_tool <= best_first_tool * 1.10 && wall <= best_wall * 1.10,
@@ -2496,6 +2499,36 @@ mod tests {
         let slow_paired = area_evidence("latency", &current, &BTreeSet::new(), &comparisons);
         assert!(slow_paired.evidence_complete);
         assert!(!slow_paired.gate_passed);
+
+        current.tasks[0].seconds = 5.0;
+        let mut failed = current.tasks[0].clone();
+        failed.task_id = "second-task".into();
+        failed.result = "fail".into();
+        current.tasks.push(failed);
+        let mut passed = reference.tasks[0].clone();
+        passed.task_id = "second-task".into();
+        reference.tasks.push(passed);
+        let references = [reference.clone()];
+        let comparisons = TokenComparisons {
+            baseline: None,
+            references: &references,
+        };
+        let quality_regression = area_evidence("latency", &current, &BTreeSet::new(), &comparisons);
+        assert!(quality_regression.evidence_complete);
+        assert!(!quality_regression.gate_passed);
+
+        reference.tasks[1].not_run = true;
+        let references = [reference];
+        let comparisons = TokenComparisons {
+            baseline: None,
+            references: &references,
+        };
+        let different_subset = area_evidence("latency", &current, &BTreeSet::new(), &comparisons);
+        assert!(!different_subset.evidence_complete);
+        assert!(different_subset
+            .missing_fields
+            .iter()
+            .any(|field| field.contains("attempted task IDs")));
     }
 
     #[test]
@@ -2540,6 +2573,25 @@ mod tests {
             .missing_fields
             .iter()
             .any(|field| field.contains("task run limits")));
+
+        let mut current_two = current.clone();
+        let mut second = current_two.tasks[0].clone();
+        second.task_id = "another-task".into();
+        current_two.tasks.push(second);
+        let mut reference_two = current_two.clone();
+        reference_two.tasks[1].not_run = true;
+        reference_two.input_tokens_per_solved_median = Some(1_000.0);
+        let references = [reference_two];
+        let comparisons = TokenComparisons {
+            baseline: None,
+            references: &references,
+        };
+        let evidence = token_evidence(&current_two, &comparisons);
+        assert!(!evidence.evidence_complete);
+        assert!(evidence
+            .missing_fields
+            .iter()
+            .any(|field| field.contains("attempted task IDs")));
     }
 
     #[test]
