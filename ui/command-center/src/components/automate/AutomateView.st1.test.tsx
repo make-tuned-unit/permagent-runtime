@@ -339,5 +339,200 @@ it('an all-rejected validated scan shows reasons without empty-success or Trash 
     expect(container.textContent).not.toContain('Report incomplete');
     expect(container.textContent).not.toContain('No report was captured');
     expect([...container.querySelectorAll('button')].some(b => /Trash|Review cleanup/.test(b.textContent || ''))).toBe(false);
+    expect(container.textContent).not.toContain('Recover saved scan results');
   }
+});
+
+const recoveredFinding: Finding = {
+  id: 'app', path: '/fixture/Library/Caches/App', type: 'app_cache', category: 'safe_to_remove',
+  size_bytes: 100, age_days: null, recommendation: 'Safe to remove', consequence: 'caches rebuild',
+  action_taken: null, actioned_at: null, size_recovered_bytes: null,
+};
+
+it('offers recover only for a missing ledger, then reloads the saved scan without sending rows', async () => {
+  let releasePost: () => void = () => {};
+  const postGate = new Promise<void>(resolve => { releasePost = resolve; });
+  let findingsReads = 0;
+  const calls: Array<{ url: string; method?: string; body?: BodyInit | null }> = [];
+  vi.mocked(apiFetch).mockImplementation(async (path, options) => {
+    const url = String(path);
+    calls.push({ url, method: options?.method, body: options?.body });
+    if (url === '/api/sessions/saved-run') return { conversation: [{ role: 'assistant', content: [{ type: 'text', text: '6.9 GB across 13 items.' }] }] };
+    if (url === '/automation/recovery/total') return { total_recovered_bytes: 0, runs_with_recovery: 0, items_trashed: 0 };
+    if (url === '/automation/run/saved-run/recover-findings') {
+      await postGate;
+      return {};
+    }
+    if (url === '/automation/run/saved-run/findings') {
+      findingsReads += 1;
+      if (findingsReads === 1) return { ledger_state: 'missing', findings: [] };
+      return {
+        ledger_state: 'valid', findings: [recoveredFinding], rejected: [],
+        created_at: '2026-09-10T00:00:00Z', recovered_at: '2026-09-27T23:00:00Z',
+      };
+    }
+    if (url.includes('/bulk-preview')) return { findings: [recoveredFinding], availability: [{ finding_id: recoveredFinding.id, category: recoveredFinding.category, eligible: true }] };
+    if (url.startsWith('/schedule/')) return [];
+    throw new Error(`Unexpected API request: ${url}`);
+  });
+  const run = {
+    id: 'saved-run', jobId: 'storage', name: 'Storage Insights', createdAt: '2026-09-22T09:00:00Z',
+    workingDir: '/', scheduleId: 'storage', messageCount: 2, totalTokens: 10, inputTokens: 5, outputTokens: 5,
+  };
+  await act(async () => root.render(<RunDetail run={run} displayName="Storage Insights" starterId="storage_insights" lastStatus="error" />));
+  expect(container.textContent).toContain('Report incomplete — cleanup findings could not be saved.');
+  const button = [...container.querySelectorAll('button')].find(b => b.textContent === 'Recover saved scan results');
+  expect(button).toBeTruthy();
+  await act(async () => { button!.click(); });
+  expect(container.textContent).toContain('Recovering saved scan results…');
+  await act(async () => { releasePost(); await postGate; });
+  await act(async () => [...container.querySelectorAll('button')].find(b => b.textContent === 'Review cleanup — 100 B selected')!.click());
+  expect(container.textContent).toContain('/fixture/Library/Caches/App');
+  expect(container.textContent).toContain('Recovered saved scan results at 2026-09-27T23:00:00Z');
+  expect(container.textContent).toContain('Original scan 2026-09-10T00:00:00Z');
+  expect(container.textContent).toContain('Sizes are the saved estimates.');
+  expect(container.textContent).not.toContain('Report incomplete — cleanup findings could not be saved.');
+  expect(container.textContent).not.toContain('no cleanup candidates found');
+  const post = calls.find(call => call.url === '/automation/run/saved-run/recover-findings');
+  expect(post?.method).toBe('POST');
+  expect(post?.body).toBeUndefined();
+});
+
+it('a failed recovery stays incomplete and keeps the previous valid report', async () => {
+  const previousDate = '2026-09-15T09:00:00Z';
+  vi.mocked(apiFetch).mockImplementation(async path => {
+    const url = String(path);
+    if (url === '/automation/run/saved-run/recover-findings') {
+      throw new Error('Saved scan results could not be recovered. incomplete scan findings JSON');
+    }
+    if (url === '/automation/run/saved-run/findings') return { ledger_state: 'missing', findings: [] };
+    if (url === '/automation/run/09-15/findings') return {
+      ledger_state: 'valid',
+      findings: [{ ...recoveredFinding, id: 'old', path: '/fixture/previous-cache' }],
+      created_at: previousDate,
+    };
+    if (url.startsWith('/schedule/storage/sessions')) return [{ id: '09-15', createdAt: previousDate }];
+    if (url === '/api/sessions/09-15') return {
+      conversation: [{ role: 'assistant', content: [{ type: 'text', text: 'Previous storage report' }] }],
+    };
+    if (url === '/api/sessions/saved-run') return { conversation: [] };
+    if (url === '/automation/recovery/total') return { total_recovered_bytes: 0, runs_with_recovery: 0, items_trashed: 0 };
+    throw new Error(`Unexpected API request: ${url}`);
+  });
+  await act(async () => root.render(<RunDetail run={{
+    id: 'saved-run', jobId: 'storage', name: 'Storage Insights', createdAt: '2026-09-22T09:00:00Z',
+    workingDir: '/', scheduleId: 'storage', messageCount: 2, totalTokens: 10, inputTokens: 5, outputTokens: 5,
+  }} displayName="Storage Insights" starterId="storage_insights" lastStatus="error" />));
+  const button = [...container.querySelectorAll('button')].find(b => b.textContent === 'Recover saved scan results');
+  await act(async () => { button!.click(); });
+  expect(container.textContent).toContain('Report incomplete — cleanup findings could not be saved.');
+  expect(container.textContent).toContain('Saved scan results could not be recovered. incomplete scan findings JSON');
+  expect(container.textContent).toContain('Previous valid report — ' + previousDate);
+  expect(container.textContent).toContain('Previous storage report');
+  expect(container.textContent).toContain('/fixture/previous-cache');
+  expect(container.textContent).not.toContain('/fixture/Library/Caches/App');
+  expect([...container.querySelectorAll('button')].some(b => /Trash|Review cleanup/.test(b.textContent || ''))).toBe(false);
+});
+
+it('does not offer recovery when a ledger is already valid or unverified', async () => {
+  for (const [index, ledger] of [
+    { ledger_state: 'unverified', findings: [] },
+    { ledger_state: 'valid', findings: [recoveredFinding], created_at: '2026-09-10T00:00:00Z' },
+    { ledger_state: 'valid', findings: [{ ...recoveredFinding, action_taken: 'trashed', size_recovered_bytes: 100 }], created_at: '2026-09-10T00:00:00Z' },
+  ].entries()) {
+    vi.mocked(apiFetch).mockImplementation(async path => {
+      const url = String(path);
+      if (url === '/automation/run/saved-run/findings') return ledger;
+      if (url === '/api/sessions/saved-run') return { conversation: [] };
+      if (url === '/automation/recovery/total') return { total_recovered_bytes: 0, runs_with_recovery: 0, items_trashed: 0 };
+      if (url.startsWith('/schedule/')) return [];
+      throw new Error(`Unexpected API request: ${url}`);
+    });
+    await act(async () => root.render(<RunDetail key={index} run={{
+      id: 'saved-run', jobId: 'storage', name: 'Storage Insights', createdAt: '2026-09-22T09:00:00Z',
+      workingDir: '/', scheduleId: 'storage', messageCount: 2, totalTokens: 10, inputTokens: 5, outputTokens: 5,
+    }} displayName="Storage Insights" starterId="storage_insights" lastStatus="ok" />));
+    expect(container.textContent).not.toContain('Recover saved scan results');
+    expect(vi.mocked(apiFetch).mock.calls.some(([url]) => String(url).endsWith('/recover-findings'))).toBe(false);
+    if (index === 2) expect(container.textContent).toContain('100 B moved to Trash (estimate)');
+  }
+});
+
+
+it('missing ledgers offer recovery only for storage cleanup, including legacy job identity', async () => {
+  vi.mocked(apiFetch).mockImplementation(async path => {
+    const url = String(path);
+    if (url.includes('/model-review/')) return [];
+    if (url.endsWith('/findings')) return { ledger_state: 'missing', findings: [] };
+    if (url.startsWith('/api/sessions/')) return { conversation: [] };
+    if (url === '/automation/recovery/total') return { total_recovered_bytes: 0, runs_with_recovery: 0, items_trashed: 0 };
+    if (url.startsWith('/schedule/')) return [];
+    throw new Error(`Unexpected API request: ${url}`);
+  });
+  for (const [jobId, starterId, expected] of [
+    ['renamed-storage-job', 'storage_insights', true],
+    ['storage-insights', undefined, true],
+    ['digest', undefined, false],
+    ['storage-insights', 'other_starter', false],
+    ['model', 'model_review', false],
+  ] as const) {
+    await act(async () => root.render(<RunDetail key={jobId + starterId} run={{
+      id: 'saved-run', jobId, name: 'Fixture', createdAt: '2026-09-22T09:00:00Z',
+      workingDir: '/', scheduleId: 'storage-insights', messageCount: 0, totalTokens: 0, inputTokens: 0, outputTokens: 0,
+    }} displayName="Fixture" starterId={starterId} />));
+    expect(container.textContent?.includes('Recover saved scan results')).toBe(expected);
+  }
+});
+
+it('switching runs resets recovery state and ignores an old recovery completion or failure', async () => {
+  for (const shouldReject of [false, true]) {
+    let finishPost: () => void = () => {};
+    let rejectPost: (error: Error) => void = () => {};
+    const pendingPost = new Promise<void>((resolve, reject) => { finishPost = resolve; rejectPost = reject; });
+    const reads: Record<string, number> = {};
+    vi.mocked(apiFetch).mockImplementation(async path => {
+      const url = String(path);
+      if (url.endsWith('/recover-findings')) { await pendingPost; return {}; }
+      if (url.endsWith('/findings')) { reads[url] = (reads[url] || 0) + 1; return { ledger_state: 'missing', findings: [] }; }
+      if (url.startsWith('/api/sessions/')) return { conversation: [] };
+      if (url === '/automation/recovery/total') return { total_recovered_bytes: 0, runs_with_recovery: 0, items_trashed: 0 };
+      if (url.startsWith('/schedule/')) return [];
+      throw new Error(`Unexpected API request: ${url}`);
+    });
+    const run = { id: 'old', jobId: 'storage-insights', name: 'Fixture', createdAt: '2026-09-22T09:00:00Z',
+      workingDir: '/', scheduleId: 'storage-insights', messageCount: 0, totalTokens: 0, inputTokens: 0, outputTokens: 0 };
+    // Same mounted component: changing props must invalidate the old request.
+    await act(async () => root.render(<RunDetail key={String(shouldReject)} run={run} displayName="Fixture" starterId="storage_insights" />));
+    await act(async () => [...container.querySelectorAll('button')].find(b => b.textContent === 'Recover saved scan results')!.click());
+    expect([...container.querySelectorAll('button')].find(b => b.textContent === 'Recovering saved scan results…')?.disabled).toBe(true);
+    await act(async () => root.render(<RunDetail key={String(shouldReject)} run={{ ...run, id: 'new' }} displayName="Fixture" starterId="storage_insights" />));
+    const newButton = [...container.querySelectorAll('button')].find(b => b.textContent === 'Recover saved scan results');
+    expect(newButton?.disabled).toBe(false);
+    const readsBefore = reads['/automation/run/new/findings'];
+    await act(async () => { if (shouldReject) rejectPost(new Error('OLD recovery error')); else finishPost(); });
+    expect(container.textContent).not.toContain('OLD recovery error');
+    expect(container.textContent).not.toContain('Recovering saved scan results…');
+    expect(reads['/automation/run/new/findings']).toBe(readsBefore);
+  }
+});
+
+
+it('a displayed recovery error clears when another run is selected', async () => {
+  vi.mocked(apiFetch).mockImplementation(async path => {
+    const url = String(path);
+    if (url.endsWith('/recover-findings')) throw new Error('OLD run has no saved payload');
+    if (url.endsWith('/findings')) return { ledger_state: 'missing', findings: [] };
+    if (url.startsWith('/api/sessions/')) return { conversation: [] };
+    if (url === '/automation/recovery/total') return { total_recovered_bytes: 0, runs_with_recovery: 0, items_trashed: 0 };
+    if (url.startsWith('/schedule/')) return [];
+    throw new Error(`Unexpected API request: ${url}`);
+  });
+  const run = { id: 'old', jobId: 'storage-insights', name: 'Fixture', createdAt: '2026-09-22T09:00:00Z',
+    workingDir: '/', scheduleId: 'storage-insights', messageCount: 0, totalTokens: 0, inputTokens: 0, outputTokens: 0 };
+  await act(async () => root.render(<RunDetail run={run} displayName="Fixture" starterId="storage_insights" />));
+  await act(async () => [...container.querySelectorAll('button')].find(b => b.textContent === 'Recover saved scan results')!.click());
+  expect(container.textContent).toContain('OLD run has no saved payload');
+  await act(async () => root.render(<RunDetail run={{ ...run, id: 'new' }} displayName="Fixture" starterId="storage_insights" />));
+  expect(container.textContent).not.toContain('OLD run has no saved payload');
+  expect([...container.querySelectorAll('button')].find(b => b.textContent === 'Recover saved scan results')?.disabled).toBe(false);
 });

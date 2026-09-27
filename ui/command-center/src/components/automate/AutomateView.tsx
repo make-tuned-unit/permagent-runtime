@@ -1649,6 +1649,7 @@ interface RunFindings {
   rejected?: RejectedFinding[];
   ledger_state?: 'valid' | 'missing' | 'unverified';
   created_at?: string | null;
+  recovered_at?: string | null;
 }
 
 export function findingsReportNotice(data: RunFindings, status?: ScheduleRunStatus | null): string | null {
@@ -1671,6 +1672,8 @@ export function RunDetail({ run, displayName, lastStatus, starterId }: {
   starterId?: string | null;
 }) {
   const isModelReview = starterId === 'model_review';
+  const isStorageCleanup = starterId === 'storage_insights'
+    || (!starterId && run.jobId === 'storage-insights');
   const { colors } = useTheme();
   const switchToSession = useCommandCenter(s => s.switchToSession);
   const openChatDock = useCommandCenter(s => s.openChatDock);
@@ -1684,6 +1687,12 @@ export function RunDetail({ run, displayName, lastStatus, starterId }: {
   const [previousReport, setPreviousReport] = useState<{ date: string; text: string; findings: Finding[] } | null>(null);
   const [findings, setFindings] = useState<Finding[]>([]);
   const [rejected, setRejected] = useState<RejectedFinding[]>([]);
+  const [ledgerState, setLedgerState] = useState<RunFindings['ledger_state']>(undefined);
+  const [scanCreatedAt, setScanCreatedAt] = useState<string | null>(null);
+  const [recoveredAt, setRecoveredAt] = useState<string | null>(null);
+  const [recovering, setRecovering] = useState(false);
+  const [recoverError, setRecoverError] = useState<string | null>(null);
+  const recoveryGeneration = useRef(0);
   const [actionInFlight, setActionInFlight] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
@@ -1703,10 +1712,16 @@ export function RunDetail({ run, displayName, lastStatus, starterId }: {
 
   useEffect(() => {
     let cancelled = false;
+    ++recoveryGeneration.current;
+    setRecovering(false);
+    setRecoverError(null);
     setLoading(true);
     setLoadError(false);
     setFindings([]);
     setRejected([]);
+    setLedgerState(undefined);
+    setScanCreatedAt(null);
+    setRecoveredAt(null);
     setReportText(null);
     setReportNotice(null);
     setPreviousReport(null);
@@ -1737,6 +1752,9 @@ export function RunDetail({ run, displayName, lastStatus, starterId }: {
         if (!cancelled) {
           setFindings(data.findings || []);
           setRejected(data.rejected || []);
+          setLedgerState(data.ledger_state);
+          setScanCreatedAt(data.created_at ?? null);
+          setRecoveredAt(data.recovered_at ?? null);
           setReportNotice(notice);
         }
         findingsOk = true;
@@ -1771,8 +1789,24 @@ export function RunDetail({ run, displayName, lastStatus, starterId }: {
       if (!cancelled) { setLoadError(!reportOk && !findingsOk); setLoading(false); }
     })();
     void refreshLifetime();
-    return () => { cancelled = true; };
+    return () => { cancelled = true; ++recoveryGeneration.current; };
   }, [run.id, run.jobId, run.createdAt, lastStatus, reloadTick, refreshLifetime, isModelReview]);
+
+  const recoverSavedScan = useCallback(async () => {
+    const generation = recoveryGeneration.current;
+    setRecovering(true);
+    setRecoverError(null);
+    try {
+      await apiFetch(`/automation/run/${encodeURIComponent(run.id)}/recover-findings`, { method: 'POST' });
+      if (generation !== recoveryGeneration.current) return;
+      setReloadTick(tick => tick + 1);
+    } catch (err) {
+      if (generation !== recoveryGeneration.current) return;
+      setRecoverError(err instanceof Error ? err.message : 'Saved scan results could not be recovered.');
+    } finally {
+      if (generation === recoveryGeneration.current) setRecovering(false);
+    }
+  }, [run.id]);
 
   const handleAction = async (findingId: string, action: string, confirmed?: boolean) => {
     setActionInFlight(findingId);
@@ -1879,6 +1913,30 @@ export function RunDetail({ run, displayName, lastStatus, starterId }: {
       {!loading && reportNotice && (
         <div role="status" style={{ fontSize: textSize.caption, color: colors.textMuted, marginBottom: space.lg, overflowWrap: 'anywhere' }}>
           {reportNotice}
+        </div>
+      )}
+      {!loading && isStorageCleanup && ledgerState === 'missing' && findings.length === 0 && rejected.length === 0 && (
+        <div style={{ marginBottom: space.lg }}>
+          <button
+            type="button"
+            disabled={recovering}
+            onClick={() => { void recoverSavedScan(); }}
+            style={{ fontFamily: font.body, fontSize: textSize.caption, fontWeight: 600 }}
+          >
+            {recovering ? 'Recovering saved scan results…' : 'Recover saved scan results'}
+          </button>
+        </div>
+      )}
+      {!loading && recoverError && (
+        <div role="alert" style={{ fontSize: textSize.caption, color: colors.textMuted, marginBottom: space.lg, overflowWrap: 'anywhere' }}>
+          {recoverError}
+        </div>
+      )}
+      {!loading && recoveredAt && (
+        <div role="status" style={{ fontSize: textSize.caption, color: colors.textMuted, marginBottom: space.lg, overflowWrap: 'anywhere' }}>
+          Recovered saved scan results at <time dateTime={recoveredAt}>{recoveredAt}</time>.
+          {scanCreatedAt ? <> Original scan <time dateTime={scanCreatedAt}>{scanCreatedAt}</time>.</> : null}
+          {' '}Sizes are the saved estimates.
         </div>
       )}
       {!loading && previousReport && (
