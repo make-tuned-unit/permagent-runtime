@@ -7,7 +7,7 @@ import { useIdentityStore } from '../../../stores/identityStore';
 import { useOrchestratorName } from '../shared/useOrchestratorName';
 
 /**
- * The sovereign's digital passport, on the forum HUD.
+ * The sovereign's digital passport, in the orchestrator's Meet detail.
  *
  * The identity surface existed only on the legacy `WorldView` (`HenryHUD` →
  * `HenryIdentityTab`), so moving the World over to the Solar Forum took the
@@ -15,7 +15,7 @@ import { useOrchestratorName } from '../shared/useOrchestratorName';
  * specifically the Chitin ID and sovereign status of my agent is no longer
  * there, that is my sovereigns digital passport."
  *
- * This is the compact, always-on forum form of it: who the agent is, its Chitin
+ * This is the compact forum form of it: who the agent is, its Chitin
  * DID, its passport token, and whether that identity is currently verified.
  *
  * It reads the SAME `identityStore` the legacy tab reads — chitin.id merged

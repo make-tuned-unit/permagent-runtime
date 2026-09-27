@@ -15,14 +15,13 @@ import { useCallback, useMemo, useState } from 'react';
  */
 const STORAGE_KEY = 'permagent.forum.dismissed';
 
-export type CardId = 'brand' | 'place' | 'feed' | 'passport' | 'hints';
+export type CardId = 'brand' | 'place' | 'feed' | 'hints';
 
 /** Cards that can be put away, in the order the restore menu lists them. */
 export const DISMISSIBLE: { id: CardId; label: string }[] = [
   { id: 'brand', label: 'World title' },
   { id: 'place', label: 'Place card' },
   { id: 'feed', label: 'Job feed' },
-  { id: 'passport', label: 'Sovereign passport' },
   { id: 'hints', label: 'Control hints' },
 ];
 

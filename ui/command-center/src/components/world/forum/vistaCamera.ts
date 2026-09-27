@@ -16,37 +16,36 @@ import landmarks from './vistaLandmarks.json';
  * orbital rings, the floating gardens and the sky bodies behind. This is that
  * camera, and the numbers are the ones the frame test below pins:
  *
- *   position  (0, 10, 23)  — over the south overlook, 4 m beyond the balustrade
- *                            at Blender y = -18.8
- *   target    (27, 1, -65) — 92.5 m out, yaw +17.06 deg east of north,
- *                            pitch -5.58 deg
+ *   position  (0, 12, 24) — over the south overlook, above the raised garden
+ *   target    (26, 2, -66) — through the lagoon toward the ridge and skyline
  *   fov       72 deg vertical
  *
  * Why the view axis is swung 17 degrees east of due north rather than looking
  * straight up the commons axis: the two landmarks that have to share the frame
- * sit about 51 degrees apart as seen from here — the nearest NE spire is at
- * azimuth +42 deg and the ridge's eastern end (the Blender polar-100 arc, with
- * its waterfall) is at -8.5 deg. Their bisector is +17 deg, and a horizontal
+ * sit on opposite sides of the view — the nearest NE spire is to the east and
+ * the ridge's eastern end is to the west. Their bisector is east of north, and a horizontal
  * half-field of at least 26 deg is the smallest that holds both — which on the
  * app's 702 x 972 canvas is 72 deg vertical, not the 48 the canvas shipped
  * with.
  *
- * Why the eye is at 10 m and not at rail height: the Gallery's raised garden
+ * Why the eye is at 12 m and not at rail height: the Gallery's raised garden
  * deck crosses the view at z = -20 and tops out near 9 m. From 6-7 m it closes
- * off the whole middle distance; from 10 m the frame clears it and the far
+ * off the whole middle distance; from 12 m the frame clears it and the far
  * shore, the ridge and the sky open up above it. (The lagoon surface itself is
  * still behind that deck — it needs an eye above about 14 m, which is an
- * overlook rather than a terrace edge. Job 20 records that.)
+ * overlook rather than a terrace edge. Job 20 records the earlier framing.)
  *
  * Why the target is BELOW the camera: `OrbitControls` clamps the polar angle to
  * `maxPolarAngle` (Math.PI / 2.05 = 87.8 deg) on every `update()`, so a target
  * above the camera is silently pulled back down and the pose would not survive
- * its first frame. Here the polar angle is 84.4 deg, inside the clamp.
+ * its first frame. This pose looks down and stays inside the clamp.
  */
 export const FORUM_VISTA = {
-  position: [0, 15, 27],
-  target: [30, 3, -76],
-  fov: 74,
+  // Lower, tighter hero framing: keeps ring + skyline while giving the
+  // furnished arrival court and agents more of the frame.
+  position: [0, 12, 24],
+  target: [26, 2, -66],
+  fov: 72,
 } as const satisfies { position: [number, number, number] | readonly number[]; target: readonly number[]; fov: number };
 
 /** The field every other district focus keeps: those camera poses were framed

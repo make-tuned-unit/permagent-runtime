@@ -448,9 +448,8 @@ await context.addInitScript(() => {
     return { ok: true, meshes, triangles, vertices, emissiveMaterials: emissive, emissiveSample: named };
   };
   // Where the gas giant and the moon actually land on screen. ForumSky builds
-  // them as plain spheres (radius 140 at 900 m, radius 46 at 1080 m) with their
-  // own shader, so they are identifiable by geometry alone and their projection
-  // can be checked instead of eyeballed.
+  // them as named sphere meshes with their own shaders. Read their live radius
+  // and transform so visual revisions do not silently invalidate this probe.
   window.__celestialProbe = function celestialProbe() {
     const store = window.__findR3FStore();
     if (!store) return { ok: false, reason: 'no-r3f-store' };
@@ -461,7 +460,7 @@ await context.addInitScript(() => {
     scene.traverse(o => {
       if (!o.isMesh || !o.geometry || o.geometry.type !== 'SphereGeometry') return;
       const r = o.geometry.parameters && o.geometry.parameters.radius;
-      const label = r === 140 ? 'gasGiant' : r === 46 ? 'moon' : r === 5.2 ? 'sunriseSun' : null;
+      const label = o.name === 'Forum gas giant' ? 'gasGiant' : o.name === 'Forum moon' ? 'moon' : r === 5.2 ? 'sunriseSun' : null;
       if (!label) return;
       o.updateMatrixWorld();
       const world = { x: o.matrixWorld.elements[12], y: o.matrixWorld.elements[13], z: o.matrixWorld.elements[14] };

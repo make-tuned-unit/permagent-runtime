@@ -321,9 +321,6 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
     try { return localStorage.getItem(FORUM_RAIL_KEY) !== 'closed'; } catch { return true; }
   });
   const cards = useDismissible();
-  // "Sovereign agent view": walking the world as the agent, or with the
-  // sovereign selected at the desk.
-  const sovereignInView = walking || flying || selected === 'henry';
   const [walkStartOverride, setWalkStartOverride] = useState<[number, number, number] | null>(null);
   const [deskOpen, setDeskOpen] = useState(() => {
     try {
@@ -396,7 +393,7 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
           : walking
           ? <ForumWalk start={walkStartOverride ?? walkStart} onExit={exitWalk} onInspect={inspectAgent} inMesh={agoraOpen} onEnterMesh={enterMesh} onExitMesh={leaveMesh} onMeshPrompt={setMeshPrompt} />
           : !agoraOpen && <ForumNavigation district={district} focusAgent={focusAgent} />}
-        <ForumPostProcessing />
+        <ForumPostProcessing appearance={appearance} />
         <PerfSampler />
       </Canvas>
       {/* The left edge is ONE column, not five boxes each pinned to the corner
@@ -453,20 +450,12 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
         </Button>
       </div>
       {walking && <div className="forum-crosshair" aria-hidden="true">+</div>}
-      {/* The bottom-right corner is one column too, for the same reason as the
-          left edge: the passport (bottom:132px) was laid over the skiff button
-          (bottom:118px), and the Agora's return button (bottom:126px) over the
-          skiff as well, because each offset was chosen without the others.
-          Stacked in one flow they sit above one another at any size. */}
+      {/* The bottom-right corner keeps the Agora return, skiff, and walk
+          controls in one column so they never cover one another. */}
       {/* The floating chat pill owns this corner too; QA 2026-09-20 caught it
           covering half of "Walk the world". The lane's bottom clears whatever
           the pill currently measures (null while it is hidden). */}
       <div className="forum-lane forum-lane-right" style={{ bottom: forumRightLaneBottom(chatLauncherSize) }}>
-      {/* The passport belongs to the agent, so it appears where the agent does:
-          while you are embodied in the world as your sovereign, or while the
-          sovereign is the one selected at the desk. Everywhere else it is just
-          a card sitting on the view. */}
-      {sovereignInView && !cards.isDismissed('passport') && <div className="forum-passport-slot" onPointerEnter={()=>hud.hold(true)} onPointerLeave={()=>hud.hold(false)}><DismissCard label="the passport" onDismiss={()=>cards.dismiss('passport')} /><ForumPassport /></div>}
       {agoraOpen && <div className="forum-agora-return"><Button colors={colors} variant="primary" flashSuccess={false} onClick={leaveMesh}>Return to the Forum</Button></div>}
       <div className="forum-fly"><Button colors={colors} variant={flying?'ghostOn':'ghost'} flashSuccess={false} style={SCENE_BUTTON} onClick={()=>{
         if (flying) { setFlying(false); return; }
@@ -498,7 +487,7 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
       <label className="field-label" htmlFor="forum-agent">Choose an agent</label>
       <select id="forum-agent" value={selected} onChange={e => { setSelected(e.target.value); setSaved(false); }}>{ROSTER.map(a => <option key={a.id} value={a.id}>{a.isHenry ? `${configuredName || 'Your agent'} · Sovereign orchestrator` : a.name}</option>)}</select>
       <nav className="forum-tabs" aria-label="Agent desk">{['meet','learn','task','conversation'].map(t => <Button colors={colors} flashSuccess={false} key={t} aria-pressed={tab===t} onClick={() => setTab(t)}>{t==='meet' ? 'Meet' : t==='learn' ? 'Learn' : t==='task' ? 'Give a brief' : 'Conversation'}</Button>)}</nav>
-      {tab==='meet' && <section><div className="forum-agent-portrait" style={{borderColor:agent.trimColor}}><img key={agent.id} src={`${import.meta.env.BASE_URL}world/forum-characters/${agent.id}.png`} alt={profile.signature} onError={e=>{e.currentTarget.style.visibility='hidden';}} /><div><span className="eyebrow">{profile.archetype}</span><h3>{agent.name}</h3></div></div><p>{profiles[selected] ?? `${agent.name} is part of the existing World roster. Its dedicated panel in the main World describes its capabilities and operating limits.`}</p><div className="forum-character"><b>Working style</b><p>{profile.manner}</p><p className="forum-voice">“{profile.voice}”</p><Button colors={colors} flashSuccess={false} onClick={()=>{setBrief(profile.question);setKind('Query');setTab('task');setSaved(false);}}>Try a question for this role ↗</Button></div><div className="note"><b>What does its presence mean?</b><p>{agent.wire==='daemon' ? 'This agent has a daemon event source. Its presence alone does not confirm a connection or a running job.' : agent.wire==='sim' ? 'Ambient presence. Idle movement is simulated; it is not evidence of a running job.' : 'Static presence. This character has no live activity emitter.'}</p></div><Button colors={colors} flashSuccess={false} variant="primary" className="forum-primary" onClick={() => setTab('learn')}>How agents work ↗</Button></section>}
+      {tab==='meet' && <section><div className="forum-agent-portrait" style={{borderColor:agent.trimColor}}><img key={agent.id} src={`${import.meta.env.BASE_URL}world/forum-characters/${agent.id}.png`} alt={profile.signature} onError={e=>{e.currentTarget.style.visibility='hidden';}} /><div><span className="eyebrow">{profile.archetype}</span><h3>{agent.name}</h3></div></div>{deskOpen && agent.isHenry && <div className="forum-passport-detail"><ForumPassport /></div>}<p>{profiles[selected] ?? `${agent.name} is part of the existing World roster. Its dedicated panel in the main World describes its capabilities and operating limits.`}</p><div className="forum-character"><b>Working style</b><p>{profile.manner}</p><p className="forum-voice">“{profile.voice}”</p><Button colors={colors} flashSuccess={false} onClick={()=>{setBrief(profile.question);setKind('Query');setTab('task');setSaved(false);}}>Try a question for this role ↗</Button></div><div className="note"><b>What does its presence mean?</b><p>{agent.wire==='daemon' ? 'This agent has a daemon event source. Its presence alone does not confirm a connection or a running job.' : agent.wire==='sim' ? 'Ambient presence. Idle movement is simulated; it is not evidence of a running job.' : 'Static presence. This character has no live activity emitter.'}</p></div><Button colors={colors} flashSuccess={false} variant="primary" className="forum-primary" onClick={() => setTab('learn')}>How agents work ↗</Button></section>}
       {tab==='learn' && <section><div className="lesson-count">FIELD GUIDE / 0{lesson+1}</div><h3>{lessons[lesson][0]}</h3><p>{lessons[lesson][1]}</p><div className="lesson-steps">{lessons.map((l,i) => <Button colors={colors} flashSuccess={false} key={l[0]} aria-label={l[0]} aria-pressed={lesson===i} onClick={() => setLesson(i)}>{i+1}</Button>)}</div><div className="note"><b>Try asking {agent.name}</b><p>{lessons[lesson][2]}</p></div><Button colors={colors} flashSuccess={false} variant="primary" className="forum-primary" onClick={() => { setBrief(lessons[lesson][2]); setKind('Query'); setSaved(false); setTab('task'); }}>Use this question ↗</Button></section>}
       {tab==='task' && <section><h3>A clear brief is a good beginning.</h3><p>Prepare a query or job for {agent.name}. Send a question, job or capability request to your orchestrator through the shared conversation. Execution and approvals use the existing runtime; exporting alone does not dispatch work.</p><label className="field-label" htmlFor="forum-kind">Type</label><select id="forum-kind" value={kind} onChange={e => { setKind(e.target.value); setSaved(false); }}><option>Query</option><option>Job</option><option>Capability</option></select><label className="field-label" htmlFor="forum-brief">What would you like to achieve?</label><textarea id="forum-brief" value={brief} placeholder="Describe the outcome and context…" onChange={e => { setBrief(e.target.value); setSaved(false); }} /><label className="field-label" htmlFor="forum-criteria">What would count as done?</label><textarea id="forum-criteria" className="short" value={criteria} placeholder="An artifact, a cited answer, a passing check…" onChange={e => { setCriteria(e.target.value); setSaved(false); }} /><Button colors={colors} flashSuccess={false} variant="primary" className="forum-primary" disabled={!brief.trim()} onClick={async()=>{
         setQueryError('');

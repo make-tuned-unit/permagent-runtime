@@ -10,6 +10,19 @@ const isTauri = !!process.env.TAURI_ENV_PLATFORM;
 
 export default defineConfig({
   plugins: [react()],
+  // Keep one module instance for React + R3F + Three across optimized deps.
+  // Standalone `forum.html` can otherwise load mixed instances and trip
+  // Canvas hook context guards (`R3F: Hooks can only be used...`).
+  resolve: {
+    dedupe: [
+      'react',
+      'react-dom',
+      'three',
+      '@react-three/fiber',
+      '@react-three/drei',
+      '@react-three/postprocessing',
+    ],
+  },
   // Expose only this explicitly non-secret PERMAGENT flag in addition to
   // Vite's normal VITE_* variables.
   envPrefix: ['VITE_', 'PERMAGENT_SHORTLIVED_STREAM_TOKEN'],
@@ -46,6 +59,9 @@ export default defineConfig({
     emptyOutDir: true,
   },
   test: {
+    // Transform the ESM store through Vite so its React resolves through the
+    // same dedupe rule as the renderer, including isolated worktree tests.
+    server: { deps: { inline: ['zustand'] } },
     include: [
       'src/**/*.{test,spec}.{ts,tsx}',
       '../analytics-client/src/**/*.{test,spec}.ts',

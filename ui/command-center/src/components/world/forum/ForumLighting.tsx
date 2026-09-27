@@ -17,7 +17,7 @@ import { ENV } from '../shared/palette';
 // emissives, which take no light at all — `emissiveIntensity` is independent
 // of every light in this file, so nothing here can dim them.
 export const FORUM_LIGHT = {
-  day: { background: ENV.marble, sky: '#FFE9CC', ground: ENV.marbleVein, ambient: 1.2, key: '#FFD9A8', strength: 2.6, fill: '#9FC0E8', fillStrength: .55 },
+  day: { background: ENV.marble, sky: '#FFE9CC', ground: ENV.marbleVein, ambient: 0.48, key: '#FFD9A8', strength: 3.1, fill: '#9FC0E8', fillStrength: .3 },
   night: { background: ENV.deepVoid, sky: '#7FA0DE', ground: '#16233C', ambient: .48, key: '#A8C4FF', strength: .85, fill: '#5C7FC6', fillStrength: .34 },
 } as const;
 /** Sun bearing, matching the sunrise sun drawn in ForumSky. asin(.274) ~= 15.9 deg. */

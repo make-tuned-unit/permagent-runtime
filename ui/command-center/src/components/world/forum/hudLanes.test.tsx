@@ -30,7 +30,7 @@ import { ForumView } from './ForumView';
  * one flex column, where two items cannot share space.
  *
  * WHAT THIS PROVES: that the rail and the left-edge cards are siblings in one
- * lane in top-to-bottom order, that the passport, the skiff and Walk share the
+ * lane in top-to-bottom order, that the skiff and Walk share the
  * right lane, and that no stylesheet rule pins any of those items back out of
  * flow with `position: absolute` or a corner offset.
  *
@@ -75,15 +75,34 @@ describe('the forum HUD lays each corner out as one column', () => {
     expect(order).toEqual(['forum-auth-notice', 'forum-brand', 'forum-rail', 'forum-location', 'forum-live', 'forum-controls']);
   });
 
-  it('stacks the passport above the skiff and Walk in one right-hand lane', () => {
-    // Henry is selected at the desk by default, so the passport is showing:
-    // the case QA saw covering "Fly the skiff".
+  it('keeps the skiff and Walk in one right-hand lane', () => {
     const lane = laneOf('.forum-fly');
     expect(lane?.classList.contains('forum-lane-right')).toBe(true);
-    expect(laneOf('.forum-passport-slot')).toBe(lane);
     expect(laneOf('.forum-play')).toBe(lane);
     const order = [...lane!.children].map(c => c.className.split(' ')[0]);
-    expect(order).toEqual(['forum-passport-slot', 'forum-fly', 'forum-play']);
+    expect(order).toEqual(['forum-fly', 'forum-play']);
+  });
+
+  it('shows the passport only in the open Meet detail for the orchestrator', () => {
+    const passport = () => host.querySelector('.forum-passport');
+    const panel = host.querySelector('.forum-panel')!;
+    expect(host.querySelector('.forum-world .forum-passport')).toBeNull();
+    expect(passport()?.closest('.forum-panel')).toBe(panel);
+
+    act(() => (host.querySelector('.forum-desk-toggle button') as HTMLButtonElement).click());
+    expect(passport()).toBeNull();
+    act(() => (host.querySelector('.forum-desk-toggle button') as HTMLButtonElement).click());
+    expect(passport()).not.toBeNull();
+
+    const agent = host.querySelector('#forum-agent') as HTMLSelectElement;
+    act(() => { agent.value = 'librarian'; agent.dispatchEvent(new Event('change', { bubbles: true })); });
+    expect(passport()).toBeNull();
+    act(() => { agent.value = 'henry'; agent.dispatchEvent(new Event('change', { bubbles: true })); });
+    expect(passport()).not.toBeNull();
+
+    const learn = [...host.querySelectorAll('.forum-tabs button')].find(button => button.textContent === 'Learn') as HTMLButtonElement;
+    act(() => learn.click());
+    expect(passport()).toBeNull();
   });
 
   // QA 2026-09-19, real window: "Show 1 hidden card" was centred on its own at
@@ -133,7 +152,7 @@ describe('the forum HUD lays each corner out as one column', () => {
 
   it('never pins a lane item back out of flow', () => {
     const members = ['forum-brand', 'forum-rail', 'forum-location', 'forum-live', 'forum-restore', 'forum-controls',
-      'forum-passport-slot', 'forum-agora-return', 'forum-fly', 'forum-play'];
+      'forum-agora-return', 'forum-fly', 'forum-play'];
     const offenders: string[] = [];
     for (const { selector, body } of rules()) {
       if (!members.includes(subjectClass(selector) ?? '')) continue;

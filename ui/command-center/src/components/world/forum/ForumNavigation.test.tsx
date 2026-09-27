@@ -33,12 +33,12 @@ it('finds the sovereign at its current walking position again on a repeated requ
   Object.assign(live, { x: 99, y: 0, z: 99 });
   const m = ensureForumMotion('henry', { x: 0, y: 0, z: 0 });
   Object.assign(m, { x: 5, y: 0, z: 3 });
-  act(() => root.render(<ForumNavigation district={DISTRICTS[0]} onDistrict={() => {}} focusAgent={{ id: 'henry', revision: 1 }} />));
+  act(() => root.render(<ForumNavigation district={DISTRICTS[0]} focusAgent={{ id: 'henry', revision: 1 }} />));
   expect(scene.camera.position.set).toHaveBeenLastCalledWith(10, 3.5, 10);
   expect(scene.controls.target.set).toHaveBeenLastCalledWith(5, 1.2, 3);
   Object.assign(live, { x: -99, y: 0, z: -99 });
   Object.assign(m, { x: -2, y: 4.32, z: 8 });
-  act(() => root.render(<ForumNavigation district={DISTRICTS[0]} onDistrict={() => {}} focusAgent={{ id: 'henry', revision: 2 }} />));
+  act(() => root.render(<ForumNavigation district={DISTRICTS[0]} focusAgent={{ id: 'henry', revision: 2 }} />));
   expect(scene.camera.position.set).toHaveBeenLastCalledWith(3, 7.82, 15);
   expect(scene.controls.target.set).toHaveBeenLastCalledWith(-2, 5.5200000000000005, 8);
   act(() => root.unmount());
@@ -47,7 +47,7 @@ it('finds the sovereign at its current walking position again on a repeated requ
 it('opens the commons on the wide vista, and gives every other district back the narrow lens', () => {
   const host = document.createElement('div');
   const root = createRoot(host);
-  act(() => root.render(<ForumNavigation district={DISTRICTS[0]} onDistrict={() => {}} focusAgent={null} />));
+  act(() => root.render(<ForumNavigation district={DISTRICTS[0]} focusAgent={null} />));
   expect(DISTRICTS[0].id).toBe('commons');
   expect(scene.camera.position.set).toHaveBeenLastCalledWith(...FORUM_VISTA.position);
   expect(scene.controls.target.set).toHaveBeenLastCalledWith(...FORUM_VISTA.target);
@@ -55,7 +55,7 @@ it('opens the commons on the wide vista, and gives every other district back the
   expect(scene.controls.update).toHaveBeenCalled();
 
   const gallery = DISTRICTS.find(d => d.id === 'gallery')!;
-  act(() => root.render(<ForumNavigation district={gallery} onDistrict={() => {}} focusAgent={null} />));
+  act(() => root.render(<ForumNavigation district={gallery} focusAgent={null} />));
   expect(scene.camera.fov).toBe(FORUM_BASE_FOV);
   expect(scene.camera.position.set).toHaveBeenLastCalledWith(gallery.position[0] + 13, gallery.position[1] + 12, gallery.position[2] + 16);
   act(() => root.unmount());
@@ -66,7 +66,7 @@ it('drops back to the narrow lens to find a person, so a portrait is not shot on
   const root = createRoot(host);
   const person = ensureForumMotion('librarian', { x: 0, y: 0, z: 0 });
   Object.assign(person, { x: 4, y: 0, z: -6 });
-  act(() => root.render(<ForumNavigation district={DISTRICTS[0]} onDistrict={() => {}} focusAgent={{ id: 'librarian', revision: 1 }} />));
+  act(() => root.render(<ForumNavigation district={DISTRICTS[0]} focusAgent={{ id: 'librarian', revision: 1 }} />));
   expect(scene.camera.fov).toBe(FORUM_BASE_FOV);
   expect(scene.camera.position.set).toHaveBeenLastCalledWith(9, 3.5, 1);
   act(() => root.unmount());

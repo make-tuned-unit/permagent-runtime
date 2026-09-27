@@ -363,15 +363,13 @@
 .forum-world .forum-location,
 .forum-world .forum-controls,
 .forum-world .forum-live,
-.forum-world .forum-passport-slot,
 .forum-world .forum-play {
   transition: opacity 620ms ease, transform 620ms ease, visibility 0s linear 0s;
 }
 .forum-world[data-hud='resting'] .forum-districts,
 .forum-world[data-hud='resting'] .forum-location,
 .forum-world[data-hud='resting'] .forum-controls,
-.forum-world[data-hud='resting'] .forum-live,
-.forum-world[data-hud='resting'] .forum-passport-slot {
+.forum-world[data-hud='resting'] .forum-live {
   opacity: 0;
   visibility: hidden;
   transform: translateY(6px);
@@ -385,17 +383,11 @@
   .forum-world .forum-location,
   .forum-world .forum-controls,
   .forum-world .forum-live,
-  .forum-world .forum-passport-slot,
   .forum-world .forum-play { transition: none; }
 }
 
-/* ── Sovereign passport ───────────────────────────────────────────────
-   The agent's digital passport: Chitin ID, passport token and whether the
-   identity is currently verified. Bottom right, opposite the place card,
-   clear of the sky bodies at the top of the frame. */
-.forum-passport-slot {
-  max-width: 300px;
-}
+/* ── Sovereign passport in the orchestrator's Meet detail ────────────── */
+.forum-passport-detail { margin: 0 0 18px; }
 .forum-passport {
   border: 1px solid var(--forum-border);
   border-left: 2px solid var(--forum-bronze);
@@ -614,7 +606,7 @@
    Every panel over the world can be put away and stays away. The control
    is the same size and place on each card, and it only appears on hover
    or focus so it is not five crosses sitting on the view. */
-.forum-brand, .forum-location, .forum-live, .forum-passport-slot, .forum-controls { position: relative; }
+.forum-brand, .forum-location, .forum-live, .forum-controls { position: relative; }
 .forum-card-dismiss {
   position: absolute;
   top: 4px;
@@ -633,7 +625,6 @@
 .forum-location:hover .forum-card-dismiss,
 .forum-live:hover .forum-card-dismiss,
 .forum-controls:hover .forum-card-dismiss,
-.forum-passport-slot:hover .forum-card-dismiss,
 .forum-card-dismiss:focus-visible { opacity: 1; }
 
 .forum-restore { pointer-events: auto; }
@@ -675,7 +666,7 @@
 }
 .forum-lane-right {
   right: 28px;
-  /* Top bound: below the desk toggle, so a tall passport cannot climb onto it. */
+  /* Top bound: below the desk toggle. */
   top: 80px;
   bottom: 72px;
   align-items: flex-end;
