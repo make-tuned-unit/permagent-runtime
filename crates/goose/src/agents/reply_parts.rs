@@ -10,6 +10,7 @@ use tracing::debug;
 use super::super::agents::Agent;
 #[cfg(feature = "code-mode")]
 use crate::agents::platform_extensions::code_execution;
+
 use crate::config::GooseMode;
 use crate::conversation::message::{Message, MessageContent, ToolRequest};
 use crate::conversation::Conversation;
@@ -31,6 +32,14 @@ use crate::session::{
     budget_task_id, goal_id, CostLedgerRow, CostTier, Session, SessionManager, SessionType,
 };
 use rmcp::model::Tool;
+
+/// Code mode's catalog/filesystem disclosures hide orchestrator tools in
+/// favor of an execution bridge. A headless coding coordinator must see the
+/// DAG tools directly, and its role tool gate denies the bridge itself.
+#[cfg(feature = "code-mode")]
+fn use_code_execution_for_role(extension_enabled: bool, headless_coding_coordinator: bool) -> bool {
+    extension_enabled && !headless_coding_coordinator
+}
 
 async fn enhance_model_error(error: ProviderError, provider: &Arc<dyn Provider>) -> ProviderError {
     let ProviderError::RequestFailed(ref msg) = error else {
@@ -1043,10 +1052,12 @@ impl Agent {
         }
 
         #[cfg(feature = "code-mode")]
-        let code_execution_active = self
-            .extension_manager
-            .is_extension_enabled(code_execution::EXTENSION_NAME)
-            .await;
+        let code_execution_active = use_code_execution_for_role(
+            self.extension_manager
+                .is_extension_enabled(code_execution::EXTENSION_NAME)
+                .await,
+            self.config.headless_coding_coordinator,
+        );
         #[cfg(not(feature = "code-mode"))]
         let code_execution_active = false;
         #[cfg(feature = "code-mode")]
@@ -2764,6 +2775,20 @@ pub fn is_tool_visible_to_model(tool: &Tool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "code-mode")]
+    #[test]
+    fn headless_coordinator_uses_direct_dag_tools_even_when_code_mode_is_enabled() {
+        use pctx_code_mode::config::ToolDisclosure;
+        for disclosure in [ToolDisclosure::Catalog, ToolDisclosure::Filesystem] {
+            assert!(
+                !crate::agents::extension_manager::is_first_class_extension("orchestrator"),
+                "{disclosure:?} would hide orchestrator DAG tools if code mode ran"
+            );
+            assert!(!use_code_execution_for_role(true, true));
+            assert!(use_code_execution_for_role(true, false));
+        }
+    }
     use crate::config::GooseMode;
     use crate::conversation::message::Message;
     use crate::model::ModelConfig;

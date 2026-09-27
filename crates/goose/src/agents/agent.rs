@@ -6013,7 +6013,10 @@ mod tests {
                     &session,
                 )
                 .await;
-            assert_eq!(result.unwrap_err().code, ErrorCode::RESOURCE_NOT_FOUND);
+            let Err(error) = result else {
+                panic!("{forbidden} must be denied before dispatch");
+            };
+            assert_eq!(error.code, ErrorCode::RESOURCE_NOT_FOUND);
         }
 
         // A dispatched worker constructs its own Agent; the coordinator's
