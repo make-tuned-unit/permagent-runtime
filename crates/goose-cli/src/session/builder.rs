@@ -1457,7 +1457,7 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
     permagent::posthog::set_session_context("cli", session_config.resume);
 
     let config = Config::global();
-    let agent = new_primary_agent().await;
+    let mut agent = new_primary_agent().await;
 
     if session_config.container.is_some() {
         agent.set_container(session_config.container.clone()).await;
@@ -1482,6 +1482,9 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
     let coding_harness = recipe
         .map(crate::recipes::builtin_recipes::is_coding_harness_recipe)
         .unwrap_or(false);
+    agent.config.headless_coding_coordinator =
+        wants_headless_goal_dispatch(coding_harness, agent.config.goose_mode)
+            && !session_config.interactive;
 
     let resolved =
         resolve_provider_and_model(&session_config, config, saved_provider, saved_model_config);

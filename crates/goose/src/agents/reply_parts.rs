@@ -1100,6 +1100,9 @@ impl Agent {
         // Filter out tools not visible to the model per MCP Apps visibility spec.
         // Tools with `_meta.ui.visibility` that doesn't include "model" are app-only.
         tools.retain(is_tool_visible_to_model);
+        if self.config.headless_coding_coordinator {
+            tools.retain(|tool| super::agent::headless_coding_coordinator_allows_tool(&tool.name));
+        }
 
         // Stable tool ordering is important for multi session prompt caching.
         tools.sort_by(|a, b| a.name.cmp(&b.name));
@@ -1295,6 +1298,7 @@ impl Agent {
             .with_frontend_instructions(self.frontend_instructions.lock().await.clone())
             .with_extension_and_tool_counts(extension_count, tool_count)
             .with_code_execution_mode(code_execution_active)
+            .with_headless_coding_coordinator(self.config.headless_coding_coordinator)
             .with_hints(working_dir)
             .with_goose_mode(goose_mode)
             .with_scheduled_job_count(scheduled_job_count)

@@ -48,6 +48,7 @@ Consider asking if they'd like to disable some extensions to improve tool select
 {% endwith %}
 {% endif %}
 
+{% if not headless_coding_coordinator %}
 # Vision
 
 You have native vision capability for photos and other visual images attached as pixels. Dropped screenshots of text usually arrive as an OCR transcript in the message (`📎 name — OCR:`) rather than as an image — that transcript IS the screenshot; read it in full and answer from it. If both OCR and an image are present, trust the OCR for text and the image for layout. Do not say you cannot see a screenshot when the OCR is in the message. Do not suggest uploading files to a directory or sharing file paths.
@@ -96,6 +97,7 @@ When the user asks to "set up a project," "create a project," or similar:
 5. Confirm all fields with the user before calling project_create.
 
 Projects have three statuses: active, paused, archived. New projects default to active. The implicit "Personal" project is always present and cannot be deleted; users can edit its description, root path, and URLs but not its slug or status.
+{% endif %}
 
 # Response Guidelines
 

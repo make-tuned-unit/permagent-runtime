@@ -306,6 +306,9 @@ pub struct AgentRunnerConfig {
     /// extension-grant mechanism entirely and so is otherwise unreachable
     /// by the profile's tool-set narrowing.
     pub compact_worker_profile: bool,
+    /// Only the headless coding recipe's top-level coordinator. Goal workers
+    /// get fresh AgentRunnerConfig values and retain their own tool grants.
+    pub headless_coding_coordinator: bool,
 }
 
 impl AgentRunnerConfig {
@@ -325,6 +328,7 @@ impl AgentRunnerConfig {
             disable_session_naming,
             goose_platform,
             compact_worker_profile: false,
+            headless_coding_coordinator: false,
         }
     }
 
@@ -467,6 +471,31 @@ pub struct Agent {
     /// prove the arms pass the failed request's real size to it.
     #[cfg(test)]
     test_failover_request_tokens: Mutex<Vec<Option<usize>>>,
+}
+
+/// The headless coding root plans and supervises; dispatched workers receive
+/// fresh agent configs and keep their own implementation/verification tools.
+/// Match full public names so a same-named tool from another extension cannot
+/// inherit a coordinator grant.
+pub(super) fn headless_coding_coordinator_allows_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "read"
+            | "tree"
+            | "search"
+            | "map_query"
+            | "analyze"
+            | "delegate"
+            | "orchestrator__routing_roster"
+            | "orchestrator__check_worker"
+            | "orchestrator__decompose_roadmap"
+            | "orchestrator__create_roadmap"
+            | "orchestrator__goal_advance"
+            | "orchestrator__goal_status"
+            | "orchestrator__goal_list"
+            | "orchestrator__resume_roadmap"
+            | "orchestrator__escalate"
+    ) || name == FINAL_OUTPUT_TOOL_NAME
 }
 
 #[derive(Clone, Debug)]
@@ -1713,6 +1742,21 @@ impl Agent {
         cancellation_token: Option<CancellationToken>,
         session: &Session,
     ) -> (String, Result<ToolCallResult, ErrorData>) {
+        if self.config.headless_coding_coordinator
+            && !headless_coding_coordinator_allows_tool(&tool_call.name)
+        {
+            return (
+                request_id,
+                Err(ErrorData::new(
+                    ErrorCode::RESOURCE_NOT_FOUND,
+                    format!(
+                        "Tool '{}' is unavailable to the headless coding coordinator",
+                        tool_call.name
+                    ),
+                    None,
+                )),
+            );
+        }
         let input_summary =
             redacted_tool_input_summary(&tool_call.name, tool_call.arguments.as_ref());
         tracing::Span::current().record("input", tracing::field::display(&input_summary));
@@ -2342,6 +2386,10 @@ impl Agent {
             if let Some(final_output_tool) = self.final_output_tool.lock().await.as_ref() {
                 prefixed_tools.push(final_output_tool.tool());
             }
+        }
+
+        if self.config.headless_coding_coordinator {
+            prefixed_tools.retain(|tool| headless_coding_coordinator_allows_tool(&tool.name));
         }
 
         prefixed_tools
@@ -5921,6 +5969,71 @@ impl Agent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn headless_coordinator_hides_and_denies_worker_tools_without_narrowing_workers(
+    ) -> anyhow::Result<()> {
+        let mut coordinator = Agent::new();
+        coordinator.config.headless_coding_coordinator = true;
+        let session = coordinator
+            .config
+            .session_manager
+            .create_session(
+                std::env::current_dir()?,
+                "coordinator-tool-scope".to_string(),
+                crate::session::session_manager::SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await?;
+        let developer = || crate::agents::extension::ExtensionConfig::Builtin {
+            name: "developer".to_string(),
+            description: String::new(),
+            display_name: None,
+            timeout: None,
+            bundled: None,
+            available_tools: Vec::new(),
+        };
+        coordinator.add_extension(developer(), &session.id).await?;
+        let coordinator_tools = coordinator.list_tools(&session.id, None).await;
+        let coordinator_names: Vec<_> = coordinator_tools
+            .iter()
+            .map(|tool| tool.name.as_ref())
+            .collect();
+        assert!(coordinator_names.contains(&"read"));
+        for forbidden in ["edit", "write", "shell", "verify"] {
+            assert!(
+                !coordinator_names.contains(&forbidden),
+                "{forbidden} was exposed"
+            );
+            let (_, result) = coordinator
+                .dispatch_tool_call(
+                    CallToolRequestParams::new(forbidden.to_string()),
+                    format!("blocked-{forbidden}"),
+                    None,
+                    &session,
+                )
+                .await;
+            assert_eq!(result.unwrap_err().code, ErrorCode::RESOURCE_NOT_FOUND);
+        }
+
+        // A dispatched worker constructs its own Agent; the coordinator's
+        // request-only tool scope must not be persisted into inherited grants.
+        let worker = Agent::new();
+        worker.add_extension(developer(), &session.id).await?;
+        let worker_names: Vec<_> = worker
+            .list_tools(&session.id, None)
+            .await
+            .into_iter()
+            .map(|tool| tool.name.into_owned())
+            .collect();
+        for authorized in ["edit", "write", "shell", "verify"] {
+            assert!(
+                worker_names.iter().any(|name| name == authorized),
+                "{authorized} missing from worker"
+            );
+        }
+        Ok(())
+    }
 
     /// 2026-09-25: a gpt-5.4-mini worker's turn held only a reasoning item
     /// (the output cap ran out while it thought). That is not the model
