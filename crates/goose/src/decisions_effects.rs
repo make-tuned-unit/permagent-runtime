@@ -1725,6 +1725,9 @@ pub(crate) async fn unpark_budget_resets(
         return Ok(String::new());
     }
     let mut clauses: Vec<String> = Vec::new();
+    if goal_transition::extend_headless_dispatch_budget(metadata, patch)? {
+        clauses.push("its headless dispatch allowance extended".to_string());
+    }
     if wall_clock_blocks_goal(decision, metadata) {
         patch.insert("first_dispatched_at".to_string(), serde_json::Value::Null);
         clauses.push("its wall-clock budget restarted".to_string());

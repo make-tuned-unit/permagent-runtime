@@ -40,6 +40,7 @@ pub const DEFAULT_ATTEMPT_CAP: u64 = 3;
 /// raw metadata PATCH, which the orchestrator's own card tools can reach
 /// (S5: the orchestrator must not be able to loosen its own approval gate).
 pub const PROTECTED_GOAL_METADATA_KEYS: &[&str] = &[
+    HEADLESS_DISPATCH_BUDGET_KEY,
     "goal_state",
     "needs_human_attention",
     "attempt_count",
@@ -252,6 +253,100 @@ pub struct TransitionEffects {
     pub review_notes: Option<String>,
     pub metadata_patch: serde_json::Map<String, serde_json::Value>,
     pub assigned_to: Option<String>,
+    /// Native headless coordinator policy, never a tool argument.
+    pub dispatch_budget: Option<HeadlessDispatchBudget>,
+}
+
+pub const HEADLESS_DISPATCH_BUDGET_KEY: &str = "headless_dispatch_budget";
+
+#[derive(Debug)]
+pub struct HeadlessDispatchBudget {
+    pub coordinator_session_id: String,
+    pub automatic_limit: u64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct HeadlessDispatchUsage {
+    coordinator_session_id: String,
+    dispatch_count: u64,
+    automatic_limit: u64,
+    approved_extra_dispatches: u64,
+}
+
+fn scoped_dispatch_usage(
+    metadata: &serde_json::Value,
+    budget: &HeadlessDispatchBudget,
+) -> Result<HeadlessDispatchUsage, String> {
+    if budget.coordinator_session_id.is_empty() || budget.automatic_limit == 0 {
+        return Err("Headless dispatch policy has no coordinator or initial allowance".into());
+    }
+    let prior = metadata
+        .get(HEADLESS_DISPATCH_BUDGET_KEY)
+        .map(|value| serde_json::from_value::<HeadlessDispatchUsage>(value.clone()))
+        .transpose()
+        .map_err(|_| "Headless dispatch budget evidence is unreadable")?;
+    let mut usage = match prior {
+        Some(usage) if usage.coordinator_session_id == budget.coordinator_session_id => usage,
+        _ => HeadlessDispatchUsage {
+            coordinator_session_id: budget.coordinator_session_id.clone(),
+            dispatch_count: 0,
+            automatic_limit: budget.automatic_limit,
+            approved_extra_dispatches: 0,
+        },
+    };
+    usage.automatic_limit = usage.automatic_limit.min(budget.automatic_limit);
+    Ok(usage)
+}
+
+/// Cheap preflight; the checked transition repeats it under BEGIN IMMEDIATE.
+pub fn check_headless_dispatch_budget(
+    metadata: &serde_json::Value,
+    budget: &HeadlessDispatchBudget,
+) -> Result<(), String> {
+    let usage = scoped_dispatch_usage(metadata, budget)?;
+    let limit = usage
+        .automatic_limit
+        .saturating_add(usage.approved_extra_dispatches);
+    if usage.dispatch_count >= limit {
+        return Err(format!("Headless dispatch allowance exhausted: {} of {} attempts claimed; an explicit approved unblock is required", usage.dispatch_count, limit));
+    }
+    Ok(())
+}
+
+fn claim_headless_dispatch_budget(
+    metadata: &mut serde_json::Map<String, serde_json::Value>,
+    budget: &HeadlessDispatchBudget,
+) -> Result<(), GuardError> {
+    let value = serde_json::Value::Object(metadata.clone());
+    check_headless_dispatch_budget(&value, budget).map_err(GuardError::Invalid)?;
+    let mut usage = scoped_dispatch_usage(&value, budget).map_err(GuardError::Invalid)?;
+    usage.dispatch_count = usage.dispatch_count.saturating_add(1);
+    metadata.insert(
+        HEADLESS_DISPATCH_BUDGET_KEY.into(),
+        serde_json::to_value(usage).map_err(|e| GuardError::Invalid(e.to_string()))?,
+    );
+    Ok(())
+}
+
+/// Called only from the verified user's unblock decision effect.
+pub(crate) fn extend_headless_dispatch_budget(
+    metadata: &serde_json::Value,
+    patch: &mut serde_json::Map<String, serde_json::Value>,
+) -> Result<bool, GuardError> {
+    let Some(value) = metadata.get(HEADLESS_DISPATCH_BUDGET_KEY) else {
+        return Ok(false);
+    };
+    let mut usage: HeadlessDispatchUsage = serde_json::from_value(value.clone()).map_err(|_| {
+        GuardError::Invalid("Headless dispatch budget evidence is unreadable".into())
+    })?;
+    usage.approved_extra_dispatches = usage
+        .approved_extra_dispatches
+        .saturating_add(DEFAULT_ATTEMPT_CAP);
+    patch.insert(
+        HEADLESS_DISPATCH_BUDGET_KEY.into(),
+        serde_json::to_value(usage).map_err(|e| GuardError::Invalid(e.to_string()))?,
+    );
+    Ok(true)
 }
 
 struct GoalRow {
@@ -587,6 +682,11 @@ pub async fn advance_goal_checked_with_auto_land(
     // Build new metadata.
     let mut meta = goal.metadata;
     apply_patch(&mut meta, &effects.metadata_patch);
+    if action == GoalAction::Dispatch {
+        if let Some(budget) = effects.dispatch_budget.as_ref() {
+            claim_headless_dispatch_budget(&mut meta, budget)?;
+        }
+    }
     if let Some(ref notes) = effects.review_notes {
         meta.insert(
             "review_notes".to_string(),
@@ -733,6 +833,11 @@ pub(crate) async fn advance_goal_checked_in_tx(
     };
     let mut meta = goal.metadata;
     apply_patch(&mut meta, &effects.metadata_patch);
+    if action == GoalAction::Dispatch {
+        if let Some(budget) = effects.dispatch_budget.as_ref() {
+            claim_headless_dispatch_budget(&mut meta, budget)?;
+        }
+    }
     if let Some(ref notes) = effects.review_notes {
         meta.insert(
             "review_notes".to_string(),
@@ -822,6 +927,38 @@ pub async fn park_goal_with_meta(
     reason: &str,
     extra_meta: &[(&str, serde_json::Value)],
 ) -> Result<(), GuardError> {
+    park_goal_with_meta_filtered(pool, card_id, actor, reason, extra_meta, None)
+        .await
+        .map(|_| ())
+}
+
+/// Park only a still-Ready, still-exhausted native authorization. A racing
+/// authorized dispatch/unblock must not be cancelled by a stale preflight.
+pub(crate) async fn park_exhausted_headless_dispatch(
+    pool: &Pool<Sqlite>,
+    card_id: &str,
+    budget: &HeadlessDispatchBudget,
+    reason: &str,
+) -> Result<bool, GuardError> {
+    park_goal_with_meta_filtered(
+        pool,
+        card_id,
+        decisions::ACTOR_SYSTEM,
+        reason,
+        &[],
+        Some(budget),
+    )
+    .await
+}
+
+async fn park_goal_with_meta_filtered(
+    pool: &Pool<Sqlite>,
+    card_id: &str,
+    actor: &str,
+    reason: &str,
+    extra_meta: &[(&str, serde_json::Value)],
+    exhausted_budget: Option<&HeadlessDispatchBudget>,
+) -> Result<bool, GuardError> {
     // BEGIN IMMEDIATE: this guard reads the goal row / audit-chain head before
     // upgrading to a write; taking the write lock up front avoids the un-retryable
     // BUSY lock-upgrade a concurrent writer would trigger (see advance_goal_checked).
@@ -833,6 +970,19 @@ pub async fn park_goal_with_meta(
             "Card '{}' is not a goal",
             card_id
         )));
+    }
+
+    if let Some(budget) = exhausted_budget {
+        let binding = state_binding_of_column_tx(&mut tx, &goal.column_id).await?;
+        if binding.as_deref() != Some("ready")
+            || check_headless_dispatch_budget(
+                &serde_json::Value::Object(goal.metadata.clone()),
+                budget,
+            )
+            .is_ok()
+        {
+            return Ok(false);
+        }
     }
 
     let journal_actor = journal_actor(actor, &goal.metadata);
@@ -895,7 +1045,7 @@ pub async fn park_goal_with_meta(
         &journal_actor,
     ));
 
-    Ok(())
+    Ok(true)
 }
 
 /// F1c (harness loop, Lane F1 2026-09-10, wired by I1 as a gate fix):
@@ -3436,6 +3586,156 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, GuardError::Invalid(_)));
+    }
+
+    #[tokio::test]
+    async fn headless_dispatch_budget_is_atomic_and_not_refunded() {
+        let pool = test_pool().await;
+        let goal = goal_in_state(&pool, "ready", 0).await;
+        let claim = || {
+            advance_goal_checked(
+                &pool,
+                &goal.id,
+                GoalAction::Dispatch,
+                "system",
+                None,
+                TransitionEffects {
+                    metadata_patch: serde_json::Map::from_iter([(
+                        "attempt_count".into(),
+                        serde_json::json!(1),
+                    )]),
+                    dispatch_budget: Some(HeadlessDispatchBudget {
+                        coordinator_session_id: "coordinator".into(),
+                        automatic_limit: 1,
+                    }),
+                    ..Default::default()
+                },
+            )
+        };
+        let (first, second) = tokio::join!(claim(), claim());
+        assert_eq!(usize::from(first.is_ok()) + usize::from(second.is_ok()), 1);
+        // The old goal-attempt counter can be refunded; the native dispatch
+        // authorization is consumed by the actual transaction regardless.
+        maybe_forgive_zero_progress_attempt(&pool, &goal.id, true)
+            .await
+            .unwrap();
+        requeue_goal(&pool, &goal.id, "system", 0, "zero progress refunded")
+            .await
+            .unwrap();
+        let metadata = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .metadata_json;
+        assert_eq!(metadata[HEADLESS_DISPATCH_BUDGET_KEY]["dispatch_count"], 1);
+        assert_eq!(metadata["attempt_count"], 0);
+        let failure = claim().await.unwrap_err();
+        assert!(failure.to_string().contains("allowance exhausted"));
+        assert!(crate::cards::merge_card_metadata(
+            &pool,
+            &goal.id,
+            serde_json::json!({HEADLESS_DISPATCH_BUDGET_KEY: null}),
+            false,
+        )
+        .await
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn stale_exhausted_dispatch_park_preserves_authorized_dispatch_and_unblock() {
+        let pool = test_pool().await;
+        let goal = goal_in_state(&pool, "ready", 0).await;
+        let budget = HeadlessDispatchBudget {
+            coordinator_session_id: "coordinator".into(),
+            automatic_limit: 1,
+        };
+        let mut metadata = goal.metadata_json.as_object().unwrap().clone();
+        claim_headless_dispatch_budget(&mut metadata, &budget).unwrap();
+        sqlx::query("UPDATE cards SET metadata_json = ? WHERE id = ?")
+            .bind(serde_json::Value::Object(metadata).to_string())
+            .bind(&goal.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let exhausted = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .metadata_json;
+        assert!(check_headless_dispatch_budget(&exhausted, &budget).is_err());
+        // The approved unblock committed between the preflight and park.
+        let mut patch = serde_json::Map::new();
+        extend_headless_dispatch_budget(&exhausted, &mut patch).unwrap();
+        let mut refreshed = exhausted.as_object().unwrap().clone();
+        apply_patch(&mut refreshed, &patch);
+        sqlx::query("UPDATE cards SET metadata_json = ? WHERE id = ?")
+            .bind(serde_json::Value::Object(refreshed).to_string())
+            .bind(&goal.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(
+            !park_exhausted_headless_dispatch(&pool, &goal.id, &budget, "stale cap")
+                .await
+                .unwrap()
+        );
+        assert_eq!(state_of(&pool, &goal.id).await, "ready");
+        // Its authorized dispatch committed before another stale park.
+        advance_goal_checked(
+            &pool,
+            &goal.id,
+            GoalAction::Dispatch,
+            "system",
+            None,
+            TransitionEffects {
+                dispatch_budget: Some(budget),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let stale_budget = HeadlessDispatchBudget {
+            coordinator_session_id: "coordinator".into(),
+            automatic_limit: 1,
+        };
+        assert!(
+            !park_exhausted_headless_dispatch(&pool, &goal.id, &stale_budget, "stale cap")
+                .await
+                .unwrap()
+        );
+        assert_eq!(state_of(&pool, &goal.id).await, "in_progress");
+    }
+
+    #[test]
+    fn headless_dispatch_budget_is_run_scoped_and_extends_only_explicitly() {
+        let budget = HeadlessDispatchBudget {
+            coordinator_session_id: "coordinator".into(),
+            automatic_limit: 1,
+        };
+        let mut meta = serde_json::Map::new();
+        claim_headless_dispatch_budget(&mut meta, &budget).unwrap();
+        let snapshot = serde_json::Value::Object(meta.clone());
+        assert!(check_headless_dispatch_budget(&snapshot, &budget).is_err());
+        let mut patch = serde_json::Map::new();
+        assert!(extend_headless_dispatch_budget(&snapshot, &mut patch).unwrap());
+        apply_patch(&mut meta, &patch);
+        claim_headless_dispatch_budget(&mut meta, &budget).unwrap();
+        assert_eq!(meta[HEADLESS_DISPATCH_BUDGET_KEY]["dispatch_count"], 2);
+        let other = HeadlessDispatchBudget {
+            coordinator_session_id: "other-coordinator".into(),
+            automatic_limit: 1,
+        };
+        claim_headless_dispatch_budget(&mut meta, &other).unwrap();
+        assert_eq!(meta[HEADLESS_DISPATCH_BUDGET_KEY]["dispatch_count"], 1);
+        assert_eq!(
+            meta[HEADLESS_DISPATCH_BUDGET_KEY]["approved_extra_dispatches"],
+            0
+        );
+        assert!(check_headless_dispatch_budget(
+            &serde_json::json!({HEADLESS_DISPATCH_BUDGET_KEY: {}}),
+            &budget
+        )
+        .is_err());
     }
 
     #[tokio::test]

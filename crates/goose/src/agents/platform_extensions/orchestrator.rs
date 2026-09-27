@@ -5529,6 +5529,8 @@ async fn get_provider_fn(context: &PlatformExtensionContext) -> Result<Arc<dyn P
 /// the brief's "avoid touching goose-server" guidance.
 #[derive(Clone)]
 pub(crate) struct HeadlessDispatchPolicy {
+    /// Native coordinator identity installed by the headless CLI.
+    pub coordinator_session_id: String,
     /// T1: when `context.extension_manager` cannot resolve a provider (the
     /// headless hook has none), build a fresh one from this session's own
     /// (already-resolved) provider/model pair instead — the same seam
@@ -5722,6 +5724,7 @@ async fn current_headless_dispatch_policy(
         .ok()
         .map(Arc::new);
     Some(HeadlessDispatchPolicy {
+        coordinator_session_id: config.coordinator_session_id.clone(),
         session_for_provider_fallback: session,
         restrict_ranked_selection_to_internal_engine: config
             .restrict_ranked_selection_to_internal_engine,
@@ -8296,6 +8299,39 @@ pub(crate) async fn dispatch_goal_fn(
         ));
     }
 
+    let dispatch_budget = policy.map(|policy| goal_transition::HeadlessDispatchBudget {
+        coordinator_session_id: policy.coordinator_session_id.clone(),
+        automatic_limit: u64::from(headless_max_redispatch_from_env()).saturating_add(1),
+    });
+    if let Some(budget) = dispatch_budget.as_ref() {
+        if let Err(reason) =
+            goal_transition::check_headless_dispatch_budget(&card.metadata_json, budget)
+        {
+            if goal_transition::park_exhausted_headless_dispatch(&pool, card_id, budget, &reason)
+                .await
+                .map_err(String::from)?
+                && decisions::find_open_decision_for_goal(&pool, card_id, "unblock")
+                    .await?
+                    .is_none()
+            {
+                create_decision_with_retry(
+                    &pool,
+                    decisions::NewDecision {
+                        kind: "unblock".into(),
+                        goal_id: Some(card.id.clone()),
+                        project_id: Some(card.project_id.clone()),
+                        headline: Some("Goal has used its automatic dispatch allowance".into()),
+                        detail: Some(reason.clone()),
+                        payload: serde_json::json!({"reason": "stuck"}),
+                        ..Default::default()
+                    },
+                )
+                .await?;
+            }
+            return Err(reason);
+        }
+    }
+
     // Budget precondition (S4): exhausted goals are parked with an
     // unblock decision — never silently retried or re-dispatched.
     if let Some(exhaustion) = goal_transition::check_budget(&pool, &card.metadata_json).await? {
@@ -9479,6 +9515,7 @@ pub(crate) async fn dispatch_goal_fn(
         TransitionEffects {
             metadata_patch: claim_patch,
             assigned_to: Some(worker_key.clone()),
+            dispatch_budget,
             ..Default::default()
         },
     )
@@ -15390,7 +15427,7 @@ fn headless_auto_land_from_env() -> bool {
     }
 }
 
-/// Env override for how many times `drain_dispatched_goals` may re-dispatch
+/// Env override for how many times any automatic headless path may re-dispatch
 /// ONE goal card within a single headless run (harness loop, Lane Y6). Same
 /// naming family and same raw-`std::env::var` idiom as
 /// [`PERMAGENT_HEADLESS_AUTOLAND_ENV`] / [`PERMAGENT_HEADLESS_WORKER_ENV`].
@@ -15398,11 +15435,10 @@ fn headless_auto_land_from_env() -> bool {
 /// `0` disables re-dispatch entirely (the pre-Y6 behavior: a goal requeued to
 /// Ready is never restarted inside the run that requeued it).
 ///
-/// It bounds the RETRY loop only — it is not an attempt cap. Every dispatch it
-/// authorises still goes through `eligible_ready_goals` + the installed
-/// dispatch hook (see [`goal_dispatch_hook_snapshot`]), so `goal_budget`'s attempt/token/wallclock caps,
-/// the atomic Ready→InProgress claim, and every guard on that rail apply
-/// unchanged.
+/// The native Ready→InProgress claim enforces this allowance across direct
+/// coordinator tools, automatic nudges and drain sweeps. Its monotonic per-run
+/// counter is independent of refundable goal attempt counts. Explicit approved
+/// unblock decisions may extend the protected allowance.
 pub const PERMAGENT_HEADLESS_MAX_REDISPATCH_ENV: &str = "PERMAGENT_HEADLESS_MAX_REDISPATCH";
 
 /// Default for [`PERMAGENT_HEADLESS_MAX_REDISPATCH_ENV`]: two re-dispatches
@@ -17881,6 +17917,25 @@ pub async fn handle_goal_completion(
             );
         }
         Err(error) => {
+            // A failed runtime can still have left a clean committed candidate.
+            // Preserve the failed attempt's receipt; recovery re-runs native
+            // verification and the existing full-contract review/landing gates.
+            let coordinator = headless_dispatch_policy_config()
+                .map(|config| config.coordinator_session_id.clone());
+            if let SalvageOutcome::Salvaged { note } =
+                Box::pin(maybe_salvage_committed_work_with_policy(
+                    pool,
+                    &card,
+                    None,
+                    coordinator.as_deref(),
+                    headless_auto_land,
+                ))
+                .await
+            {
+                tracing::info!(target: "permagentd::brain", goal_id = %card_id,
+                        worker_error = %error, "Recovered committed candidate after failed worker: {note}");
+                return Ok(());
+            }
             // Budget check (S4): exhaustion emits an unblock decision and
             // parks the goal — never a silent retry.
             if let Some(exhaustion) =
@@ -25332,6 +25387,24 @@ async fn maybe_salvage_committed_work(
     grace_deadline: Option<std::time::Instant>,
     calling_session_id: Option<&str>,
 ) -> SalvageOutcome {
+    let auto_land = headless_dispatch_policy_config().is_some_and(|config| config.auto_land);
+    maybe_salvage_committed_work_with_policy(
+        pool,
+        card,
+        grace_deadline,
+        calling_session_id,
+        auto_land,
+    )
+    .await
+}
+
+async fn maybe_salvage_committed_work_with_policy(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card: &cards::Card,
+    grace_deadline: Option<std::time::Instant>,
+    calling_session_id: Option<&str>,
+    headless_auto_land: bool,
+) -> SalvageOutcome {
     // R37a: record-only when a test has scoped the capture above; a no-op
     // `try_with` failure (the ordinary, non-test-scoped case) is silently
     // ignored.
@@ -25342,12 +25415,8 @@ async fn maybe_salvage_committed_work(
             .push(calling_session_id.map(str::to_string));
     });
 
-    // Same derivation `handle_goal_completion`'s own callers already use
-    // (`dispatch_goal_fn` passes `policy.is_some_and(|p| p.auto_land)`) —
-    // computed here so every salvage call site gets it for free instead of
-    // threading it through call sites (like `handle_goal_timeout`) that
-    // otherwise have no reason to know about headless dispatch at all.
-    let headless_auto_land = headless_dispatch_policy_config().is_some_and(|c| c.auto_land);
+    // Failed-worker recovery passes its actual dispatch policy; legacy park
+    // callers retain the wrapper's installed-policy derivation.
     let not_salvaged = |note: String| SalvageOutcome::NotSalvaged { note };
 
     // Lane R22f: guards run in this documented order — attempted-once →
@@ -36182,6 +36251,57 @@ mod tests {
     /// `developer::verify`'s real Rust/`cargo test` detection, which this
     /// EDIT-ONLY lane cannot compile or run.
     #[tokio::test]
+    async fn failed_worker_committed_candidate_enters_review_without_rewriting_failure() {
+        let pool = test_pool().await;
+        let (card, _directory, _head) =
+            r20b_setup_goal_with_committed_work(&pool, "failed-worker-candidate", None).await;
+        let session_id = card.metadata_json["worker_session_id"].as_str().unwrap();
+        let mut receipt = ExecutionReceipt::new(
+            "permagent",
+            session_id,
+            serde_json::json!({}),
+            "fixture-lifecycle",
+            chrono::Utc::now().to_rfc3339(),
+            1,
+        );
+        receipt.finalize(ReceiptState::Failed, chrono::Utc::now().to_rfc3339());
+        persist_card_meta(&pool, &card.id, |metadata| {
+            metadata.insert(
+                "execution_receipt".into(),
+                serde_json::to_value(&receipt).unwrap(),
+            );
+        })
+        .await
+        .unwrap();
+        handle_goal_completion(
+            &pool,
+            &card.id,
+            &card.project_id,
+            Err("Subagent runtime failed".into()),
+            false,
+        )
+        .await
+        .unwrap();
+        let recovered = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let column = cards::get_column(&pool, &recovered.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(column.state_binding.as_deref(), Some("review"));
+        assert!(recovered.metadata_json.get("salvaged_on_park").is_some());
+        assert_eq!(
+            recovered.metadata_json["execution_receipt"]["state"],
+            "failed"
+        );
+        assert!(
+            decisions::find_open_decision_for_goal(&pool, &card.id, "approve_review")
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
     async fn salvage_lands_a_committed_goal_on_a_wall_budget_park() {
         let pool = test_pool().await;
         let (card, _dir, _head) =
@@ -39984,6 +40104,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         // production, since the CLI installer always attaches one) — same
         // failure, not a panic.
         let empty_policy = HeadlessDispatchPolicy {
+            coordinator_session_id: "test-coordinator".to_string(),
             session_for_provider_fallback: None,
             restrict_ranked_selection_to_internal_engine: true,
             auto_land: false,
@@ -40003,6 +40124,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             ..crate::session::Session::default()
         };
         let policy = HeadlessDispatchPolicy {
+            coordinator_session_id: "test-coordinator".to_string(),
             session_for_provider_fallback: Some(Arc::new(session)),
             restrict_ranked_selection_to_internal_engine: true,
             auto_land: false,
@@ -40035,6 +40157,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             ..crate::session::Session::default()
         };
         HeadlessDispatchPolicy {
+            coordinator_session_id: "test-coordinator".to_string(),
             session_for_provider_fallback: Some(Arc::new(session)),
             restrict_ranked_selection_to_internal_engine: true,
             auto_land: false,
@@ -40399,6 +40522,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         };
         let probe_cache = ProbeCache::new();
         let policy = HeadlessDispatchPolicy {
+            coordinator_session_id: "test-coordinator".to_string(),
             session_for_provider_fallback: Some(Arc::new(session)),
             restrict_ranked_selection_to_internal_engine: true,
             auto_land: false,
@@ -40487,6 +40611,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         };
         let probe_cache = ProbeCache::new();
         let policy = HeadlessDispatchPolicy {
+            coordinator_session_id: "test-coordinator".to_string(),
             session_for_provider_fallback: Some(Arc::new(fallback_session)),
             restrict_ranked_selection_to_internal_engine: true,
             auto_land: false,
@@ -40600,6 +40725,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         };
         let probe_cache = ProbeCache::new();
         let policy = HeadlessDispatchPolicy {
+            coordinator_session_id: "test-coordinator".to_string(),
             session_for_provider_fallback: Some(Arc::new(fallback_session)),
             restrict_ranked_selection_to_internal_engine: true,
             auto_land: false,
@@ -43610,6 +43736,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         };
         let probe_cache = ProbeCache::new();
         let policy = HeadlessDispatchPolicy {
+            coordinator_session_id: "test-coordinator".to_string(),
             session_for_provider_fallback: Some(Arc::new(session)),
             restrict_ranked_selection_to_internal_engine: true,
             auto_land: false,
