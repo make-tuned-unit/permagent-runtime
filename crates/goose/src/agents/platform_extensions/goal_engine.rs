@@ -118,12 +118,27 @@ fn dependency_setup_brief(worktree: &Path) -> String {
 /// leaving a dirty trunk that then blocked their own goal from landing.
 pub(crate) fn worktree_scope_brief(worktree: &Path) -> String {
     format!(
-        "\n\nWRITABLE ROOT: {} — this worktree is the ONLY directory you may create, edit, \
+        "EXECUTION DIRECTORY / WRITABLE ROOT: {} — this worktree is the ONLY directory you may create, edit, \
          delete or commit files in, and it is where your goal branch is checked out. Read \
          anywhere you like, but never write outside it: the project checkout is NOT yours to \
          touch, and a stray write or commit there blocks your own work from landing. Your \
-         shell already starts in this worktree and relative paths resolve there.",
+         shell already starts in this worktree and relative paths resolve there. \
+         Any Project root or Working directory named in the original task below is source-reference \
+         context, not your execution directory. Resolve repository-relative paths for reads, edits, \
+         dependency setup, tests and commits against this execution directory. Do not cd to the \
+         source checkout to run those operations.",
         worktree.display()
+    )
+}
+
+/// Put the actual execution directory before any preserved task paths. The
+/// original contract remains byte-for-byte task data, not a cwd override.
+fn scoped_worker_prompt(instructions: &str, worktree: &Path) -> String {
+    format!(
+        "{}{}\n\n{}",
+        worktree_scope_brief(worktree),
+        dependency_setup_brief(worktree),
+        instructions
     )
 }
 
@@ -698,12 +713,9 @@ impl GoalEngine for InternalSubagentEngine {
         )
         .with_compact_worker_profile(self.compact_worker_profile);
 
-        let worker_prompt = format!(
-            "{}{}{}{}",
-            task.instructions,
-            COMMIT_ONLY_BRIEF,
-            worktree_scope_brief(&work_dir),
-            dependency_setup_brief(&work_dir)
+        let worker_prompt = scoped_worker_prompt(
+            &format!("{}{}", task.instructions, COMMIT_ONLY_BRIEF),
+            &work_dir,
         );
         let recipe = Recipe::builder()
             .version("1.0.0")
@@ -1034,11 +1046,7 @@ impl GoalEngine for ExternalCliEngine {
         // and the verifier records Uncertain rather than guessing a stale base.
         let work_base_hooks = install_work_base_hooks(&worktree).await;
 
-        let prompt = format!(
-            "{}{}",
-            self.build_prompt(&task.instructions),
-            dependency_setup_brief(&worktree)
-        );
+        let prompt = scoped_worker_prompt(&self.build_prompt(&task.instructions), &worktree);
         let mut args: Vec<String> = self
             .args
             .iter()
@@ -3648,6 +3656,24 @@ mod tests {
         assert!(
             brief.contains("never write outside it"),
             "the brief must be a prohibition, not a preference: {brief}"
+        );
+    }
+
+    #[test]
+    fn worker_execution_scope_precedes_and_preserves_original_contract_paths() {
+        let worktree = tempfile::tempdir().unwrap();
+        let original = "Project root: /repos/CityCircle\nOriginal task contract: \"Working directory: /repos/CityCircle; viewport_position: above_fold|below_fold\"";
+        let prompt = scoped_worker_prompt(original, worktree.path());
+        assert!(prompt.starts_with("EXECUTION DIRECTORY / WRITABLE ROOT:"));
+        assert!(prompt.contains(&worktree.path().display().to_string()));
+        assert!(
+            prompt.ends_with(original),
+            "the original contract must be unchanged"
+        );
+        assert!(prompt.find("ONLY directory").unwrap() < prompt.find("/repos/CityCircle").unwrap());
+        assert!(prompt.contains("source-reference context, not your execution directory"));
+        assert!(
+            prompt.contains("dependency setup, tests and commits against this execution directory")
         );
     }
 
