@@ -3555,7 +3555,8 @@ mod tests {
         crate::cards::seed_goal_columns(&pool, PERSONAL_PROJECT_ID)
             .await
             .unwrap();
-        let col = crate::cards::get_goal_column(&pool, PERSONAL_PROJECT_ID, "parked")
+        // Parking uses the Failed lifecycle state/column; "parked" is not a state.
+        let col = crate::cards::get_goal_column(&pool, PERSONAL_PROJECT_ID, "failed")
             .await
             .unwrap()
             .unwrap();
@@ -3569,7 +3570,8 @@ mod tests {
                 column_id: Some(col.id),
                 created_by: None,
                 metadata_json: Some(serde_json::json!({
-                    "goal_state": "parked", "attempt_count": 2,
+                    "goal_state": "failed", "attempt_count": 2,
+                    "needs_human_attention": true,
                     (goal_transition::ZERO_PROGRESS_STREAK_METADATA_KEY): 2,
                     (goal_transition::ZERO_PROGRESS_ESCALATION_USED_METADATA_KEY): true,
                     "zero_progress": {"streak": 2}
