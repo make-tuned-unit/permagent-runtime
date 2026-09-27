@@ -9101,7 +9101,7 @@ pub(crate) async fn dispatch_goal_fn(
     // Author the goal's completion criterion at dispatch, in precedence
     // order (all seed the SAME `metadata_json.completion_checks` the #682
     // verifier runs in the worker's worktree):
-    //   1. user-authored `completion_checks` win — never overwritten;
+    //   1. existing `completion_checks` win — their provenance is preserved;
     //   2. else the goal's acceptance criteria, COMPILED into enforced
     //      checks (spec-driven builds, extends #682): unlike spec-kit, which
     //      only prompts the model, we prove each mechanically-checkable
@@ -9109,33 +9109,15 @@ pub(crate) async fn dispatch_goal_fn(
     //   3. else the #456 project-default build check — source
     //      "project-default".
     // A failing check clamps the verdict to Fail and blocks auto-approval.
-    //   0. Checks the user wrote are never overwritten, and are now STAMPED
-    //      `user` rather than left unmarked. The approval ladder
-    //      (`verification_approval`) exempts user-authored checks from its gate,
-    //      and it can only do that from a positive signal: an absent stamp means
-    //      "unknown", which is gated. Without this stamp every user-authored
-    //      check would be gated as though the model had written it.
-    let (seeded_checks, checks_source): (Option<serde_json::Value>, &str) =
-        if card.metadata_json.get("completion_checks").is_some() {
-            (None, crate::verification_approval::USER_CHECKS_SOURCE)
-        } else if let Some(acc) = checks_from_acceptance(
-            &card.metadata_json,
-            &card.description,
-            &project.metadata_json,
-            &working_dir,
-        ) {
-            (Some(acc), ACCEPTANCE_CHECKS_SOURCE)
-        } else {
-            (
-                default_completion_checks(
-                    &card.metadata_json,
-                    &project.metadata_json,
-                    &working_dir,
-                    baseline_commit.is_some(),
-                ),
-                PROJECT_DEFAULT_CHECKS_SOURCE,
-            )
-        };
+    // Existing provenance survives retries. Presence alone never proves that
+    // the user authored checks: a prior dispatch may have seeded them.
+    let (seeded_checks, checks_source) = dispatch_completion_checks(
+        &card.metadata_json,
+        &card.description,
+        &project.metadata_json,
+        &working_dir,
+        baseline_commit.is_some(),
+    );
 
     // Resolve the engine for this worker and dispatch. The engine owns *how*
     // the goal runs; the card lifecycle around it stays here.
@@ -9460,11 +9442,9 @@ pub(crate) async fn dispatch_goal_fn(
     if let Some(checks) = seeded_checks.clone() {
         claim_patch.insert("completion_checks".to_string(), checks);
     }
-    // The stamp is written whenever there are checks to attribute — seeded ones
-    // here, or the user's own, which carry no seeded value but must still be
-    // marked so the approval ladder can recognise them.
-    if seeded_checks.is_some() || checks_source == crate::verification_approval::USER_CHECKS_SOURCE
-    {
+    // Stamp newly seeded checks or preserve existing provenance. Legacy
+    // unmarked checks remain unknown rather than gaining user authorization.
+    if seeded_checks.is_some() || card.metadata_json.get("completion_checks").is_some() {
         claim_patch.insert(
             "completion_checks_source".to_string(),
             serde_json::json!(checks_source),
@@ -9931,7 +9911,7 @@ pub(crate) async fn dispatch_goal_fn(
         );
         patch.insert("completion_checks".to_string(), checks);
     }
-    if have_seeded_checks || checks_source == crate::verification_approval::USER_CHECKS_SOURCE {
+    if have_seeded_checks || card.metadata_json.get("completion_checks").is_some() {
         patch.insert(
             "completion_checks_source".to_string(),
             serde_json::json!(checks_source),
@@ -16079,6 +16059,37 @@ const DEFAULT_BUILD_CHECK_TIMEOUT_SECS: u64 = 600;
 const ACCEPTANCE_CHECKS_SOURCE: &str = "spec-acceptance";
 /// `completion_checks_source` marker for the #456 project-default build check.
 const PROJECT_DEFAULT_CHECKS_SOURCE: &str = "project-default";
+
+/// The dispatch and redispatch provenance decision, shared by claim and
+/// post-spawn persistence. Unknown legacy authorship stays gated; only a
+/// pre-existing explicit user stamp retains user authorization.
+fn dispatch_completion_checks<'a>(
+    card_meta: &'a serde_json::Value,
+    description: &str,
+    project_meta: &serde_json::Value,
+    working_dir: &std::path::Path,
+    is_git_repo: bool,
+) -> (Option<serde_json::Value>, &'a str) {
+    if card_meta.get("completion_checks").is_some() {
+        (
+            None,
+            card_meta
+                .get("completion_checks_source")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown"),
+        )
+    } else if let Some(checks) =
+        checks_from_acceptance(card_meta, description, project_meta, working_dir)
+    {
+        (Some(checks), ACCEPTANCE_CHECKS_SOURCE)
+    } else {
+        (
+            default_completion_checks(card_meta, project_meta, working_dir, is_git_repo),
+            PROJECT_DEFAULT_CHECKS_SOURCE,
+        )
+    }
+}
+
 /// Timeout for a `command_exit_zero` check compiled from an acceptance
 /// criterion (checks.rs clamps to 600s max, so this is the ceiling).
 const ACCEPTANCE_CMD_TIMEOUT_SECS: u64 = 600;
@@ -31818,6 +31829,85 @@ mod tests {
 
     fn seeded_cmd(checks: &serde_json::Value) -> &str {
         checks[0]["cmd"].as_str().unwrap()
+    }
+
+    #[tokio::test]
+    async fn redispatch_preserves_durable_generated_completion_check_provenance() {
+        let pool = test_pool().await;
+        let card = setup_goal_in_state(&pool, "ready", 0).await;
+        let temp = tempfile::tempdir().unwrap();
+        let acceptance = serde_json::json!({"acceptance_criteria": ["`cargo test` passes"]});
+        let project = serde_json::json!({"build_command": "cargo check"});
+        for (initial, expected) in [
+            (acceptance, ACCEPTANCE_CHECKS_SOURCE),
+            (serde_json::json!({}), PROJECT_DEFAULT_CHECKS_SOURCE),
+        ] {
+            let (checks, source) =
+                dispatch_completion_checks(&initial, "", &project, temp.path(), true);
+            assert_eq!(source, expected);
+            let checks = checks.expect("first dispatch seeds checks");
+            persist_card_meta(&pool, &card.id, |meta| {
+                meta.insert("completion_checks".to_string(), checks.clone());
+                meta.insert(
+                    "completion_checks_source".to_string(),
+                    serde_json::json!(source),
+                );
+            })
+            .await
+            .unwrap();
+            let stored = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+            let (reseeded, retry_source) =
+                dispatch_completion_checks(&stored.metadata_json, "", &project, temp.path(), true);
+            assert!(reseeded.is_none(), "retry does not overwrite checks");
+            assert_eq!(retry_source, expected);
+            persist_card_meta(&pool, &card.id, |meta| {
+                meta.insert(
+                    "completion_checks_source".to_string(),
+                    serde_json::json!(retry_source),
+                );
+            })
+            .await
+            .unwrap();
+            let retried = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+            assert_eq!(retried.metadata_json["completion_checks"], checks);
+            assert_eq!(
+                crate::verification_approval::ChecksSource::from_metadata(&retried.metadata_json),
+                crate::verification_approval::ChecksSource::Model
+            );
+        }
+    }
+
+    #[test]
+    fn redispatch_preserves_explicit_user_but_never_promotes_legacy_checks() {
+        let checks = serde_json::json!([{"type": "command_exit_zero", "cmd": "cargo test"}]);
+        for source in [
+            None,
+            Some("user"),
+            Some("spec-acceptance"),
+            Some("project-default"),
+            Some("custom-origin"),
+        ] {
+            let mut meta = serde_json::json!({"completion_checks": checks});
+            if let Some(source) = source {
+                meta["completion_checks_source"] = serde_json::json!(source);
+            }
+            let (seeded, preserved) = dispatch_completion_checks(
+                &meta,
+                "",
+                &serde_json::json!({}),
+                std::path::Path::new("/unused"),
+                false,
+            );
+            assert!(seeded.is_none());
+            assert_eq!(preserved, source.unwrap_or("unknown"));
+            let preserved = preserved.to_string();
+            meta["completion_checks_source"] = serde_json::json!(preserved);
+            assert_eq!(
+                crate::verification_approval::ChecksSource::from_metadata(&meta)
+                    == crate::verification_approval::ChecksSource::User,
+                source == Some("user")
+            );
+        }
     }
 
     #[test]
