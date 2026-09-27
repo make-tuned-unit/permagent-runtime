@@ -313,3 +313,31 @@ it('both acknowledgments include optional rows but never nested or blocked findi
   await act(async () => move!.click());
   expect(onConfirm.mock.calls[0][0].map((f: Finding) => f.id)).toEqual(['xcode', 'npm', 'download']);
 });
+
+
+it('an all-rejected validated scan shows reasons without empty-success or Trash controls', async () => {
+  const rejected = [
+    { id: 'outside', path: '/fixture/outside', reason: 'Outside cleanup scope' },
+    { id: 'invalid', reason: 'Invalid path' },
+  ];
+  vi.mocked(apiFetch).mockImplementation(async path => {
+    const url = String(path);
+    if (url === '/automation/run/rejected/findings') return { ledger_state: 'valid', findings: [], rejected };
+    if (url === '/api/sessions/rejected') return { conversation: [] };
+    if (url === '/automation/recovery/total') return { total_recovered_bytes: 0, runs_with_recovery: 0, items_trashed: 0 };
+    throw new Error(`Unexpected API request: ${url}`);
+  });
+  for (const lastStatus of ['ok', 'error'] as const) {
+    await act(async () => root.render(<RunDetail key={lastStatus} run={{
+      id: 'rejected', jobId: 'storage', name: 'Storage Insights', createdAt: '2026-09-27T12:00:00Z',
+      workingDir: '/', scheduleId: 'storage', messageCount: 0, totalTokens: 0, inputTokens: 0, outputTokens: 0,
+    }} displayName="Storage Insights" lastStatus={lastStatus} />));
+    expect(container.textContent).toContain('No actionable cleanup findings — scanned items were rejected.');
+    expect(container.textContent).toContain('Not saved — /fixture/outside: Outside cleanup scope');
+    expect(container.textContent).toContain('Not saved — invalid: Invalid path');
+    expect(container.textContent).not.toContain('no cleanup candidates found');
+    expect(container.textContent).not.toContain('Report incomplete');
+    expect(container.textContent).not.toContain('No report was captured');
+    expect([...container.querySelectorAll('button')].some(b => /Trash|Review cleanup/.test(b.textContent || ''))).toBe(false);
+  }
+});

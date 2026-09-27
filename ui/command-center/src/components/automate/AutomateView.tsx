@@ -1654,7 +1654,10 @@ interface RunFindings {
 export function findingsReportNotice(data: RunFindings, status?: ScheduleRunStatus | null): string | null {
   // A validated ledger with rows is the cleanup UI, even if the narration
   // failed afterwards. An empty or unverified ledger must not claim success.
-  if (data.ledger_state === 'valid' && data.findings.length > 0) return null;
+  if (data.ledger_state === 'valid') {
+    if (data.findings.length > 0) return null;
+    if (data.rejected?.length) return 'No actionable cleanup findings — scanned items were rejected. Review the reasons below.';
+  }
   if (status === 'error' || data.ledger_state !== 'valid') {
     return 'Report incomplete — cleanup findings could not be saved.';
   }
@@ -1913,6 +1916,8 @@ export function RunDetail({ run, displayName, lastStatus, starterId }: {
           <FindingsPanel runId={run.id} findings={findings} actionInFlight={actionInFlight} onAction={handleAction} onBulkAction={handleBulkAction} totalRecovered={totalRecovered} allActioned={allActioned} lifetime={lifetime} />
           {reportText && <ReportToggle text={reportText} createdAt={run.createdAt} tokens={run.totalTokens} />}
         </>
+      ) : rejected.length > 0 ? (
+        reportText ? <ReportToggle text={reportText} createdAt={run.createdAt} tokens={run.totalTokens} /> : null
       ) : reportText ? (
         <>
           <div style={{ maxHeight: 600, overflowY: 'auto' }}><RenderedReport text={reportText} /></div>
