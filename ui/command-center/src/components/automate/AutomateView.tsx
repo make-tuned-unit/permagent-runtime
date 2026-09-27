@@ -144,6 +144,10 @@ export interface Finding {
   protection?: string;
   profiles?: CargoProfile[];
   action_source?: string | null;
+  /** Set when another saved finding already covers this path. */
+  contained_in?: string | null;
+  /** Set when removing this item would also remove an in-use or protected path. */
+  blocked_reason?: string | null;
 }
 
 interface ExtensionInfo {
@@ -1634,17 +1638,27 @@ function ExtensionDetail({ ext }: { ext: ExtensionInfo }) {
   );
 }
 
+interface RejectedFinding {
+  id: string;
+  path?: string | null;
+  reason: string;
+}
+
 interface RunFindings {
   findings: Finding[];
+  rejected?: RejectedFinding[];
   ledger_state?: 'valid' | 'missing' | 'unverified';
   created_at?: string | null;
 }
 
 export function findingsReportNotice(data: RunFindings, status?: ScheduleRunStatus | null): string | null {
+  // A validated ledger with rows is the cleanup UI, even if the narration
+  // failed afterwards. An empty or unverified ledger must not claim success.
+  if (data.ledger_state === 'valid' && data.findings.length > 0) return null;
   if (status === 'error' || data.ledger_state !== 'valid') {
     return 'Report incomplete — cleanup findings could not be saved.';
   }
-  return data.findings.length === 0 ? 'Scan complete — no cleanup candidates found.' : null;
+  return 'Scan complete — no cleanup candidates found.';
 }
 
 export function RunDetail({ run, displayName, lastStatus, starterId }: {
@@ -1666,6 +1680,7 @@ export function RunDetail({ run, displayName, lastStatus, starterId }: {
   const [reportNotice, setReportNotice] = useState<string | null>(null);
   const [previousReport, setPreviousReport] = useState<{ date: string; text: string; findings: Finding[] } | null>(null);
   const [findings, setFindings] = useState<Finding[]>([]);
+  const [rejected, setRejected] = useState<RejectedFinding[]>([]);
   const [actionInFlight, setActionInFlight] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
@@ -1688,6 +1703,7 @@ export function RunDetail({ run, displayName, lastStatus, starterId }: {
     setLoading(true);
     setLoadError(false);
     setFindings([]);
+    setRejected([]);
     setReportText(null);
     setReportNotice(null);
     setPreviousReport(null);
@@ -1717,6 +1733,7 @@ export function RunDetail({ run, displayName, lastStatus, starterId }: {
         notice = findingsReportNotice(data, lastStatus);
         if (!cancelled) {
           setFindings(data.findings || []);
+          setRejected(data.rejected || []);
           setReportNotice(notice);
         }
         findingsOk = true;
@@ -1870,6 +1887,15 @@ export function RunDetail({ run, displayName, lastStatus, starterId }: {
           {previousReport.findings.map(f => (
             <div key={f.id} style={{ fontSize: textSize.caption, marginBottom: space.sm }}>
               {f.path} — {f.consequence || f.recommendation}
+            </div>
+          ))}
+        </div>
+      )}
+      {!loading && rejected.length > 0 && (
+        <div role="status" style={{ fontSize: textSize.caption, color: colors.textMuted, marginBottom: space.lg }}>
+          {rejected.map(item => (
+            <div key={item.id} style={{ marginBottom: space.xs }}>
+              Not saved — {item.path || item.id}: {item.reason}
             </div>
           ))}
         </div>
@@ -2354,7 +2380,7 @@ runId, findings, actionInFlight, onAction, onBulkAction, totalRecovered, allActi
       <div style={{ display: 'flex', flexDirection: 'column', gap: space.lg }}>
         {Array.from(groups.entries()).map(([groupName, items]) => {
           const pending = items.filter(f => !f.action_taken);
-          const pendingBytes = pending.reduce((s, f) => s + f.size_bytes, 0);
+          const pendingBytes = sumPendingBytes(pending);
           const groupRecovered = items.filter(f => f.action_taken === 'trashed').reduce((s, f) => s + (f.size_recovered_bytes || 0), 0);
           const isExpanded = expandedGroup === groupName;
           const allDone = pending.length === 0;
@@ -2445,7 +2471,7 @@ export function BulkConfirmDialog({
   const rustTargets = pending.filter(f => f.protection?.startsWith('cargo-') || /\/(target|cargo-target)$/.test(f.path));
   const profiles = completedProfiles.length ? completedProfiles : rustTargets.flatMap(f => f.profiles || []);
   const profileBytes = (status: CargoProfile['status']) => profiles.filter(p => p.status === status).reduce((total, p) => total + p.bytes, 0);
-  const sum = (items: Finding[]) => items.reduce((n, f) => n + cleanupBytes(f), 0);
+  const sum = (items: Finding[]) => items.filter(f => !f.contained_in).reduce((n, f) => n + cleanupBytes(f), 0);
   const renderItems = (label: string, items: Finding[]) => (
     <div style={{ padding: space.xl, minWidth: 0, borderBottom: `1px solid ${colors.border}` }}>
       <div style={{ fontSize: textSize.caption, fontWeight: 600 }}>{label} — {items.length} items · {formatBytes(sum(items))} estimated</div>
@@ -2453,7 +2479,7 @@ export function BulkConfirmDialog({
         <CategoryBadge category={categoryOf(f)} />
         <div style={{ fontSize: textSize.caption }}>{f.path}</div>
         <div style={{ fontSize: textSize.micro, color: colors.textMuted }}>
-          {formatBytes(f.size_bytes)} estimated · {f.availability_reason || f.consequence || f.recommendation}
+          {formatBytes(f.size_bytes)} estimated · {f.blocked_reason || (f.contained_in ? 'Included in another finding; not counted separately' : f.availability_reason || f.consequence || f.recommendation)}
           {f.protection === 'probe-only' ? ' · probe-only' : ''}
         </div>
       </div>)}
@@ -2492,7 +2518,7 @@ export function BulkConfirmDialog({
       </div>
       {renderItems('Excluded — will not be removed', excluded)}
       {onRecheck && <Button colors={colors} disabled={checking || sweep.running} onClick={onRecheck} style={actionVars(colors)}>Recheck availability</Button>}
-      {sweep.phase !== 'idle' && <JobProgress job={sweep} label="Cleanup sweep" onRetry={null} />}
+      {sweep.phase !== 'idle' && <JobProgress job={sweep} label="Cleanup sweep" />}
       <div style={{ padding: space.xl, display: 'flex', flexWrap: 'wrap', gap: space.md, justifyContent: 'flex-end' }}>
         <Button colors={colors} disabled={sweep.running} onClick={onCancel} style={actionVars(colors)}>Cancel</Button>
         <Button colors={colors} variant="primary" disabled={checking || !!checkError || sweep.running || completedProfiles.length > 0 || eligible.length === 0}
@@ -2513,8 +2539,28 @@ finding, loading, onAction, onRecheck }: { finding: Finding; loading: boolean; o
 
 
   if (finding.action_taken === 'trashed') return <div style={{ display: 'flex', alignItems: 'center', gap: space.md, padding: `${space.sm}px ${space.lg}px`, borderRadius: radius.sm, background: withAlpha(colors.success, 0.05), border: `1px solid ${withAlpha(colors.success, 0.12)}` }}><span style={{ fontSize: textSize.caption, color: colors.success }}>Trashed</span><span style={{ fontSize: textSize.micro, color: colors.textDim, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fileName}</span>{finding.size_recovered_bytes != null && <span style={{ fontSize: textSize.micro, color: colors.success, fontFamily: font.mono, fontVariantNumeric: 'tabular-nums' }}>{formatBytes(finding.size_recovered_bytes)} estimated</span>}</div>;
-  if (finding.action_taken === 'error') return <div style={{ display: 'flex', alignItems: 'center', gap: space.md, padding: `${space.sm}px ${space.lg}px`, borderRadius: radius.sm, background: withAlpha(colors.danger, 0.06), border: `1px solid ${withAlpha(colors.danger, 0.15)}` }}><span style={{ fontSize: textSize.caption, color: colors.danger, fontWeight: 600, flexShrink: 0 }}>Failed</span><Tooltip content={finding.error_message || undefined}><span tabIndex={0} style={{ outline: 'none' }}><span style={{ fontSize: textSize.micro, color: colors.textDim, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{finding.error_message || fileName}</span></span></Tooltip><Button colors={colors} onClick={() => onAction('trash')} style={{ ...actionVars(colors, 'danger'), '--pa-btn-pad': '2px 6px', fontSize: textSize.micro, flexShrink: 0 } as CSSProperties}>Retry</Button></div>;
-  if (finding.action_taken) return <div style={{ display: 'flex', alignItems: 'center', gap: space.md, padding: `${space.sm}px ${space.lg}px`, borderRadius: radius.sm, opacity: 0.6 }}><span style={{ fontSize: textSize.caption, color: colors.textMuted }}>Kept</span><span style={{ fontSize: textSize.micro, color: colors.textDim, flex: 1 }}>{fileName}</span></div>;
+  if (finding.action_taken && finding.action_taken !== 'error') return <div style={{ display: 'flex', alignItems: 'center', gap: space.md, padding: `${space.sm}px ${space.lg}px`, borderRadius: radius.sm, opacity: 0.6 }}><span style={{ fontSize: textSize.caption, color: colors.textMuted }}>Kept</span><span style={{ fontSize: textSize.micro, color: colors.textDim, flex: 1 }}>{fileName}</span></div>;
+
+  const held = finding.blocked_reason
+    || (finding.contained_in && category !== 'in_use' && category !== 'managed_by_macos'
+      ? 'Included in another finding; it is removed only with that item'
+      : null);
+  if (held) {
+    return (
+      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: space.md, padding: `${space.md}px ${space.lg}px`, borderRadius: radius.sm, background: colors.surface, border: `1px solid ${colors.border}`, marginTop: space.xs }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: space.sm }}>
+            <div style={{ fontSize: textSize.caption, fontWeight: 500, color: colors.text }}>{fileName}</div>
+            <CategoryBadge category={category} />
+          </div>
+          <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: space.xxs }}>{held}</div>
+        </div>
+        <Button colors={colors} onClick={() => onAction('keep')} disabled={loading} style={{ ...actionVars(colors), '--pa-btn-pad': '3px 8px', fontSize: textSize.micro } as CSSProperties}>Keep</Button>
+      </div>
+    );
+  }
+
+  if (finding.action_taken === 'error') return <div style={{ display: 'flex', alignItems: 'center', gap: space.md, padding: `${space.sm}px ${space.lg}px`, borderRadius: radius.sm, background: withAlpha(colors.danger, 0.06), border: `1px solid ${withAlpha(colors.danger, 0.15)}` }}><span style={{ fontSize: textSize.caption, color: colors.danger, fontWeight: 600, flexShrink: 0 }}>Failed</span><Tooltip content={finding.error_message || undefined}><span tabIndex={0} style={{ outline: 'none' }}><span style={{ fontSize: textSize.micro, color: colors.textDim, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{finding.error_message || fileName}</span></span></Tooltip><Button colors={colors} onClick={() => onAction('trash')} disabled={loading || finding.available === false || category === 'in_use' || category === 'managed_by_macos'} style={{ ...actionVars(colors, 'danger'), '--pa-btn-pad': '2px 6px', fontSize: textSize.micro, flexShrink: 0 } as CSSProperties}>Retry</Button></div>;
 
   const handleTrashClick = () => {
     onAction('trash');

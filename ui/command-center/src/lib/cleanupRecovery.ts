@@ -15,6 +15,8 @@ export interface RecoveryFinding {
   action_taken: string | null;
   size_recovered_bytes: number | null;
   size_bytes: number;
+  /** Nested in another saved finding; its bytes are already in that parent. */
+  contained_in?: string | null;
 }
 
 export function formatBytes(bytes: number): string {
@@ -33,7 +35,9 @@ export function sumRunRecovered(findings: RecoveryFinding[]): number {
 
 /** Bytes still awaiting an action in this run. */
 export function sumPendingBytes(findings: RecoveryFinding[]): number {
-  return findings.filter(f => !f.action_taken).reduce((s, f) => s + f.size_bytes, 0);
+  return findings
+    .filter(f => !f.action_taken && !f.contained_in)
+    .reduce((s, f) => s + f.size_bytes, 0);
 }
 
 /**

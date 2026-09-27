@@ -34,6 +34,13 @@ describe('per-run recovery sum', () => {
   it('is zero for a scan with no actions', () => {
     expect(sumRunRecovered([f({ size_bytes: 10 })])).toBe(0);
   });
+
+  it('does not count a nested finding twice', () => {
+    expect(sumPendingBytes([
+      f({ size_bytes: 100, contained_in: null }),
+      f({ size_bytes: 40, contained_in: 'parent' }),
+    ])).toBe(100);
+  });
 });
 
 describe('recovery headline (period must be explicit)', () => {

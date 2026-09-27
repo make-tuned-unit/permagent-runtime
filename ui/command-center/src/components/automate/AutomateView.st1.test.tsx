@@ -2,7 +2,7 @@
 import { act } from 'react-dom/test-utils';
 import { createRoot, type Root } from 'react-dom/client';
 import { beforeEach, afterEach, expect, it, vi } from 'vitest';
-import { RunDetail, findingsReportNotice, FindingsPanel, BulkConfirmDialog, type Finding, type BulkSweepSummary } from './AutomateView';
+import { RunDetail, findingsReportNotice, FindingsPanel, FindingRow, BulkConfirmDialog, type Finding, type BulkSweepSummary } from './AutomateView';
 import { idleJob } from '../../hooks/useLongRunningJob';
 import { apiFetch } from '../../lib/api';
 import { REGENERABLE_ACK, REVIEW_ACK } from './findingCategories';
@@ -170,4 +170,146 @@ it('acceptance 2 and 7: confirms exact idle profile paths and excludes busy and 
   });
   expect(container.textContent).toContain('1 moved · 0 skipped · 0 failed · 1.0 GB moved');
   expect(container.textContent).toContain('0 moved · 1 skipped · 0 failed');
+});
+
+const savedRun = [
+  { id: 'xcode', path: '/fixture/xcode/DerivedData', type: 'build_artifact', category: 'safe_to_remove',
+    size_bytes: 4 * gb, age_days: 3, recommendation: 'Safe to remove', consequence: 'the next Xcode build is a full rebuild',
+    action_taken: null, actioned_at: null, size_recovered_bytes: null },
+  { id: 'npm', path: '/fixture/.npm', type: 'app_cache', category: 'regenerable_costly',
+    size_bytes: 2 * gb, age_days: 1, recommendation: 'Regenerable but costly', consequence: 're-downloads the next time npm is used',
+    action_taken: null, actioned_at: null, size_recovered_bytes: null },
+  { id: 'live', path: '/fixture/proj/node_modules', type: 'dev_cache', category: 'in_use',
+    size_bytes: 8 * gb, age_days: 0, recommendation: 'In use — do not remove', consequence: 'permagentd is using this directory',
+    action_taken: null, actioned_at: null, size_recovered_bytes: null, blocked_reason: null },
+  { id: 'nested', path: '/fixture/proj/node_modules/pkg/node_modules', type: 'dev_cache', category: 'safe_to_remove',
+    size_bytes: gb, age_days: 0, recommendation: 'Safe to remove', consequence: 'npm install re-fetches this package tree',
+    action_taken: null, actioned_at: null, size_recovered_bytes: null, contained_in: 'live' },
+  { id: 'download', path: '/fixture/Downloads/archive.iso', type: 'large_file', category: 'review_before_removing',
+    size_bytes: 500 * 1024 * 1024, age_days: 40, recommendation: 'Review before removing', consequence: 'Needs review',
+    action_taken: null, actioned_at: null, size_recovered_bytes: null },
+] satisfies Finding[];
+
+it('a prose report with a saved ledger renders selectable cleanup and keeps protected items out', async () => {
+  vi.mocked(apiFetch).mockImplementation(async path => {
+    const url = String(path);
+    if (url === '/automation/recovery/total') return { total_recovered_bytes: 0, runs_with_recovery: 0, items_trashed: 0 };
+    if (url === '/api/sessions/saved') return {
+      conversation: [{ role: 'assistant', content: [{ type: 'text', text: '**Your disk has 6.9 GB of cleanup opportunities across 13 items.**' }] }],
+    };
+    if (url === '/automation/run/saved/findings') return {
+      ledger_state: 'valid',
+      findings: savedRun,
+      rejected: [{ id: 'outside', path: '/fixture/not-a-cache', reason: 'Path is outside the scanner cleanup scope' }],
+      created_at: '2026-09-27T12:00:00Z',
+    };
+    if (url.includes('bulk-preview')) return {
+      findings: savedRun,
+      availability: savedRun.map(f => ({
+        finding_id: f.id, category: f.category, eligible: !['in_use', 'managed_by_macos'].includes(f.category!) && !f.contained_in && !f.blocked_reason,
+        reason: f.blocked_reason || f.consequence, protection: 'probe-only',
+      })),
+    };
+    return {};
+  });
+  await act(async () => root.render(<RunDetail run={{
+    id: 'saved', jobId: 'storage', name: 'Storage Insights', createdAt: '2026-09-27T12:00:00Z',
+    workingDir: '/', scheduleId: 'storage', messageCount: 2, totalTokens: 10, inputTokens: 5, outputTokens: 5,
+  }} displayName="Storage Insights" lastStatus="ok" />));
+  expect(container.textContent).not.toContain('Report incomplete — cleanup findings could not be saved.');
+  expect(container.textContent).not.toContain('6.9 GB of cleanup opportunities');
+  expect(container.textContent).toContain('Not saved — /fixture/not-a-cache: Path is outside the scanner cleanup scope');
+  const open = [...container.querySelectorAll('button')].find(b => b.textContent?.startsWith('Review cleanup'));
+  expect(open).toBeTruthy();
+  await act(async () => open!.click());
+  expect(container.textContent).toContain('/fixture/xcode/DerivedData');
+  expect(container.textContent).toContain('/fixture/.npm');
+  expect(container.textContent).toContain('/fixture/proj/node_modules');
+  expect(container.textContent).toContain('/fixture/Downloads/archive.iso');
+  expect(container.textContent).toContain('14.5 GB found (estimate)');
+  expect(container.textContent).toContain('2 items · 8.0 GB');
+  expect(container.textContent).toContain('Selected — 1 items');
+  expect(container.textContent).toContain('Optional — rebuildable — 1 items');
+  expect(container.textContent).toContain('Optional — requiring review — 1 items');
+  expect(container.textContent).toContain('Excluded — will not be removed — 2 items · 8.0 GB estimated');
+  expect(container.textContent).toContain('Included in another finding; not counted separately');
+  const move = [...container.querySelectorAll('button')].find(b => b.textContent === 'Move 1 items to Trash — 4.0 GB');
+  expect(move?.disabled).toBe(false);
+});
+
+it('saved findings stay selectable when the run status is an error', async () => {
+  vi.mocked(apiFetch).mockImplementation(async path => {
+    const url = String(path);
+    if (url === '/automation/run/saved/findings') return { ledger_state: 'valid', findings: [savedRun[0]], created_at: '2026-09-27T12:00:00Z' };
+    if (url === '/api/sessions/saved') return { conversation: [{ role: 'assistant', content: [{ type: 'text', text: 'Partial narration' }] }] };
+    return {};
+  });
+  await act(async () => root.render(<RunDetail run={{
+    id: 'saved', jobId: 'storage', name: 'Storage Insights', createdAt: '2026-09-27T12:00:00Z',
+    workingDir: '/', scheduleId: 'storage', messageCount: 2, totalTokens: 10, inputTokens: 5, outputTokens: 5,
+  }} displayName="Storage Insights" lastStatus="error" />));
+  expect(container.textContent).not.toContain('Report incomplete — cleanup findings could not be saved.');
+  const open = [...container.querySelectorAll('button')].find(b => b.textContent?.startsWith('Review cleanup'));
+  await act(async () => open!.click());
+  expect(container.textContent).toContain('/fixture/xcode/DerivedData');
+});
+
+it('a failed delete shows the reason and retry sends the action again', async () => {
+  const row = { ...savedRun[0], action_taken: 'error', error_message: 'Native Trash failed' };
+  const onAction = vi.fn();
+  await act(async () => root.render(<FindingRow finding={row} loading={false} onAction={onAction} />));
+  expect(container.textContent).toContain('Native Trash failed');
+  const retry = [...container.querySelectorAll('button')].find(b => b.textContent === 'Retry');
+  expect(retry).toBeTruthy();
+  await act(async () => retry!.click());
+  expect(onAction).toHaveBeenCalledWith('trash');
+});
+
+it('a failed sweep stays on screen and can be tried again without dropping blocked items', async () => {
+  const safe = [savedRun[0]];
+  vi.mocked(apiFetch).mockResolvedValue({ findings: safe, availability: [{
+    finding_id: safe[0].id, category: safe[0].category, eligible: true, reason: 'Available', protection: 'probe-only',
+  }] });
+  const onBulkAction = vi.fn()
+    .mockRejectedValueOnce(new Error('Trash is unavailable'))
+    .mockResolvedValueOnce({ cleaned: 1, failed: 0, bytes: safe[0].size_bytes });
+  await act(async () => root.render(<FindingsPanel runId="retry" findings={safe} actionInFlight={null}
+    onAction={vi.fn()} onBulkAction={onBulkAction} totalRecovered={0} allActioned={false} lifetime={null} />));
+  await act(async () => [...container.querySelectorAll('button')].find(b => b.textContent === 'Review cleanup — 4.0 GB selected')!.click());
+  await act(async () => [...container.querySelectorAll('button')].find(b => b.textContent === 'Move 1 items to Trash — 4.0 GB')!.click());
+  expect(container.textContent).toContain('Trash is unavailable');
+  const again = [...container.querySelectorAll('button')].find(b => b.textContent === 'Try again');
+  expect(again).toBeTruthy();
+  await act(async () => again!.click());
+  expect(onBulkAction).toHaveBeenCalledTimes(2);
+  expect(container.textContent).toContain('Moved 1 to Trash');
+});
+
+
+it('nested and blocked findings remain visible without independent Trash or Retry actions', async () => {
+  for (const row of [
+    { ...savedRun[3], action_taken: null },
+    { ...savedRun[0], action_taken: 'error', blocked_reason: 'Contains a protected checkout' },
+  ]) {
+    const onAction = vi.fn();
+    await act(async () => root.render(<FindingRow finding={row} loading={false} onAction={onAction} />));
+    expect(container.textContent).toContain(row.path.split('/').pop()!);
+    expect(container.textContent).toContain(row.blocked_reason || 'Included in another finding');
+    expect([...container.querySelectorAll('button')].map(b => b.textContent)).toEqual(['Keep']);
+    await act(async () => container.querySelector('button')!.click());
+    expect(onAction).toHaveBeenCalledWith('keep');
+  }
+});
+
+it('both acknowledgments include optional rows but never nested or blocked findings', async () => {
+  const blocked = { ...savedRun[0], id: 'blocked', blocked_reason: 'Contains a protected checkout' };
+  const onConfirm = vi.fn();
+  await act(async () => root.render(<BulkConfirmDialog pending={[...savedRun, blocked]} includeRegenerable includeReview
+    onToggleRegenerable={vi.fn()} onToggleReview={vi.fn()} onCancel={vi.fn()} onConfirm={onConfirm}
+    sweep={idleJob<BulkSweepSummary>()} />));
+  expect(container.textContent).toContain('Contains a protected checkout');
+  const move = [...container.querySelectorAll('button')].find(b => b.textContent === 'Move 3 items to Trash — 6.5 GB');
+  expect(move?.disabled).toBe(false);
+  await act(async () => move!.click());
+  expect(onConfirm.mock.calls[0][0].map((f: Finding) => f.id)).toEqual(['xcode', 'npm', 'download']);
 });
