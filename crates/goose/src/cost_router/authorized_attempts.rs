@@ -188,6 +188,25 @@ pub(crate) fn is_proven_not_sent(
     matches!(error, crate::providers::errors::ProviderError::NotSent(_)) && evidence.all_not_sent
 }
 
+/// `stream_response_from_provider` represents a provider error during stream
+/// creation as the first error *frame* of an otherwise successfully-created
+/// stream. Preserve the pre-wire proof at that seam as well as for a direct
+/// stream-creation error, but never release after content has been committed.
+pub(crate) fn is_unbilled_stream_error(
+    error: &crate::providers::errors::ProviderError,
+    evidence: &AttemptEvidence,
+    stream_committed: bool,
+    first_byte_stall_retried: bool,
+) -> bool {
+    (!stream_committed && is_proven_not_sent(error, evidence))
+        || is_unbilled_rate_rejection(
+            error,
+            evidence.safe_rate_rejection,
+            stream_committed,
+            first_byte_stall_retried,
+        )
+}
+
 pub(crate) fn record_transport_success() {
     // An accepted HTTP request can have generated billable work even when a
     // later stream frame says rate-limited. Only transport-level rejections
@@ -401,8 +420,7 @@ mod tests {
             } else {
                 assert!(!evidence.all_not_sent, "{scenario}");
             }
-            let release = is_proven_not_sent(&error, &evidence)
-                || is_unbilled_rate_rejection(&error, evidence.safe_rate_rejection, false, false);
+            let release = is_unbilled_stream_error(&error, &evidence, false, false);
             finalize_missing_usage(&manager, &reservation_id, release)
                 .await
                 .unwrap();

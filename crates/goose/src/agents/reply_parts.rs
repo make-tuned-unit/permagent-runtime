@@ -3026,6 +3026,102 @@ mod tests {
         assert_eq!(captured.max_tokens, Some(128));
     }
 
+    /// OpenAI's local pacer rejects inside `stream_split`, but this adapter
+    /// turns that creation error into the first stream frame. Exercise the
+    /// same evidence and settlement decision the agent turn uses, against a
+    /// durable reservation, without a reachable provider endpoint.
+    #[tokio::test]
+    async fn wrapped_openai_not_sent_frame_releases_the_real_reservation() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().to_str().unwrap();
+        let _env = env_lock::lock_env([
+            ("PERMAGENT_PATH_ROOT", Some(root)),
+            ("PERMAGENT_OPENAI_TPM_BUDGET", Some("1")),
+            ("PERMAGENT_OPENAI_MIN_INTERVAL_MS", Some("0")),
+        ]);
+        let manager = Arc::new(SessionManager::new(temp.path().to_path_buf()));
+        let session = manager
+            .create_session(
+                temp.path().to_path_buf(),
+                "wrapped local refusal".into(),
+                SessionType::User,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let task = manager.begin_budget_task(&session.id).await.unwrap();
+        let granted = manager
+            .reserve_provider_invocation(
+                "wrapped-local-refusal",
+                &session.id,
+                Some(&task),
+                0.5,
+                "2099-01-01T00:00:00Z",
+                &crate::cost_router::budget::BudgetConfig::default(),
+            )
+            .await
+            .unwrap();
+        let crate::session::CostReservationOutcome::Granted { reservation_id } = granted else {
+            panic!("{granted:?}");
+        };
+        let provider: Arc<dyn Provider> = Arc::new(crate::providers::openai::OpenAiProvider::new(
+            crate::providers::api_client::ApiClient::new(
+                "http://127.0.0.1:9".to_string(),
+                crate::providers::api_client::AuthMethod::NoAuth,
+            )
+            .unwrap(),
+            ModelConfig::new_or_fail("gpt-5.4-mini"),
+        ));
+        let prompt = SystemPromptParts::all_stable("system".to_string());
+        let messages = [Message::user().with_text("hello")];
+        let (result, evidence) =
+            crate::cost_router::authorized_attempts::with_reservation_attempts_evidence(
+                Arc::clone(&manager),
+                "wrapped-local-refusal".into(),
+                Some(1),
+                Agent::stream_response_from_provider(
+                    provider,
+                    &session.id,
+                    &prompt,
+                    &messages,
+                    &[],
+                    &[],
+                    Some(128),
+                ),
+            )
+            .await;
+        let mut stream = result.expect("the adapter wraps the creation error as a frame");
+        let error = match stream.next().await.expect("one error frame") {
+            Err(error) => error,
+            Ok(_) => panic!("local refusal unexpectedly produced a provider frame"),
+        };
+        assert!(matches!(&error, ProviderError::NotSent(_)), "{error}");
+        assert!(evidence.all_not_sent);
+        let release = crate::cost_router::authorized_attempts::is_unbilled_stream_error(
+            &error, &evidence, false, false,
+        );
+        crate::cost_router::authorized_attempts::finalize_missing_usage(
+            &manager,
+            &reservation_id,
+            release,
+        )
+        .await
+        .unwrap();
+        let pool = manager.pool_clone().await.unwrap();
+        let state: String = sqlx::query_scalar(
+            "SELECT state FROM cost_reservations WHERE invocation_id = 'wrapped-local-refusal'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let ledger_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM cost_ledger")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(state, "released");
+        assert_eq!(ledger_count, 0);
+    }
+
     /// A mock whose provider name is settable, so a test can actually switch
     /// providers mid-session the way a failover does.
     #[derive(Clone)]

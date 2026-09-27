@@ -3301,8 +3301,8 @@ impl Agent {
                         stream_outcome.observe_message(response);
                     }
                     if let Err(error) = &next {
-                        rejected_without_usage = crate::cost_router::authorized_attempts::is_unbilled_rate_rejection(
-                            error, attempt_evidence.safe_rate_rejection, stream_committed, first_byte_stall_retried,
+                        rejected_without_usage = crate::cost_router::authorized_attempts::is_unbilled_stream_error(
+                            error, &attempt_evidence, stream_committed, first_byte_stall_retried,
                         );
                     }
                     match next {
