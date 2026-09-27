@@ -59,6 +59,7 @@
 pub mod ab;
 pub mod cost;
 pub mod dispatch_inventory;
+mod evidence_validity;
 pub mod graduate;
 pub mod harness_log;
 pub mod invocation;
