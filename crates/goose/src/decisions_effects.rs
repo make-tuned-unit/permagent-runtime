@@ -3584,6 +3584,7 @@ mod tests {
             kind: "choice".to_string(), goal_id: Some(goal.id.clone()),
             project_id: Some(PERSONAL_PROJECT_ID.to_string()),
             headline: Some("Allow this check?".to_string()),
+            detail: Some("Run cargo test after explicit approval.".to_string()),
             payload: serde_json::json!({
                 "question": "Allow this check?",
                 "proposal": decisions::PROPOSAL_CHECK_APPROVAL,
@@ -3597,6 +3598,7 @@ mod tests {
                 }
             }), ..Default::default()
         }).await.unwrap();
+        assert_eq!(decision.kind, "choice", "{:?}", decision.payload);
         let (decision, proof) = decisions::answer_decision(
             &pool,
             &decision.id,
