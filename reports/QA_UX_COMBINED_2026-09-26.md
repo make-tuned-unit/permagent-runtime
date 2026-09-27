@@ -35,7 +35,7 @@ The first authentic Grow trial exposed conflicting original-checkout paths befor
 
 Strict core/daemon Clippy passed again with `-D warnings`. Four additional actual regressions passed at `594de8e3`: execution scope precedes and preserves original paths, the worktree is the only writable root, the compact prompt stays within 6,000 tokens, and local-window sizing counts the real worker brief. This brings targeted executed tests to **223** (220 core and 3 eval). Test linking took 2m28s; normal CLI rebuilding took 2m01s. The only linker warning remains the previously acknowledged compact-unwind size warning.
 
-The replacement normal CLI at `/private/tmp/qa-ux-target/debug/permagent` is from source **`594de8e3d837b8daa30a0afd162fb5599f48b8a4`**, SHA-256 **`ea199658a6fdac985177130958a5dc5dc53c6b4b8544d5dbbe078257dc620348`**, 582,938,440 bytes. Isolated-root `--version` and `run --help` pass without a DYLD override. Handoff left 3.71 GiB free. A second live Grow trial requires the coordinator's separate go; this report makes no live success claim.
+The replacement normal CLI at `/private/tmp/qa-ux-target/debug/permagent` is from source **`594de8e3d837b8daa30a0afd162fb5599f48b8a4`**, SHA-256 **`ea199658a6fdac985177130958a5dc5dc53c6b4b8544d5dbbe078257dc620348`**, 582,938,440 bytes. Isolated-root `--version` and `run --help` pass without a DYLD override. Handoff left 3.71 GiB free. The subsequent authorized trials are recorded below; none achieved a landed implementation.
 
 For this rebuild, the coordinator authorized exact removal of the invalidated core runtime archive and its 16 objects, then the successfully tested standalone test executable and its 16 test-only objects. Full hashes, stat identity, idle/open-handle checks, and test evidence were retained; dependencies and the existing CLI were preserved until replacement linking completed. Evidence: `workspace-scope-clippy.log`, `workspace-scope-test-build.log`, `workspace-scope-regression-manifest.json`, `workspace-scope-cli-build.log`, `workspace-scope-cli-provenance.json`, `current-core-runtime-rebuild-cleanup.json`, and `workspace-scope-tested-artifacts-cleanup.json`.
 
@@ -52,6 +52,28 @@ A normal CLI binary was built from clean source checkpoint **`42248f6261befb7d49
 The test profile reuses compatible dependency artifacts; this is the normal CLI main executable, not a test harness. It is a development validation binary, not an optimized signed app release. The linker reported a nonfatal large `__eh_frame` compact-unwind warning; compilation and runtime smoke succeeded. The strict source gates did not report Rust warnings.
 
 The coordinator and Grow worker received the exact path/hash/source. The coordinator subsequently authorized the separate CLI-only authentic Grow run. That run's results belong to the Grow report; they are not claimed here. Heavy-build ownership was handed to the Grow npm/test phase after this checkpoint.
+
+## Authentic Grow outcomes and current stopping point
+
+Three coordinator-authorized CLI-only trials used the real CityCircle task in fresh isolated runtime roots and product-created goal worktrees. No daemon or installed runtime changed. The second and third trials used the current tested CLI from `594de8e3`; the strict, UI, and four scope-regression evidence above remains applicable.
+
+| Trial | Outcome | Recorded actual USD | Unresolved hold USD |
+| --- | --- | ---: | ---: |
+| 1 | Original checkout paths confused the worker; write jail refused the wrong-root operations. Stopped before implementation. Scope priority subsequently fixed and tested in `594de8e3`. | 0.117368955 | 0.1331532 |
+| 2 | Scope fix worked: observed edits stayed in the worktree. Candidate `91902ff` was rejected before landing despite 9 existing test files / 138 tests passing. | 0.192016140 | 0.1406997 |
+| 3 | OpenAI accepted-stream TPM error produced no matching authoritative usage receipt; conservative unknown hold exhausted available reservation headroom. Goal failed/parked and CLI exited without implementation. | 0.086400300 | 0.4126065 |
+
+Trial 2 added no behavioral tests. Review reproduced incorrect quartiles (25 at every reached threshold), found scroll tracking skipped when CTA cleanup returned early, incorrect below-fold classification after scrolling, and missing session/event persistence and crossed-quartile behavior. Its nonexistent `npm run check` was masked by a pipeline; lint failed and no production build ran. Candidate commit/worktree is preserved as rejected evidence, not shipped work.
+
+Trial 3 used OpenAI gpt-5.4-mini for parent and native worker with auto-land disabled and a $0.75 cap. It installed dependencies and read project docs but made no code changes. The in-band rate-limit event reported a 200,000 TPM limit, 166,057 used, and 36,302 requested, with retry-after 707 ms and token reset 49.816 seconds. Accepted transport plus absent usage evidence kept the two-attempt $0.4126065 envelope UNKNOWN. The next roughly $0.41 reservation, and then parent continuation, correctly failed the budget gate. No unknown hold was released or presented as measured spend.
+
+Aggregate receipt: **$0.395785395 actual**, **$0.6864594 unresolved holds**, leaving **$0.417755205** of the original $1.50 authorization envelope. Unresolved liabilities remain preserved. Actual CityCircle stayed clean at `a9ba56ee2f6e3ec642b86cb4cf3ec5fa52b1ef46`; no candidate landed, no live Grow verification ran, and nothing deployed.
+
+Evidence: `/private/tmp/permagent-grow-test/RUN_RESULT.md`, `/private/tmp/permagent-grow-test-attempt2/RUN_RESULT.md`, `/private/tmp/permagent-grow-test-attempt3/RUN_RESULT.md`, and the third root's `aggregate-budget-receipt.json` and `reservation-failure-evidence.json`. Isolated credentials were removed and launched process groups exited.
+
+No fourth paid run is authorized absent a real pacing mechanism or revised plan. Read-only source audit found `GOOSE_MAX_TOKENS=8192` is a supported fresh-session output cap, propagated to coordinator, planner, internal worker, reservation, and API request. It is not input-TPM pacing, and same-model resume can retain saved model configuration. No supported per-run token pacing setting was found; skip-backoff would remove waiting, not solve this failure.
+
+The separate World worker exhausted its allowance and recorded checkpoint `eed56db6`, with no implementation. The heavy-build slot is idle. HTTP execution and native packaging remain pending; neither this integration nor the authentic trials establish end-to-end release success.
 
 ## Resources and artifact provenance
 
@@ -74,4 +96,4 @@ Evidence directory: `/private/tmp/qa-ux-recovery`.
 - The Grow HTTP integration binaries `growth_actions_wiring` and `growth_verify_completes` were compiled/linted by the strict daemon test gate but have not been linked and executed. They must run in a later idle/resource-safe slot.
 - Native owner, Brain forget/Undo, Librarian answer, relationship, and other daemon/app integration still need isolated runtime acceptance. Prior UX browser checks used mocked APIs.
 - No combined daemon binary, Tauri bundle, signed app, or updater release was built/installed in this pass. The production UI build uses the web `/ui/` base; Tauri packaging must rebuild with `TAURI_ENV_PLATFORM` for the native `/` base.
-- Packaged release acceptance, the previously planned benchmark baseline, and live Grow evidence remain separate pending work. No release is claimed complete.
+- Packaged release acceptance and the previously planned benchmark baseline remain pending. Live Grow trials are recorded above, but successful implementation/landing and live verification remain unmet. No release is claimed complete.
