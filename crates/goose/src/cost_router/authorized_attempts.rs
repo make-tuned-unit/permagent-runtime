@@ -198,7 +198,7 @@ pub(crate) fn is_unbilled_stream_error(
     stream_committed: bool,
     first_byte_stall_retried: bool,
 ) -> bool {
-    (!stream_committed && is_proven_not_sent(error, evidence))
+    (!stream_committed && !first_byte_stall_retried && is_proven_not_sent(error, evidence))
         || is_unbilled_rate_rejection(
             error,
             evidence.safe_rate_rejection,

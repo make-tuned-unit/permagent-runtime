@@ -3097,6 +3097,16 @@ mod tests {
         };
         assert!(matches!(&error, ProviderError::NotSent(_)), "{error}");
         assert!(evidence.all_not_sent);
+        assert!(
+            !crate::cost_router::authorized_attempts::is_unbilled_stream_error(
+                &error, &evidence, true, false,
+            )
+        );
+        assert!(
+            !crate::cost_router::authorized_attempts::is_unbilled_stream_error(
+                &error, &evidence, false, true,
+            )
+        );
         let release = crate::cost_router::authorized_attempts::is_unbilled_stream_error(
             &error, &evidence, false, false,
         );
