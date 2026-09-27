@@ -395,7 +395,7 @@ async fn verifying_an_action_files_it_with_its_commit_and_says_so() {
                 "/api/projects/{}/growth-actions/{}/verify",
                 manual_project.id, manual_action.id
             ),
-            None,
+            Some(serde_json::json!({ "targetMetric": "sessions", "targetDir": "up" })),
         ))
         .await
         .unwrap();
