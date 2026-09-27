@@ -362,6 +362,12 @@ pub fn run_task(task: &Task, tier: &Tier, cfg: &RunConfig, deps: &Deps<'_>) -> R
         Duration::from_secs(effective_harness_timeout_secs),
         &harness_log_path,
     )?;
+    // Snapshot before the oracle gets any access to the workspace/run tree.
+    // A timed-out child may not have completed its drain or final atomic
+    // sidecar write, so its file is diagnostic only, never qualifying timing.
+    let native_timing = (!harness_run.timed_out)
+        .then(|| read_native_timing(&timing_sidecar_base, &timing_run_key, harness_run.pid))
+        .flatten();
     // Best-effort: a missing/unreadable log just yields zeroed signals rather
     // than failing the whole task (the oracle's verdict is authoritative).
     // Lane K10: keep the raw text too — `provider_unavailable::classify_in_run`
@@ -452,8 +458,7 @@ pub fn run_task(task: &Task, tier: &Tier, cfg: &RunConfig, deps: &Deps<'_>) -> R
         reading,
     );
     result.duration_secs = harness_run.duration.as_secs_f64();
-    if let Some(timing) = read_native_timing(&timing_sidecar_base, &timing_run_key, harness_run.pid)
-    {
+    if let Some(timing) = native_timing {
         result.first_tool_ms = timing.first_tool_ms;
         result.native_wall_ms = Some(timing.native_wall_ms);
         result.native_timing_phase = Some(timing.phase);
@@ -3372,5 +3377,94 @@ mod tests {
         )
         .unwrap();
         assert!(read_native_timing(&base, "run-one", Some(1234)).is_none());
+    }
+
+    struct TimedHarness {
+        timed_out: bool,
+    }
+
+    impl HarnessRunner for TimedHarness {
+        fn run(&self, inv: &Invocation, _t: Duration, log_path: &Path) -> Result<HarnessRun> {
+            fs::write(log_path, "")?;
+            let base = inv.env("PERMAGENT_EVAL_TIMING_SIDECAR").unwrap();
+            let key = inv.env("PERMAGENT_EVAL_TIMING_RUN_KEY").unwrap();
+            let pid = std::process::id();
+            fs::write(
+                format!("{base}.{pid}.json"),
+                serde_json::json!({
+                    "phase": NATIVE_TIMING_PHASE,
+                    "run_key": key,
+                    "pid": pid,
+                    "root_session_id": "parent-session",
+                    "first_tool_ms": 100,
+                    "native_wall_ms": 500
+                })
+                .to_string(),
+            )?;
+            Ok(HarnessRun {
+                exit: Some(0),
+                timed_out: self.timed_out,
+                duration: Duration::from_secs(1),
+                pid: Some(pid),
+            })
+        }
+    }
+
+    struct OverwritingOracle;
+
+    impl OracleRunner for OverwritingOracle {
+        fn run(
+            &self,
+            workdir: &Path,
+            _argv: &[String],
+            _envs: &[(String, String)],
+            _timeout: Duration,
+            _log_path: &Path,
+        ) -> Result<OracleRun> {
+            let path = workdir
+                .parent()
+                .unwrap()
+                .join(format!("native-timing.{}.json", std::process::id()));
+            fs::write(path, "{\"first_tool_ms\":0}")?;
+            Ok(OracleRun {
+                exit: Some(0),
+                timed_out: false,
+                duration: Duration::ZERO,
+            })
+        }
+    }
+
+    #[test]
+    fn native_timing_is_snapshotted_before_oracle_and_not_credited_on_timeout() {
+        let temp = tempfile::tempdir().unwrap();
+        let task = make_task(&temp.path().join("demo"), &[], &[]);
+        let config = RunConfig {
+            permagent_bin: "permagent".into(),
+            runs_root: temp.path().join("runs"),
+            ..Default::default()
+        };
+        let oracle = OverwritingOracle;
+        let cost = UnknownCost;
+        let recipe = FakeRecipe;
+        let passing = TimedHarness { timed_out: false };
+        let deps = Deps {
+            harness: &passing,
+            oracle: &oracle,
+            cost: &cost,
+            recipe: &recipe,
+        };
+        let measured = run_task(&task, &Tier::builtin("local").unwrap(), &config, &deps).unwrap();
+        assert_eq!(measured.first_tool_ms, Some(100));
+        assert_eq!(measured.native_wall_ms, Some(500));
+        assert_eq!(measured.duration_secs, 1.0);
+
+        let timed_out = TimedHarness { timed_out: true };
+        let deps = Deps {
+            harness: &timed_out,
+            ..deps
+        };
+        let missing = run_task(&task, &Tier::builtin("local").unwrap(), &config, &deps).unwrap();
+        assert_eq!(missing.first_tool_ms, None);
+        assert_eq!(missing.native_wall_ms, None);
     }
 }

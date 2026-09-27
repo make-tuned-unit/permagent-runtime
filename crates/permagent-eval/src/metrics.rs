@@ -21,8 +21,9 @@ pub struct TaskResult {
     pub cost: CostReading,
     /// Wall-clock seconds the harness run took.
     pub duration_secs: f64,
-    /// Native CLI-entry-to-post-drain timing, separate from external
-    /// spawn-to-exit `duration_secs`. First-tool is absent when no approved
+    /// Native CLI-main-entry-to-post-drain timing, separate from external
+    /// spawn-to-exit `duration_secs` (which includes OS startup and cleanup).
+    /// First-tool is absent when no approved
     /// tool ran; all fields are absent without a valid structured sidecar.
     pub first_tool_ms: Option<u64>,
     pub native_wall_ms: Option<u64>,

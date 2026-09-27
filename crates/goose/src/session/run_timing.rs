@@ -1,4 +1,6 @@
-//! Eval-only, process-local timing from CLI entry to the end of headless drain.
+//! Eval-only, process-local timing from CLI `main` entry to the end of
+//! headless drain. OS spawn and Tokio runtime construction precede this clock
+//! and remain visible only in the separate external spawn-to-exit wall time.
 //! The sidecar is produced by native code, never parsed from model output.
 
 use serde::{Deserialize, Serialize};
