@@ -2832,6 +2832,9 @@ mod tests {
     #[test]
     fn all_nine_areas_can_reach_excellent_together() {
         let mut record = receipt_record();
+        // This synthetic fixture explicitly supplies the measured first-tool
+        // timing that the real qualification producer does not yet record.
+        record.tasks[0].first_tool_ms = Some(100);
         record.capability_verdict = Some(passing_capability());
         record.token_verdict = Some(TokenVerdict {
             knob: "test-knob".to_string(),
@@ -2840,8 +2843,28 @@ mod tests {
             median_input_token_improvement: Some(0.2),
             non_inferior_pass_rate: true,
         });
+        let reference = record.clone();
+        let records: Vec<_> = (0..3)
+            .map(|i| {
+                let mut copy = record.clone();
+                copy.run_id = format!("r{i}");
+                copy
+            })
+            .collect();
+        let comparisons = TokenComparisons {
+            baseline: Some(&reference),
+            references: &[],
+        };
+        let input = qualification_input_with_token_comparisons(
+            &records,
+            "contract-v1",
+            Vec::new(),
+            vec!["held-1".to_string()],
+            &comparisons,
+        );
+        let report = qualify(&input).unwrap();
         for area in NINE_AREAS {
-            assert_eq!(rating(area, &record), AreaRating::Excellent, "{area}");
+            assert_eq!(report.areas[area].rating, AreaRating::Excellent, "{area}");
         }
     }
 }

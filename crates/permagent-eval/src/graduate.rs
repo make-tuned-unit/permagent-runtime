@@ -1971,6 +1971,7 @@ mod tests {
             cache_write_tokens: None,
             tool_calls: 0,
             seconds,
+            first_tool_ms: None,
             seed_commit: None,
             headless_autoland: None,
             headless_drain_secs: None,
