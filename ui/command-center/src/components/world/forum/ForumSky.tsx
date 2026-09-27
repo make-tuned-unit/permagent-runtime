@@ -197,13 +197,11 @@ void main(){vec3 d=normalize(direction);
  gl_FragColor=vec4(color,1.);}`}/>
   </mesh>;
 }
-// Radii are load-bearing beyond the look: the in-app harnesses identify the
-// two bodies by sphere radius alone (`verify-world-in-app-v2.mjs`
-// `__celestialProbe`), so day legibility is bought with the shading floor
-// below, never by resizing them.
-export const GAS_GIANT_RADIUS = 140;
-export const MOON_RADIUS = 46;
-// 26.5 degrees up, 19.6 degrees east of due north — over the lagoon, inside
+// The bodies keep their names across size and position changes so the in-app
+// probe can measure their live projection.
+export const GAS_GIANT_RADIUS = 112;
+export const MOON_RADIUS = 38;
+// 29 degrees up, about 15 degrees east of due north — over the lagoon, inside
 // the first orbital ring's hoop, and inside the default vista's frame
 // (`vistaCamera.ts`).
 //
@@ -218,9 +216,9 @@ export const MOON_RADIUS = 46;
 // squarely behind the "The Solar Forum" title card, and this is the bearing
 // that clears it while staying left of the moon, which keeps its own
 // north-easterly bearing at the top right of the frame.
-export const GAS_GIANT_POS = bearing(0.336, -0.942, 26.5).multiplyScalar(900);
-// Unchanged: the moon was never occluded, only overpainted and unlit.
-export const MOON_POS = new THREE.Vector3(0.6, 0.55, -1).normalize().multiplyScalar(1080);
+export const GAS_GIANT_POS = bearing(0.26, -0.965, 29).multiplyScalar(980);
+// The moon stays northeast of the gas giant in the default vista.
+export const MOON_POS = new THREE.Vector3(0.64, 0.57, -1).normalize().multiplyScalar(1140);
 
 const BODY_VERT = `
 varying vec3 vLocal; varying vec3 vWorld;
@@ -276,9 +274,7 @@ function body(name: string, position: THREE.Vector3, radius: number, segments: [
     }),
   );
   mesh.name = name;
-  // The in-app harness finds meshes either by sphere radius (`__celestialProbe`)
-  // or by material name (`__namedMeshProbe`); naming both makes the bodies
-  // findable from the browser without another geometry heuristic.
+  // Browser probes find these meshes by name, independently of their geometry.
   mesh.material.name = name;
   mesh.position.copy(position);
   mesh.renderOrder = SKY_RENDER_ORDER.bodies;

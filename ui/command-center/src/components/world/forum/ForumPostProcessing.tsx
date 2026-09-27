@@ -203,18 +203,19 @@ import { ToneMappingMode } from 'postprocessing';
  *  runs the first time the screen is unlocked with the night World open.
  *  That capture is the one confirmation still owed.
  */
-const SATURATION = 0.5;
+// Keep the stronger night grade; daylight foliage needs less saturation.
+const SATURATION = { day: 0.16, night: 0.5 };
 const CONTRAST = 0.075;
 const BRIGHTNESS = -0.035;
 
-export function ForumPostProcessing() {
+export function ForumPostProcessing({ appearance = 'day' }: { appearance?: 'day' | 'night' }) {
   return (
     <EffectComposer multisampling={0}>
-      <Bloom mipmapBlur intensity={0.55} radius={0.6} levels={5} luminanceThreshold={0.72} luminanceSmoothing={0.3} />
+      <Bloom mipmapBlur intensity={appearance === 'day' ? 0.3 : 0.55} radius={0.6} levels={5} luminanceThreshold={0.72} luminanceSmoothing={0.3} />
       {/* AgX here, not on the Canvas: the Canvas's toneMapping is skipped while
           this composer is mounted, which is what clipped the gas giant white. */}
       <ToneMapping mode={ToneMappingMode.AGX} />
-      <HueSaturation saturation={SATURATION} />
+      <HueSaturation saturation={SATURATION[appearance]} />
       <BrightnessContrast brightness={BRIGHTNESS} contrast={CONTRAST} />
     </EffectComposer>
   );
