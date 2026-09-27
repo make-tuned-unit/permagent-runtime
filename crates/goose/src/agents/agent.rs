@@ -5973,13 +5973,23 @@ mod tests {
     #[tokio::test]
     async fn headless_coordinator_hides_and_denies_worker_tools_without_narrowing_workers(
     ) -> anyhow::Result<()> {
-        let mut coordinator = Agent::new();
+        let directory = tempfile::tempdir()?;
+        let manager = Arc::new(crate::session::SessionManager::new(
+            directory.path().to_path_buf(),
+        ));
+        let config = AgentRunnerConfig::new(
+            Arc::clone(&manager),
+            PermissionManager::instance(),
+            None,
+            GooseMode::Auto,
+            true,
+            GoosePlatform::GooseCli,
+        );
+        let mut coordinator = Agent::with_config(config.clone());
         coordinator.config.headless_coding_coordinator = true;
-        let session = coordinator
-            .config
-            .session_manager
+        let session = manager
             .create_session(
-                std::env::current_dir()?,
+                directory.path().to_path_buf(),
                 "coordinator-tool-scope".to_string(),
                 crate::session::session_manager::SessionType::Hidden,
                 GooseMode::Auto,
@@ -6021,7 +6031,7 @@ mod tests {
 
         // A dispatched worker constructs its own Agent; the coordinator's
         // request-only tool scope must not be persisted into inherited grants.
-        let worker = Agent::new();
+        let worker = Agent::with_config(config);
         worker.add_extension(developer(), &session.id).await?;
         let worker_names: Vec<_> = worker
             .list_tools(&session.id, None)

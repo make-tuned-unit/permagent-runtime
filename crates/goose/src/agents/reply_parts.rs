@@ -41,6 +41,46 @@ fn use_code_execution_for_role(extension_enabled: bool, headless_coding_coordina
     extension_enabled && !headless_coding_coordinator
 }
 
+#[cfg(feature = "code-mode")]
+fn disclose_code_mode_tools(
+    tools: Vec<Tool>,
+    disclosure_style: pctx_code_mode::config::ToolDisclosure,
+) -> Vec<Tool> {
+    tools
+        .into_iter()
+        .filter_map(|mut tool| match disclosure_style {
+            pctx_code_mode::config::ToolDisclosure::Catalog
+            | pctx_code_mode::config::ToolDisclosure::Filesystem => {
+                let owner = crate::agents::extension_manager::get_tool_owner(&tool)?;
+                crate::agents::extension_manager::is_first_class_extension(&owner).then_some(tool)
+            }
+            pctx_code_mode::config::ToolDisclosure::Sidecar => {
+                let output_schema = tool
+                    .output_schema
+                    .as_ref()
+                    .map(|schema| serde_json::json!(schema).to_string())
+                    .unwrap_or("unknown".to_string());
+                let description_extension =
+                    format!("The successful return schema of this tool is:\n{output_schema}");
+                tool.description = Some(
+                    tool.description
+                        .map(|description| format!("{description}\n{description_extension}"))
+                        .unwrap_or(description_extension)
+                        .into(),
+                );
+                Some(tool)
+            }
+        })
+        .collect()
+}
+
+fn finish_model_tool_visibility(tools: &mut Vec<Tool>, headless_coding_coordinator: bool) {
+    tools.retain(is_tool_visible_to_model);
+    if headless_coding_coordinator {
+        tools.retain(|tool| super::agent::headless_coding_coordinator_allows_tool(&tool.name));
+    }
+}
+
 async fn enhance_model_error(error: ProviderError, provider: &Arc<dyn Provider>) -> ProviderError {
     let ProviderError::RequestFailed(ref msg) = error else {
         return error;
@@ -1064,56 +1104,12 @@ impl Agent {
         if code_execution_active {
             let disclosure_style =
                 crate::agents::platform_extensions::code_execution::get_tool_disclosure();
-
-            tools = tools
-                .into_iter()
-                .filter_map(|mut t| match disclosure_style {
-                    pctx_code_mode::config::ToolDisclosure::Catalog
-                    | pctx_code_mode::config::ToolDisclosure::Filesystem => {
-                        // in catalog & filesystem styles, progressive search is handled
-                        // by pctx, so we want to omit all non-first-class extensions
-                        // from the standard tool list
-                        if crate::agents::extension_manager::get_tool_owner(&t).is_some_and(|o| {
-                            crate::agents::extension_manager::is_first_class_extension(&o)
-                        }) {
-                            Some(t)
-                        } else {
-                            None
-                        }
-                    }
-                    pctx_code_mode::config::ToolDisclosure::Sidecar => {
-                        // in sidecar style there is no progressive search, just a way to chain tools
-                        // together with typescript
-                        // add output schema to description since many model providers drop the
-                        // output schema when presenting tools to the model
-                        let output_schema = t
-                            .output_schema
-                            .as_ref()
-                            .map(|s| serde_json::json!(s).to_string())
-                            .unwrap_or("unknown".to_string());
-                        let description_extension = format!(
-                            "The successful return schema of this tool is:\n{output_schema}"
-                        );
-
-                        t.description = Some(
-                            t.description
-                                .map(|t| format!("{t}\n{description_extension}"))
-                                .unwrap_or(description_extension)
-                                .into(),
-                        );
-
-                        Some(t)
-                    }
-                })
-                .collect();
+            tools = disclose_code_mode_tools(tools, disclosure_style);
         }
 
         // Filter out tools not visible to the model per MCP Apps visibility spec.
         // Tools with `_meta.ui.visibility` that doesn't include "model" are app-only.
-        tools.retain(is_tool_visible_to_model);
-        if self.config.headless_coding_coordinator {
-            tools.retain(|tool| super::agent::headless_coding_coordinator_allows_tool(&tool.name));
-        }
+        finish_model_tool_visibility(&mut tools, self.config.headless_coding_coordinator);
 
         // Stable tool ordering is important for multi session prompt caching.
         tools.sort_by(|a, b| a.name.cmp(&b.name));
@@ -2778,15 +2774,47 @@ mod tests {
 
     #[cfg(feature = "code-mode")]
     #[test]
-    fn headless_coordinator_uses_direct_dag_tools_even_when_code_mode_is_enabled() {
+    fn headless_coordinator_tool_assembly_keeps_dag_with_code_mode_extension_loaded() {
         use pctx_code_mode::config::ToolDisclosure;
+        let tool = |name: &str, owner: &str| {
+            Tool::new(
+                name.to_string(),
+                format!("{name} schema"),
+                object!({"type": "object", "properties": {}}),
+            )
+            .with_meta(rmcp::model::Meta(
+                serde_json::json!({"goose_extension": owner})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ))
+        };
+        let loaded = vec![
+            tool("orchestrator__decompose_roadmap", "orchestrator"),
+            tool("orchestrator__create_roadmap", "orchestrator"),
+            tool("read", "developer"),
+            tool("edit", "developer"),
+            tool("execute_typescript", "code_execution"),
+        ];
         for disclosure in [ToolDisclosure::Catalog, ToolDisclosure::Filesystem] {
-            assert!(
-                !crate::agents::extension_manager::is_first_class_extension("orchestrator"),
-                "{disclosure:?} would hide orchestrator DAG tools if code mode ran"
-            );
-            assert!(!use_code_execution_for_role(true, true));
+            let mut coordinator = loaded.clone();
+            if use_code_execution_for_role(true, true) {
+                coordinator = disclose_code_mode_tools(coordinator, disclosure.clone());
+            }
+            finish_model_tool_visibility(&mut coordinator, true);
+            let names: Vec<_> = coordinator.iter().map(|tool| tool.name.as_ref()).collect();
+            assert!(names.contains(&"orchestrator__decompose_roadmap"));
+            assert!(names.contains(&"orchestrator__create_roadmap"));
+            assert!(names.contains(&"read"));
+            assert!(!names.contains(&"edit"));
+            assert!(!names.contains(&"execute_typescript"));
+
             assert!(use_code_execution_for_role(true, false));
+            let mut worker = disclose_code_mode_tools(loaded.clone(), disclosure);
+            finish_model_tool_visibility(&mut worker, false);
+            let worker_names: Vec<_> = worker.iter().map(|tool| tool.name.as_ref()).collect();
+            assert!(worker_names.contains(&"execute_typescript"));
+            assert!(!worker_names.contains(&"orchestrator__create_roadmap"));
         }
     }
     use crate::config::GooseMode;
