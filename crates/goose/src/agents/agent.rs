@@ -6028,7 +6028,7 @@ mod tests {
             let message = if first && matches!(self.first_reply, OutcomeFirstReply::Read) {
                 Message::assistant().with_tool_request(
                     "fixture-read",
-                    Ok(CallToolRequestParams::new("developer__read")
+                    Ok(CallToolRequestParams::new("read")
                         .with_arguments(rmcp::object!({"path": self.read_path.clone()}))),
                 )
             } else {
