@@ -535,8 +535,8 @@ pub enum AgentRuntimeOutcome {
 /// as failed), to the HUD, and, once the scheduler starts reading the outcome,
 /// to the three-strike auto-pause, which would pause a working job.
 ///
-/// So `iteration_errored` is cleared by [`Self::begin_iteration`] at the top of
-/// every outer-loop iteration and is what the outcome reads. Keeping both in
+/// So `iteration_errored` is cleared by [`Self::begin_iteration`] when the
+/// entry guards allow another outer-loop attempt and is what the outcome reads. Keeping both in
 /// the guard means the 15 `mark_error` call sites need no edits and a new
 /// failure path gets the correct behaviour for free.
 ///
@@ -2905,17 +2905,17 @@ impl Agent {
             let mut retry_of_failed_call: Option<String> = None;
 
             loop {
-                // Only the per-iteration fact is cleared; the HUD's sticky
-                // latch survives the whole turn. See `ReplyStateGuard`.
-                state_guard.begin_iteration();
-
                 if is_token_cancelled(&cancel_token) {
+                    // Preserve the existing cancellation outcome rather than
+                    // reporting the preceding failed attempt as this exit.
+                    state_guard.begin_iteration();
                     break;
                 }
 
                 {
                     let guard = self.final_output_tool.lock().await;
                     if let Some(ref output) = guard.as_ref().and_then(|fot| fot.final_output.clone()) {
+                        state_guard.begin_iteration();
                         yield AgentEvent::Message(Message::assistant().with_text(output));
                         break;
                     }
@@ -2925,6 +2925,11 @@ impl Agent {
                     turns_taken += 1;
                 }
                 if turns_taken > max_turns {
+                    // Re-entry means the prior attempt still needed a tool
+                    // follow-up or continuation; reaching this cap is not a
+                    // completed reply even if that attempt's provider call
+                    // itself succeeded.
+                    state_guard.mark_error();
                     yield AgentEvent::Message(
                         Message::assistant().with_text(
                             "I've reached the maximum number of actions I can do without user input. Would you like me to continue?"
@@ -2932,6 +2937,11 @@ impl Agent {
                     );
                     break;
                 }
+
+                // Clear the prior attempt's error only after the entry guards
+                // allow a real next iteration. An after-turn continuation
+                // stopped by max_turns has not recovered from that failure.
+                state_guard.begin_iteration();
 
                 // Lane X-lat (coding-harness excellence iteration): one
                 // recorder per outer-loop turn attempt. `finish()` is called
@@ -5972,6 +5982,235 @@ impl Agent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Clone, Copy)]
+    enum OutcomeFirstReply {
+        Failure,
+        Text,
+        Read,
+    }
+
+    struct OutcomeSequenceProvider {
+        calls: std::sync::atomic::AtomicUsize,
+        first_reply: OutcomeFirstReply,
+        read_path: String,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for OutcomeSequenceProvider {
+        fn get_name(&self) -> &str {
+            "outcome-sequence-fixture"
+        }
+        fn get_model_config(&self) -> crate::model::ModelConfig {
+            crate::model::ModelConfig::new_or_fail("gpt-5.4-mini")
+        }
+        fn cost_tier(&self) -> crate::session::CostTier {
+            crate::session::CostTier::LocalFree
+        }
+        async fn stream(
+            &self,
+            _model_config: &crate::model::ModelConfig,
+            _session_id: &str,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> std::result::Result<crate::providers::base::MessageStream, ProviderError> {
+            let first = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0;
+            if first && matches!(self.first_reply, OutcomeFirstReply::Failure) {
+                return Err(ProviderError::NotSent(
+                    "fixture admission refusal".to_string(),
+                ));
+            }
+            let message = if first && matches!(self.first_reply, OutcomeFirstReply::Read) {
+                Message::assistant().with_tool_request(
+                    "fixture-read",
+                    Ok(CallToolRequestParams::new("developer__read")
+                        .with_arguments(rmcp::object!({"path": self.read_path.clone()}))),
+                )
+            } else {
+                Message::assistant().with_text("Recovered successfully.")
+            };
+            Ok(crate::providers::base::stream_from_single_message(
+                message,
+                ProviderUsage::new(
+                    self.get_name().to_string(),
+                    crate::providers::base::Usage::default(),
+                ),
+            ))
+        }
+    }
+
+    struct ContinueOnceAfterFailure {
+        cancel: Option<CancellationToken>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::after_turn::AfterTurn for ContinueOnceAfterFailure {
+        fn name(&self) -> &'static str {
+            "outcome-sequence-continuation"
+        }
+        async fn after_turn(
+            &self,
+            ctx: &crate::after_turn::AfterTurnContext<'_>,
+        ) -> crate::after_turn::AfterTurnAction {
+            if ctx.prior_holds == 0 {
+                if let Some(cancel) = &self.cancel {
+                    cancel.cancel();
+                }
+                crate::after_turn::AfterTurnAction::Continue {
+                    inject: "Retry the operation.".to_string(),
+                }
+            } else {
+                crate::after_turn::AfterTurnAction::Allow
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn reply_outcome_preserves_failure_at_cap_and_allows_real_recovery() -> anyhow::Result<()>
+    {
+        for (
+            first_reply,
+            max_turns,
+            continue_once,
+            cancel_after_failure,
+            expected,
+            expected_calls,
+        ) in [
+            (
+                OutcomeFirstReply::Failure,
+                1,
+                true,
+                false,
+                AgentRuntimeOutcome::Failed,
+                1,
+            ),
+            (
+                OutcomeFirstReply::Failure,
+                2,
+                true,
+                false,
+                AgentRuntimeOutcome::Succeeded,
+                2,
+            ),
+            (
+                OutcomeFirstReply::Failure,
+                2,
+                true,
+                true,
+                AgentRuntimeOutcome::Cancelled,
+                1,
+            ),
+            (
+                OutcomeFirstReply::Read,
+                1,
+                false,
+                false,
+                AgentRuntimeOutcome::Failed,
+                1,
+            ),
+            (
+                OutcomeFirstReply::Text,
+                1,
+                false,
+                false,
+                AgentRuntimeOutcome::Succeeded,
+                1,
+            ),
+        ] {
+            let directory = tempfile::tempdir()?;
+            let manager = Arc::new(SessionManager::new(directory.path().to_path_buf()));
+            let mut agent = Agent::with_config(AgentRunnerConfig::new(
+                Arc::clone(&manager),
+                PermissionManager::instance(),
+                None,
+                GooseMode::Auto,
+                true,
+                GoosePlatform::GooseCli,
+            ));
+            let session = manager
+                .create_session(
+                    directory.path().to_path_buf(),
+                    "reply outcome sequence".to_string(),
+                    crate::session::session_manager::SessionType::Hidden,
+                    GooseMode::Auto,
+                )
+                .await?;
+            let provider = Arc::new(OutcomeSequenceProvider {
+                calls: std::sync::atomic::AtomicUsize::new(0),
+                first_reply,
+                read_path: directory
+                    .path()
+                    .join("fixture.txt")
+                    .to_string_lossy()
+                    .into_owned(),
+            });
+            if matches!(first_reply, OutcomeFirstReply::Read) {
+                std::fs::write(&provider.read_path, "fixture contents")?;
+                agent
+                    .add_extension(
+                        ExtensionConfig::Builtin {
+                            name: "developer".to_string(),
+                            description: String::new(),
+                            display_name: None,
+                            timeout: None,
+                            bundled: None,
+                            available_tools: vec!["read".to_string()],
+                        },
+                        &session.id,
+                    )
+                    .await?;
+            }
+            agent.update_provider(provider.clone(), &session.id).await?;
+            let cancellation = CancellationToken::new();
+            agent.after_turn_manager = crate::after_turn::AfterTurnManager::new();
+            if continue_once {
+                agent
+                    .after_turn_manager
+                    .add_hook(Box::new(ContinueOnceAfterFailure {
+                        cancel: cancel_after_failure.then(|| cancellation.clone()),
+                    }));
+            }
+            let mut reply = agent
+                .reply(
+                    Message::user().with_text("Perform the operation."),
+                    SessionConfig {
+                        id: session.id,
+                        schedule_id: None,
+                        max_turns: Some(max_turns),
+                        retry_config: None,
+                    },
+                    Some(cancellation),
+                )
+                .await?;
+            let mut outcome = None;
+            let mut successful_tool = false;
+            while let Some(event) = reply.next().await {
+                match event? {
+                    AgentEvent::RuntimeOutcome(observed) => outcome = Some(observed),
+                    AgentEvent::Message(message) => {
+                        for content in message.content {
+                            if let MessageContent::ToolResponse(response) = content {
+                                successful_tool |= response
+                                    .tool_result
+                                    .is_ok_and(|result| !result.is_error.unwrap_or(false));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            assert_eq!(outcome, Some(expected));
+            assert_eq!(
+                provider.calls.load(std::sync::atomic::Ordering::SeqCst),
+                expected_calls
+            );
+            if matches!(first_reply, OutcomeFirstReply::Read) {
+                assert!(successful_tool);
+            }
+        }
+        Ok(())
+    }
 
     #[tokio::test]
     async fn headless_coordinator_hides_and_denies_worker_tools_without_narrowing_workers(
