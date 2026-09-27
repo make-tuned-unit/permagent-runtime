@@ -3125,7 +3125,7 @@ impl Agent {
                 // Carry the hold's count and extension authorizer into physical
                 // retries. Exhausting the count requires a new one-attempt grant.
                 // Unpaid work keeps the provider's retry policy unchanged.
-                let (stream_result, transport_rejection_safe) = crate::cost_router::authorized_attempts::with_reservation_attempts_evidence(
+                let (stream_result, attempt_evidence) = crate::cost_router::authorized_attempts::with_reservation_attempts_evidence(
                     Arc::clone(&session_manager),
                     invocation.invocation_id.clone(),
                     invocation.attempts_reserved,
@@ -3143,14 +3143,19 @@ impl Agent {
                 let mut stream = match stream_result {
                     Ok(stream) => stream,
                     Err(error) => {
-                        // stream_split can fail after handing work to a remote
-                        // endpoint. Treat this as an unknown paid outcome; only
-                        // the reservation layer may release a proven
-                        // pre-dispatch failure.
+                        // A typed local admission refusal can prove that no
+                        // retry reached HTTP. Every other pre-stream error may
+                        // have handed work to the provider and keeps its hold.
                         if let Some(reservation_id) = invocation.reservation_id.as_deref() {
-                            session_manager
-                                .mark_provider_invocation_unknown(reservation_id)
-                                .await?;
+                            crate::cost_router::authorized_attempts::finalize_missing_usage(
+                                &session_manager,
+                                reservation_id,
+                                crate::cost_router::authorized_attempts::is_proven_not_sent(
+                                    &error,
+                                    &attempt_evidence,
+                                ),
+                            )
+                            .await?;
                         }
                         let message = Message::assistant()
                             .with_text(format!("Ran into this error: {error}."));
@@ -3246,7 +3251,7 @@ impl Agent {
                     }
                     if let Err(error) = &next {
                         rejected_without_usage = crate::cost_router::authorized_attempts::is_unbilled_rate_rejection(
-                            error, transport_rejection_safe, stream_committed, first_byte_stall_retried,
+                            error, attempt_evidence.safe_rate_rejection, stream_committed, first_byte_stall_retried,
                         );
                     }
                     match next {

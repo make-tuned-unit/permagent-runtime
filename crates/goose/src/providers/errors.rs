@@ -25,6 +25,11 @@ pub enum ProviderError {
     #[error("Request failed: {0}")]
     RequestFailed(String),
 
+    /// Local admission refused before any HTTP dispatch. Only emit this when
+    /// the adapter can prove it never handed this attempt to the transport.
+    #[error("Request not sent: {0}")]
+    NotSent(String),
+
     #[error("Execution error: {0}")]
     ExecutionError(String),
 
@@ -71,6 +76,7 @@ impl ProviderError {
             ProviderError::ServerError(_) => "server",
             ProviderError::NetworkError(_) => "network",
             ProviderError::RequestFailed(_) => "request",
+            ProviderError::NotSent(_) => "request_not_sent",
             ProviderError::ExecutionError(_) => "execution",
             ProviderError::UsageError(_) => "usage",
             ProviderError::NotImplemented(_) => "not_implemented",
@@ -105,7 +111,8 @@ impl ProviderError {
             | ProviderError::CreditsExhausted { .. }
             | ProviderError::ContextLengthExceeded(_)
             | ProviderError::EndpointNotFound(_)
-            | ProviderError::NotImplemented(_) => true,
+            | ProviderError::NotImplemented(_)
+            | ProviderError::NotSent(_) => true,
             ProviderError::RequestFailed(msg) => is_permanent_client_message(msg),
             // Y8a: a stream that blew its budget is permanent BY CONSTRUCTION.
             // The bytes we would resend are identical, and the failure mode is

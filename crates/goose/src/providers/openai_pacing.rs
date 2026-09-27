@@ -66,7 +66,9 @@ fn parse_config(
 }
 
 fn refusal(message: &str) -> ProviderError {
-    ProviderError::RequestFailed(format!("OpenAI local request quota: {message}"))
+    // Every caller invokes this before `response_post`; this typed proof lets
+    // the enclosing reservation release a hold that never reached HTTP.
+    ProviderError::NotSent(format!("OpenAI local request quota: {message}"))
 }
 
 /// Count serialized bytes, not a guessed tokens/character ratio, plus the
@@ -339,10 +341,16 @@ mod tests {
     #[test]
     fn disabled_and_invalid_config_and_unbounded_payloads() {
         assert!(parse_config(None, Some("invalid")).unwrap().is_none());
-        assert!(parse_config(Some("invalid"), None).is_err());
+        assert!(matches!(
+            parse_config(Some("invalid"), None),
+            Err(ProviderError::NotSent(_))
+        ));
         assert!(parse_config(Some("0"), None).is_err());
         assert!(parse_config(Some("180000"), Some("1000")).is_ok());
-        assert!(request_charge(&json!({"input":"text"})).is_err());
+        assert!(matches!(
+            request_charge(&json!({"input":"text"})),
+            Err(ProviderError::NotSent(_))
+        ));
         assert!(request_charge(&json!({"max_output_tokens":8192,"input":[{"type":"input_image","image_url":"https://example.com/image"}]})).is_err());
         assert!(
             request_charge(&json!({"max_output_tokens":8192,"previous_response_id":"hidden"}))
@@ -414,7 +422,10 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(charge(&pacer).await, 90);
-        assert!(pacer.admit(config(100), 101).await.is_err());
+        assert!(matches!(
+            pacer.admit(config(100), 101).await,
+            Err(ProviderError::NotSent(_))
+        ));
     }
 
     #[tokio::test]
@@ -457,7 +468,9 @@ mod tests {
             };
             let mut chunks = vec![Ok((None, Some(reported)))];
             if mode == 0 {
-                chunks.push(Err(refusal("interrupted stream")));
+                chunks.push(Err(ProviderError::NetworkError(
+                    "interrupted stream".into(),
+                )));
             }
             let mut stream =
                 reconcile_stream(Some(ticket), Box::pin(futures::stream::iter(chunks)));

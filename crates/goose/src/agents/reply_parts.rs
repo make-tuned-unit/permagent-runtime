@@ -2304,6 +2304,14 @@ impl FastReservationUnknownGuard {
         Ok(())
     }
 
+    async fn release_not_sent(&mut self) -> Result<()> {
+        if let Some(id) = self.reservation_id.as_deref().filter(|_| self.armed) {
+            self.manager.release_provider_invocation(id).await?;
+        }
+        self.armed = false;
+        Ok(())
+    }
+
     fn disarm(&mut self) {
         self.armed = false;
     }
@@ -2515,8 +2523,8 @@ impl AccountedFastCompletion {
 
         // Physical retries beyond the hold's count require a one-attempt
         // extension grant. Unpaid work keeps the retry policy unchanged.
-        let (response, mut usage) =
-            match crate::cost_router::authorized_attempts::with_reservation_attempts(
+        let (result, attempt_evidence) =
+            crate::cost_router::authorized_attempts::with_reservation_attempts_evidence(
                 Arc::clone(&self.manager),
                 invocation.invocation_id.clone(),
                 invocation.attempts_reserved,
@@ -2524,16 +2532,23 @@ impl AccountedFastCompletion {
                     // permagent-dispatch: seam=complete_fast_attempt_v1 class=wrapped contract=reservation_settlement
                     .complete(&model_config, &self.session.id, system, messages, tools),
             )
-            .await
-            {
-                Ok(result) => result,
-                Err(error) => {
+            .await;
+        let (response, mut usage) = match result {
+            Ok(result) => result,
+            Err(error) => {
+                if crate::cost_router::authorized_attempts::is_proven_not_sent(
+                    &error,
+                    &attempt_evidence,
+                ) {
+                    unknown_guard.release_not_sent().await?;
+                } else {
                     unknown_guard.mark_unknown().await?;
-                    return Err(anyhow::anyhow!(
-                        "complete_fast physical attempt failed: {error}"
-                    ));
                 }
-            };
+                return Err(anyhow::anyhow!(
+                    "complete_fast physical attempt failed: {error}"
+                ));
+            }
+        };
 
         let has_authoritative_usage = usage.usage.input_tokens.is_some()
             || usage.usage.output_tokens.is_some()
