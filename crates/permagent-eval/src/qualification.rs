@@ -385,11 +385,20 @@ pub struct TaskQualificationEvidence {
     /// of the following is `None`/empty rather than a defaulted value when
     /// its producing lane's line was not found in this task's harness log.
     pub harness_overhead: Option<HarnessOverhead>,
-    /// Measured time from harness start to the first worker tool request.
-    /// The current runner does not produce this yet; historical records and
-    /// new runs remain Unrated for paired latency until it is instrumented.
+    /// Native monotonic time from CLI entry to the first authorized client
+    /// tool dispatch in this run's top-level session. Not inferred from model
+    /// text or the external harness process duration.
     #[serde(default)]
     pub first_tool_ms: Option<u64>,
+    /// Same native CLI-entry clock and phase as `first_tool_ms`.
+    #[serde(default)]
+    pub native_wall_ms: Option<u64>,
+    #[serde(default)]
+    pub native_timing_phase: Option<String>,
+    #[serde(default)]
+    pub native_timing_root_session_id: Option<String>,
+    #[serde(default)]
+    pub native_other_session_first_tool_ms: BTreeMap<String, u64>,
     pub landed_goals: Vec<LandedGoal>,
     pub drain_summary: Option<String>,
     pub create_roadmap_dispatched: Option<usize>,
@@ -582,7 +591,11 @@ pub fn build_run_qualification_record(
             headless_autoland: r.headless_autoland.clone(),
             headless_drain_secs: r.headless_drain_secs.clone(),
             harness_overhead: r.signals.harness_overhead,
-            first_tool_ms: None,
+            first_tool_ms: r.first_tool_ms,
+            native_wall_ms: r.native_wall_ms,
+            native_timing_phase: r.native_timing_phase.clone(),
+            native_timing_root_session_id: r.native_timing_root_session_id.clone(),
+            native_other_session_first_tool_ms: r.native_other_session_first_tool_ms.clone(),
             landed_goals: r.signals.landed_goals.clone(),
             drain_summary: r.signals.drain_summary.clone(),
             create_roadmap_dispatched: r.signals.create_roadmap_dispatched,
@@ -1195,11 +1208,25 @@ fn median(mut values: Vec<f64>) -> Option<f64> {
 
 fn latency_medians(record: &RunQualificationRecord) -> Option<(f64, f64)> {
     let attempted: Vec<_> = record.tasks.iter().filter(|t| !t.not_run).collect();
+    if attempted.iter().any(|t| {
+        t.native_timing_phase.as_deref() != Some("cli_entry_to_post_drain_v1")
+            || t.native_timing_root_session_id
+                .as_deref()
+                .is_none_or(str::is_empty)
+            || t.first_tool_ms
+                .zip(t.native_wall_ms)
+                .is_none_or(|(first, wall)| first > wall)
+    }) {
+        return None;
+    }
     let first_tools = attempted
         .iter()
         .map(|t| t.first_tool_ms.map(|n| n as f64))
         .collect::<Option<Vec<_>>>()?;
-    let walls = attempted.iter().map(|t| t.seconds).collect();
+    let walls = attempted
+        .iter()
+        .map(|t| t.native_wall_ms.map(|n| n as f64))
+        .collect::<Option<Vec<_>>>()?;
     Some((median(first_tools)?, median(walls)?))
 }
 
@@ -1209,7 +1236,7 @@ fn latency_evidence(
 ) -> AreaEvidence {
     let Some((first_tool, wall)) = latency_medians(record) else {
         return unrated(vec![
-            "first_tool_ms or wall time: measured values for every attempted task".into(),
+            "first_tool_ms and native_wall_ms in matching cli_entry_to_post_drain_v1 phase for every attempted task".into(),
         ]);
     };
     let candidates = comparisons
@@ -1230,7 +1257,7 @@ fn latency_evidence(
             compatible.push((reference, reference_first_tool, reference_wall));
         } else {
             missing.push(format!(
-                "latency comparison {}: first_tool_ms or wall time missing",
+                "latency comparison {}: matching native first-tool/wall timing missing",
                 reference.run_id
             ));
         }
@@ -1596,6 +1623,10 @@ mod tests {
     fn build_run_qualification_record_carries_the_resolved_harness_timeout() {
         let mut solved = passing_task("t1");
         solved.harness_timeout_secs = Some(900);
+        solved.first_tool_ms = Some(120);
+        solved.native_wall_ms = Some(5_000);
+        solved.native_timing_phase = Some("cli_entry_to_post_drain_v1".into());
+        solved.native_timing_root_session_id = Some("parent-session".into());
         let mut not_run = crate::metrics::TaskResult::new(
             "t2",
             "classic",
@@ -1615,6 +1646,12 @@ mod tests {
             &[solved, not_run],
         );
         assert_eq!(record.tasks[0].harness_timeout_secs, Some(900));
+        assert_eq!(record.tasks[0].first_tool_ms, Some(120));
+        assert_eq!(record.tasks[0].native_wall_ms, Some(5_000));
+        assert_eq!(
+            record.tasks[0].native_timing_root_session_id.as_deref(),
+            Some("parent-session")
+        );
         assert_eq!(record.tasks[1].harness_timeout_secs, None);
 
         // Serde default: a qual.json written before this lane (no field at
@@ -2478,12 +2515,22 @@ mod tests {
 
         current.tasks[0].first_tool_ms = Some(100);
         reference.tasks[0].first_tool_ms = Some(100);
+        for task in [&mut current.tasks[0], &mut reference.tasks[0]] {
+            task.native_wall_ms = Some(5_000);
+            task.native_timing_phase = Some("cli_entry_to_post_drain_v1".into());
+            task.native_timing_root_session_id = Some("root-session".into());
+        }
         let references = [reference.clone()];
         let comparisons = TokenComparisons {
             baseline: None,
             references: &references,
         };
         assert!(area_evidence("latency", &current, &BTreeSet::new(), &comparisons).gate_passed);
+
+        current.tasks[0].native_timing_phase = Some("turn_only_v0".into());
+        let wrong_phase = area_evidence("latency", &current, &BTreeSet::new(), &comparisons);
+        assert!(!wrong_phase.evidence_complete);
+        current.tasks[0].native_timing_phase = Some("cli_entry_to_post_drain_v1".into());
 
         current.tasks[0].harness_overhead.as_mut().unwrap().p50_ms = 251;
         let slow = area_evidence("latency", &current, &BTreeSet::new(), &comparisons);
@@ -2495,12 +2542,12 @@ mod tests {
         assert!(slow_tail.evidence_complete);
         assert!(!slow_tail.gate_passed);
         current.tasks[0].harness_overhead.as_mut().unwrap().p95_ms = 100;
-        current.tasks[0].seconds = 5.51;
+        current.tasks[0].native_wall_ms = Some(5_501);
         let slow_paired = area_evidence("latency", &current, &BTreeSet::new(), &comparisons);
         assert!(slow_paired.evidence_complete);
         assert!(!slow_paired.gate_passed);
 
-        current.tasks[0].seconds = 5.0;
+        current.tasks[0].native_wall_ms = Some(5_000);
         let mut failed = current.tasks[0].clone();
         failed.task_id = "second-task".into();
         failed.result = "fail".into();
@@ -2671,6 +2718,10 @@ mod tests {
         let task = record.get_mut("tasks").unwrap()[0].as_object_mut().unwrap();
         for field in [
             "first_tool_ms",
+            "native_wall_ms",
+            "native_timing_phase",
+            "native_timing_root_session_id",
+            "native_other_session_first_tool_ms",
             "dag_enforcement",
             "verification_integrity",
             "safety_and_trust",
@@ -2832,9 +2883,11 @@ mod tests {
     #[test]
     fn all_nine_areas_can_reach_excellent_together() {
         let mut record = receipt_record();
-        // This synthetic fixture explicitly supplies the measured first-tool
-        // timing that the real qualification producer does not yet record.
+        // Explicit measured synthetic timing with one native clock origin.
         record.tasks[0].first_tool_ms = Some(100);
+        record.tasks[0].native_wall_ms = Some(5_000);
+        record.tasks[0].native_timing_phase = Some("cli_entry_to_post_drain_v1".into());
+        record.tasks[0].native_timing_root_session_id = Some("root-session".into());
         record.capability_verdict = Some(passing_capability());
         record.token_verdict = Some(TokenVerdict {
             knob: "test-knob".to_string(),

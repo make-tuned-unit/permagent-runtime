@@ -1764,6 +1764,10 @@ async fn handle_run_command(
         session
             .drain_dispatched_goals(std::time::Duration::from_secs(drain_cap_secs))
             .await;
+        if let Err(error) = permagent::session::run_timing::finish_to_sidecar(session.session_id())
+        {
+            tracing::debug!(%error, "failed to write eval run timing sidecar");
+        }
         session.print_harness_receipts();
         session
             .finish_harness_lease(if succeeded { "completed" } else { "failed" })

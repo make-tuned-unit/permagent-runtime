@@ -1771,6 +1771,7 @@ impl Agent {
             .record_tool_arguments(&tool_call.arguments, &session.working_dir);
 
         if tool_call.name == PLATFORM_MANAGE_SCHEDULE_TOOL_NAME {
+            crate::session::run_timing::record_approved_dispatch(&session.id);
             let arguments = tool_call
                 .arguments
                 .map(Value::Object)
@@ -1783,6 +1784,7 @@ impl Agent {
         }
 
         if tool_call.name == PLATFORM_LOAD_FEATURE_LESSON_TOOL_NAME {
+            crate::session::run_timing::record_approved_dispatch(&session.id);
             let feature_id = tool_call
                 .arguments
                 .as_ref()
@@ -1797,6 +1799,7 @@ impl Agent {
 
         if tool_call.name == FINAL_OUTPUT_TOOL_NAME {
             return if let Some(final_output_tool) = self.final_output_tool.lock().await.as_mut() {
+                crate::session::run_timing::record_approved_dispatch(&session.id);
                 let result = final_output_tool.execute_tool_call(tool_call.clone()).await;
                 (request_id, Ok(result))
             } else {
