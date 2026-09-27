@@ -29,7 +29,17 @@ Integration checkout: `/Users/j/Documents/dev/permagent-worktrees/dagJ-lane-qa-i
 
 All test execution used temporary roots. No paid model request or live Grow action was performed by this integration worker.
 
-## Normal CLI runtime handoff
+## Workspace scope follow-up
+
+The first authentic Grow trial exposed conflicting original-checkout paths before the worker's execution scope. `594de8e3` (Grow `bd67366a`) leads both internal and external worker prompts with the actual writable worktree, labels historical task paths as source-reference context, and maps repository-relative setup, edits, and tests to that worktree. The original task contract remains byte-for-byte unchanged and the write jail remains enforced.
+
+Strict core/daemon Clippy passed again with `-D warnings`. Four additional actual regressions passed at `594de8e3`: execution scope precedes and preserves original paths, the worktree is the only writable root, the compact prompt stays within 6,000 tokens, and local-window sizing counts the real worker brief. This brings targeted executed tests to **223** (220 core and 3 eval). Test linking took 2m28s; normal CLI rebuilding took 2m01s. The only linker warning remains the previously acknowledged compact-unwind size warning.
+
+The replacement normal CLI at `/private/tmp/qa-ux-target/debug/permagent` is from source **`594de8e3d837b8daa30a0afd162fb5599f48b8a4`**, SHA-256 **`ea199658a6fdac985177130958a5dc5dc53c6b4b8544d5dbbe078257dc620348`**, 582,938,440 bytes. Isolated-root `--version` and `run --help` pass without a DYLD override. Handoff left 3.71 GiB free. A second live Grow trial requires the coordinator's separate go; this report makes no live success claim.
+
+For this rebuild, the coordinator authorized exact removal of the invalidated core runtime archive and its 16 objects, then the successfully tested standalone test executable and its 16 test-only objects. Full hashes, stat identity, idle/open-handle checks, and test evidence were retained; dependencies and the existing CLI were preserved until replacement linking completed. Evidence: `workspace-scope-clippy.log`, `workspace-scope-test-build.log`, `workspace-scope-regression-manifest.json`, `workspace-scope-cli-build.log`, `workspace-scope-cli-provenance.json`, `current-core-runtime-rebuild-cleanup.json`, and `workspace-scope-tested-artifacts-cleanup.json`.
+
+## Initial normal CLI runtime handoff (superseded by follow-up)
 
 A normal CLI binary was built from clean source checkpoint **`42248f6261befb7d4963fafdafc5e58ff0abbebb`**:
 
