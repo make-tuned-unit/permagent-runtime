@@ -5994,6 +5994,7 @@ mod tests {
         calls: std::sync::atomic::AtomicUsize,
         first_reply: OutcomeFirstReply,
         read_path: String,
+        cancel_on_failure: Option<CancellationToken>,
     }
 
     #[async_trait::async_trait]
@@ -6017,6 +6018,9 @@ mod tests {
         ) -> std::result::Result<crate::providers::base::MessageStream, ProviderError> {
             let first = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0;
             if first && matches!(self.first_reply, OutcomeFirstReply::Failure) {
+                if let Some(cancel) = &self.cancel_on_failure {
+                    cancel.cancel();
+                }
                 return Err(ProviderError::NotSent(
                     "fixture admission refusal".to_string(),
                 ));
@@ -6040,47 +6044,13 @@ mod tests {
         }
     }
 
-    struct ContinueOnceAfterFailure {
-        cancel: Option<CancellationToken>,
-    }
-
-    #[async_trait::async_trait]
-    impl crate::after_turn::AfterTurn for ContinueOnceAfterFailure {
-        fn name(&self) -> &'static str {
-            "outcome-sequence-continuation"
-        }
-        async fn after_turn(
-            &self,
-            ctx: &crate::after_turn::AfterTurnContext<'_>,
-        ) -> crate::after_turn::AfterTurnAction {
-            if ctx.prior_holds == 0 {
-                if let Some(cancel) = &self.cancel {
-                    cancel.cancel();
-                }
-                crate::after_turn::AfterTurnAction::Continue {
-                    inject: "Retry the operation.".to_string(),
-                }
-            } else {
-                crate::after_turn::AfterTurnAction::Allow
-            }
-        }
-    }
-
     #[tokio::test]
     async fn reply_outcome_preserves_failure_at_cap_and_allows_real_recovery() -> anyhow::Result<()>
     {
-        for (
-            first_reply,
-            max_turns,
-            continue_once,
-            cancel_after_failure,
-            expected,
-            expected_calls,
-        ) in [
+        for (first_reply, max_turns, cancel_after_failure, expected, expected_calls) in [
             (
                 OutcomeFirstReply::Failure,
                 1,
-                true,
                 false,
                 AgentRuntimeOutcome::Failed,
                 1,
@@ -6088,7 +6058,6 @@ mod tests {
             (
                 OutcomeFirstReply::Failure,
                 2,
-                true,
                 false,
                 AgentRuntimeOutcome::Succeeded,
                 2,
@@ -6097,7 +6066,6 @@ mod tests {
                 OutcomeFirstReply::Failure,
                 2,
                 true,
-                true,
                 AgentRuntimeOutcome::Cancelled,
                 1,
             ),
@@ -6105,14 +6073,12 @@ mod tests {
                 OutcomeFirstReply::Read,
                 1,
                 false,
-                false,
                 AgentRuntimeOutcome::Failed,
                 1,
             ),
             (
                 OutcomeFirstReply::Text,
                 1,
-                false,
                 false,
                 AgentRuntimeOutcome::Succeeded,
                 1,
@@ -6136,9 +6102,11 @@ mod tests {
                     GooseMode::Auto,
                 )
                 .await?;
+            let cancellation = CancellationToken::new();
             let provider = Arc::new(OutcomeSequenceProvider {
                 calls: std::sync::atomic::AtomicUsize::new(0),
                 first_reply,
+                cancel_on_failure: cancel_after_failure.then(|| cancellation.clone()),
                 read_path: directory
                     .path()
                     .join("fixture.txt")
@@ -6162,15 +6130,7 @@ mod tests {
                     .await?;
             }
             agent.update_provider(provider.clone(), &session.id).await?;
-            let cancellation = CancellationToken::new();
             agent.after_turn_manager = crate::after_turn::AfterTurnManager::new();
-            if continue_once {
-                agent
-                    .after_turn_manager
-                    .add_hook(Box::new(ContinueOnceAfterFailure {
-                        cancel: cancel_after_failure.then(|| cancellation.clone()),
-                    }));
-            }
             let mut reply = agent
                 .reply(
                     Message::user().with_text("Perform the operation."),
