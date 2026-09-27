@@ -22045,6 +22045,63 @@ pub async fn landed_goals_for_session(
     Ok(out)
 }
 
+/// Final states of goals owned by this coordinator run. Include cards minted
+/// by this session even if dispatch never produced a worker session, plus
+/// descendant worker cards (including resumed or re-dispatched goals). This
+/// deliberately does not inspect project-wide cards from older runs.
+pub async fn goal_states_for_session(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    coordinator_session_id: &str,
+    run_started_at: chrono::DateTime<chrono::Utc>,
+) -> Result<Vec<(String, GoalState)>, String> {
+    let mut ids = std::collections::BTreeSet::new();
+    for card in cards::goal_cards_created_by_session(pool, coordinator_session_id).await? {
+        ids.insert(card.card_id);
+    }
+    for session_id in descendant_session_ids(pool, coordinator_session_id).await? {
+        if let Some((card_id, _)) = goal_card_for_worker_session(pool, &session_id).await? {
+            ids.insert(card_id);
+        }
+    }
+    let mut states = Vec::with_capacity(ids.len());
+    for card_id in ids {
+        let card = cards::get_card(pool, &card_id)
+            .await?
+            .ok_or_else(|| format!("goal card '{card_id}' disappeared during final check"))?;
+        // A resumed CLI reuses the coordinator session ID. A card created or
+        // dispatched on a prior invocation must not decide THIS run's exit.
+        let created_at = chrono::DateTime::parse_from_rfc3339(&card.created_at)
+            .map_err(|e| format!("goal card '{card_id}' has invalid created_at: {e}"))?;
+        let dispatched_at = match card
+            .metadata_json
+            .pointer("/execution_receipt/dispatched_at")
+        {
+            Some(value) => {
+                let stamp = value.as_str().ok_or_else(|| {
+                    format!("goal card '{card_id}' has non-text execution receipt dispatch time")
+                })?;
+                Some(chrono::DateTime::parse_from_rfc3339(stamp).map_err(|e| {
+                    format!(
+                        "goal card '{card_id}' has invalid execution receipt dispatch time: {e}"
+                    )
+                })?)
+            }
+            None if card.metadata_json.get("execution_receipt").is_some() => {
+                return Err(format!(
+                    "goal card '{card_id}' has an execution receipt without dispatch time"
+                ));
+            }
+            None => None,
+        };
+        let stamped_this_run = created_at >= run_started_at
+            || dispatched_at.is_some_and(|stamp| stamp >= run_started_at);
+        if stamped_this_run {
+            states.push((card_id.clone(), goal_state_for_card(pool, &card_id).await?));
+        }
+    }
+    Ok(states)
+}
+
 /// Lane R35a (A32 root cause 1): for each of `coordinator_session_id`'s
 /// dispatched goal cards still non-terminal right after the drain returns, a
 /// short machine-parseable reason — printed by the CLI's drain summary
@@ -42064,6 +42121,112 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
                 .is_empty(),
             "a goal that only reached Review must never be reported as landed"
         );
+    }
+
+    #[tokio::test]
+    async fn final_goal_states_are_run_scoped_and_include_unstarted_cards() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+        let coordinator = sm
+            .create_session(
+                tmp.path().to_path_buf(),
+                "coordinator".to_string(),
+                SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let run_started_at = chrono::Utc::now() - chrono::Duration::seconds(1);
+        assert!(
+            goal_states_for_session(&pool, &coordinator.id, run_started_at)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        let child = sm
+            .create_session_with_parent(
+                Some(&coordinator.id),
+                tmp.path().to_path_buf(),
+                "Goal worker".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let mine = setup_goal_in_state(&pool, "failed", 1).await;
+        attach_worker_session_to_card(&pool, &mine.id, &child.id).await;
+        let unstarted = setup_goal_in_state(&pool, "ready", 1).await;
+        sqlx::query(
+            "UPDATE cards SET metadata_json = json_set(coalesce(metadata_json, '{}'), \
+             '$.created_by_session_id', ?) WHERE id = ?",
+        )
+        .bind(&coordinator.id)
+        .bind(&unstarted.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let historical = setup_goal_in_state(&pool, "failed", 1).await;
+        sqlx::query(
+            "UPDATE cards SET created_at = '2020-01-01T00:00:00.000Z', \
+             metadata_json = json_set(coalesce(metadata_json, '{}'), \
+             '$.created_by_session_id', ?) WHERE id = ?",
+        )
+        .bind(&coordinator.id)
+        .bind(&historical.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let redispatched = setup_goal_in_state(&pool, "failed", 1).await;
+        let receipt = ExecutionReceipt::new(
+            "worker",
+            child.id.clone(),
+            serde_json::Value::Null,
+            "lifecycle",
+            chrono::Utc::now().to_rfc3339(),
+            2,
+        );
+        sqlx::query(
+            "UPDATE cards SET created_at = '2020-01-01T00:00:00.000Z', \
+             metadata_json = ? WHERE id = ?",
+        )
+        .bind(
+            serde_json::json!({
+                "created_by_session_id": &coordinator.id,
+                "execution_receipt": receipt,
+            })
+            .to_string(),
+        )
+        .bind(&redispatched.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let other = setup_goal_in_state(&pool, "complete", 1).await;
+        let states = goal_states_for_session(&pool, &coordinator.id, run_started_at)
+            .await
+            .unwrap();
+        assert_eq!(states.len(), 3);
+        assert!(states.contains(&(mine.id, GoalState::Failed)));
+        assert!(states.contains(&(unstarted.id, GoalState::Ready)));
+        assert!(states.contains(&(redispatched.id, GoalState::Failed)));
+        assert!(!states.iter().any(|(id, _)| id == &historical.id));
+        assert!(!states.iter().any(|(id, _)| id == &other.id));
+
+        sqlx::query(
+            "UPDATE cards SET metadata_json = json_set(metadata_json, \
+             '$.execution_receipt', json('{}')) WHERE id = ?",
+        )
+        .bind(&historical.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let error = goal_states_for_session(&pool, &coordinator.id, run_started_at)
+            .await
+            .unwrap_err();
+        assert!(error.contains("without dispatch time"), "{error}");
     }
 
     /// Harness loop, Lane V (V2): `landed_goals_for_session` is the CLI's own
