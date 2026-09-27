@@ -6145,12 +6145,14 @@ mod tests {
                 .await?;
             let mut outcome = None;
             let mut successful_tool = false;
+            let mut observed_tool_results = Vec::new();
             while let Some(event) = reply.next().await {
                 match event? {
                     AgentEvent::RuntimeOutcome(observed) => outcome = Some(observed),
                     AgentEvent::Message(message) => {
                         for content in message.content {
                             if let MessageContent::ToolResponse(response) = content {
+                                observed_tool_results.push(format!("{:?}", response.tool_result));
                                 successful_tool |= response
                                     .tool_result
                                     .is_ok_and(|result| !result.is_error.unwrap_or(false));
@@ -6166,7 +6168,10 @@ mod tests {
                 expected_calls
             );
             if matches!(first_reply, OutcomeFirstReply::Read) {
-                assert!(successful_tool);
+                assert!(
+                    successful_tool,
+                    "read fixture did not succeed: {observed_tool_results:?}"
+                );
             }
         }
         Ok(())
