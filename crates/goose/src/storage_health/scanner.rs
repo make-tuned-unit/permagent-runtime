@@ -1044,7 +1044,7 @@ fn trusted_saved_scan_rows(
     }
     let mut selected = None;
     for item in texts {
-        if let Some(rows) = extract_trusted_scan_rows(&item.text)? {
+        if let Some(rows) = extract_trusted_scan_rows(&item.text).map_err(anyhow::Error::msg)? {
             selected = Some((rows, item.responded_at));
         }
     }
