@@ -158,6 +158,47 @@ struct Entry {
     at: Instant,
     charge: u64,
 }
+enum Admission {
+    Granted(u64),
+    WaitUntil(Instant),
+}
+
+impl State {
+    /// Pure scheduling transition: production supplies the clock; tests can
+    /// advance explicit instants without changing Tokio's feature graph.
+    fn admission(&mut self, config: Config, charge: u64, now: Instant) -> Admission {
+        while self
+            .entries
+            .front()
+            .is_some_and(|entry| now.duration_since(entry.at) >= WINDOW)
+        {
+            self.entries.pop_front();
+        }
+        let mut used = self.entries.iter().map(|entry| entry.charge).sum::<u64>();
+        let interval_at = self.last.map(|last| last + config.interval).unwrap_or(now);
+        if used <= config.budget - charge && interval_at <= now {
+            self.next_id += 1;
+            let id = self.next_id;
+            self.entries.push_back(Entry {
+                id,
+                at: now,
+                charge,
+            });
+            self.last = Some(now);
+            return Admission::Granted(id);
+        }
+        let mut quota_at = now;
+        for entry in &self.entries {
+            if used <= config.budget - charge {
+                break;
+            }
+            used -= entry.charge;
+            quota_at = entry.at + WINDOW;
+        }
+        Admission::WaitUntil(interval_at.max(quota_at))
+    }
+}
+
 #[derive(Default)]
 struct Pacer {
     state: Mutex<State>,
@@ -179,27 +220,13 @@ impl Pacer {
             let changed = self.changed.notified();
             tokio::pin!(changed);
             changed.as_mut().enable();
-            let deadline = {
-                let now = Instant::now();
-                let mut state = self.state.lock().await;
-                while state
-                    .entries
-                    .front()
-                    .is_some_and(|entry| now.duration_since(entry.at) >= WINDOW)
-                {
-                    state.entries.pop_front();
-                }
-                let mut used = state.entries.iter().map(|entry| entry.charge).sum::<u64>();
-                let interval_at = state.last.map(|last| last + config.interval).unwrap_or(now);
-                if used <= config.budget - charge && interval_at <= now {
-                    state.next_id += 1;
-                    let id = state.next_id;
-                    state.entries.push_back(Entry {
-                        id,
-                        at: now,
-                        charge,
-                    });
-                    state.last = Some(now);
+            let admission = self
+                .state
+                .lock()
+                .await
+                .admission(config, charge, Instant::now());
+            let deadline = match admission {
+                Admission::Granted(id) => {
                     tracing::debug!(
                         charge,
                         budget = config.budget,
@@ -210,15 +237,7 @@ impl Pacer {
                         id,
                     });
                 }
-                let mut quota_at = now;
-                for entry in &state.entries {
-                    if used <= config.budget - charge {
-                        break;
-                    }
-                    used -= entry.charge;
-                    quota_at = entry.at + WINDOW;
-                }
-                interval_at.max(quota_at)
+                Admission::WaitUntil(deadline) => deadline,
             };
             tokio::select! {
                 _ = tokio::time::sleep_until(deadline) => {},
@@ -339,47 +358,66 @@ mod tests {
         );
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn concurrent_physical_attempts_share_window_and_expire() {
-        let pacer = Arc::new(Pacer::default());
-        let _first = pacer.admit(config(100), 70).await.unwrap();
-        // A physical retry has its own charge even if the prior HTTP failed.
-        let next = {
-            let pacer = pacer.clone();
-            tokio::spawn(async move { pacer.admit(config(100), 70).await })
-        };
-        tokio::task::yield_now().await;
-        assert!(!next.is_finished());
-        tokio::time::advance(Duration::from_secs(59)).await;
-        assert!(!next.is_finished());
-        tokio::time::advance(Duration::from_secs(1)).await;
-        next.await.unwrap().unwrap();
-        assert_eq!(charge(&pacer).await, 70);
-        assert!(pacer.admit(config(100), 101).await.is_err());
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn cancelled_waiter_does_not_reserve_future_quota_or_interval() {
-        let pacer = Arc::new(Pacer::default());
+    #[test]
+    fn concurrent_physical_attempts_share_window_and_expire() {
+        let mut state = State::default();
+        let start = Instant::now();
+        assert!(matches!(
+            state.admission(config(100), 70, start),
+            Admission::Granted(1)
+        ));
+        // Each physical retry asks again; a failed prior POST remains charged.
+        for now in [start, start + Duration::from_secs(59)] {
+            assert!(
+                matches!(state.admission(config(100), 70, now), Admission::WaitUntil(at) if at == start + WINDOW)
+            );
+        }
+        assert!(matches!(
+            state.admission(config(100), 70, start + WINDOW),
+            Admission::Granted(2)
+        ));
+        assert_eq!(state.entries.len(), 1);
+        let mut interval_state = State::default();
         let cfg = Config {
             budget: 100,
             interval: Duration::from_secs(10),
         };
-        pacer.admit(cfg, 20).await.unwrap();
-        let waiter = {
-            let pacer = pacer.clone();
-            tokio::spawn(async move { pacer.admit(cfg, 20).await })
-        };
-        tokio::task::yield_now().await;
-        waiter.abort();
-        assert!(matches!(waiter.await, Err(error) if error.is_cancelled()));
-        assert_eq!(charge(&pacer).await, 20);
-        tokio::time::advance(Duration::from_secs(10)).await;
-        pacer.admit(cfg, 20).await.unwrap();
-        assert_eq!(charge(&pacer).await, 40);
+        assert!(matches!(
+            interval_state.admission(cfg, 20, start),
+            Admission::Granted(1)
+        ));
+        assert!(
+            matches!(interval_state.admission(cfg, 20, start), Admission::WaitUntil(at) if at == start + Duration::from_secs(10))
+        );
+        assert!(matches!(
+            interval_state.admission(cfg, 20, start + Duration::from_secs(10)),
+            Admission::Granted(2)
+        ));
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
+    async fn cancelled_waiter_does_not_reserve_future_quota_or_interval() {
+        let pacer = Arc::new(Pacer::default());
+        let ticket = pacer.admit(config(100), 90).await.unwrap();
+        let waiter = {
+            let pacer = pacer.clone();
+            tokio::spawn(async move { pacer.admit(config(100), 20).await })
+        };
+        tokio::task::yield_now().await;
+        assert!(!waiter.is_finished());
+        waiter.abort();
+        assert!(matches!(waiter.await, Err(error) if error.is_cancelled()));
+        assert_eq!(charge(&pacer).await, 90);
+        ticket.reconcile(10).await;
+        tokio::time::timeout(Duration::from_secs(5), pacer.admit(config(100), 80))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(charge(&pacer).await, 90);
+        assert!(pacer.admit(config(100), 101).await.is_err());
+    }
+
+    #[tokio::test]
     async fn complete_raw_usage_reconciles_and_wakes_waiting_request() {
         let pacer = Arc::new(Pacer::default());
         let ticket = pacer.admit(config(100), 90).await.unwrap();
@@ -389,7 +427,6 @@ mod tests {
         };
         tokio::task::yield_now().await;
         assert!(!waiter.is_finished());
-        let start = Instant::now();
         let stream: MessageStream =
             Box::pin(futures::stream::iter(vec![Ok((None, Some(usage(10, 5))))]));
         let mut stream = reconcile_stream(Some(ticket), stream);
@@ -400,16 +437,15 @@ mod tests {
             "usage before full exhaustion is insufficient"
         );
         assert!(stream.next().await.is_none());
-        waiter.await.unwrap().unwrap();
-        assert_eq!(
-            Instant::now(),
-            start,
-            "reconciliation wakes before window expiry"
-        );
+        tokio::time::timeout(Duration::from_secs(5), waiter)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
         assert_eq!(charge(&pacer).await, 85);
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn error_drop_incomplete_or_missing_usage_keeps_full_charge() {
         for mode in 0..4 {
             let pacer = Arc::new(Pacer::default());
@@ -436,7 +472,7 @@ mod tests {
         assert!(complete_usage(Usage::new(Some(-1), Some(2), Some(1))).is_none());
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn registered_notification_survives_reconcile_before_sleep() {
         let pacer = Arc::new(Pacer::default());
         let ticket = pacer.admit(config(100), 90).await.unwrap();
@@ -444,9 +480,9 @@ mod tests {
         tokio::pin!(notification);
         notification.as_mut().enable();
         ticket.reconcile(10).await;
-        let start = Instant::now();
-        notification.await;
-        assert_eq!(Instant::now(), start);
+        tokio::time::timeout(Duration::from_secs(5), notification)
+            .await
+            .unwrap();
         pacer.admit(config(100), 80).await.unwrap();
     }
 }

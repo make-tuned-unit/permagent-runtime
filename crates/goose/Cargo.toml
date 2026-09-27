@@ -249,7 +249,7 @@ backtrace = "0.3"
 serial_test = { workspace = true }
 mockall = "0.13.1"
 wiremock = { workspace = true }
-tokio = { workspace = true, features = ["test-util"] }
+tokio = { workspace = true }
 tokio-util = { workspace = true, features = ["compat"] }
 dotenvy = { workspace = true }
 ctor = "1.0"
