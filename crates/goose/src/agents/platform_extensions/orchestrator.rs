@@ -520,6 +520,26 @@ fn task_contract_block(metadata: &serde_json::Value) -> Option<String> {
     ))
 }
 
+// Reviewer input must carry the same complete contract given to the worker.
+// A malformed or oversized stored contract must not turn into an implicit
+// omission at the review gate.
+fn reviewer_task_contract_block(metadata: &serde_json::Value) -> Result<Option<String>, String> {
+    let Some(contract) = metadata.get(TASK_CONTRACT_METADATA_KEY) else {
+        return Ok(None); // Legacy goals have no saved launch contract.
+    };
+    let Some(text) = contract.get("text").and_then(serde_json::Value::as_str) else {
+        return Err("the goal's original task contract has no text".to_string());
+    };
+    if text.trim().is_empty() || text.len() > MAX_TASK_CONTRACT_BYTES {
+        return Err(format!(
+            "the goal's original task contract is empty or exceeds {MAX_TASK_CONTRACT_BYTES} bytes; review cannot proceed on incomplete task data"
+        ));
+    }
+    task_contract_block(metadata)
+        .map(Some)
+        .ok_or_else(|| "the goal's original task contract could not be rendered".to_string())
+}
+
 async fn durable_dispatch_budget_task_id(
     manager: &crate::session::SessionManager,
     metadata: &serde_json::Value,
@@ -18655,6 +18675,20 @@ pub(crate) fn auto_land_review_requirement(
     }
 }
 
+fn auto_land_review_requirement_for_goal(
+    facts: &crate::cost_router::recommend::ReviewFacts,
+    metadata: &serde_json::Value,
+) -> AutoLandReviewRequirement {
+    if metadata.get(TASK_CONTRACT_METADATA_KEY).is_some() {
+        AutoLandReviewRequirement::Required {
+            reason: "the goal carries an original task contract that needs independent review"
+                .to_string(),
+        }
+    } else {
+        auto_land_review_requirement(facts)
+    }
+}
+
 /// What [`independent_review_before_auto_land`] decided.
 #[derive(Debug)]
 enum AutoLandReview {
@@ -18842,13 +18876,14 @@ fn write_scope_violation_finding(declared: &[String], violations: &[String]) -> 
 /// with no independent reviewer, and the oracle failed on a surface the plan
 /// missed. Before headless auto-land lands a verified goal, measure the goal's
 /// trunk-relative diff (the same range the reviewer delegate measures,
-/// [`goal_trunk_relative_diff`]) and apply [`auto_land_review_requirement`]:
-/// a trivial change lands as before; any other change is reviewed by the
+/// [`goal_trunk_relative_diff`]) and apply [`auto_land_review_requirement_for_goal`]:
+/// a contract-bearing goal always needs review; other trivial changes land
+/// as before, and other non-trivial changes are reviewed by the
 /// objective cross-family reviewer assignment
 /// ([`review_goal_diff_with_cross_family_reviewer`] → `assign_reviewer`), and
 /// only an approval lets it land. A goal whose diff cannot be measured (no
 /// recorded head, no trunk, or an empty range) has nothing for a reviewer to
-/// read; the landing step itself refuses a goal with nothing to land. The
+/// read; a contract-bearing goal is refused at this gate. The
 /// outcome is recorded on the card as `auto_land_review`.
 async fn independent_review_before_auto_land(
     pool: &sqlx::Pool<sqlx::Sqlite>,
@@ -18863,6 +18898,15 @@ async fn independent_review_before_auto_land(
         .unwrap_or_default();
     let measured = goal_trunk_relative_diff(pool, card, &session_dir, false).await;
     let (outcome, mut record) = match measured {
+        None if card.metadata_json.get(TASK_CONTRACT_METADATA_KEY).is_some() => {
+            let reason = "the goal carries an original task contract, but no change against trunk could be measured for its required independent review".to_string();
+            (
+                AutoLandReview::Refused {
+                    reason: reason.clone(),
+                },
+                serde_json::json!({ "required": true, "outcome": "refused", "reason": reason }),
+            )
+        }
         None => {
             let reason = "no change against trunk could be measured, so there is nothing for a \
                           reviewer to read"
@@ -18882,7 +18926,7 @@ async fn independent_review_before_auto_land(
                 .map(|e| e.call_sites.len())
                 .sum();
             let facts = crate::cost_router::recommend::ReviewFacts::from_diff(&diff, call_sites);
-            match auto_land_review_requirement(&facts) {
+            match auto_land_review_requirement_for_goal(&facts, &card.metadata_json) {
                 AutoLandReviewRequirement::Skip { reason } => (
                     AutoLandReview::NotRequired {
                         reason: reason.clone(),
@@ -27099,6 +27143,23 @@ fn verified_goal_review_task_spec(title: &str, criteria: &[String]) -> String {
     spec
 }
 
+fn goal_review_task_spec(
+    title: &str,
+    criteria: &[String],
+    metadata: &serde_json::Value,
+    salvage: bool,
+) -> Result<String, String> {
+    let mut spec = if salvage {
+        format!("{}\n\n{}", title, criteria.join("\n"))
+    } else {
+        verified_goal_review_task_spec(title, criteria)
+    };
+    if let Some(contract) = reviewer_task_contract_block(metadata)? {
+        spec.push_str(&contract);
+    }
+    Ok(spec)
+}
+
 /// Lane R65a: the verification a verified goal's reviewer may be shown — the
 /// worker session's last genuine verify pass with no edit after it
 /// ([`credited_verification_after_last_edit`]), and only while the goal's
@@ -27270,6 +27331,18 @@ async fn review_goal_diff_with_cross_family_reviewer(
     kind: &GoalReviewKind<'_>,
     calling_session_id: Option<&str>,
 ) -> GoalReviewRun {
+    // Refuse before provider selection when a saved contract cannot be shown
+    // in full. A generic build/test criterion is not its replacement.
+    let criteria = collect_acceptance_criteria(&card.metadata_json, &card.description);
+    let task_spec = match goal_review_task_spec(
+        &card.title,
+        &criteria,
+        &card.metadata_json,
+        matches!(kind, GoalReviewKind::Salvage { .. }),
+    ) {
+        Ok(spec) => spec,
+        Err(reason) => return GoalReviewRun::single(ReviewerGateOutcome::Refused { reason }),
+    };
     let changed_lines = count_diff_changed_lines(&diff);
     // Lane R22c-e (G26 MED-2): character count, not `diff.len()` (bytes) —
     // `git diff` output is arbitrary UTF-8, so a byte-length comparison
@@ -27384,17 +27457,11 @@ async fn review_goal_diff_with_cross_family_reviewer(
         return GoalReviewRun::single(ReviewerGateOutcome::Refused { reason });
     }
 
-    let criteria = collect_acceptance_criteria(&card.metadata_json, &card.description);
-    let (task_spec, verify_output_lead, verification) = match kind {
-        GoalReviewKind::Salvage { verify_note } => (
-            format!("{}\n\n{}", card.title, criteria.join("\n")),
-            salvage_verify_output_lead(verify_note),
-            None,
-        ),
+    let (verify_output_lead, verification) = match kind {
+        GoalReviewKind::Salvage { verify_note } => (salvage_verify_output_lead(verify_note), None),
         // Lane R65a: a verified goal's reviewer sees the bound verify run when
         // there is one, and criteria no check covered are not framed as unmet.
         GoalReviewKind::Verified { verification } => (
-            verified_goal_review_task_spec(&card.title, &criteria),
             if verification.is_some() {
                 VERIFIED_GOAL_WITH_EVIDENCE_LEAD.to_string()
             } else {
@@ -46490,6 +46557,54 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         );
     }
 
+    #[tokio::test]
+    async fn contract_bearing_trivial_goal_cannot_auto_land_without_its_required_review() {
+        let (repo, head) = n4_repo_with_goal_branch("contract-trivial-run", |root| {
+            n4_replace_in(
+                root,
+                "src/shipping/quote.ts",
+                "domestic: 200,",
+                "domestic: 210,",
+            );
+        });
+        let pool = test_pool().await;
+        sqlx::query("UPDATE projects SET root_path = ? WHERE id = ?")
+            .bind(repo.path().to_string_lossy().as_ref())
+            .bind(crate::projects::PERSONAL_PROJECT_ID)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let card = setup_goal_in_state(&pool, "review", 1).await;
+        cards::merge_card_metadata(
+            &pool,
+            &card.id,
+            serde_json::json!({
+                TASK_CONTRACT_METADATA_KEY: {"text": "Preserve every user-visible shipping rule."},
+                "acceptance_criteria": ["npm run build exits with code 0", "npm run test exits with code 0"]
+            }),
+            false,
+        )
+        .await
+        .unwrap();
+        v1_stamp_dispatch_evidence(&pool, &card.id, "contract-trivial-run", &head).await;
+        stamp_successful_verify(&pool, &card.id).await;
+        let decision = v2_review_decision(&pool, &card.id, Some("coord-session-1")).await;
+        let card = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+
+        auto_land_headless_goal(&pool, &decision.id, &card, true, Some("coord-session-1")).await;
+
+        assert_ne!(git_v1(repo.path(), &["rev-parse", "HEAD"]), head);
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let review = &updated.metadata_json[AUTO_LAND_REVIEW_METADATA_KEY];
+        assert_eq!(review["required"], true, "{review}");
+        assert_eq!(review["outcome"], "refused", "{review}");
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(col.state_binding.as_deref(), Some("failed"));
+    }
+
     #[test]
     fn n4_auto_land_review_requirement_follows_the_mandate_and_review_complexity() {
         use crate::cost_router::recommend::ReviewFacts;
@@ -60461,6 +60576,47 @@ mod r65a_tests {
             !spec.contains("UNVERIFIED") && !spec.contains("kept for human review"),
             "the unmet-sounding label is not handed to the reviewer: {spec}"
         );
+    }
+
+    #[test]
+    fn reviewer_prompt_receives_full_contract_despite_generic_build_and_test_criteria() {
+        let contract = "Count each CTA visibility once per session; report above_fold or below_fold from the initial viewport; keep event_id stable across retries.\nExact enum: [above_fold, below_fold].";
+        let metadata = serde_json::json!({
+            TASK_CONTRACT_METADATA_KEY: {"text": contract},
+        });
+        let criteria = vec![
+            "npm run build exits with code 0".to_string(),
+            "npm run test exits with code 0".to_string(),
+        ];
+        for salvage in [false, true] {
+            let spec =
+                goal_review_task_spec("Instrument the CTA", &criteria, &metadata, salvage).unwrap();
+            let prompt = build_goal_review_prompt(
+                &spec,
+                "diff --git a/a b/a\n+x",
+                "Verification passed",
+                &SalvageReviewContext::default(),
+                None,
+            );
+            assert!(prompt.contains("npm run build exits with code 0"));
+            assert!(prompt.contains("npm run test exits with code 0"));
+            assert!(
+                prompt.contains(&serde_json::to_string(contract).unwrap()),
+                "the complete JSON-quoted contract must reach the reviewer: {prompt}"
+            );
+        }
+    }
+
+    #[test]
+    fn reviewer_refuses_an_unrepresentable_contract_instead_of_omitting_it() {
+        for contract in [
+            serde_json::json!({"text": ""}),
+            serde_json::json!({"text": "x".repeat(MAX_TASK_CONTRACT_BYTES + 1)}),
+            serde_json::json!({"source": "headless_launch"}),
+        ] {
+            let metadata = serde_json::json!({TASK_CONTRACT_METADATA_KEY: contract});
+            assert!(goal_review_task_spec("Goal", &[], &metadata, false).is_err());
+        }
     }
 
     #[test]
