@@ -1513,6 +1513,10 @@ pub struct FindingsResponse {
     /// Missing/corrupt files are never an explicitly empty successful scan.
     ledger_state: &'static str,
     created_at: Option<String>,
+    /// Set only when this ledger was rebuilt from a saved scan-tool response.
+    /// Distinct from `created_at`, which stays the original scan time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recovered_at: Option<String>,
 }
 
 fn findings_response(dir: &Path, run_id: &str) -> FindingsResponse {
@@ -1522,6 +1526,7 @@ fn findings_response(dir: &Path, run_id: &str) -> FindingsResponse {
         rejected: Vec::new(),
         ledger_state: "missing",
         created_at: None,
+        recovered_at: None,
     };
     if run_id.is_empty()
         || !run_id
@@ -1558,6 +1563,10 @@ fn findings_response(dir: &Path, run_id: &str) -> FindingsResponse {
             .get("created_at")
             .and_then(|v| v.as_str())
             .map(str::to_owned),
+        recovered_at: value
+            .get("recovered_at")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned),
     }
 }
 
@@ -1565,6 +1574,81 @@ async fn get_findings(
     State(_state): State<Arc<AppState>>,
     AxumPath(run_id): AxumPath<String>,
 ) -> Result<Json<FindingsResponse>, (StatusCode, Json<ErrorBody>)> {
+    Ok(Json(findings_response(&findings_dir(), &run_id)))
+}
+
+fn valid_automation_run_id(run_id: &str) -> bool {
+    !run_id.is_empty()
+        && run_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// POST /automation/run/:run_id/recover-findings
+///
+/// Loads the saved session on the server and rebuilds the ledger from an
+/// authentic scan-tool response. The request body is ignored. This does not
+/// start a scan and does not delete files.
+async fn recover_findings(
+    State(state): State<Arc<AppState>>,
+    AxumPath(run_id): AxumPath<String>,
+) -> Result<Json<FindingsResponse>, (StatusCode, Json<ErrorBody>)> {
+    if !valid_automation_run_id(&run_id) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody {
+                error: "Invalid run id".into(),
+            }),
+        ));
+    }
+    let session = state
+        .session_manager()
+        .get_session(&run_id, true)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(ErrorBody {
+                    error: "This run has no saved conversation.".into(),
+                }),
+            )
+        })?;
+    let Some(conversation) = session.conversation else {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ErrorBody {
+                error: "This run has no saved conversation to recover from.".into(),
+            }),
+        ));
+    };
+    let home = std::env::var("HOME").map(PathBuf::from).map_err(|_| {
+        (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ErrorBody {
+                error: "Cleanup home is unavailable.".into(),
+            }),
+        )
+    })?;
+    if let Err(error) = permagent::storage_health::scanner::recover_saved_scan(
+        &conversation,
+        &run_id,
+        &findings_dir(),
+        &home,
+        &ActionProbe,
+    ) {
+        let message = error.to_string();
+        let status = if message.contains("not a validated scan") {
+            StatusCode::CONFLICT
+        } else {
+            StatusCode::UNPROCESSABLE_ENTITY
+        };
+        return Err((
+            status,
+            Json(ErrorBody {
+                error: format!("Saved scan results could not be recovered. {message}"),
+            }),
+        ));
+    }
     Ok(Json(findings_response(&findings_dir(), &run_id)))
 }
 
@@ -1619,6 +1703,10 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route(
             "/automation/run/{run_id}/findings",
             get(get_findings).post(save_findings_endpoint),
+        )
+        .route(
+            "/automation/run/{run_id}/recover-findings",
+            post(recover_findings),
         )
         .route(
             "/automation/run/{run_id}/bulk-action",

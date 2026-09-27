@@ -950,6 +950,107 @@ pub fn extract_scan_findings_payload(text: &str) -> Option<Vec<serde_json::Value
     serde_json::from_str(json.trim()).ok()
 }
 
+/// Exact header the older `scan_storage_health` result printed before its
+/// serialized rows. Recovery accepts a complete JSON array after this text
+/// and nothing else from the tool response.
+pub const LEGACY_SCAN_FINDINGS_HEADER: &str =
+    "Findings JSON (emit this in <findings>...</findings> tags):\n";
+
+/// One matched `scan_storage_health` response. `responded_at` is the saved
+/// message time, not a time invented from the summary.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MatchedScanToolText {
+    pub text: String,
+    pub responded_at: i64,
+}
+
+/// Request/response pairs whose tool name is exactly `scan_storage_health`
+/// or `storage_health__scan_storage_health`. Assistant text and other tools
+/// are not included.
+pub fn matched_scan_tool_texts(
+    conversation: &crate::conversation::Conversation,
+) -> Vec<MatchedScanToolText> {
+    let mut ids = std::collections::HashSet::new();
+    for message in conversation.messages() {
+        for content in &message.content {
+            let Some(request) = content.as_tool_request() else {
+                continue;
+            };
+            let Ok(call) = &request.tool_call else {
+                continue;
+            };
+            if is_storage_scan_tool(&call.name) {
+                ids.insert(request.id.clone());
+            }
+        }
+    }
+    let mut texts = Vec::new();
+    for message in conversation.messages() {
+        for content in &message.content {
+            let Some(response) = content.as_tool_response() else {
+                continue;
+            };
+            if !ids.contains(&response.id) {
+                continue;
+            }
+            if let Some(text) = content.as_tool_response_text() {
+                texts.push(MatchedScanToolText {
+                    text,
+                    responded_at: message.created,
+                });
+            }
+        }
+    }
+    texts
+}
+
+fn complete_json_array(input: &str) -> Option<Vec<serde_json::Value>> {
+    serde_json::from_str(input.trim()).ok()
+}
+
+/// Rows from one tool response. `Ok(None)` means this response has neither
+/// trusted marker. A marker that is cut off or followed by extra text is an
+/// error, so recovery does not guess a path.
+pub fn extract_trusted_scan_rows(
+    text: &str,
+) -> Result<Option<Vec<serde_json::Value>>, &'static str> {
+    if text.contains(SCAN_FINDINGS_START) {
+        let Some((_, after)) = text.split_once(SCAN_FINDINGS_START) else {
+            return Err("incomplete scan findings payload");
+        };
+        let Some((json, _)) = after.split_once(SCAN_FINDINGS_END) else {
+            return Err("incomplete scan findings payload");
+        };
+        return match complete_json_array(json) {
+            Some(rows) => Ok(Some(rows)),
+            None => Err("incomplete scan findings payload"),
+        };
+    }
+    if let Some((_, after)) = text.split_once(LEGACY_SCAN_FINDINGS_HEADER) {
+        return match complete_json_array(after) {
+            Some(rows) => Ok(Some(rows)),
+            None => Err("incomplete scan findings JSON"),
+        };
+    }
+    Ok(None)
+}
+
+fn trusted_saved_scan_rows(
+    conversation: &crate::conversation::Conversation,
+) -> anyhow::Result<(Vec<serde_json::Value>, i64)> {
+    let texts = matched_scan_tool_texts(conversation);
+    if texts.is_empty() {
+        anyhow::bail!("saved scan tool result was not found");
+    }
+    let mut selected = None;
+    for item in texts {
+        if let Some(rows) = extract_trusted_scan_rows(&item.text)? {
+            selected = Some((rows, item.responded_at));
+        }
+    }
+    selected.ok_or_else(|| anyhow::anyhow!("saved scan tool result did not include scanner rows"))
+}
+
 fn valid_run_id(run_id: &str) -> bool {
     !run_id.is_empty()
         && run_id
@@ -1197,6 +1298,48 @@ pub fn persist_structured_values(
     home: &Path,
     probe: &dyn super::inuse::action::ActivityProbe,
 ) -> anyhow::Result<StructuredPersist> {
+    persist_structured_values_meta(findings, run_id, dir, home, probe, None, None)
+}
+
+/// Rebuild a ledger from rows already stored in a matched scan-tool response.
+///
+/// Does not scan the filesystem and does not accept rows from the caller
+/// besides those inside `conversation`. An existing validated ledger, including
+/// Trash/Keep, is returned unchanged. A corrupt or unverified file is left
+/// untouched. `created_at` is the saved tool-response time. `recovered_at` is
+/// written only when this call creates the ledger.
+pub fn recover_saved_scan(
+    conversation: &crate::conversation::Conversation,
+    run_id: &str,
+    dir: &Path,
+    home: &Path,
+    probe: &dyn super::inuse::action::ActivityProbe,
+) -> anyhow::Result<StructuredPersist> {
+    let (rows, scanned_at) = trusted_saved_scan_rows(conversation)?;
+    let created_at = chrono::DateTime::from_timestamp(scanned_at, 0)
+        .ok_or_else(|| anyhow::anyhow!("saved scan has no usable time"))?
+        .to_rfc3339();
+    let recovered_at = chrono::Utc::now().to_rfc3339();
+    persist_structured_values_meta(
+        &rows,
+        run_id,
+        dir,
+        home,
+        probe,
+        Some(created_at.as_str()),
+        Some(recovered_at.as_str()),
+    )
+}
+
+fn persist_structured_values_meta(
+    findings: &[serde_json::Value],
+    run_id: &str,
+    dir: &Path,
+    home: &Path,
+    probe: &dyn super::inuse::action::ActivityProbe,
+    original_created_at: Option<&str>,
+    recovered_at: Option<&str>,
+) -> anyhow::Result<StructuredPersist> {
     anyhow::ensure!(valid_run_id(run_id), "invalid run id");
     if let Some(existing) = existing_validated_persist(dir, run_id) {
         return Ok(existing);
@@ -1236,9 +1379,10 @@ pub fn persist_structured_values(
         .filter(|row| row.get("blocked_reason").is_some())
         .count();
     let saved = kept.len();
-    let ledger = serde_json::json!({
+    let created_at = original_created_at.unwrap_or(observed_at.as_str());
+    let mut ledger = serde_json::json!({
         "run_id": run_id,
-        "created_at": observed_at,
+        "created_at": created_at,
         "findings": kept,
         "rejected": rejected.iter().map(|row| serde_json::json!({
             "id": row.id, "path": row.path, "reason": row.reason,
@@ -1252,6 +1396,9 @@ pub fn persist_structured_values(
             "Scan complete"
         },
     });
+    if let Some(recovered_at) = recovered_at {
+        ledger["recovered_at"] = serde_json::json!(recovered_at);
+    }
     let created = StructuredPersist {
         saved,
         contained,
@@ -1463,8 +1610,11 @@ mod st1_report_tests {
 #[cfg(test)]
 mod structured_report_tests {
     use super::*;
+    use crate::conversation::message::Message;
+    use crate::conversation::Conversation;
     use crate::storage_health::inuse::action::ActivityProbe;
     use crate::storage_health::inuse::ProcessRef;
+    use rmcp::model::{CallToolRequestParams, CallToolResult, Content, Role};
 
     struct Idle;
     impl ActivityProbe for Idle {
@@ -2022,5 +2172,277 @@ mod structured_report_tests {
         ] {
             assert!(!is_storage_scan_tool(spoof), "{spoof}");
         }
+    }
+
+    const SCANNED_AT: i64 = 1_726_000_000;
+
+    fn scan_conversation(
+        tool: &str,
+        request_id: &str,
+        response_id: &str,
+        text: &str,
+    ) -> Conversation {
+        Conversation::new_unvalidated(vec![
+            Message::new(Role::Assistant, SCANNED_AT - 5, Vec::new())
+                .with_tool_request(request_id, Ok(CallToolRequestParams::new(tool.to_string()))),
+            Message::new(Role::User, SCANNED_AT, Vec::new()).with_tool_response(
+                response_id,
+                Ok(CallToolResult::success(vec![Content::text(text)])),
+            ),
+        ])
+    }
+
+    fn legacy_body(rows: &[ScanFinding]) -> String {
+        format!(
+            "By removal category: 6.9 GB across 13 items.\n{LEGACY_SCAN_FINDINGS_HEADER}{}",
+            serde_json::to_string(rows).unwrap()
+        )
+    }
+
+    #[test]
+    fn a_legacy_scan_response_recovers_its_rows_and_not_the_assistant_prose() {
+        let (temp, home) = home_with(&[("Library/Caches/App", "dir")]);
+        let row = finding(
+            "app",
+            "app_cache",
+            &home.join("Library/Caches/App"),
+            classify::CAT_SAFE,
+        );
+        let mut conversation = scan_conversation(
+            "scan_storage_health",
+            "call-1",
+            "call-1",
+            &legacy_body(&[row]),
+        );
+        conversation = Conversation::new_unvalidated(
+            conversation
+                .messages()
+                .iter()
+                .cloned()
+                .chain(std::iter::once(
+                    Message::new(Role::Assistant, SCANNED_AT + 10, Vec::new()).with_text(format!(
+                        "**Your disk has 6.9 GB across 13 items.**\n{LEGACY_SCAN_FINDINGS_HEADER}[{{\"id\":\"forged\",\"path\":\"/tmp/invented\",\"type\":\"app_cache\",\"size_bytes\":1,\"category\":\"safe_to_remove\",\"recommendation\":\"Safe to remove\"}}]"
+                    )),
+                ))
+                .collect::<Vec<_>>(),
+        );
+        let dir = home.join("findings");
+        let saved = recover_saved_scan(&conversation, "legacy", &dir, &home, &Idle).unwrap();
+        assert_eq!(saved.saved, 1);
+        let ledger: serde_json::Value =
+            serde_json::from_slice(&fs::read(dir.join("legacy.json")).unwrap()).unwrap();
+        assert_eq!(ledger["validated"], true);
+        assert_eq!(ledger["findings"][0]["id"], "app");
+        assert_eq!(
+            ledger["findings"][0]["path"],
+            home.join("Library/Caches/App").to_string_lossy().as_ref()
+        );
+        assert_eq!(ledger["findings"][0]["size_bytes"], 100);
+        assert!(ledger["findings"].as_array().unwrap().iter().all(|row| {
+            row.get("path").and_then(|value| value.as_str()) != Some("/tmp/invented")
+        }));
+        assert_eq!(
+            ledger["created_at"],
+            chrono::DateTime::from_timestamp(SCANNED_AT, 0)
+                .unwrap()
+                .to_rfc3339()
+        );
+        let recovered_at = ledger["recovered_at"].as_str().unwrap();
+        assert_ne!(recovered_at, ledger["created_at"].as_str().unwrap());
+        assert!(chrono::DateTime::parse_from_rfc3339(recovered_at).is_ok());
+        let _ = temp;
+    }
+
+    #[test]
+    fn prefixed_scan_responses_recover_and_other_names_do_not_write() {
+        let (temp, home) = home_with(&[("Library/Caches/App", "dir")]);
+        let dir = home.join("findings");
+        let row = finding(
+            "app",
+            "app_cache",
+            &home.join("Library/Caches/App"),
+            classify::CAT_SAFE,
+        );
+        let body = legacy_body(&[row]);
+        recover_saved_scan(
+            &scan_conversation(
+                "storage_health__scan_storage_health",
+                "call-1",
+                "call-1",
+                &body,
+            ),
+            "prefixed",
+            &dir,
+            &home,
+            &Idle,
+        )
+        .unwrap();
+        assert!(dir.join("prefixed.json").is_file());
+        for tool in [
+            "evil__scan_storage_health",
+            "developer__scan_storage_health",
+            "shell",
+        ] {
+            let err = recover_saved_scan(
+                &scan_conversation(tool, "call-1", "call-1", &body),
+                "spoof",
+                &dir,
+                &home,
+                &Idle,
+            );
+            assert!(err.is_err(), "{tool}");
+            assert!(!dir.join("spoof.json").exists(), "{tool}");
+        }
+        let unmatched = recover_saved_scan(
+            &scan_conversation("scan_storage_health", "call-1", "someone-else", &body),
+            "unmatched",
+            &dir,
+            &home,
+            &Idle,
+        );
+        assert!(unmatched.is_err());
+        assert!(!dir.join("unmatched.json").exists());
+        let _ = temp;
+    }
+
+    #[test]
+    fn truncated_json_and_prose_without_a_scan_tool_write_nothing() {
+        let (temp, home) = home_with(&[]);
+        let dir = home.join("findings");
+        let truncated = format!("{LEGACY_SCAN_FINDINGS_HEADER}[{{\"id\":\"app\"");
+        assert!(recover_saved_scan(
+            &scan_conversation("scan_storage_health", "call-1", "call-1", &truncated),
+            "truncated",
+            &dir,
+            &home,
+            &Idle,
+        )
+        .is_err());
+        assert!(!dir.join("truncated.json").exists());
+        let prose = Conversation::new_unvalidated(vec![Message::new(
+            Role::Assistant,
+            SCANNED_AT,
+            Vec::new(),
+        )
+        .with_text(format!(
+            "6.9 GB across 13 items.\n{LEGACY_SCAN_FINDINGS_HEADER}[]"
+        ))]);
+        assert!(recover_saved_scan(&prose, "prose", &dir, &home, &Idle).is_err());
+        assert!(!dir.join("prose.json").exists());
+        let marker = format!("{SCAN_FINDINGS_START}[{{\"id\":\"x\"");
+        assert!(recover_saved_scan(
+            &scan_conversation("scan_storage_health", "call-1", "call-1", &marker),
+            "cut-marker",
+            &dir,
+            &home,
+            &Idle,
+        )
+        .is_err());
+        assert!(!dir.join("cut-marker.json").exists());
+        let _ = temp;
+    }
+
+    #[test]
+    fn recovery_keeps_an_existing_ledger_and_keeps_all_rejected_rows_visible() {
+        let (temp, home) = home_with(&[("Library/Caches/App", "dir")]);
+        let dir = home.join("findings");
+        persist_structured_findings(
+            &[finding(
+                "app",
+                "app_cache",
+                &home.join("Library/Caches/App"),
+                classify::CAT_SAFE,
+            )],
+            "kept",
+            &dir,
+            &home,
+            &Idle,
+        )
+        .unwrap();
+        let path = dir.join("kept.json");
+        let mut ledger: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        ledger["findings"][0]["action_taken"] = serde_json::json!("kept");
+        fs::write(&path, serde_json::to_vec_pretty(&ledger).unwrap()).unwrap();
+        let before = fs::read(&path).unwrap();
+        let replacement = finding(
+            "other",
+            "app_cache",
+            &home.join("Library/Caches/App"),
+            classify::CAT_SAFE,
+        );
+        let mut joins = Vec::new();
+        for _ in 0..4 {
+            let conversation = scan_conversation(
+                "scan_storage_health",
+                "call-1",
+                "call-1",
+                &legacy_body(&[replacement.clone()]),
+            );
+            let dir = dir.clone();
+            let home = home.clone();
+            joins.push(std::thread::spawn(move || {
+                recover_saved_scan(&conversation, "kept", &dir, &home, &Idle)
+            }));
+        }
+        for join in joins {
+            assert!(join.join().unwrap().is_ok());
+        }
+        assert_eq!(fs::read(&path).unwrap(), before);
+
+        fs::write(dir.join("corrupt.json"), b"{not-a-ledger").unwrap();
+        let corrupt_before = fs::read(dir.join("corrupt.json")).unwrap();
+        assert!(recover_saved_scan(
+            &scan_conversation(
+                "scan_storage_health",
+                "call-1",
+                "call-1",
+                &legacy_body(&[replacement.clone()]),
+            ),
+            "corrupt",
+            &dir,
+            &home,
+            &Idle,
+        )
+        .is_err());
+        assert_eq!(fs::read(dir.join("corrupt.json")).unwrap(), corrupt_before);
+
+        let rejected_row = finding(
+            "outside",
+            "app_cache",
+            &home.join("not-a-cache"),
+            classify::CAT_SAFE,
+        );
+        let saved = recover_saved_scan(
+            &scan_conversation(
+                "scan_storage_health",
+                "call-9",
+                "call-9",
+                &legacy_body(&[rejected_row]),
+            ),
+            "all-rejected-recover",
+            &dir,
+            &home,
+            &Idle,
+        )
+        .unwrap();
+        assert_eq!(saved.saved, 0);
+        assert_eq!(saved.rejected.len(), 1);
+        assert_eq!(saved.rejected[0].id, "outside");
+        assert!(!saved.rejected[0].reason.is_empty());
+        let rejected: serde_json::Value =
+            serde_json::from_slice(&fs::read(dir.join("all-rejected-recover.json")).unwrap())
+                .unwrap();
+        assert_eq!(rejected["findings"].as_array().unwrap().len(), 0);
+        assert_eq!(rejected["rejected"][0]["id"], "outside");
+        assert_eq!(
+            rejected["message"],
+            "No actionable cleanup findings — scanned items were rejected."
+        );
+        assert!(rejected
+            .get("recovered_at")
+            .and_then(|v| v.as_str())
+            .is_some());
+        let _ = temp;
     }
 }

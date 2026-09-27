@@ -4162,35 +4162,10 @@ async fn execute_job_inner(
 /// The scanner embeds rows here only when it could not write the ledger.
 /// Assistant prose is not included.
 fn scan_storage_tool_texts(conversation: &Conversation) -> Vec<String> {
-    let mut ids = std::collections::HashSet::new();
-    for message in conversation.messages() {
-        for content in &message.content {
-            let Some(request) = content.as_tool_request() else {
-                continue;
-            };
-            let Ok(call) = &request.tool_call else {
-                continue;
-            };
-            if crate::storage_health::scanner::is_storage_scan_tool(&call.name) {
-                ids.insert(request.id.clone());
-            }
-        }
-    }
-    let mut texts = Vec::new();
-    for message in conversation.messages() {
-        for content in &message.content {
-            let Some(response) = content.as_tool_response() else {
-                continue;
-            };
-            if !ids.contains(&response.id) {
-                continue;
-            }
-            if let Some(text) = content.as_tool_response_text() {
-                texts.push(text);
-            }
-        }
-    }
-    texts
+    crate::storage_health::scanner::matched_scan_tool_texts(conversation)
+        .into_iter()
+        .map(|item| item.text)
+        .collect()
 }
 
 #[cfg(test)]
