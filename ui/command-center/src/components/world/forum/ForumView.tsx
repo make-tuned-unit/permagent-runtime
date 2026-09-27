@@ -395,7 +395,7 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
             /></Suspense>
           : walking
           ? <ForumWalk start={walkStartOverride ?? walkStart} onExit={exitWalk} onInspect={inspectAgent} inMesh={agoraOpen} onEnterMesh={enterMesh} onExitMesh={leaveMesh} onMeshPrompt={setMeshPrompt} />
-          : !agoraOpen && <ForumNavigation district={district} onDistrict={selectDistrict} focusAgent={focusAgent} />}
+          : !agoraOpen && <ForumNavigation district={district} focusAgent={focusAgent} />}
         <ForumPostProcessing />
         <PerfSampler />
       </Canvas>
