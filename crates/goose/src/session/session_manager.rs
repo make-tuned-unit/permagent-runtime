@@ -5424,7 +5424,7 @@ mod tests {
             claim_id: claim_id.clone(),
         };
         permit
-            .prepare_worker(&worker.id, root, Some(&task_id))
+            .prepare_worker(&worker.id, &root, Some(&task_id))
             .await
             .unwrap();
         let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.unwrap();
