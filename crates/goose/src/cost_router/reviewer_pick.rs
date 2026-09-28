@@ -165,14 +165,36 @@ pub enum ContributorFamilies<'a> {
 }
 
 /// A model family established by a knowledge row or an explicit KB alias.
-/// Provider-id fallback and approximate local tag-prefix matches cannot prove
-/// the physical family of an unknown model behind a proxy or alias.
+/// Provider-id fallback, opaque runtime labels (including KB `ollama` rows),
+/// and approximate local tag-prefix matches cannot prove the physical family
+/// of an unknown model behind a proxy or alias.
 pub fn known_physical_family_of(provider: &str, model: &str) -> Option<String> {
     let (row, confidence) = lookup_with_confidence(provider, model)?;
-    if confidence == LookupConfidence::FamilyEstimate || row.family.trim().is_empty() {
+    let family = row.family.trim().to_ascii_lowercase();
+    if confidence == LookupConfidence::FamilyEstimate || !physical_family_label(&family) {
         return None;
     }
-    Some(row.family.trim().to_ascii_lowercase())
+    Some(family)
+}
+
+// These identify runtimes/transports or missing identity, not model producers.
+fn physical_family_label(family: &str) -> bool {
+    !matches!(
+        family,
+        "" | "ollama"
+            | "local"
+            | "openrouter"
+            | "unknown"
+            | "custom"
+            | "proxy"
+            | "openai-compatible"
+            | "openai_compatible"
+            | "vllm"
+            | "llamacpp"
+            | "llama.cpp"
+            | "lmstudio"
+            | "localai"
+    )
 }
 
 /// Choose a reviewer independent of ALL contributors. Unlike the legacy API,
@@ -196,7 +218,7 @@ pub fn select_reviewer_for_contributors(
         .iter()
         .map(|family| family.trim().to_ascii_lowercase())
         .collect();
-    if families.contains("") {
+    if families.iter().any(|family| !physical_family_label(family)) {
         return ReviewerSelection::Unavailable {
             reason: "trusted contributor history contains an unknown family; an independent reviewer cannot be selected".into(),
         };
@@ -684,45 +706,54 @@ mod tests {
     }
 
     #[test]
-    fn contributor_set_known_local_above_capability_floor_wins_on_price() {
+    fn contributor_set_current_known_local_below_capability_floor_is_refused() {
         let families = contributor_set(&["anthropic", "openai"]);
-        let local = KNOWN_MODELS
-            .iter()
-            .find(|model| {
-                model.is_local
-                    && model.orchestration_strength >= REVIEWER_MIN_ORCHESTRATION
-                    && known_physical_family_of(model.provider, model.model)
-                        .is_some_and(|family| !families.contains(&family))
-            })
-            .expect("the KB contains a known local reviewer above the static capability floor");
-        let cloud = KNOWN_MODELS
-            .iter()
-            .find(|model| {
-                !model.is_local
-                    && model.blended_cost_per_mtok() > 0.0
-                    && model.orchestration_strength >= REVIEWER_MIN_ORCHESTRATION
-                    && known_physical_family_of(model.provider, model.model)
-                        .is_some_and(|family| !families.contains(&family))
-            })
-            .expect(
-                "a known independent paid reviewer above the static capability floor exists too",
-            );
-        let selection = select_reviewer_for_contributors(
-            ContributorFamilies::Known(&families),
-            None,
-            None,
-            &[
-                AvailableModel::new(cloud.provider, cloud.model),
-                AvailableModel::new(local.provider, local.model),
-            ],
-            10,
+        let local = lookup_model("qwen38_split", "qwen3.8-27b")
+            .expect("the current local split model has a KB row");
+        assert!(local.is_local);
+        assert!(local.orchestration_strength < REVIEWER_MIN_ORCHESTRATION);
+        assert_eq!(
+            known_physical_family_of(local.provider, local.model),
+            Some("qwen".into())
         );
-        let pick = selection
-            .pick()
-            .expect("known independent local model above the static capability floor");
-        assert!(pick.is_local);
-        assert_eq!(pick.model, local.model);
-        assert_eq!(pick.cost_hint_per_mtok, 0.0);
+        assert!(matches!(
+            select_reviewer_for_contributors(
+                ContributorFamilies::Known(&families),
+                None,
+                None,
+                &[AvailableModel::new(local.provider, local.model)],
+                10,
+            ),
+            ReviewerSelection::Unavailable { .. }
+        ));
+    }
+
+    #[test]
+    fn contributor_set_opaque_runtime_kb_family_never_proves_independence() {
+        assert!(lookup_model("ollama", "qwen3-coder").is_some());
+        assert_eq!(known_physical_family_of("ollama", "qwen3-coder"), None);
+        let families = contributor_set(&["openai"]);
+        assert!(matches!(
+            select_reviewer_for_contributors(
+                ContributorFamilies::Known(&families),
+                Some(&rm("ollama", "qwen3-coder")),
+                None,
+                &[],
+                10,
+            ),
+            ReviewerSelection::Unavailable { .. }
+        ));
+        let opaque_contributor = contributor_set(&["ollama"]);
+        assert!(matches!(
+            select_reviewer_for_contributors(
+                ContributorFamilies::Known(&opaque_contributor),
+                Some(&rm("openai", "gpt-5.4-mini")),
+                None,
+                &[],
+                10,
+            ),
+            ReviewerSelection::Unavailable { .. }
+        ));
     }
 
     #[test]
