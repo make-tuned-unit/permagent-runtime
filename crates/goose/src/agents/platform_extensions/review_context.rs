@@ -506,8 +506,8 @@ fn is_sensitive_path(path: &str) -> bool {
             || *part == ".pypirc"
             || *part == ".env"
             || part.starts_with(".env.")
-            || part == "secrets"
-            || part == "credentials"
+            || *part == "secrets"
+            || *part == "credentials"
             || [
                 "node_modules",
                 "vendor",
