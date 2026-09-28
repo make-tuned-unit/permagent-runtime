@@ -998,6 +998,10 @@ impl GoalEngine for InternalSubagentEngine {
                 .prepare_worker(&session_id, &worktree, task.budget_task_id.as_deref())
                 .await
                 .map_err(|e| e.to_string())?;
+            permit
+                .mark_provider_accounting(&session_id)
+                .await
+                .map_err(|e| e.to_string())?;
         }
         if let Some(cleanup) = prepared.cleanup.as_ref() {
             *cleanup

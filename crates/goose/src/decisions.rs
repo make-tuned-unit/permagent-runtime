@@ -2004,6 +2004,39 @@ pub async fn create_decision(pool: &Pool<Sqlite>, req: NewDecision) -> Result<De
         .ok_or_else(|| "Failed to read created decision".to_string())
 }
 
+/// Native state transitions can create a validated decision under their own
+/// exact-attempt transaction. Validation, policy tier and audit remain native;
+/// the caller emits the event only after committing the combined mutation.
+pub(crate) async fn create_validated_decision_tx(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    req: NewDecision,
+) -> Result<(String, i64), String> {
+    validate_new_decision(&req)?;
+    let tier = sqlx::query_scalar::<_, i64>("SELECT tier FROM risk_policy WHERE action_class=?")
+        .bind(resolve_action_class(&req))
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(|e| e.to_string())?
+        .unwrap_or(2);
+    let id = Uuid::now_v7().to_string();
+    sqlx::query("INSERT INTO decisions (id,kind,goal_id,project_id,tier,headline,detail,payload_json,rank,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)")
+        .bind(&id).bind(&req.kind).bind(&req.goal_id).bind(&req.project_id).bind(tier)
+        .bind(req.headline.as_deref().unwrap_or("").trim()).bind(req.detail.as_deref().unwrap_or("").trim())
+        .bind(serde_json::to_string(&req.payload).map_err(|e|e.to_string())?).bind(req.rank).bind(now_timestamp())
+        .execute(&mut **tx).await.map_err(|e|e.to_string())?;
+    append_audit_tx(
+        tx,
+        &id,
+        req.goal_id.as_deref(),
+        ACTOR_SYSTEM,
+        tier,
+        "created",
+        None,
+    )
+    .await?;
+    Ok((id, tier))
+}
+
 fn schedule_pause_payload(
     job: &crate::scheduler::ScheduledJob,
     episode: &crate::scheduler::SchedulePauseEpisode,

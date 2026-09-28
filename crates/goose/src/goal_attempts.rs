@@ -42,6 +42,8 @@ pub(crate) async fn apply_schema(pool: &Pool<Sqlite>) -> Result<()> {
         claimed_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
         started_at TEXT, finalized_at TEXT, ended_at TEXT, terminal_reason TEXT,
         UNIQUE(goal_id, ordinal))").execute(pool).await?;
+    crate::goal_candidates::apply_schema(pool).await?;
+    crate::native_provider_calls::apply_schema(pool).await?;
     Ok(())
 }
 
@@ -180,16 +182,35 @@ pub(crate) async fn claim_tx(
     {
         bail!("Native execution root differs from frozen goal root");
     }
+    let baseline = if let Some(root) = input.execution_root.as_ref() {
+        crate::goal_candidates::dispatch_baseline_tx(tx, goal_id, Path::new(root)).await?
+    } else {
+        None
+    };
+    let (parent, baseline_authority) = if let Some((native_head, parent)) = baseline {
+        if input.input_head != native_head {
+            bail!("Dispatch baseline differs from native observed input");
+        }
+        (parent, "native")
+    } else {
+        let native_no_root:i64=sqlx::query_scalar("SELECT COUNT(*) FROM goal_execution_bindings WHERE goal_id=? AND authority='native' AND root_status='absent'")
+            .bind(goal_id).fetch_one(&mut **tx).await?;
+        if native_no_root == 1 && input.execution_root.is_none() && input.input_head.is_none() {
+            (None, "native")
+        } else {
+            (None, "unverified")
+        }
+    };
     let ordinal: i64 =
         sqlx::query_scalar("SELECT COALESCE(MAX(ordinal),0)+1 FROM goal_attempts WHERE goal_id=?")
             .bind(goal_id)
             .fetch_one(&mut **tx)
             .await?;
     sqlx::query("INSERT INTO goal_attempts
-        (attempt_id,goal_id,ordinal,claim_id,lifecycle_id,worker_key,execution_root,input_head,execution_state)
-        VALUES (?,?,?,?,?,?,?,?,'claimed')")
+        (attempt_id,goal_id,ordinal,claim_id,lifecycle_id,worker_key,execution_root,input_head,parent_candidate_attempt_id,baseline_authority,execution_state)
+        VALUES (?,?,?,?,?,?,?,?,?,?,'claimed')")
         .bind(uuid::Uuid::now_v7().to_string()).bind(goal_id).bind(ordinal).bind(&input.claim_id)
-        .bind(&input.lifecycle_id).bind(&input.worker_key).bind(&input.execution_root).bind(&input.input_head)
+        .bind(&input.lifecycle_id).bind(&input.worker_key).bind(&input.execution_root).bind(&input.input_head).bind(parent).bind(baseline_authority)
         .execute(&mut **tx).await?;
     Ok(())
 }
@@ -208,6 +229,15 @@ impl StartPermit {
             bail!("Worker cannot start before native finalization or after losing its claim");
         }
         tx.commit().await?;
+        Ok(())
+    }
+
+    pub(crate) async fn mark_provider_accounting(&self, session: &str) -> Result<()> {
+        let changed=sqlx::query("UPDATE goal_attempts SET accounting_authority=? WHERE goal_id=? AND claim_id=? AND worker_session_id=? AND execution_state='prepared'")
+            .bind(crate::native_provider_calls::COVERAGE_VERSION).bind(&self.goal_id).bind(&self.claim_id).bind(session).execute(&self.pool).await?.rows_affected();
+        if changed != 1 {
+            bail!("Provider accounting cannot bind a different native worker");
+        }
         Ok(())
     }
 
@@ -251,6 +281,11 @@ impl StartPermit {
                 bail!("Prepared worker root does not match native claim");
             }
         }
+        crate::goal_candidates::validate_prepared_head(
+            Path::new(&path),
+            row.try_get::<Option<String>, _>("input_head")?.as_deref(),
+        )
+        .await?;
         let bound_task: Option<String> = row.try_get("task_id")?;
         if bound_task.as_deref().is_some_and(|t| Some(t) != task) {
             bail!("Native worker task mismatch");
@@ -382,6 +417,38 @@ pub(crate) async fn worker_binding(
         })
     })
     .transpose()
+}
+
+/// A known model-capable delegation outside the universal native invocation
+/// journal permanently invalidates this editor's coverage. No child/parent
+/// inference or reviewer-persona metadata can restore automatic authority.
+pub(crate) async fn mark_unreported_delegation(pool: &Pool<Sqlite>, session: &str) -> Result<()> {
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let native: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM goal_attempts a JOIN goal_execution_bindings b ON b.goal_id=a.goal_id WHERE a.worker_session_id=? AND b.authority='native'")
+        .bind(session).fetch_one(&mut *tx).await?;
+    if native == 0 {
+        tx.commit().await?;
+        return Ok(());
+    }
+    if native != 1 {
+        bail!("Model-capable delegation has ambiguous native editor identity");
+    }
+    let changed = sqlx::query(
+        "UPDATE goal_attempts SET accounting_authority='unreported_delegation'
+        WHERE worker_session_id=? AND execution_state='started' AND EXISTS (
+          SELECT 1 FROM cards c JOIN board_columns col ON col.id=c.column_id
+          WHERE c.id=goal_attempts.goal_id AND col.state_binding='in_progress'
+          AND json_extract(c.metadata_json,'$.dispatch_claim_id')=goal_attempts.claim_id)",
+    )
+    .bind(session)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+    if changed != 1 {
+        bail!("Model-capable delegation no longer owns the native editing attempt");
+    }
+    tx.commit().await?;
+    Ok(())
 }
 
 #[cfg(test)]

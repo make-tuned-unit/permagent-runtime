@@ -9149,19 +9149,30 @@ pub(crate) async fn dispatch_goal_fn(
     // fresh off trunk HEAD (see `prior_goal_branch_tip`'s doc comment for
     // why). `None` on a genuine first dispatch or a reaped branch — the
     // trunk-HEAD read below is then unchanged from before this lane.
-    let redispatch_base = prior_goal_branch_tip(&working_dir, &card.metadata_json).await;
-    let baseline_commit = match redispatch_base.as_ref() {
-        Some((_, tip)) => Some(tip.clone()),
-        None => tokio::process::Command::new("git")
-            .arg("-C")
-            .arg(&working_dir)
-            .args(["rev-parse", "HEAD"])
-            .output()
-            .await
-            .ok()
-            .filter(|o| o.status.success())
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-            .filter(|s| !s.is_empty()),
+    let native_baseline = crate::goal_candidates::dispatch_baseline(&pool, card_id, &working_dir)
+        .await
+        .map_err(|e| e.to_string())?;
+    let redispatch_base = if native_baseline.is_some() {
+        None
+    } else {
+        prior_goal_branch_tip(&working_dir, &card.metadata_json).await
+    };
+    let baseline_commit = if let Some((head, _parent)) = native_baseline {
+        head
+    } else {
+        match redispatch_base.as_ref() {
+            Some((_, tip)) => Some(tip.clone()),
+            None => tokio::process::Command::new("git")
+                .arg("-C")
+                .arg(&working_dir)
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .await
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .filter(|s| !s.is_empty()),
+        }
     };
 
     // Author the goal's completion criterion at dispatch, in precedence
@@ -9851,7 +9862,7 @@ pub(crate) async fn dispatch_goal_fn(
         };
         // The worker has exited — drop its kill handle from the registry.
         // (A cancel may already have taken it; remove is then a no-op.)
-        take_goal_worker(&tracker_card_id);
+        take_goal_worker_for_session(&tracker_card_id, &tracker_session_id);
         // R28a: the worker's session just ended, for whichever reason
         // `outcome` names — the one place every dispatch attempt's teardown
         // passes through, before `finalize_receipt`/`handle_goal_completion`
@@ -9871,18 +9882,58 @@ pub(crate) async fn dispatch_goal_fn(
             checkpoint_reason_for_outcome(&outcome),
         )
         .await;
+        let _completion_claim = CompletionInFlight::begin(&tracker_card_id);
+        let native_state = match &outcome {
+            goal_engine::GoalOutcome::Success(_) => {
+                crate::goal_candidates::TerminalState::Succeeded
+            }
+            _ => crate::goal_candidates::TerminalState::Failed,
+        };
+        match crate::goal_candidates::observe_worker_terminal(
+            &tracker_pool,
+            &tracker_card_id,
+            &tracker_claim_id,
+            &tracker_session_id,
+            native_state,
+            &format!("Native worker outcome: {outcome:?}"),
+            receipt_state_for_outcome(&outcome),
+        )
+        .await
+        {
+            Ok(crate::goal_candidates::TerminalObservation::Sealed(_)) => {}
+            Ok(
+                crate::goal_candidates::TerminalObservation::Stale
+                | crate::goal_candidates::TerminalObservation::AlreadySealed(_),
+            ) => return,
+            Err(error) => {
+                tracing::error!("Cannot seal native worker terminal observation: {error}");
+                return;
+            }
+        }
         // #210: stamp the receipt's terminal state (best-effort) before running
         // the completion handler, so the attempt's outcome is recorded even if a
         // downstream handler step fails.
-        let terminal_state = receipt_state_for_outcome(&outcome);
         // Lane Y6: claim the card BEFORE the receipt is stamped terminal, so
         // there is no instant in which the receipt says "done" while nothing
         // says "a handler owns this". `drain_dispatched_goals` reads this mark
         // and keeps waiting instead of parking the card out from under the
         // handler mid-transition (see `CompletionInFlight`). Dropped at the end
         // of this block — including on an early return or a panic.
-        let _completion_claim = CompletionInFlight::begin(&tracker_card_id);
-        finalize_receipt(&tracker_pool, &tracker_card_id, terminal_state).await;
+
+        let expected_attempt = match crate::goal_candidates::terminal_fence(
+            &tracker_pool,
+            &tracker_card_id,
+            &tracker_claim_id,
+            &tracker_session_id,
+        )
+        .await
+        {
+            Ok(value) => value,
+            Err(error) => {
+                tracing::error!("Cannot acquire native completion fence: {error}");
+                return;
+            }
+        };
         let result = match outcome {
             goal_engine::GoalOutcome::Success(evidence) => {
                 // Layer 1: persist deterministic proof-of-work to the goal
@@ -9997,12 +10048,13 @@ pub(crate) async fn dispatch_goal_fn(
                         );
                     }
                 }
-                handle_goal_completion(
+                handle_goal_completion_for_attempt(
                     &tracker_pool,
                     &tracker_card_id,
                     &tracker_project_id,
                     Ok(()),
                     tracker_headless_auto_land,
+                    Some(&expected_attempt),
                 )
                 .await
             }
@@ -10016,12 +10068,13 @@ pub(crate) async fn dispatch_goal_fn(
                     &checkpoint,
                 )
                 .await;
-                handle_goal_completion(
+                handle_goal_completion_for_attempt(
                     &tracker_pool,
                     &tracker_card_id,
                     &tracker_project_id,
                     Err(error),
                     tracker_headless_auto_land,
+                    Some(&expected_attempt),
                 )
                 .await
             }
@@ -10049,22 +10102,25 @@ pub(crate) async fn dispatch_goal_fn(
                 } else {
                     None
                 };
-                handle_goal_timeout(
+                handle_goal_timeout_for_attempt(
                     &tracker_pool,
                     &tracker_card_id,
                     &tracker_project_id,
                     secs,
                     None,
                     coordinator_session_id.as_deref(),
+                    goal_transition::TimeoutPark::AttemptBound,
+                    Some(&expected_attempt),
                 )
                 .await
             }
             goal_engine::GoalOutcome::Blocked { reason } => {
-                handle_goal_blocked(
+                handle_goal_blocked_for_attempt(
                     &tracker_pool,
                     &tracker_card_id,
                     &tracker_project_id,
                     &reason,
+                    Some(&expected_attempt),
                 )
                 .await
             }
@@ -14706,6 +14762,21 @@ impl McpClientTrait for OrchestratorClient {
         arguments: Option<JsonObject>,
         cancel_token: CancellationToken,
     ) -> Result<CallToolResult, Error> {
+        // These tools can execute a model-backed session outside the editor's
+        // exact-session invocation journal. Record that coverage gap before
+        // any target is created/driven; a failed durable marker refuses dispatch.
+        if matches!(name, "start_agent" | "send_message") {
+            let marker = async {
+                let pool = self.context.session_manager.pool_clone().await?;
+                crate::goal_attempts::mark_unreported_delegation(&pool, &ctx.session_id).await
+            }
+            .await;
+            if let Err(error) = marker {
+                return Ok(CallToolResult::error(vec![Content::text(format!(
+                    "Native delegation coverage could not be recorded: {error}"
+                ))]));
+            }
+        }
         let result = match name {
             "list_sessions" => self.handle_list_sessions(arguments).await,
             "view_session" => self.handle_view_session(&ctx.session_id, arguments).await,
@@ -17106,6 +17177,28 @@ pub fn take_goal_worker(card_id: &str) -> Option<goal_engine::GoalKill> {
         .map(|w| w.kill)
 }
 
+fn take_goal_worker_for_completion(
+    card_id: &str,
+    expected: Option<&crate::goal_candidates::ExpectedAttempt>,
+) -> Option<goal_engine::GoalKill> {
+    match expected {
+        Some(expected) => take_goal_worker_for_session(card_id, &expected.worker_session_id),
+        None => take_goal_worker(card_id),
+    }
+}
+
+fn take_goal_worker_for_session(card_id: &str, session_id: &str) -> Option<goal_engine::GoalKill> {
+    let mut map = GOAL_WORKERS.lock().ok()?;
+    if map
+        .get(card_id)
+        .is_some_and(|worker| worker.session_id == session_id)
+    {
+        map.remove(card_id).map(|worker| worker.kill)
+    } else {
+        None
+    }
+}
+
 /// Clone a goal's steer handle WITHOUT removing the registry entry — steering
 /// must not disarm the cancel path.
 pub fn steer_handle_for(card_id: &str) -> Option<std::sync::Arc<goal_engine::SteerHandle>> {
@@ -17860,9 +17953,51 @@ pub async fn handle_goal_completion(
     result: Result<(), String>,
     headless_auto_land: bool,
 ) -> Result<(), String> {
+    handle_goal_completion_for_attempt(pool, card_id, project_id, result, headless_auto_land, None)
+        .await
+}
+
+async fn handle_goal_completion_for_attempt(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card_id: &str,
+    project_id: &str,
+    result: Result<(), String>,
+    headless_auto_land: bool,
+    expected_attempt: Option<&crate::goal_candidates::ExpectedAttempt>,
+) -> Result<(), String> {
     let card = cards::get_card(pool, card_id)
         .await?
         .ok_or_else(|| format!("Card '{}' not found during completion handling", card_id))?;
+
+    if expected_attempt.is_some() {
+        let unverifiable = match crate::goal_candidates::resolve_candidate(pool, card_id)
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            crate::goal_candidates::LineageResolution::Unverifiable(reason) => Some(reason),
+            crate::goal_candidates::LineageResolution::Verified(lineage) => {
+                match crate::goal_candidates::contributor_evidence(pool, &lineage)
+                    .await
+                    .map_err(|e| e.to_string())?
+                {
+                    crate::goal_candidates::ContributorEvidence::Unknown(reason) => Some(reason),
+                    _ => None,
+                }
+            }
+            crate::goal_candidates::LineageResolution::NoGit => None,
+        };
+        if let Some(reason) = unverifiable {
+            park_refused_goal_for_attempt(
+                pool,
+                &card,
+                &format!("Native candidate provenance is unverifiable: {reason}"),
+                None,
+                expected_attempt,
+            )
+            .await;
+            return Ok(());
+        }
+    }
 
     // Check card is still in InProgress — if not, someone manually intervened; no-op.
     let current_col = cards::get_column(pool, &card.column_id).await?;
@@ -17903,11 +18038,12 @@ pub async fn handle_goal_completion(
             } else {
                 None
             };
-            if let Some(held) = maybe_hold_review(
+            if let Some(held) = maybe_hold_review_for_attempt(
                 pool,
                 &card,
                 headless_auto_land,
                 coordinator_session_id.as_deref(),
+                expected_attempt,
             )
             .await?
             {
@@ -17926,6 +18062,7 @@ pub async fn handle_goal_completion(
                 None,
                 TransitionEffects {
                     metadata_patch: patch,
+                    expected_attempt: expected_attempt.cloned(),
                     ..Default::default()
                 },
             )
@@ -18001,12 +18138,13 @@ pub async fn handle_goal_completion(
             let coordinator = headless_dispatch_policy_config()
                 .map(|config| config.coordinator_session_id.clone());
             if let SalvageOutcome::Salvaged { note } =
-                Box::pin(maybe_salvage_committed_work_with_policy(
+                Box::pin(maybe_salvage_committed_work_for_attempt(
                     pool,
                     &card,
                     None,
                     coordinator.as_deref(),
                     headless_auto_land,
+                    expected_attempt,
                 ))
                 .await
             {
@@ -18019,13 +18157,15 @@ pub async fn handle_goal_completion(
             if let Some(exhaustion) =
                 goal_transition::check_budget(pool, &card.metadata_json).await?
             {
-                let decision_id = goal_transition::exhaust_and_park(
+                let decision_id = goal_transition::exhaust_and_park_for_attempt(
                     pool,
                     card_id,
                     &card.title,
                     project_id,
                     exhaustion,
                     Some(&error),
+                    None,
+                    expected_attempt,
                 )
                 .await?;
 
@@ -18067,11 +18207,13 @@ pub async fn handle_goal_completion(
                 } else {
                     None
                 };
-                let salvage_note = match maybe_salvage_committed_work(
+                let salvage_note = match maybe_salvage_committed_work_for_attempt(
                     pool,
                     &card,
                     None,
                     coordinator_session_id.as_deref(),
+                    headless_dispatch_policy_config().is_some_and(|config| config.auto_land),
+                    expected_attempt,
                 )
                 .await
                 {
@@ -18108,7 +18250,7 @@ pub async fn handle_goal_completion(
                         "could not record the wall_budget_exhausted receipt: {e}"
                     );
                 }
-                let decision_id = goal_transition::exhaust_and_park(
+                let decision_id = goal_transition::exhaust_and_park_for_attempt(
                     pool,
                     card_id,
                     &card.title,
@@ -18118,6 +18260,8 @@ pub async fn handle_goal_completion(
                         cap_secs: outcome.cap_secs,
                     },
                     Some(&reason),
+                    None,
+                    expected_attempt,
                 )
                 .await?;
 
@@ -18140,12 +18284,13 @@ pub async fn handle_goal_completion(
                     .get("attempt_count")
                     .and_then(|value| value.as_u64())
                     .unwrap_or(0);
-                goal_transition::requeue_goal(
+                goal_transition::requeue_goal_for_attempt(
                     pool,
                     card_id,
                     decisions::ACTOR_SYSTEM,
                     attempt_count,
                     &error,
+                    expected_attempt,
                 )
                 .await
                 .map_err(String::from)?;
@@ -19635,6 +19780,16 @@ pub(crate) async fn park_refused_goal(
     reason: &str,
     cause: Option<decisions::UnblockCause>,
 ) {
+    park_refused_goal_for_attempt(pool, card, reason, cause, None).await
+}
+
+async fn park_refused_goal_for_attempt(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card: &cards::Card,
+    reason: &str,
+    cause: Option<decisions::UnblockCause>,
+    expected_attempt: Option<&crate::goal_candidates::ExpectedAttempt>,
+) {
     // One open unblock per goal, same dedupe every other park path uses.
     match decisions::find_open_decision_for_goal(pool, &card.id, "unblock").await {
         Ok(Some(_)) => {}
@@ -19692,7 +19847,15 @@ pub(crate) async fn park_refused_goal(
         }
     }
 
-    match goal_transition::park_goal(pool, &card.id, decisions::ACTOR_SYSTEM, reason).await {
+    match goal_transition::park_goal_for_attempt(
+        pool,
+        &card.id,
+        decisions::ACTOR_SYSTEM,
+        reason,
+        expected_attempt,
+    )
+    .await
+    {
         Ok(()) => tracing::warn!(
             target: "permagentd::brain",
             goal_id = %card.id,
@@ -19757,9 +19920,62 @@ pub async fn handle_goal_timeout_for(
     calling_session_id: Option<&str>,
     park: goal_transition::TimeoutPark,
 ) -> Result<(), String> {
+    handle_goal_timeout_for_attempt(
+        pool,
+        card_id,
+        project_id,
+        secs,
+        grace_deadline,
+        calling_session_id,
+        park,
+        None,
+    )
+    .await
+}
+
+async fn handle_goal_timeout_for_attempt(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card_id: &str,
+    project_id: &str,
+    secs: u64,
+    grace_deadline: Option<std::time::Instant>,
+    calling_session_id: Option<&str>,
+    park: goal_transition::TimeoutPark,
+    expected_attempt: Option<&crate::goal_candidates::ExpectedAttempt>,
+) -> Result<(), String> {
     let card = cards::get_card(pool, card_id)
         .await?
         .ok_or_else(|| format!("Card '{}' not found during timeout handling", card_id))?;
+
+    if expected_attempt.is_some() {
+        let unverifiable = match crate::goal_candidates::resolve_candidate(pool, card_id)
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            crate::goal_candidates::LineageResolution::Unverifiable(reason) => Some(reason),
+            crate::goal_candidates::LineageResolution::Verified(lineage) => {
+                match crate::goal_candidates::contributor_evidence(pool, &lineage)
+                    .await
+                    .map_err(|e| e.to_string())?
+                {
+                    crate::goal_candidates::ContributorEvidence::Unknown(reason) => Some(reason),
+                    _ => None,
+                }
+            }
+            crate::goal_candidates::LineageResolution::NoGit => None,
+        };
+        if let Some(reason) = unverifiable {
+            park_refused_goal_for_attempt(
+                pool,
+                &card,
+                &format!("Native candidate provenance is unverifiable: {reason}"),
+                None,
+                expected_attempt,
+            )
+            .await;
+            return Ok(());
+        }
+    }
 
     // Only act while the goal is still InProgress (mirrors handle_goal_completion:
     // a manual intervention since dispatch is respected) — Lane R26b widens
@@ -19846,20 +20062,28 @@ pub async fn handle_goal_timeout_for(
     // path by construction. `calling_session_id` is threaded through from
     // the caller instead — still `None` for the rare caller with no
     // coordinator session to give (e.g. a direct test).
-    let salvage_note =
-        match maybe_salvage_committed_work(pool, &card, grace_deadline, calling_session_id).await {
-            SalvageOutcome::Salvaged { note } => {
-                tracing::info!(
-                    target: "permagentd::brain",
-                    "Goal '{}' worker timed out after {}s, but its committed work was salvaged \
-                     instead of parked: {note}",
-                    card.title,
-                    secs
-                );
-                return Ok(());
-            }
-            SalvageOutcome::NotSalvaged { note } => note,
-        };
+    let salvage_note = match maybe_salvage_committed_work_for_attempt(
+        pool,
+        &card,
+        grace_deadline,
+        calling_session_id,
+        headless_dispatch_policy_config().is_some_and(|config| config.auto_land),
+        expected_attempt,
+    )
+    .await
+    {
+        SalvageOutcome::Salvaged { note } => {
+            tracing::info!(
+                target: "permagentd::brain",
+                "Goal '{}' worker timed out after {}s, but its committed work was salvaged \
+                 instead of parked: {note}",
+                card.title,
+                secs
+            );
+            return Ok(());
+        }
+        SalvageOutcome::NotSalvaged { note } => note,
+    };
     // QA 2026-09-25: a quarantined checkpoint left real work uncommitted in
     // the worktree on purpose — say so, and where, so the park reason never
     // reads as "nothing to salvage" while that work is still sitting there.
@@ -19880,13 +20104,15 @@ pub async fn handle_goal_timeout_for(
         cap_secs: secs,
     };
     let last_error = format!("{}; salvage: {salvage_note}", park.error_prefix());
-    let decision_id = goal_transition::exhaust_and_park(
+    let decision_id = goal_transition::exhaust_and_park_for_attempt(
         pool,
         card_id,
         &card.title,
         project_id,
         exhaustion,
         Some(&last_error),
+        None,
+        expected_attempt,
     )
     .await?;
 
@@ -22393,6 +22619,16 @@ pub async fn handle_goal_blocked(
     project_id: &str,
     reason: &str,
 ) -> Result<(), String> {
+    handle_goal_blocked_for_attempt(pool, card_id, project_id, reason, None).await
+}
+
+async fn handle_goal_blocked_for_attempt(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card_id: &str,
+    project_id: &str,
+    reason: &str,
+    expected_attempt: Option<&crate::goal_candidates::ExpectedAttempt>,
+) -> Result<(), String> {
     let card = cards::get_card(pool, card_id).await?.ok_or_else(|| {
         format!(
             "Card '{}' not found during credential-block handling",
@@ -22460,9 +22696,15 @@ pub async fn handle_goal_blocked(
         }
     }
 
-    goal_transition::park_goal(pool, card_id, decisions::ACTOR_SYSTEM, reason)
-        .await
-        .map_err(String::from)?;
+    goal_transition::park_goal_for_attempt(
+        pool,
+        card_id,
+        decisions::ACTOR_SYSTEM,
+        reason,
+        expected_attempt,
+    )
+    .await
+    .map_err(String::from)?;
 
     tracing::warn!(
         target: "permagentd::brain",
@@ -23640,6 +23882,19 @@ async fn maybe_credit_and_bypass_hold(
     headless_auto_land: bool,
     calling_session_id: Option<&str>,
 ) -> Result<Option<Option<String>>, String> {
+    // Evidence from another goal cannot establish this native attempt's
+    // authorship or acceptance. The native path needs its own sealed lineage;
+    // legacy sibling-credit projections are advisory, not completion authority.
+    let native: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM goal_execution_bindings WHERE goal_id=? AND authority='native'",
+    )
+    .bind(&card.id)
+    .fetch_one(pool)
+    .await
+    .map_err(|error| error.to_string())?;
+    if native != 0 {
+        return Ok(None);
+    }
     let Some(evidence) = card.metadata_json.get("dispatch_evidence") else {
         return Ok(None);
     };
@@ -25523,6 +25778,25 @@ async fn maybe_salvage_committed_work_with_policy(
     calling_session_id: Option<&str>,
     headless_auto_land: bool,
 ) -> SalvageOutcome {
+    maybe_salvage_committed_work_for_attempt(
+        pool,
+        card,
+        grace_deadline,
+        calling_session_id,
+        headless_auto_land,
+        None,
+    )
+    .await
+}
+
+async fn maybe_salvage_committed_work_for_attempt(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card: &cards::Card,
+    grace_deadline: Option<std::time::Instant>,
+    calling_session_id: Option<&str>,
+    headless_auto_land: bool,
+    expected_attempt: Option<&crate::goal_candidates::ExpectedAttempt>,
+) -> SalvageOutcome {
     // R37a: record-only when a test has scoped the capture above; a no-op
     // `try_with` failure (the ordinary, non-test-scoped case) is silently
     // ignored.
@@ -25591,7 +25865,25 @@ async fn maybe_salvage_committed_work_with_policy(
         }
     }
 
-    let baseline_and_worktree =
+    let native_lineage = if expected_attempt.is_some() {
+        match crate::goal_candidates::resolve_candidate(pool, &card.id).await {
+            Ok(crate::goal_candidates::LineageResolution::Verified(lineage)) => {
+                match crate::goal_candidates::revalidate_candidate(pool, &lineage).await {
+                    Ok(current) if Some(&current) == expected_attempt => Some(lineage),
+                    _ => return not_salvaged("Native salvage claim changed".into()),
+                }
+            }
+            _ => return not_salvaged("Native salvage candidate is unverifiable".into()),
+        }
+    } else {
+        None
+    };
+    let baseline_and_worktree = if let Some(lineage) = &native_lineage {
+        Some((
+            lineage.candidate.trunk_head.clone(),
+            lineage.candidate.worktree.to_string_lossy().into_owned(),
+        ))
+    } else {
         match resolve_goal_baseline_and_worktree(pool, &card.metadata_json).await {
             Ok(v) => v,
             Err(e) => {
@@ -25599,7 +25891,8 @@ async fn maybe_salvage_committed_work_with_policy(
                 record_salvage_receipt(pool, &card.id, "salvage_skipped_no_worktree", &note).await;
                 return not_salvaged(note);
             }
-        };
+        }
+    };
     let Some((baseline, worktree)) = baseline_and_worktree else {
         let note = "no dispatch baseline recorded — nothing to salvage".to_string();
         record_salvage_receipt(pool, &card.id, "salvage_skipped_no_baseline", &note).await;
@@ -25887,6 +26180,7 @@ async fn maybe_salvage_committed_work_with_policy(
                     baseline: &baseline,
                     headless_auto_land,
                     calling_session_id,
+                    expected_attempt,
                 },
             )
             .await;
@@ -25906,12 +26200,16 @@ async fn maybe_salvage_committed_work_with_policy(
         return not_salvaged(note);
     }
 
-    let Some(worker_session_id) = card
-        .metadata_json
-        .get("worker_session_id")
-        .and_then(|v| v.as_str())
-        .map(str::to_string)
-    else {
+    let worker_session_id = native_lineage
+        .as_ref()
+        .map(|lineage| lineage.candidate.worker_session_id.clone())
+        .or_else(|| {
+            card.metadata_json
+                .get("worker_session_id")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        });
+    let Some(worker_session_id) = worker_session_id else {
         let note = "salvage verify passed but the goal has no worker session to attribute it to"
             .to_string();
         record_salvage_receipt(pool, &card.id, "salvage_evidence_write_failed", &note).await;
@@ -25984,12 +26282,13 @@ async fn maybe_salvage_committed_work_with_policy(
     // generated future type embed itself — an infinite-sized type the
     // compiler refuses. Boxing breaks the cycle; it does not change
     // behavior.
-    if let Err(e) = Box::pin(handle_goal_completion(
+    if let Err(e) = Box::pin(handle_goal_completion_for_attempt(
         pool,
         &card.id,
         &card.project_id,
         Ok(()),
         headless_auto_land,
+        expected_attempt,
     ))
     .await
     {
@@ -26085,6 +26384,7 @@ struct SalvageReviewInput<'a> {
     baseline: &'a str,
     headless_auto_land: bool,
     calling_session_id: Option<&'a str>,
+    expected_attempt: Option<&'a crate::goal_candidates::ExpectedAttempt>,
 }
 
 /// Lane R22c-b/R22c-c: NO_CHECKS (R21c) — and the `error_result` shape that
@@ -26131,13 +26431,21 @@ async fn hand_salvaged_work_to_review_unverified(
         baseline,
         headless_auto_land,
         calling_session_id,
+        expected_attempt,
     } = input;
 
     if !headless_auto_land {
-        return hand_to_review_for_a_human(pool, card, ahead, verify_note).await;
+        return hand_to_review_for_a_human_for_attempt(
+            pool,
+            card,
+            ahead,
+            verify_note,
+            expected_attempt,
+        )
+        .await;
     }
 
-    match dispatch_cross_family_reviewer_for_salvage(
+    let run = dispatch_cross_family_reviewer_for_salvage(
         pool,
         card,
         worktree_path,
@@ -26145,8 +26453,14 @@ async fn hand_salvaged_work_to_review_unverified(
         verify_note,
         calling_session_id,
     )
-    .await
-    {
+    .await;
+    let native_binding = run.native_binding;
+    if expected_attempt.is_some() && native_binding.is_none() {
+        return SalvageOutcome::NotSalvaged {
+            note: "Native salvage has no exact independent review binding".into(),
+        };
+    }
+    match run.outcome {
         ReviewerGateOutcome::Approved {
             checked,
             reviewer_provider,
@@ -26161,6 +26475,7 @@ async fn hand_salvaged_work_to_review_unverified(
                     checked: &checked,
                     reviewer_provider: &reviewer_provider,
                     reviewer_model: &reviewer_model,
+                    native_binding: native_binding.as_ref(),
                 },
                 calling_session_id,
             )
@@ -26203,6 +26518,15 @@ async fn hand_to_review_for_a_human(
     ahead: u64,
     verify_note: &str,
 ) -> SalvageOutcome {
+    hand_to_review_for_a_human_for_attempt(pool, card, ahead, verify_note, None).await
+}
+async fn hand_to_review_for_a_human_for_attempt(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card: &cards::Card,
+    ahead: u64,
+    verify_note: &str,
+    expected_attempt: Option<&crate::goal_candidates::ExpectedAttempt>,
+) -> SalvageOutcome {
     let mut patch = serde_json::Map::new();
     patch.insert(
         "completed_at".to_string(),
@@ -26216,6 +26540,7 @@ async fn hand_to_review_for_a_human(
         None,
         TransitionEffects {
             metadata_patch: patch,
+            expected_attempt: expected_attempt.cloned(),
             ..Default::default()
         },
     )
@@ -29235,6 +29560,7 @@ struct SalvageReviewerApproval<'a> {
     checked: &'a str,
     reviewer_provider: &'a str,
     reviewer_model: &'a str,
+    native_binding: Option<&'a crate::goal_candidates::NativeReviewBinding>,
 }
 
 /// Lane R22c-c: the reviewer approved — land through the SAME
@@ -29258,7 +29584,23 @@ async fn land_salvage_approved_by_reviewer(
         checked,
         reviewer_provider,
         reviewer_model,
+        native_binding,
     } = approval;
+    let expected_attempt = match native_binding {
+        Some(binding) => {
+            match crate::goal_candidates::revalidate_review_binding(pool, binding).await {
+                Ok(expected) => Some(expected),
+                Err(error) => {
+                    return SalvageOutcome::NotSalvaged {
+                        note: format!(
+                            "Native review binding changed before salvage transition: {error}"
+                        ),
+                    }
+                }
+            }
+        }
+        None => None,
+    };
     // Lane R22f: the identity that will need to match `goal_transition::
     // check_proof`'s Tier-1 `ACTOR_AUTO_LAUNCH` comparison at land time —
     // resolved ONCE, here, and reused for BOTH the decision payload below
@@ -29304,6 +29646,7 @@ async fn land_salvage_approved_by_reviewer(
         None,
         TransitionEffects {
             metadata_patch: patch,
+            expected_attempt,
             ..Default::default()
         },
     )
@@ -29837,6 +30180,16 @@ async fn maybe_hold_review(
     headless_auto_land: bool,
     calling_session_id: Option<&str>,
 ) -> Result<Option<String>, String> {
+    maybe_hold_review_for_attempt(pool, card, headless_auto_land, calling_session_id, None).await
+}
+
+async fn maybe_hold_review_for_attempt(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card: &cards::Card,
+    headless_auto_land: bool,
+    calling_session_id: Option<&str>,
+    expected_attempt: Option<&crate::goal_candidates::ExpectedAttempt>,
+) -> Result<Option<String>, String> {
     let meta = card.metadata_json.as_object().cloned().unwrap_or_default();
     let role = meta
         .get("workflow_role")
@@ -30081,8 +30434,8 @@ async fn maybe_hold_review(
         {
             // The goal is not done (see the reply below), so this park is no
             // landing refusal: no cause, and the inbox reads it from `plan`.
-            park_refused_goal(pool, card, &plan, None).await;
-            if let Some(kill) = take_goal_worker(&card.id) {
+            park_refused_goal_for_attempt(pool, card, &plan, None, expected_attempt).await;
+            if let Some(kill) = take_goal_worker_for_completion(&card.id, expected_attempt) {
                 kill.kill();
             }
             return Ok(Some(format!(
@@ -30221,11 +30574,13 @@ async fn maybe_hold_review(
                 // G25/M21: fold `NotSalvaged`'s `note` into the park reason
                 // instead of discarding it — see `handle_goal_completion`'s
                 // sibling fix for why.
-                let salvage_note = match maybe_salvage_committed_work(
+                let salvage_note = match maybe_salvage_committed_work_for_attempt(
                     pool,
                     card,
                     None,
                     calling_session_id,
+                    headless_dispatch_policy_config().is_some_and(|config| config.auto_land),
+                    expected_attempt,
                 )
                 .await
                 {
@@ -30262,7 +30617,7 @@ async fn maybe_hold_review(
                         "could not record the wall_budget_exhausted receipt: {e}"
                     );
                 }
-                let decision_id = crate::goal_transition::exhaust_and_park(
+                let decision_id = crate::goal_transition::exhaust_and_park_for_attempt(
                     pool,
                     &card.id,
                     &card.title,
@@ -30272,9 +30627,11 @@ async fn maybe_hold_review(
                         cap_secs: refusal.cap_secs,
                     },
                     Some(&reason),
+                    None,
+                    expected_attempt,
                 )
                 .await?;
-                if let Some(kill) = take_goal_worker(&card.id) {
+                if let Some(kill) = take_goal_worker_for_completion(&card.id, expected_attempt) {
                     kill.kill();
                 }
                 tracing::warn!(
@@ -30314,16 +30671,17 @@ async fn maybe_hold_review(
             // which dispatch_brief carries into the next worker's prompt; the
             // structured HoldState above is the durable hold receipt.
             let attempt = current_attempt_count(&card.metadata_json);
-            crate::goal_transition::requeue_goal(
+            crate::goal_transition::requeue_goal_for_attempt(
                 pool,
                 &card.id,
                 crate::decisions::ACTOR_SYSTEM,
                 attempt,
                 &inject_plan,
+                expected_attempt,
             )
             .await
             .map_err(String::from)?;
-            if let Some(kill) = take_goal_worker(&card.id) {
+            if let Some(kill) = take_goal_worker_for_completion(&card.id, expected_attempt) {
                 kill.kill();
             }
             Ok(Some(format!(
@@ -30382,20 +30740,28 @@ async fn maybe_hold_review(
             // work already committed one honest chance to verify, review and
             // land before parking it unread — see
             // `maybe_salvage_committed_work`'s own doc comment.
-            let salvage_note =
-                match maybe_salvage_committed_work(pool, card, None, calling_session_id).await {
-                    SalvageOutcome::Salvaged { note } => {
-                        tracing::info!(
-                            target: "permagentd::brain",
-                            goal_id = %card.id,
-                            "Goal '{}' held twice ({reason}), but its committed work was salvaged \
-                             instead of parked: {note}",
-                            card.title
-                        );
-                        return Ok(Some(note));
-                    }
-                    SalvageOutcome::NotSalvaged { note } => note,
-                };
+            let salvage_note = match maybe_salvage_committed_work_for_attempt(
+                pool,
+                card,
+                None,
+                calling_session_id,
+                headless_dispatch_policy_config().is_some_and(|config| config.auto_land),
+                expected_attempt,
+            )
+            .await
+            {
+                SalvageOutcome::Salvaged { note } => {
+                    tracing::info!(
+                        target: "permagentd::brain",
+                        goal_id = %card.id,
+                        "Goal '{}' held twice ({reason}), but its committed work was salvaged \
+                         instead of parked: {note}",
+                        card.title
+                    );
+                    return Ok(Some(note));
+                }
+                SalvageOutcome::NotSalvaged { note } => note,
+            };
             let reason = format!("{reason}; salvage: {salvage_note}");
             persist_card_meta(pool, &card.id, |m| {
                 crate::cost_router::RoutingSnapshot::from_signals(&signals, Some(&reason))
@@ -30436,15 +30802,16 @@ async fn maybe_hold_review(
                     record_decision_create_failure(pool, &card.id, "unblock", &error).await;
                 }
             }
-            crate::goal_transition::park_goal(
+            crate::goal_transition::park_goal_for_attempt(
                 pool,
                 &card.id,
                 crate::decisions::ACTOR_SYSTEM,
                 &reason,
+                expected_attempt,
             )
             .await
             .map_err(String::from)?;
-            if let Some(kill) = take_goal_worker(&card.id) {
+            if let Some(kill) = take_goal_worker_for_completion(&card.id, expected_attempt) {
                 kill.kill();
             }
             Ok(Some(format!(
@@ -37758,6 +38125,7 @@ mod tests {
                           new risk",
                 reviewer_provider: "test-reviewer-provider",
                 reviewer_model: "test-reviewer-model",
+                native_binding: None,
             },
             Some("coord-session-1"),
         )
@@ -37894,6 +38262,7 @@ mod tests {
                           new risk",
                 reviewer_provider: "test-reviewer-provider",
                 reviewer_model: "test-reviewer-model",
+                native_binding: None,
             },
             Some("coord-session-1"),
         )
