@@ -3087,3 +3087,144 @@ mod st1_acceptance {
         assert_eq!(saved.findings.len(), 2);
     }
 }
+
+#[cfg(test)]
+mod saved_scan_recovery_http_tests {
+    use crate as permagent_daemon;
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use permagent::conversation::message::{Message, MessageContent};
+    use serde_json::{json, Value};
+    use tower::ServiceExt;
+
+    async fn request(app: &axum::Router, method: &str, uri: &str) -> (StatusCode, Value) {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, serde_json::from_slice(&body).unwrap())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn saved_scan_recovery_restores_authentic_rows_and_preserves_the_ledger() {
+        let home = tempfile::tempdir().unwrap();
+        let root = crate::test_support::test_root();
+        let _environment = env_lock::lock_env([
+            ("HOME", Some(home.path().to_str().unwrap())),
+            ("PERMAGENT_PATH_ROOT", Some(root.to_str().unwrap())),
+            ("PERMAGENT_DISABLE_KEYRING", Some("true")),
+        ]);
+        let cache = home.path().join("Library/Caches/Fixture");
+        std::fs::create_dir_all(&cache).unwrap();
+        let state = permagent_daemon::state::AppState::new(true).await.unwrap();
+        let manager = state.session_manager();
+        let session = manager
+            .create_session(
+                home.path().to_path_buf(),
+                "Saved scan fixture".into(),
+                permagent::session::SessionType::Scheduled,
+                permagent::config::GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let request_content: MessageContent = serde_json::from_value(json!({
+            "type":"toolRequest","id":"scan-1","toolCall":{"status":"success",
+            "value":{"name":"scan_storage_health","arguments":{}}}}))
+        .unwrap();
+        let rows = json!([{"id":"cache-1","type":"app_cache","path":cache,
+            "size_bytes":100,"age_days":null,"recommendation":"Safe to remove",
+            "category":"safe_to_remove","consequence":"Rebuilt on next use"}]);
+        let text = format!("Findings JSON (emit this in <findings>...</findings> tags):\n{rows}");
+        let response_content: MessageContent = serde_json::from_value(json!({
+            "type":"toolResponse","id":"scan-1","toolResult":{"status":"success",
+            "value":{"content":[{"type":"text","text":text}],"isError":false}}}))
+        .unwrap();
+        let mut source_request = Message::assistant().with_content(request_content);
+        source_request.created = 1_725_999_995;
+        let mut source_response = Message::user().with_content(response_content);
+        source_response.created = 1_726_000_000;
+        manager
+            .add_message(&session.id, &source_request)
+            .await
+            .unwrap();
+        manager
+            .add_message(&session.id, &source_response)
+            .await
+            .unwrap();
+        manager
+            .add_message(
+                &session.id,
+                &Message::assistant().with_text("6.9 GB across 13 items."),
+            )
+            .await
+            .unwrap();
+        let original = manager
+            .get_session(&session.id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap();
+        let app = permagent_daemon::routes::findings::routes(state.clone());
+        let base = format!("/automation/run/{}", session.id);
+        assert_eq!(
+            request(&app, "GET", &format!("{base}/findings")).await.1["ledger_state"],
+            "missing"
+        );
+        assert_eq!(
+            request(
+                &app,
+                "POST",
+                "/automation/run/missing-session/recover-findings"
+            )
+            .await
+            .0,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            request(&app, "POST", "/automation/run/bad!id/recover-findings")
+                .await
+                .0,
+            StatusCode::BAD_REQUEST
+        );
+        let (status, recovered) = request(&app, "POST", &format!("{base}/recover-findings")).await;
+        assert_eq!(status, StatusCode::OK, "{recovered}");
+        assert_eq!(recovered["ledger_state"], "valid");
+        assert_eq!(recovered["findings"].as_array().unwrap().len(), 1);
+        assert_eq!(recovered["findings"][0]["id"], "cache-1");
+        assert_eq!(recovered["created_at"], "2024-09-10T20:26:40+00:00");
+        assert_ne!(recovered["created_at"], recovered["recovered_at"]);
+        let ledger = home
+            .path()
+            .join(".permagent/automation/findings")
+            .join(format!("{}.json", session.id));
+        let bytes = std::fs::read(&ledger).unwrap();
+        let (status, repeated) = request(&app, "POST", &format!("{base}/recover-findings")).await;
+        assert_eq!(status, StatusCode::OK, "{repeated}");
+        assert_eq!(std::fs::read(&ledger).unwrap(), bytes);
+        let after = manager
+            .get_session(&session.id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(after).unwrap(),
+            serde_json::to_value(original).unwrap()
+        );
+        assert!(cache.is_dir(), "recovery must not remove the scanned cache");
+    }
+}
