@@ -78,6 +78,7 @@ fn call(
         parent_session_id: None,
         task_id: None,
         goal_id: None,
+        goal_attempt_id: None,
         subagent_id: None,
         provider: Some("zai".to_string()),
         model: Some(model.to_string()),

@@ -539,7 +539,7 @@ mod tests {
             parent_session_id: session.parent_session_id.clone(),
             task_id,
             goal_id: None,
-            goal_attempt_id: call.goal_attempt_id.clone(),
+            goal_attempt_id: None,
             subagent_id: None,
             provider: Some("seed".to_string()),
             model: Some("seed-model".to_string()),
