@@ -155,7 +155,7 @@ async fn native_non_git_binding_keeps_exact_origin_and_accepts_canonical_root() 
     );
     assert_eq!(
         row.try_get::<String, _>("contract_sha256").unwrap(),
-        format!("{:x}", Sha256::digest(canonical_contract.as_bytes()))
+        hex::encode(Sha256::digest(canonical_contract.as_bytes()))
     );
     assert_eq!(row.try_get::<String, _>("canonical_root").unwrap(), root);
     assert_eq!(

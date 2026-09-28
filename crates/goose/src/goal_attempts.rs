@@ -96,7 +96,7 @@ pub(crate) async fn bind_new_goal_tx(
     let exact = native_contract.map(serde_json::to_string).transpose()?;
     let digest = exact
         .as_ref()
-        .map(|s| format!("{:x}", Sha256::digest(s.as_bytes())));
+        .map(|s| hex::encode(Sha256::digest(s.as_bytes())));
     let project_root: Option<String> =
         sqlx::query_scalar("SELECT root_path FROM projects WHERE id=?")
             .bind(project_id)
