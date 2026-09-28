@@ -23,8 +23,8 @@ pub use types::{
 };
 
 use crate::cost_router::metered::{
-    finish_metered_call, reserve_metered_call, MeteredCallContext, MeteredCallError,
-    MeteredCallFinish, MeteredCallKind, MeteredCallRequest,
+    finish_metered_call, record_local_provider_call, reserve_metered_call, MeteredCallContext,
+    MeteredCallError, MeteredCallFinish, MeteredCallKind, MeteredCallRequest,
 };
 use crate::session::{Session, SessionManager};
 use crate::sovereignty::{DataLocality, EgressKind, EgressRecord};

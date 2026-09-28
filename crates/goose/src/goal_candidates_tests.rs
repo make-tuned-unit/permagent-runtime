@@ -385,7 +385,8 @@ async fn zero_calls_external_unknown_and_pending_known_route_have_distinct_prove
 
 #[tokio::test]
 async fn suspended_old_completion_cannot_review_requeue_or_park_a_redispatched_attempt() {
-    use crate::goal_transition::{self, GoalAction, TransitionEffects};
+    use crate::goal_state::GoalAction;
+    use crate::goal_transition::{self, TransitionEffects};
     let temp = tempfile::tempdir().unwrap();
     let manager = crate::session::SessionManager::new(temp.path().join("sessions"));
     let pool = manager.pool_clone().await.unwrap();
@@ -726,7 +727,8 @@ async fn additive_candidate_migration_preserves_legacy_attempts_and_financial_ho
 
 #[tokio::test]
 async fn checked_review_and_approval_derive_next_stage_tokens_in_their_transactions() {
-    use crate::goal_transition::{self, GoalAction, TransitionEffects};
+    use crate::goal_state::GoalAction;
+    use crate::goal_transition::{self, TransitionEffects};
     let temp = tempfile::tempdir().unwrap();
     let manager = crate::session::SessionManager::new(temp.path().join("sessions"));
     let pool = manager.pool_clone().await.unwrap();

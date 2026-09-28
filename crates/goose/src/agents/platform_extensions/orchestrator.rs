@@ -39811,7 +39811,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             None,
         )
         .await;
-        match outcome {
+        match outcome.outcome {
             ReviewerGateOutcome::DiffTooLarge { reason } => {
                 assert!(
                     reason.contains("character"),

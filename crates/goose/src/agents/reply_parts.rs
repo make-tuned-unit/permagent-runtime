@@ -320,7 +320,7 @@ async fn try_auto_answer_reservation_gate(
             let mut gate_grant_minted = false;
             if let ProviderAuthorizationFailure::NeedsGate { requested_usd, .. } = failure {
                 let worker_binding =
-                    match crate::native_provider_calls::active_worker_binding(pool, &session.id)
+                    match crate::native_provider_calls::active_worker_binding(&pool, &session.id)
                         .await
                     {
                         Ok(binding) => binding,
@@ -2044,12 +2044,12 @@ pub(crate) async fn reserve_provider_invocation_for_model(
     provenance: CallProvenance,
 ) -> std::result::Result<ProviderInvocationContext, ProviderAuthorizationFailure> {
     let pool = manager
-        .pool()
+        .pool_clone()
         .await
         .map_err(|e| ProviderAuthorizationFailure::Unknown {
             reason: format!("cannot resolve native worker attempt: {e}"),
         })?;
-    let worker_binding = crate::native_provider_calls::active_worker_binding(pool, &session.id)
+    let worker_binding = crate::native_provider_calls::active_worker_binding(&pool, &session.id)
         .await
         .map_err(|e| ProviderAuthorizationFailure::Unknown {
             reason: format!("cannot resolve native worker attempt: {e}"),
@@ -2126,14 +2126,15 @@ pub(crate) async fn reserve_provider_invocation_for_model(
             "reservation skipped: unpaid tier holds no dollars"
         );
         if let Some(binding) = &worker_binding {
-            let pool = manager
-                .pool()
-                .await
-                .map_err(|e| ProviderAuthorizationFailure::Unknown {
-                    reason: format!("cannot record native provider route: {e}"),
-                })?;
+            let pool =
+                manager
+                    .pool_clone()
+                    .await
+                    .map_err(|e| ProviderAuthorizationFailure::Unknown {
+                        reason: format!("cannot record native provider route: {e}"),
+                    })?;
             crate::native_provider_calls::record(
-                pool,
+                &pool,
                 &context.invocation_id,
                 binding,
                 &context.provider,
@@ -2207,9 +2208,9 @@ pub(crate) async fn reserve_provider_invocation_for_model(
         crate::session::CostReservationOutcome::Granted { reservation_id } => {
             if let Some(binding) = &worker_binding {
                 let record_result = async {
-                    let pool = manager.pool().await?;
+                    let pool = manager.pool_clone().await?;
                     crate::native_provider_calls::record(
-                        pool,
+                        &pool,
                         &context.invocation_id,
                         binding,
                         &context.provider,
@@ -2234,9 +2235,9 @@ pub(crate) async fn reserve_provider_invocation_for_model(
         crate::session::CostReservationOutcome::AlreadyReserved { reservation_id } => {
             if let Some(binding) = &worker_binding {
                 let record_result = async {
-                    let pool = manager.pool().await?;
+                    let pool = manager.pool_clone().await?;
                     crate::native_provider_calls::record(
-                        pool,
+                        &pool,
                         &context.invocation_id,
                         binding,
                         &context.provider,
@@ -2334,9 +2335,9 @@ pub(crate) async fn mark_provider_dispatch_possible(
     invocation: &ProviderInvocationContext,
 ) -> Result<()> {
     if let Some(binding) = &invocation.worker_binding {
-        let pool = manager.pool().await?;
+        let pool = manager.pool_clone().await?;
         crate::native_provider_calls::mark_dispatch_possible(
-            pool,
+            &pool,
             &invocation.invocation_id,
             binding,
         )
@@ -2358,8 +2359,8 @@ pub(crate) async fn mark_provider_dispatch_not_sent(
     invocation: &ProviderInvocationContext,
 ) -> Result<()> {
     if invocation.worker_binding.is_some() {
-        let pool = manager.pool().await?;
-        crate::native_provider_calls::mark_not_sent(pool, &invocation.invocation_id).await?;
+        let pool = manager.pool_clone().await?;
+        crate::native_provider_calls::mark_not_sent(&pool, &invocation.invocation_id).await?;
     }
     Ok(())
 }

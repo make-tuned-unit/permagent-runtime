@@ -52,18 +52,16 @@ pub(crate) async fn apply_schema(pool: &Pool<Sqlite>) -> Result<()> {
     let columns = sqlx::query("PRAGMA table_info(goal_attempts)")
         .fetch_all(&mut *tx)
         .await?;
-    for (name, declaration) in [
-        ("parent_candidate_attempt_id", "TEXT"),
-        ("baseline_authority", "TEXT NOT NULL DEFAULT 'unverified'"),
-        ("accounting_authority", "TEXT NOT NULL DEFAULT 'unverified'"),
+    for (name, sql) in [
+        ("parent_candidate_attempt_id", "ALTER TABLE goal_attempts ADD COLUMN parent_candidate_attempt_id TEXT"),
+        ("baseline_authority", "ALTER TABLE goal_attempts ADD COLUMN baseline_authority TEXT NOT NULL DEFAULT 'unverified'"),
+        ("accounting_authority", "ALTER TABLE goal_attempts ADD COLUMN accounting_authority TEXT NOT NULL DEFAULT 'unverified'"),
     ] {
         if !columns
             .iter()
             .any(|row| row.try_get::<String, _>("name").is_ok_and(|s| s == name))
         {
-            sqlx::query(&format!(
-                "ALTER TABLE goal_attempts ADD COLUMN {name} {declaration}"
-            ))
+            sqlx::query(sql)
             .execute(&mut *tx)
             .await?;
         }

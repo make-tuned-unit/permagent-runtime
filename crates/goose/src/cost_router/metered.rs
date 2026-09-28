@@ -144,8 +144,11 @@ pub async fn reserve_metered_call(
     validate_request(&request)?;
     let requested_usd =
         input_cost_usd(request.input_token_upper_bound, request.input_usd_per_mtok)?;
-    let pool = manager.pool().await.map_err(MeteredCallError::Storage)?;
-    let binding = crate::native_provider_calls::active_worker_binding(pool, &session.id)
+    let pool = manager
+        .pool_clone()
+        .await
+        .map_err(MeteredCallError::Storage)?;
+    let binding = crate::native_provider_calls::active_worker_binding(&pool, &session.id)
         .await
         .map_err(MeteredCallError::Storage)?;
     if binding.is_some() && request.model.as_deref().map_or(true, str::is_empty) {
@@ -222,9 +225,12 @@ pub async fn reserve_metered_call(
     };
 
     if let Some(binding) = &binding {
-        let pool = manager.pool().await.map_err(MeteredCallError::Storage)?;
+        let pool = manager
+            .pool_clone()
+            .await
+            .map_err(MeteredCallError::Storage)?;
         crate::native_provider_calls::record(
-            pool,
+            &pool,
             &request.call_id,
             binding,
             &request.backend,
@@ -274,8 +280,8 @@ async fn unreserved_local_call(
     model: Option<String>,
     estimated_input_tokens: u64,
 ) -> MeteredCallContext {
-    let binding = match manager.pool().await {
-        Ok(pool) => crate::native_provider_calls::active_worker_binding(pool, &session.id)
+    let binding = match manager.pool_clone().await {
+        Ok(pool) => crate::native_provider_calls::active_worker_binding(&pool, &session.id)
             .await
             .ok()
             .flatten(),
@@ -303,12 +309,15 @@ pub(crate) async fn record_local_provider_call(
     estimated_input_tokens: u64,
 ) -> Result<MeteredCallContext, MeteredCallError> {
     let call_id = uuid::Uuid::now_v7().to_string();
-    let pool = manager.pool().await.map_err(MeteredCallError::Storage)?;
-    let binding = crate::native_provider_calls::active_worker_binding(pool, &session.id)
+    let pool = manager
+        .pool_clone()
+        .await
+        .map_err(MeteredCallError::Storage)?;
+    let binding = crate::native_provider_calls::active_worker_binding(&pool, &session.id)
         .await
         .map_err(MeteredCallError::Storage)?;
     if let Some(binding) = &binding {
-        crate::native_provider_calls::record(pool, &call_id, binding, provider, model)
+        crate::native_provider_calls::record(&pool, &call_id, binding, provider, model)
             .await
             .map_err(MeteredCallError::Storage)?;
     }
@@ -330,8 +339,11 @@ pub(crate) async fn mark_metered_call_dispatch_possible(
     let Some(expected_attempt_id) = call.goal_attempt_id.as_deref() else {
         return Ok(());
     };
-    let pool = manager.pool().await.map_err(MeteredCallError::Storage)?;
-    let binding = crate::native_provider_calls::active_worker_binding(pool, &call.session_id)
+    let pool = manager
+        .pool_clone()
+        .await
+        .map_err(MeteredCallError::Storage)?;
+    let binding = crate::native_provider_calls::active_worker_binding(&pool, &call.session_id)
         .await
         .map_err(MeteredCallError::Storage)?
         .ok_or_else(|| MeteredCallError::BudgetUnknown {
@@ -345,7 +357,7 @@ pub(crate) async fn mark_metered_call_dispatch_possible(
             reason: "native worker binding changed before decision dispatch".to_string(),
         });
     }
-    crate::native_provider_calls::mark_dispatch_possible(pool, &call.call_id, &binding)
+    crate::native_provider_calls::mark_dispatch_possible(&pool, &call.call_id, &binding)
         .await
         .map_err(MeteredCallError::Storage)
 }
@@ -443,8 +455,11 @@ pub async fn finish_metered_call(
     match finish {
         MeteredCallFinish::NotSent => {
             if call.goal_attempt_id.is_some() {
-                let pool = manager.pool().await.map_err(MeteredCallError::Storage)?;
-                crate::native_provider_calls::mark_not_sent(pool, &call.call_id)
+                let pool = manager
+                    .pool_clone()
+                    .await
+                    .map_err(MeteredCallError::Storage)?;
+                crate::native_provider_calls::mark_not_sent(&pool, &call.call_id)
                     .await
                     .map_err(MeteredCallError::Storage)?;
             }

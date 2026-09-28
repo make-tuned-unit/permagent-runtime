@@ -1426,7 +1426,7 @@ impl SessionManager {
                 reason: "budget ceiling is unavailable or invalid".to_string(),
             }));
         };
-        let pool = self.pool().await?;
+        let pool = self.pool_clone().await?;
         let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
         let extension_data: Option<String> =
             sqlx::query_scalar("SELECT extension_data FROM sessions WHERE id = ?")
