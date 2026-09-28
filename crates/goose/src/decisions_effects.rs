@@ -1990,12 +1990,9 @@ pub(crate) async fn apply_native_review_approval(
     };
     let outcome = goal_landing::land_under_guard(&request, &guard).await;
     if !outcome.is_landed() {
-        // Dropping the transaction rolls the Approve transition back. Rebase
-        // would alter the reviewed candidate and requires a new review.
-        return Err(denied(format!(
-            "native review approval was not applied: {}",
-            outcome.describe()
-        )));
+        return commit_native_landing_transaction(tx, &outcome)
+            .await
+            .map(|_| (None, None));
     }
     let after = goal_landing::git(root, &["rev-parse", "HEAD"]).await;
     if !matches!(after, Some((true, ref head)) if head == &request.head_commit) {
@@ -2010,9 +2007,7 @@ pub(crate) async fn apply_native_review_approval(
             "Git reached the candidate but final native fence failed; recovery required: {e}"
         )));
     }
-    tx.commit().await.map_err(|e| GuardError::Db(format!(
-        "Git reached the reviewed candidate but approval commit failed; recovery required, not retry success: {e}"
-    )))?;
+    commit_native_landing_transaction(tx, &outcome).await?;
     drop(guard);
     // These display receipts never supply future automatic landing authority.
     if let Ok(Some(card)) = crate::cards::get_card(pool, goal).await {
@@ -2036,6 +2031,24 @@ pub(crate) async fn apply_native_review_approval(
         )),
         warning,
     ))
+}
+
+async fn commit_native_landing_transaction(
+    tx: sqlx::Transaction<'_, Sqlite>,
+    outcome: &crate::goal_landing::LandOutcome,
+) -> Result<(), GuardError> {
+    if !outcome.is_landed() {
+        tx.rollback()
+            .await
+            .map_err(|e| GuardError::Db(e.to_string()))?;
+        return Err(GuardError::Denied(format!(
+            "native review approval was not applied: {}",
+            outcome.describe()
+        )));
+    }
+    tx.commit().await.map_err(|e| GuardError::Db(format!(
+        "Git reached the reviewed candidate but approval commit failed; recovery required, not retry success: {e}"
+    )))
 }
 
 pub async fn apply_decision_effect_with_auto_land(
@@ -2080,6 +2093,17 @@ pub async fn apply_decision_effect_with_auto_land(
             let Some(goal_id) = decision.goal_id.as_deref() else {
                 return Ok((None, None));
             };
+            // A decision/outbox replay has no in-memory native Approved review
+            // capability. It must never recreate one from PASS/Complete display
+            // metadata, including after a strict landing refusal.
+            let native: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM goal_execution_bindings WHERE goal_id=? AND authority='native'"
+            ).bind(goal_id).fetch_one(pool).await.map_err(|e| GuardError::Db(e.to_string()))?;
+            if native != 0 {
+                return Err(GuardError::Denied(
+                    "native goal approval/landing requires a fresh exact Approved review binding; legacy replay is refused".into()
+                ));
+            }
             match goal_state(pool, goal_id).await?.as_deref() {
                 Some("complete") => {
                     // The approval transition may have committed before a
@@ -7257,5 +7281,89 @@ mod tests {
         other.oracle_source = "import sys\nsys.exit(1)\n".to_string();
         let err = write_regression_task_in(&tasks, &other).unwrap_err();
         assert!(format!("{err:?}").contains("already exists"), "{err:?}");
+    }
+}
+
+#[cfg(test)]
+mod native_landing_transaction_tests {
+    use super::*;
+    #[tokio::test]
+    async fn failed_native_git_landing_rolls_back_actual_checked_approval() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = crate::session::SessionManager::new(temp.path().to_path_buf());
+        let pool = manager.pool_clone().await.unwrap();
+        let project = crate::projects::PERSONAL_PROJECT_ID;
+        crate::cards::seed_goal_columns(&pool, project)
+            .await
+            .unwrap();
+        let review = crate::cards::get_goal_column(&pool, project, "review")
+            .await
+            .unwrap()
+            .unwrap();
+        let card = crate::cards::create_card(
+            &pool,
+            crate::cards::CreateCard {
+                project_id: project.into(),
+                title: "Landing rollback".into(),
+                description: None,
+                card_type: Some("goal".into()),
+                column_id: Some(review.id.clone()),
+                created_by: None,
+                metadata_json: Some(serde_json::json!({"dispatch_claim_id":"claim"})),
+            },
+        )
+        .await
+        .unwrap();
+        // This control tests the actual checked transition and production
+        // transaction settlement, not full reviewer/candidate qualification.
+        let decision = crate::decisions::create_decision(
+            &pool,
+            crate::decisions::NewDecision {
+                kind: "approve_review".into(),
+                goal_id: Some(card.id.clone()),
+                project_id: Some(project.into()),
+                headline: Some("Review".into()),
+                detail: Some("Rollback control".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let (_, proof) = crate::decisions::answer_decision(
+            &pool,
+            &decision.id,
+            &crate::decisions::DecisionAnswer {
+                answer: "approve".into(),
+                ..Default::default()
+            },
+            crate::decisions::ACTOR_JESSE,
+        )
+        .await
+        .unwrap();
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.unwrap();
+        goal_transition::advance_goal_checked_in_tx(
+            &mut tx,
+            &card.id,
+            GoalAction::Approve,
+            crate::decisions::ACTOR_JESSE,
+            Some(proof),
+            TransitionEffects::default(),
+        )
+        .await
+        .unwrap();
+        assert!(commit_native_landing_transaction(
+            tx,
+            &crate::goal_landing::LandOutcome::Skipped("changed reviewed head".into())
+        )
+        .await
+        .is_err());
+        assert_eq!(
+            crate::cards::get_card(&pool, &card.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .column_id,
+            review.id
+        );
     }
 }

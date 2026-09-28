@@ -30010,21 +30010,23 @@ async fn land_salvage_approved_by_reviewer(
         reviewer_model,
         native_binding,
     } = approval;
-    let expected_attempt = match native_binding {
-        Some(binding) => {
-            match crate::goal_candidates::revalidate_review_binding(pool, binding).await {
-                Ok(expected) => Some(expected),
-                Err(error) => {
-                    return SalvageOutcome::NotSalvaged {
-                        note: format!(
-                            "Native review binding changed before salvage transition: {error}"
-                        ),
-                    }
+    let Some(native_binding) = native_binding else {
+        return SalvageOutcome::NotSalvaged {
+            note: "automatic salvage landing requires an actual native Approved review binding"
+                .into(),
+        };
+    };
+    let expected_attempt =
+        match crate::goal_candidates::revalidate_review_binding(pool, native_binding).await {
+            Ok(expected) => expected,
+            Err(error) => {
+                return SalvageOutcome::NotSalvaged {
+                    note: format!(
+                        "Native review binding changed before salvage transition: {error}"
+                    ),
                 }
             }
-        }
-        None => None,
-    };
+        };
     // Lane R22f: the identity that will need to match `goal_transition::
     // check_proof`'s Tier-1 `ACTOR_AUTO_LAUNCH` comparison at land time —
     // resolved ONCE, here, and reused for BOTH the decision payload below
@@ -30062,34 +30064,52 @@ async fn land_salvage_approved_by_reviewer(
             "recorded_at": chrono::Utc::now().to_rfc3339(),
         }),
     );
-    if let Err(e) = goal_transition::advance_goal_checked(
-        pool,
-        &card.id,
-        GoalAction::Review,
-        decisions::ACTOR_SYSTEM,
-        None,
-        TransitionEffects {
-            metadata_patch: patch,
-            expected_attempt,
-            ..Default::default()
-        },
-    )
-    .await
-    {
-        let e = String::from(e);
-        let note = format!(
-            "the independent reviewer approved {ahead} commit(s), but the goal could not be \
-             moved to Review to land it: {e}"
-        );
-        record_salvage_receipt(
-            pool,
+    let transition = async {
+        let mut tx = pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(|e| goal_transition::GuardError::Db(e.to_string()))?;
+        let record = goal_transition::advance_goal_checked_in_tx(
+            &mut tx,
             &card.id,
-            "salvage_skipped_review_transition_failed",
-            &note,
+            GoalAction::Review,
+            decisions::ACTOR_SYSTEM,
+            None,
+            TransitionEffects {
+                metadata_patch: patch,
+                expected_attempt: Some(expected_attempt.clone()),
+                ..Default::default()
+            },
         )
-        .await;
-        return SalvageOutcome::NotSalvaged { note };
+        .await?;
+        let mut renewed = native_binding.clone();
+        renewed.expected = crate::goal_candidates::refresh_expected_after_transition_tx(
+            &mut tx,
+            &expected_attempt,
+            &record,
+        )
+        .await
+        .map_err(|e| goal_transition::GuardError::Denied(e.to_string()))?;
+        tx.commit()
+            .await
+            .map_err(|e| goal_transition::GuardError::Db(e.to_string()))?;
+        Ok::<_, goal_transition::GuardError>(renewed)
     }
+    .await;
+    let renewed_binding = match transition {
+        Ok(binding) => binding,
+        Err(e) => {
+            let note = format!("independent reviewer approved {ahead} commit(s), but native Review transition was refused: {e}");
+            record_salvage_receipt(
+                pool,
+                &card.id,
+                "salvage_skipped_review_transition_failed",
+                &note,
+            )
+            .await;
+            return SalvageOutcome::NotSalvaged { note };
+        }
+    };
 
     // D1: the title travels as the inbox's `goal_title`.
     let headline = "Goal was reviewed and approved (no automated checks ran)".to_string();
@@ -30159,12 +30179,13 @@ async fn land_salvage_approved_by_reviewer(
     let refreshed = cards::get_card(pool, &card.id).await.ok().flatten();
     let had_worktree_to_land = refreshed.is_some();
     if let Some(refreshed) = refreshed {
-        auto_land_headless_goal(
+        finish_headless_auto_land(
             pool,
             &decision.id,
             &refreshed,
             true,
             minting_session_id.as_deref(),
+            Some(&renewed_binding),
         )
         .await;
     }
@@ -57366,6 +57387,8 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             serde_json::json!({"outcome":"approved", "reviewer":"minimax/MiniMax-M2.5"}),
         )
         .await;
+        sqlx::query("INSERT INTO goal_execution_bindings(goal_id,project_id,authority) VALUES(?,?,'native')")
+            .bind(&card.id).bind(&card.project_id).execute(&pool).await.unwrap();
         let decision = v2_review_decision(&pool, &card.id, Some("coord-session-1")).await;
         let card = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
         finish_headless_auto_land(
@@ -57385,6 +57408,30 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
                 .unwrap()
                 .is_some()
         );
+        let (answered, proof) = decisions::answer_decision(
+            &pool,
+            &decision.id,
+            &decisions::DecisionAnswer {
+                answer: "approve".into(),
+                ..Default::default()
+            },
+            decisions::ACTOR_JESSE,
+        )
+        .await
+        .unwrap();
+        let error = crate::decisions_effects::apply_decision_effect_with_auto_land(
+            &pool,
+            &answered,
+            proof,
+            "approve_review",
+            true,
+            Some("coord-session-1"),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("legacy replay is refused"));
+        assert_eq!(git_v1(repo.path(), &["rev-parse", "HEAD"]), before);
+        assert_eq!(r66a_state(&pool, &card.id).await, "review");
     }
 
     struct NativeReviewRouteStub {
