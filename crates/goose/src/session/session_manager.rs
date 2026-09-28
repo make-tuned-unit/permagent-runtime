@@ -5410,7 +5410,8 @@ mod tests {
         tx.commit().await.unwrap();
 
         let worker = sm
-            .create_session(
+            .create_session_with_parent(
+                Some(&coordinator.id),
                 root.to_path_buf(),
                 "native test worker".to_string(),
                 SessionType::SubAgent,
@@ -5418,6 +5419,22 @@ mod tests {
             )
             .await
             .unwrap();
+        assert_eq!(
+            budget_task_id(&worker.extension_data).as_deref(),
+            Some(task_id.as_str())
+        );
+        let mut data = worker.extension_data.clone();
+        data.set_extension_state(
+            crate::session::GOAL_ID_EXTENSION_NAME,
+            crate::session::GOAL_ID_EXTENSION_VERSION,
+            serde_json::json!(card.id),
+        );
+        sm.update(&worker.id)
+            .extension_data(data)
+            .apply()
+            .await
+            .unwrap();
+        let worker = sm.get_session(&worker.id, false).await.unwrap();
         let permit = crate::goal_attempts::StartPermit {
             pool: pool.clone(),
             goal_id: card.id,
