@@ -158,6 +158,10 @@ impl SystemOneHttpBackend {
 
 #[async_trait]
 impl DecisionBackend for SystemOneHttpBackend {
+    fn execution_kind(&self) -> super::DecisionExecutionKind {
+        super::DecisionExecutionKind::Model
+    }
+
     fn name(&self) -> &str {
         "systemone"
     }
@@ -216,35 +220,58 @@ impl DecisionBackend for SystemOneHttpBackend {
             let estimate = (chars.saturating_add(3) / 4).max(1) as u64;
             // Build before reserving: serialization/URL errors cannot have sent bytes.
             let request = request.json(&wire).build().map_err(transport_error)?;
-            let mut hold = if self.billing == super::JudgeBilling::PaidApi {
-                let accounting = self
-                    .accounting
-                    .as_ref()
-                    .ok_or(DecisionError::BudgetRefused(BudgetRefusal::NoTaskIdentity))?;
-                let call = accounting
-                    .reserve(MeteredCallRequest {
-                        call_id: uuid::Uuid::now_v7().to_string(),
-                        kind: MeteredCallKind::Decision,
-                        backend: self.name().to_string(),
-                        model: Some(self.model.clone()),
-                        estimated_input_tokens: estimate,
-                        // One token per UTF-8 byte is a conservative bound for this text.
-                        input_token_upper_bound: (state
-                            .text
-                            .len()
-                            .saturating_add(question_text.len())
-                            as u64)
-                            .max(estimate),
-                        input_usd_per_mtok: self.input_usd_per_mtok,
+            let mut hold = match self.billing {
+                super::JudgeBilling::PaidApi => {
+                    let accounting = self
+                        .accounting
+                        .as_ref()
+                        .ok_or(DecisionError::BudgetRefused(BudgetRefusal::NoTaskIdentity))?;
+                    let call = accounting
+                        .reserve(MeteredCallRequest {
+                            call_id: uuid::Uuid::now_v7().to_string(),
+                            kind: MeteredCallKind::Decision,
+                            backend: self.name().to_string(),
+                            model: Some(self.model.clone()),
+                            estimated_input_tokens: estimate,
+                            // One token per UTF-8 byte is a conservative bound for this text.
+                            input_token_upper_bound: (state
+                                .text
+                                .len()
+                                .saturating_add(question_text.len())
+                                as u64)
+                                .max(estimate),
+                            input_usd_per_mtok: self.input_usd_per_mtok,
+                        })
+                        .await?;
+                    Some(PendingCall {
+                        accounting: Arc::clone(accounting),
+                        call: Some(call),
                     })
-                    .await?;
-                Some(PendingCall {
-                    accounting: Arc::clone(accounting),
-                    call: Some(call),
-                })
-            } else {
-                None
+                }
+                super::JudgeBilling::LocalFree => {
+                    if let Some(accounting) = self.accounting.as_ref() {
+                        let call = accounting
+                            .record_local_call(self.name(), &self.model, estimate)
+                            .await
+                            .map_err(DecisionError::from)?;
+                        Some(PendingCall {
+                            accounting: Arc::clone(accounting),
+                            call: Some(call),
+                        })
+                    } else {
+                        None
+                    }
+                }
             };
+            if let Some(pending) = hold.as_ref() {
+                if let Some(call) = pending.call.as_ref() {
+                    pending
+                        .accounting
+                        .mark_dispatch(call)
+                        .await
+                        .map_err(DecisionError::from)?;
+                }
+            }
             let mut response = match self.client.execute(request).await {
                 Ok(response) => response,
                 Err(error) => {

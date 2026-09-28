@@ -31,7 +31,15 @@ use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
+use crate::providers::errors::ProviderError;
 use crate::session::{CostReservationOutcome, SessionManager};
+use futures::future::BoxFuture;
+
+/// An authorization seam that runs immediately before each
+/// physical provider operation (including retries). Native reviewers use it
+/// to revalidate the candidate and contributor snapshot before transport.
+pub(crate) type NativePretransportGate =
+    Arc<dyn Fn() -> BoxFuture<'static, Result<(), ProviderError>> + Send + Sync>;
 
 struct AttemptAuthorization {
     granted: AtomicU32,
@@ -61,6 +69,29 @@ impl AttemptAuthorization {
 
 tokio::task_local! {
     static AUTHORIZED_ATTEMPTS: Arc<AttemptAuthorization>;
+    static NATIVE_PRETRANSPORT_GATE: NativePretransportGate;
+}
+
+/// Run a provider operation under a mandatory pretransport policy. Provider
+/// retry loops consult this scope before every physical attempt, and fail
+/// closed if the callback rejects the current candidate.
+pub(crate) async fn with_native_pretransport_gate<F: Future>(
+    gate: NativePretransportGate,
+    future: F,
+) -> F::Output {
+    NATIVE_PRETRANSPORT_GATE.scope(gate, future).await
+}
+
+/// Run the installed policy before one physical provider operation. Callers
+/// that are not native-bound have no policy and retain existing behavior.
+pub(crate) async fn check_native_pretransport_gate() -> Result<(), ProviderError> {
+    let gate = NATIVE_PRETRANSPORT_GATE
+        .try_with(|gate| Arc::clone(gate))
+        .ok();
+    if let Some(gate) = gate {
+        gate().await?;
+    }
+    Ok(())
 }
 
 /// Run `future` with `attempts` physical provider attempts authorized by the
@@ -362,7 +393,7 @@ mod tests {
             };
             let calls = AtomicU32::new(0);
             let http_calls = AtomicU32::new(0);
-            let (result, evidence) = with_reservation_attempts_evidence(
+            let provider_future = with_reservation_attempts_evidence(
                 Arc::clone(&manager),
                 "first".into(),
                 Some(2),
@@ -374,7 +405,7 @@ mod tests {
                             return Ok(());
                         }
                         if scenario == "local_not_sent"
-                            || (scenario.ends_with("then_not_sent") && attempt == 1)
+                            || (scenario == "timeout_then_not_sent" && attempt == 1)
                         {
                             return Err(ProviderError::NotSent(
                                 "local admission rejected before HTTP".into(),
@@ -402,8 +433,26 @@ mod tests {
                     },
                     RetryConfig::new(1, 0, 1.0, 0).with_rate_limit_floor_ms(0),
                 ),
-            )
-            .await;
+            );
+            let (result, evidence) = if scenario == "accepted_then_not_sent" {
+                let gate_calls = Arc::new(AtomicU32::new(0));
+                let gate_counter = Arc::clone(&gate_calls);
+                let gate: NativePretransportGate = Arc::new(move || {
+                    let attempt = gate_counter.fetch_add(1, Ordering::SeqCst);
+                    Box::pin(async move {
+                        if attempt == 1 {
+                            Err(ProviderError::NotSent(
+                                "candidate changed after earlier possible dispatch".into(),
+                            ))
+                        } else {
+                            Ok(())
+                        }
+                    })
+                });
+                with_native_pretransport_gate(gate, provider_future).await
+            } else {
+                provider_future.await
+            };
             let error = result
                 .err()
                 .unwrap_or_else(|| ProviderError::RateLimitExceeded {
@@ -445,6 +494,8 @@ mod tests {
                 http_calls.load(Ordering::SeqCst),
                 if scenario == "local_not_sent" {
                     0
+                } else if scenario == "accepted_then_not_sent" {
+                    1
                 } else {
                     calls.load(Ordering::SeqCst) - u32::from(scenario.ends_with("then_not_sent"))
                 },
@@ -493,6 +544,7 @@ mod tests {
                     parent_session_id: None,
                     task_id: Some(task.clone()),
                     goal_id: None,
+                    goal_attempt_id: None,
                     subagent_id: None,
                     provider: Some("test".into()),
                     model: Some("test".into()),

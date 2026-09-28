@@ -3103,7 +3103,7 @@ pub async fn migrate_v34_to_v35(pool: &Pool<Sqlite>) -> Result<()> {
 /// installs (which get the columns from the `sessions` CREATE) and fills them in
 /// on existing DBs. Fully idempotent — safe on every boot and on fresh installs.
 pub async fn apply_cost_ledger_schema(pool: &Pool<Sqlite>) -> Result<()> {
-    let mut tx = pool.begin().await?;
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
 
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS cost_ledger (
@@ -3113,6 +3113,7 @@ pub async fn apply_cost_ledger_schema(pool: &Pool<Sqlite>) -> Result<()> {
             parent_session_id  TEXT,
             task_id            TEXT,
             goal_id            TEXT,
+            goal_attempt_id    TEXT,
             subagent_id        TEXT,
             turn_index         INTEGER,
             provider           TEXT,
@@ -3240,6 +3241,10 @@ pub async fn apply_cost_ledger_schema(pool: &Pool<Sqlite>) -> Result<()> {
             "completion_kind",
             "ALTER TABLE cost_ledger ADD COLUMN completion_kind TEXT",
         ),
+        (
+            "goal_attempt_id",
+            "ALTER TABLE cost_ledger ADD COLUMN goal_attempt_id TEXT",
+        ),
     ] {
         let has_column: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM pragma_table_info('cost_ledger') WHERE name = ?",
@@ -3260,13 +3265,16 @@ pub async fn apply_cost_ledger_schema(pool: &Pool<Sqlite>) -> Result<()> {
 /// separate from `cost_ledger`: reservations are authorization holds, not
 /// provider spend, and must never change the ledger's SUM semantics.
 pub async fn apply_cost_reservations_schema(pool: &Pool<Sqlite>) -> Result<()> {
-    let mut tx = pool.begin().await?;
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS cost_reservations (
             reservation_id TEXT PRIMARY KEY,
             invocation_id TEXT NOT NULL UNIQUE,
             session_id TEXT NOT NULL,
             task_id TEXT,
+            goal_attempt_id TEXT,
+            dispatch_state TEXT NOT NULL DEFAULT 'not_started'
+                CHECK (dispatch_state IN ('not_started', 'started_possible', 'not_sent')),
             amount_usd REAL NOT NULL CHECK (amount_usd > 0),
             state TEXT NOT NULL CHECK (state IN ('pending', 'settled', 'released', 'unknown')),
             lease_until TEXT NOT NULL,
@@ -3277,6 +3285,26 @@ pub async fn apply_cost_reservations_schema(pool: &Pool<Sqlite>) -> Result<()> {
     )
     .execute(&mut *tx)
     .await?;
+
+    // Native goal-attempt linkage is nullable for historical/unverified rows;
+    // do not infer provenance from mutable session metadata during migration.
+    for (col, ddl) in [
+        ("goal_attempt_id", "ALTER TABLE cost_reservations ADD COLUMN goal_attempt_id TEXT"),
+        (
+            "dispatch_state",
+            "ALTER TABLE cost_reservations ADD COLUMN dispatch_state TEXT NOT NULL DEFAULT 'not_started' CHECK (dispatch_state IN ('not_started', 'started_possible', 'not_sent'))",
+        ),
+    ] {
+        let has_column: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('cost_reservations') WHERE name = ?",
+        )
+        .bind(col)
+        .fetch_one(&mut *tx)
+        .await?;
+        if has_column == 0 {
+            sqlx::query(ddl).execute(&mut *tx).await?;
+        }
+    }
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_cost_reservations_task_state
          ON cost_reservations(task_id, state)",

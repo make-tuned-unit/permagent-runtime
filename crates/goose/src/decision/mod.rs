@@ -23,8 +23,8 @@ pub use types::{
 };
 
 use crate::cost_router::metered::{
-    finish_metered_call, reserve_metered_call, unreserved_local_call, MeteredCallContext,
-    MeteredCallError, MeteredCallFinish, MeteredCallKind, MeteredCallRequest,
+    finish_metered_call, reserve_metered_call, MeteredCallContext, MeteredCallError,
+    MeteredCallFinish, MeteredCallKind, MeteredCallRequest,
 };
 use crate::session::{Session, SessionManager};
 use crate::sovereignty::{DataLocality, EgressKind, EgressRecord};
@@ -44,8 +44,18 @@ pub const MAX_QUESTIONS_PER_STATE: usize = 20;
 /// must yield; synchronous blocking work is not permitted by this contract.
 pub const DECISION_DEADLINE: Duration = Duration::from_secs(30);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecisionExecutionKind {
+    Model,
+    Deterministic,
+    Unknown,
+}
+
 #[async_trait]
 pub trait DecisionBackend: Send + Sync {
+    fn execution_kind(&self) -> DecisionExecutionKind {
+        DecisionExecutionKind::Unknown
+    }
     fn name(&self) -> &str;
     fn model_name(&self) -> Option<&str> {
         None
@@ -67,12 +77,62 @@ pub trait DecisionBackend: Send + Sync {
         &self,
         state: &DecisionState,
         questions: &[Question],
-        _accounting: Arc<dyn MeteredAccounting>,
+        accounting: Arc<dyn MeteredAccounting>,
     ) -> Result<DecisionResponse, DecisionError> {
-        if self.billing() == JudgeBilling::PaidApi {
-            return Err(DecisionError::Accounting);
+        match (self.execution_kind(), self.billing()) {
+            (DecisionExecutionKind::Deterministic, JudgeBilling::LocalFree) => {
+                self.decide_with_usage(state, questions).await
+            }
+            (DecisionExecutionKind::Model, JudgeBilling::LocalFree) => {
+                let model = self.model_name().ok_or(DecisionError::Accounting)?;
+                let estimate = (state
+                    .text
+                    .chars()
+                    .count()
+                    .saturating_add(questions.len().saturating_mul(256))
+                    .saturating_add(3)
+                    / 4)
+                .max(1) as u64;
+                let call = accounting
+                    .record_local_call(self.name(), model, estimate)
+                    .await
+                    .map_err(DecisionError::from)?;
+                accounting
+                    .mark_dispatch(&call)
+                    .await
+                    .map_err(DecisionError::from)?;
+                match self.decide_with_usage(state, questions).await {
+                    Ok(response) => {
+                        let input_tokens = response
+                            .usage
+                            .input_tokens
+                            .and_then(|tokens| u64::try_from(tokens).ok())
+                            .unwrap_or(estimate);
+                        accounting
+                            .finish(
+                                &call,
+                                MeteredCallFinish::Usage {
+                                    input_tokens,
+                                    is_estimated: response.usage.input_tokens.is_none(),
+                                },
+                            )
+                            .await
+                            .map_err(DecisionError::from)?;
+                        Ok(response)
+                    }
+                    Err(error) => {
+                        accounting
+                            .finish(&call, MeteredCallFinish::UsageUnknown)
+                            .await
+                            .map_err(DecisionError::from)?;
+                        Err(error)
+                    }
+                }
+            }
+            // Unknown/new backends must explicitly declare model transport or
+            // deterministic execution before an accounted call can run.
+            _ => Err(DecisionError::Accounting),
         }
-        self.decide_with_usage(state, questions).await
     }
 
     async fn decide(
@@ -186,6 +246,10 @@ impl DeterministicBackend {
 
 #[async_trait]
 impl DecisionBackend for DeterministicBackend {
+    fn execution_kind(&self) -> DecisionExecutionKind {
+        DecisionExecutionKind::Deterministic
+    }
+
     fn billing(&self) -> JudgeBilling {
         JudgeBilling::LocalFree
     }
@@ -391,6 +455,21 @@ pub trait MeteredAccounting: Send + Sync {
         call: &MeteredCallContext,
         finish: MeteredCallFinish,
     ) -> Result<(), MeteredCallError>;
+    async fn mark_dispatch(&self, call: &MeteredCallContext) -> Result<(), MeteredCallError> {
+        let _ = call;
+        Ok(())
+    }
+    async fn record_local_call(
+        &self,
+        provider: &str,
+        model: &str,
+        estimated_input_tokens: u64,
+    ) -> Result<MeteredCallContext, MeteredCallError> {
+        let _ = (provider, model, estimated_input_tokens);
+        Err(MeteredCallError::BudgetUnknown {
+            reason: "local provider route accounting is unavailable".to_string(),
+        })
+    }
 }
 
 pub struct SessionMeteredAccounting {
@@ -420,6 +499,30 @@ impl MeteredAccounting for SessionMeteredAccounting {
     ) -> Result<(), MeteredCallError> {
         finish_metered_call(Arc::clone(&self.manager), call, finish).await
     }
+
+    async fn mark_dispatch(&self, call: &MeteredCallContext) -> Result<(), MeteredCallError> {
+        crate::cost_router::metered::mark_metered_call_dispatch_possible(
+            Arc::clone(&self.manager),
+            call,
+        )
+        .await
+    }
+
+    async fn record_local_call(
+        &self,
+        provider: &str,
+        model: &str,
+        estimated_input_tokens: u64,
+    ) -> Result<MeteredCallContext, MeteredCallError> {
+        record_local_provider_call(
+            Arc::clone(&self.manager),
+            &self.session,
+            provider,
+            model,
+            estimated_input_tokens,
+        )
+        .await
+    }
 }
 
 struct AccountedBackend<'a> {
@@ -429,6 +532,9 @@ struct AccountedBackend<'a> {
 
 #[async_trait]
 impl DecisionBackend for AccountedBackend<'_> {
+    fn execution_kind(&self) -> DecisionExecutionKind {
+        self.backend.execution_kind()
+    }
     fn billing(&self) -> JudgeBilling {
         self.backend.billing()
     }
@@ -615,31 +721,6 @@ pub async fn decide_journaled(
     } else {
         decide_or_fallback_with_trace(primary, fallback, state, questions).await?
     };
-
-    if traced.trace.billing == JudgeBilling::LocalFree {
-        let estimated_tokens = estimate_input_tokens(state.text.chars().count());
-        let (input_tokens, is_estimated) = match traced.trace.input_tokens {
-            Some(tokens) => (tokens, false),
-            None => (estimated_tokens, true),
-        };
-        let call = unreserved_local_call(
-            &session,
-            uuid::Uuid::now_v7().to_string(),
-            MeteredCallKind::Decision,
-            traced.trace.backend_name.clone(),
-            Some(traced.trace.backend_model.clone()),
-            estimated_tokens as u64,
-        );
-        finish_metered_call(
-            Arc::clone(session_manager),
-            &call,
-            MeteredCallFinish::Usage {
-                input_tokens: u64::try_from(input_tokens).map_err(|_| DecisionError::Accounting)?,
-                is_estimated,
-            },
-        )
-        .await?;
-    }
 
     let backend = traced
         .outcome

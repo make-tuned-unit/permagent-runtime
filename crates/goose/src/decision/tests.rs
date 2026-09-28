@@ -1129,7 +1129,7 @@ async fn local_rate_limit_records_rate_limited_and_refills_after_clock_advance()
 }
 
 #[tokio::test]
-async fn local_ledger_rows_record_systemone_and_deterministic_separately() {
+async fn local_ledger_records_model_call_once_and_not_the_deterministic_fallback() {
     let (_dir, manager, session_id) = test_manager().await;
     let pool = manager.pool_clone().await.unwrap();
     let journal = DecisionJournal::new(pool.clone());
@@ -1209,10 +1209,13 @@ async fn local_ledger_rows_record_systemone_and_deterministic_separately() {
     .await
     .unwrap();
     assert!(rows.iter().any(|row| row.0 == "systemone"));
-    assert!(rows.iter().any(|row| row.0 == "deterministic"));
     assert!(rows.iter().all(|row| row.1 == 0));
     assert!(rows.iter().all(|row| row.2 == 0.0));
-    assert_eq!(rows.len(), 2);
+    assert_eq!(
+        rows.len(),
+        1,
+        "the model route must be accounted exactly once"
+    );
     let reservations: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM cost_reservations")
         .fetch_one(&pool)
         .await

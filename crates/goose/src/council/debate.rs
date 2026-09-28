@@ -77,6 +77,7 @@ fn council_ledger_row(
         parent_session_id: session.parent_session_id.clone(),
         task_id: budget_task_id(&session.extension_data),
         goal_id: crate::session::goal_id(&session.extension_data),
+        goal_attempt_id: None,
         subagent_id: None,
         provider: Some(provider.to_string()),
         model: Some(model.to_string()),

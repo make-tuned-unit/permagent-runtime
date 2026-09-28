@@ -3183,6 +3183,42 @@ impl Agent {
                 // instead of a fresh window — see the retry arm below and
                 // `stream_budget::FIRST_BYTE_WINDOW_OVERRIDE`'s doc comment.
                 let first_byte_wait_started = std::time::Instant::now();
+                if let Some(reservation_id) = invocation.reservation_id.as_deref() {
+                    match session_manager
+                        .mark_provider_invocation_dispatch_possible(reservation_id)
+                        .await
+                    {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            let message = Message::assistant().with_text(
+                                "I did not send this request because its provider reservation was no longer active.",
+                            );
+                            persist_turn_ending_message(
+                                &session_manager,
+                                &session_config.id,
+                                &message,
+                            )
+                            .await;
+                            yield AgentEvent::Message(message);
+                            state_guard.mark_error();
+                            break;
+                        }
+                        Err(error) => {
+                            let message = Message::assistant().with_text(format!(
+                                "I did not send this request because its provider dispatch could not be recorded: {error}.",
+                            ));
+                            persist_turn_ending_message(
+                                &session_manager,
+                                &session_config.id,
+                                &message,
+                            )
+                            .await;
+                            yield AgentEvent::Message(message);
+                            state_guard.mark_error();
+                            break;
+                        }
+                    }
+                }
                 // Carry the hold's count and extension authorizer into physical
                 // retries. Exhausting the count requires a new one-attempt grant.
                 // Unpaid work keeps the provider's retry policy unchanged.
@@ -3207,14 +3243,23 @@ impl Agent {
                         // A typed local admission refusal can prove that no
                         // retry reached HTTP. Every other pre-stream error may
                         // have handed work to the provider and keeps its hold.
+                        let proven_not_sent =
+                            crate::cost_router::authorized_attempts::is_proven_not_sent(
+                                &error,
+                                &attempt_evidence,
+                            );
                         if let Some(reservation_id) = invocation.reservation_id.as_deref() {
                             crate::cost_router::authorized_attempts::finalize_missing_usage(
                                 &session_manager,
                                 reservation_id,
-                                crate::cost_router::authorized_attempts::is_proven_not_sent(
-                                    &error,
-                                    &attempt_evidence,
-                                ),
+                                proven_not_sent,
+                            )
+                            .await?;
+                        }
+                        if proven_not_sent {
+                            crate::agents::reply_parts::mark_provider_dispatch_not_sent(
+                                &session_manager,
+                                &invocation,
                             )
                             .await?;
                         }

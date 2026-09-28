@@ -319,19 +319,38 @@ async fn try_auto_answer_reservation_gate(
         Ok(_) => {
             let mut gate_grant_minted = false;
             if let ProviderAuthorizationFailure::NeedsGate { requested_usd, .. } = failure {
-                let task_id = budget_task_id(&session.extension_data);
+                let worker_binding =
+                    match crate::native_provider_calls::active_worker_binding(pool, &session.id)
+                        .await
+                    {
+                        Ok(binding) => binding,
+                        Err(error) => {
+                            tracing::warn!(goal_id = %card_id, decision_id,
+                            "cannot resolve worker attempt for approved reservation gate: {error}");
+                            return None;
+                        }
+                    };
+                let task_id = worker_binding
+                    .as_ref()
+                    .map(|binding| binding.task_id.clone())
+                    .or_else(|| budget_task_id(&session.extension_data));
                 let lease_until = (chrono::Utc::now() + chrono::Duration::hours(2)).to_rfc3339();
                 match task_id {
                     Some(task_id) => {
                         match session_manager
-                            .grant_reservation_after_gate_approval(
+                            .grant_reservation_after_gate_approval_with_identity(
                                 invocation_id,
                                 &session.id,
                                 &task_id,
                                 *requested_usd,
                                 &lease_until,
-                                provider,
-                                model,
+                                &crate::session::session_manager::ProviderReservationIdentity {
+                                    goal_attempt_id: worker_binding
+                                        .as_ref()
+                                        .map(|binding| binding.attempt_id.clone()),
+                                    provider: provider.to_string(),
+                                    model: model.to_string(),
+                                },
                             )
                             .await
                         {
@@ -1791,8 +1810,25 @@ pub(crate) async fn record_provider_usage(
         ts: chrono::Utc::now().to_rfc3339(),
         session_id: session_id.to_string(),
         parent_session_id: session.parent_session_id.clone(),
-        task_id: budget_task_id(&session.extension_data),
-        goal_id: goal_id(&session.extension_data),
+        task_id: invocation
+            .and_then(|call| {
+                call.worker_binding
+                    .as_ref()
+                    .map(|binding| binding.task_id.clone())
+            })
+            .or_else(|| budget_task_id(&session.extension_data)),
+        goal_id: invocation
+            .and_then(|call| {
+                call.worker_binding
+                    .as_ref()
+                    .map(|binding| binding.goal_id.clone())
+            })
+            .or_else(|| goal_id(&session.extension_data)),
+        goal_attempt_id: invocation.and_then(|call| {
+            call.worker_binding
+                .as_ref()
+                .map(|binding| binding.attempt_id.clone())
+        }),
         subagent_id,
         provider,
         model: Some(model),
@@ -2007,6 +2043,17 @@ pub(crate) async fn reserve_provider_invocation_for_model(
     counted_prompt_tokens: Option<usize>,
     provenance: CallProvenance,
 ) -> std::result::Result<ProviderInvocationContext, ProviderAuthorizationFailure> {
+    let pool = manager
+        .pool()
+        .await
+        .map_err(|e| ProviderAuthorizationFailure::Unknown {
+            reason: format!("cannot resolve native worker attempt: {e}"),
+        })?;
+    let worker_binding = crate::native_provider_calls::active_worker_binding(pool, &session.id)
+        .await
+        .map_err(|e| ProviderAuthorizationFailure::Unknown {
+            reason: format!("cannot resolve native worker attempt: {e}"),
+        })?;
     // Y7 (harness loop, from Lane A12's Q6 measurement): reserve for ONE
     // physical attempt by default instead of the provider's whole retry
     // envelope. `max_physical_attempts` stays the envelope — it is the
@@ -2044,6 +2091,7 @@ pub(crate) async fn reserve_provider_invocation_for_model(
         provider: provider.to_string(),
         model: model_config.model_name,
         cost_tier,
+        worker_binding: worker_binding.clone(),
         reservation_id: None,
         // Only a paid hold constrains how many physical attempts may be made:
         // `plan_reservation_bound` returns `None` for local/subscription work,
@@ -2077,6 +2125,25 @@ pub(crate) async fn reserve_provider_invocation_for_model(
             counted_prompt_tokens = ?counted_prompt_tokens,
             "reservation skipped: unpaid tier holds no dollars"
         );
+        if let Some(binding) = &worker_binding {
+            let pool = manager
+                .pool()
+                .await
+                .map_err(|e| ProviderAuthorizationFailure::Unknown {
+                    reason: format!("cannot record native provider route: {e}"),
+                })?;
+            crate::native_provider_calls::record(
+                pool,
+                &context.invocation_id,
+                binding,
+                &context.provider,
+                &context.model,
+            )
+            .await
+            .map_err(|e| ProviderAuthorizationFailure::Unknown {
+                reason: format!("cannot record native provider route: {e}"),
+            })?;
+        }
         return Ok(context);
     };
     // F2 (harness loop, Round F, from the I1/M11 forensics chain): F8, D1
@@ -2110,16 +2177,26 @@ pub(crate) async fn reserve_provider_invocation_for_model(
         reserved_input_tokens = bound.input_tokens,
         "reservation bound computed"
     );
-    let task_id = budget_task_id(&session.extension_data);
+    let task_id = worker_binding
+        .as_ref()
+        .map(|binding| binding.task_id.clone())
+        .or_else(|| budget_task_id(&session.extension_data));
     let lease_until = (chrono::Utc::now() + chrono::Duration::hours(2)).to_rfc3339();
     let outcome = manager
-        .reserve_bounded_provider_invocation(
+        .reserve_bounded_provider_invocation_with_identity(
             &context.invocation_id,
             &session.id,
             task_id.as_deref(),
             bound,
             &lease_until,
             &crate::cost_router::budget::load_budget_config(),
+            &crate::session::session_manager::ProviderReservationIdentity {
+                goal_attempt_id: worker_binding
+                    .as_ref()
+                    .map(|binding| binding.attempt_id.clone()),
+                provider: context.provider.clone(),
+                model: context.model.clone(),
+            },
         )
         .await
         .map_err(|e| ProviderAuthorizationFailure::Unknown {
@@ -2127,8 +2204,58 @@ pub(crate) async fn reserve_provider_invocation_for_model(
         })?;
 
     match outcome {
-        crate::session::CostReservationOutcome::Granted { reservation_id }
-        | crate::session::CostReservationOutcome::AlreadyReserved { reservation_id } => {
+        crate::session::CostReservationOutcome::Granted { reservation_id } => {
+            if let Some(binding) = &worker_binding {
+                let record_result = async {
+                    let pool = manager.pool().await?;
+                    crate::native_provider_calls::record(
+                        pool,
+                        &context.invocation_id,
+                        binding,
+                        &context.provider,
+                        &context.model,
+                    )
+                    .await
+                }
+                .await;
+                if let Err(error) = record_result {
+                    // This is a fresh hold and no dispatch context escaped
+                    // this function, so it is provably unsent. Do not leave a
+                    // durable hold solely because route provenance failed.
+                    let _ = manager.release_provider_invocation(&reservation_id).await;
+                    return Err(ProviderAuthorizationFailure::Unknown {
+                        reason: format!("cannot record native provider route: {error}"),
+                    });
+                }
+            }
+            context.reservation_id = Some(reservation_id);
+            Ok(context)
+        }
+        crate::session::CostReservationOutcome::AlreadyReserved { reservation_id } => {
+            if let Some(binding) = &worker_binding {
+                let record_result = async {
+                    let pool = manager.pool().await?;
+                    crate::native_provider_calls::record(
+                        pool,
+                        &context.invocation_id,
+                        binding,
+                        &context.provider,
+                        &context.model,
+                    )
+                    .await
+                }
+                .await;
+                if let Err(error) = record_result {
+                    // The existing invocation may already have reached HTTP;
+                    // retain the hold when its durable route cannot be read.
+                    let _ = manager
+                        .mark_provider_invocation_unknown(&reservation_id)
+                        .await;
+                    return Err(ProviderAuthorizationFailure::Unknown {
+                        reason: format!("cannot record native provider route: {error}"),
+                    });
+                }
+            }
             context.reservation_id = Some(reservation_id);
             Ok(context)
         }
@@ -2176,6 +2303,9 @@ pub(crate) struct ProviderInvocationContext {
     pub provider: String,
     pub model: String,
     pub cost_tier: CostTier,
+    /// Exact attempt resolved from this provider-calling session before
+    /// authorization; retained unchanged if settlement arrives late.
+    pub worker_binding: Option<crate::goal_attempts::WorkerBinding>,
     pub reservation_id: Option<String>,
     /// Y7: physical provider attempts this invocation's hold pays for, or
     /// `None` when the call took no paid hold. The dispatch seam installs it
@@ -2197,6 +2327,41 @@ pub(crate) struct ProviderInvocationContext {
     /// v60 (node A4): why this call was made, as the dispatching caller knew
     /// it before dispatch. Copied verbatim onto the `cost_ledger` row.
     pub provenance: CallProvenance,
+}
+
+pub(crate) async fn mark_provider_dispatch_possible(
+    manager: &SessionManager,
+    invocation: &ProviderInvocationContext,
+) -> Result<()> {
+    if let Some(binding) = &invocation.worker_binding {
+        let pool = manager.pool().await?;
+        crate::native_provider_calls::mark_dispatch_possible(
+            pool,
+            &invocation.invocation_id,
+            binding,
+        )
+        .await?;
+    }
+    if let Some(reservation_id) = invocation.reservation_id.as_deref() {
+        anyhow::ensure!(
+            manager
+                .mark_provider_invocation_dispatch_possible(reservation_id)
+                .await?,
+            "paid provider reservation disappeared before dispatch"
+        );
+    }
+    Ok(())
+}
+
+pub(crate) async fn mark_provider_dispatch_not_sent(
+    manager: &SessionManager,
+    invocation: &ProviderInvocationContext,
+) -> Result<()> {
+    if invocation.worker_binding.is_some() {
+        let pool = manager.pool().await?;
+        crate::native_provider_calls::mark_not_sent(pool, &invocation.invocation_id).await?;
+    }
+    Ok(())
 }
 
 /// v60 (node A4): the provenance the streamed reply loop can honestly claim
@@ -2532,6 +2697,15 @@ impl AccountedFastCompletion {
             invocation.reservation_id.clone(),
         );
 
+        if let Some(reservation_id) = invocation.reservation_id.as_deref() {
+            anyhow::ensure!(
+                self.manager
+                    .mark_provider_invocation_dispatch_possible(reservation_id)
+                    .await?,
+                "paid provider reservation disappeared before dispatch"
+            );
+        }
+
         // Physical retries beyond the hold's count require a one-attempt
         // extension grant. Unpaid work keeps the retry policy unchanged.
         let (result, attempt_evidence) =
@@ -2552,6 +2726,7 @@ impl AccountedFastCompletion {
                     &attempt_evidence,
                 ) {
                     unknown_guard.release_not_sent().await?;
+                    mark_provider_dispatch_not_sent(&self.manager, &invocation).await?;
                 } else {
                     unknown_guard.mark_unknown().await?;
                 }
