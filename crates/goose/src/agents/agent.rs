@@ -6102,6 +6102,12 @@ mod tests {
                     GooseMode::Auto,
                 )
                 .await?;
+            // Hidden worker sessions inherit identity in production. This
+            // standalone fixture must establish the same durable task boundary.
+            let task_message = Message::user().with_text("Perform the operation.");
+            manager
+                .begin_budget_task_with_contract(&session.id, &task_message)
+                .await?;
             let cancellation = CancellationToken::new();
             let provider = Arc::new(OutcomeSequenceProvider {
                 calls: std::sync::atomic::AtomicUsize::new(0),
@@ -6133,7 +6139,7 @@ mod tests {
             agent.after_turn_manager = crate::after_turn::AfterTurnManager::new();
             let mut reply = agent
                 .reply(
-                    Message::user().with_text("Perform the operation."),
+                    task_message,
                     SessionConfig {
                         id: session.id,
                         schedule_id: None,
