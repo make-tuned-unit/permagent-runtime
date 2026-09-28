@@ -18504,6 +18504,7 @@ async fn auto_land_headless_goal(
             card,
             auto_land_allowed,
             calling_session_id,
+            None,
         )
         .await;
         return;
@@ -18553,6 +18554,7 @@ async fn auto_land_headless_goal(
             card,
             auto_land_allowed,
             calling_session_id,
+            None,
         )
         .await;
         return;
@@ -18720,15 +18722,16 @@ async fn settle_verified_goal_review(
     review: AutoLandReview,
     max_redispatch: u32,
 ) {
-    match review {
+    let native_binding = match review {
         AutoLandReview::NotRequired { reason } => {
             tracing::debug!(
                 target: "permagentd::brain",
                 goal_id = %card.id,
                 "headless Auto: no independent review needed before auto-land: {reason}"
             );
+            None
         }
-        AutoLandReview::Approved => {}
+        AutoLandReview::Approved { binding } => binding,
         AutoLandReview::ChangesRequested {
             reason,
             findings,
@@ -18794,7 +18797,7 @@ async fn settle_verified_goal_review(
             park_refused_auto_land(pool, decision_id, card, auto_land_allowed, &reason).await;
             return;
         }
-    }
+    };
 
     if let Err(e) = cards::set_goal_verdict_and_program_receipts(
         pool,
@@ -18824,6 +18827,7 @@ async fn settle_verified_goal_review(
         card,
         auto_land_allowed,
         calling_session_id,
+        native_binding.as_ref(),
     )
     .await;
 }
@@ -18841,7 +18845,19 @@ async fn finish_headless_auto_land(
     card: &cards::Card,
     auto_land_allowed: bool,
     calling_session_id: Option<&str>,
+    native_binding: Option<&crate::goal_candidates::NativeReviewBinding>,
 ) {
+    // Serialized card PASS/reviewer metadata is display-only. A native code
+    // candidate requires the actual Approved run's in-memory binding.
+    if native_binding.is_none() {
+        match crate::goal_candidates::resolve_candidate(pool, &card.id).await {
+            Ok(crate::goal_candidates::LineageResolution::NoGit) => {}
+            _ => {
+                tracing::warn!(goal_id=%card.id, "automatic approval refused: no native Approved review binding");
+                return;
+            }
+        }
+    }
     let (answered, proof) =
         match decisions::auto_approve_headless_goal_review(pool, decision_id, &card.id).await {
             Ok(pair) => pair,
@@ -18859,16 +18875,31 @@ async fn finish_headless_auto_land(
             }
         };
 
-    match crate::decisions_effects::apply_decision_effect_with_auto_land(
-        pool,
-        &answered,
-        proof,
-        "approve_review",
-        auto_land_allowed,
-        calling_session_id,
-    )
-    .await
-    {
+    let result = match native_binding {
+        Some(binding) => {
+            crate::decisions_effects::apply_native_review_approval(
+                pool,
+                &answered,
+                proof,
+                binding,
+                auto_land_allowed,
+                calling_session_id,
+            )
+            .await
+        }
+        None => {
+            crate::decisions_effects::apply_decision_effect_with_auto_land(
+                pool,
+                &answered,
+                proof,
+                "approve_review",
+                auto_land_allowed,
+                calling_session_id,
+            )
+            .await
+        }
+    };
+    match result {
         Ok((effect, warning)) => {
             tracing::info!(
                 target: "permagentd::brain",
@@ -18973,7 +19004,9 @@ enum AutoLandReview {
     /// No review is needed (trivial, or nothing measurable to review).
     NotRequired { reason: String },
     /// A cross-family reviewer approved the diff.
-    Approved,
+    Approved {
+        binding: Option<crate::goal_candidates::NativeReviewBinding>,
+    },
     /// Lane R66a: the review requested changes with concrete findings, which
     /// a headless run may send back to the worker once.
     ChangesRequested {
@@ -19264,7 +19297,7 @@ async fn independent_review_before_auto_land(
                             reviewer_provider,
                             reviewer_model,
                         } => (
-                            AutoLandReview::Approved,
+                            AutoLandReview::Approved { binding: run.native_binding },
                             serde_json::json!({
                                 "required": true,
                                 "reason": reason,
@@ -27150,7 +27183,13 @@ async fn complete_native_reviewer_on_checked_route(
     messages: &[Message],
     families: &std::collections::BTreeSet<String>,
     floor: f64,
+    cfg: &crate::cost_router::budget::BudgetConfig,
 ) -> anyhow::Result<(Message, crate::providers::base::ProviderUsage)> {
+    if !provider.supports_native_pretransport_gate() {
+        anyhow::bail!(
+            "native reviewer transport adapter has not been audited for scoped candidate fencing"
+        );
+    }
     let actual_provider = provider.get_name().to_string();
     let actual_model = provider.get_model_config().model_name;
     validate_native_reviewer_route(families, floor, &actual_provider, &actual_model)
@@ -27169,8 +27208,20 @@ async fn complete_native_reviewer_on_checked_route(
     let pick = selection
         .pick()
         .ok_or_else(|| anyhow::anyhow!("the actual reviewer route is not eligible"))?;
-    let cfg = crate::cost_router::budget::load_budget_config();
-    let verdict = crate::cost_router::budget_verdict(0.0, 0.0, &cfg);
+    // This style/routing verdict is not a claim that real exposure is zero.
+    // Run the canonical frozen-task ceiling arithmetic for every tier, including
+    // free/subscription reviewers; paid accounting still reserves its full bound.
+    let task = crate::session::budget_task_id(&session.extension_data)
+        .ok_or_else(|| anyhow::anyhow!("native reviewer has no frozen task identity"))?;
+    if let Some(outcome) = manager
+        .check_provider_task_exposure(&session.id, &task, cfg)
+        .await?
+    {
+        return Err(anyhow::anyhow!(
+            "native review refused by original-task exposure: {outcome:?}"
+        ));
+    }
+    let verdict = crate::cost_router::budget_verdict(0.0, 0.0, cfg);
     if let crate::cost_router::SpendDecision::Refuse { reason } =
         crate::cost_router::reviewer_spend_gate(pick, &verdict)
     {
@@ -27266,13 +27317,27 @@ async fn call_reviewer_provider(
             let gate_policy = policy.clone();
             let gate_provider = provider.get_name().to_string();
             let gate_model = provider.get_model_config().model_name;
+            let gate_session = session.id.clone();
             let gate: crate::cost_router::authorized_attempts::NativePretransportGate =
                 Arc::new(move || {
                     let policy = gate_policy.clone();
                     let provider = gate_provider.clone();
                     let model = gate_model.clone();
-                    Box::pin(async move { policy.check_dispatch(&provider, &model).await })
+                    let session = gate_session.clone();
+                    Box::pin(async move {
+                        policy.check_dispatch(&provider, &model).await?;
+                        let cfg = crate::cost_router::budget::load_budget_config();
+                        match SessionManager::instance().check_provider_task_exposure(
+                            &session, &policy.lineage.task_id, &cfg,
+                        ).await {
+                            Ok(None) => Ok(()),
+                            result => Err(crate::providers::errors::ProviderError::NotSent(
+                                format!("native reviewer original-task exposure refused before transport: {result:?}")
+                            )),
+                        }
+                    })
                 });
+            let review_budget = crate::cost_router::budget::load_budget_config();
             crate::cost_router::authorized_attempts::with_native_pretransport_gate(
                 gate,
                 complete_native_reviewer_on_checked_route(
@@ -27283,6 +27348,7 @@ async fn call_reviewer_provider(
                     &[user_message],
                     &policy.families,
                     policy.floor,
+                    &review_budget,
                 ),
             )
             .await
@@ -28372,7 +28438,7 @@ async fn review_goal_diff_with_cross_family_reviewer(
 
     // Never attribute a candidate to only the latest worker's configured model.
     // Native lineage binds the exact original candidate and every editing attempt.
-    let lineage = match crate::goal_candidates::resolve_candidate(pool, card).await {
+    let lineage = match crate::goal_candidates::resolve_candidate(pool, &card.id).await {
         Ok(crate::goal_candidates::LineageResolution::Verified(lineage)) => lineage,
         Ok(crate::goal_candidates::LineageResolution::NoGit) => {
             return GoalReviewRun::single(ReviewerGateOutcome::Refused {
@@ -28539,11 +28605,8 @@ async fn review_goal_diff_with_cross_family_reviewer(
         pick.why = assignment.why.clone();
     }
 
-    // No live cost tracker for a completed, abandoned worker session at this
-    // point — 0.0 is the same "nothing spent in this scope yet" a fresh
-    // budget scope reads; a genuinely exhausted Hard/Gate band was already
-    // the reason `check_budget` refused another dispatch attempt upstream
-    // of this call.
+    // This is a static routing/style gate. The strict completion seam checks
+    // real frozen-task cumulative and unresolved exposure for every tier.
     let cfg = crate::cost_router::budget::load_budget_config();
     let verdict = crate::cost_router::budget_verdict(0.0, 0.0, &cfg);
     if let crate::cost_router::SpendDecision::Refuse { reason } =
@@ -48491,7 +48554,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             &card,
             true,
             Some("coord-session-1"),
-            AutoLandReview::Approved,
+            AutoLandReview::Approved { binding: None },
             DEFAULT_HEADLESS_MAX_REDISPATCH,
         )
         .await;
@@ -57289,19 +57352,59 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         );
     }
 
+    #[tokio::test]
+    async fn automatic_review_display_pass_without_native_binding_cannot_approve_or_land() {
+        let (repo, head) = v1_repo_with_finished_goal_branch("no-native-review-binding");
+        let before = git_v1(repo.path(), &["rev-parse", "HEAD"]);
+        let pool = test_pool().await;
+        let card = setup_goal_in_state(&pool, "review", 1).await;
+        v1_stamp_dispatch_evidence(&pool, &card.id, "no-native-review-binding", &head).await;
+        stamp_successful_verify(&pool, &card.id).await;
+        record_auto_land_review(
+            &pool,
+            &card.id,
+            serde_json::json!({"outcome":"approved", "reviewer":"minimax/MiniMax-M2.5"}),
+        )
+        .await;
+        let decision = v2_review_decision(&pool, &card.id, Some("coord-session-1")).await;
+        let card = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        finish_headless_auto_land(
+            &pool,
+            &decision.id,
+            &card,
+            true,
+            Some("coord-session-1"),
+            None,
+        )
+        .await;
+        assert_eq!(git_v1(repo.path(), &["rev-parse", "HEAD"]), before);
+        assert_eq!(r66a_state(&pool, &card.id).await, "review");
+        assert!(
+            decisions::find_open_decision_for_goal(&pool, &card.id, "approve_review")
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+
     struct NativeReviewRouteStub {
         provider: &'static str,
         model_config: crate::model::ModelConfig,
         observed_models: Arc<std::sync::Mutex<Vec<String>>>,
+        tier: crate::session::CostTier,
+        audited: bool,
     }
 
     #[async_trait::async_trait]
     impl Provider for NativeReviewRouteStub {
+        fn supports_native_pretransport_gate(&self) -> bool {
+            self.audited
+        }
         fn get_name(&self) -> &str {
             self.provider
         }
         fn cost_tier(&self) -> crate::session::CostTier {
-            crate::session::CostTier::LocalFree
+            self.tier
         }
         fn get_model_config(&self) -> crate::model::ModelConfig {
             self.model_config.clone()
@@ -57349,6 +57452,12 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             )
             .await
             .unwrap();
+        manager
+            .begin_budget_task_with_contract(&session.id, &Message::user().with_text("candidate"))
+            .await
+            .unwrap();
+        let session = manager.get_session(&session.id, false).await.unwrap();
+        let cfg = crate::cost_router::budget::BudgetConfig::default();
         let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
         let provider: Arc<dyn Provider> = Arc::new(NativeReviewRouteStub {
             provider: "openai",
@@ -57357,6 +57466,8 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
                 .with_fast("unmapped-fast-proxy", "openai")
                 .unwrap(),
             observed_models: observed.clone(),
+            tier: crate::session::CostTier::LocalFree,
+            audited: true,
         });
         let contributors =
             std::collections::BTreeSet::from(["openai".to_string(), "minimax".to_string()]);
@@ -57367,7 +57478,8 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             "review",
             &[Message::user().with_text("candidate")],
             &contributors,
-            0.60
+            0.60,
+            &cfg,
         )
         .await
         .is_err());
@@ -57377,6 +57489,28 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         );
         let contributors =
             std::collections::BTreeSet::from(["anthropic".to_string(), "minimax".to_string()]);
+        let unaudited: Arc<dyn Provider> = Arc::new(NativeReviewRouteStub {
+            provider: "openai",
+            model_config: crate::model::ModelConfig::new("gpt-5.4-mini").unwrap(),
+            observed_models: observed.clone(),
+            tier: crate::session::CostTier::LocalFree,
+            audited: false,
+        });
+        assert!(complete_native_reviewer_on_checked_route(
+            manager.clone(),
+            session.clone(),
+            unaudited,
+            "review",
+            &[Message::user().with_text("candidate")],
+            &contributors,
+            0.60,
+            &cfg,
+        )
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("not been audited"));
+        assert!(observed.lock().unwrap().is_empty());
         let (_, usage) = complete_native_reviewer_on_checked_route(
             manager,
             session,
@@ -57385,6 +57519,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             &[Message::user().with_text("candidate")],
             &contributors,
             0.60,
+            &cfg,
         )
         .await
         .unwrap();
@@ -57394,6 +57529,133 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             "strict native review must not substitute the provider fast model"
         );
         assert_eq!(usage.model, "gpt-5.4-mini");
+    }
+
+    #[tokio::test]
+    async fn native_reviewer_original_task_exposure_blocks_every_tier_without_reset_or_hold_mutation(
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let manager = Arc::new(SessionManager::new(tmp.path().to_path_buf()));
+        let parent = manager
+            .create_session(
+                tmp.path().to_path_buf(),
+                "coordinator".into(),
+                SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let original = manager
+            .begin_budget_task_with_contract(
+                &parent.id,
+                &Message::user().with_text("original brief"),
+            )
+            .await
+            .unwrap();
+        let contract = crate::session::session_manager::budget_task_contract(
+            &manager
+                .get_session(&parent.id, false)
+                .await
+                .unwrap()
+                .extension_data,
+        )
+        .unwrap()
+        .clone();
+        let pool = manager.pool_clone().await.unwrap();
+        let ts = chrono::Utc::now().to_rfc3339();
+        sqlx::query("INSERT INTO cost_ledger(call_id,ts,session_id,task_id,cost_usd) VALUES ('original-cost',?,?,?,0.10)")
+            .bind(&ts).bind(&parent.id).bind(&original).execute(&pool).await.unwrap();
+        for state in ["pending", "unknown"] {
+            sqlx::query("INSERT INTO cost_reservations(reservation_id,invocation_id,session_id,task_id,amount_usd,state,lease_until,created_at,updated_at) VALUES (?,?,?,?,0.10,?,?,?,?)")
+                .bind(format!("hold-{state}")).bind(format!("call-{state}")).bind(&parent.id).bind(&original).bind(state)
+                .bind((chrono::Utc::now()+chrono::Duration::minutes(5)).to_rfc3339()).bind(&ts).bind(&ts).execute(&pool).await.unwrap();
+        }
+        let before: Vec<(String, String, f64)> = sqlx::query_as(
+            "SELECT reservation_id,state,amount_usd FROM cost_reservations ORDER BY reservation_id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        let later = manager
+            .begin_budget_task_with_contract(
+                &parent.id,
+                &Message::user().with_text("newer unrelated task"),
+            )
+            .await
+            .unwrap();
+        assert_ne!(original, later);
+        let reviewer = create_frozen_reviewer_child(
+            &manager,
+            &parent.id,
+            tmp.path(),
+            &original,
+            "goal",
+            contract,
+        )
+        .await
+        .unwrap();
+        let cfg = crate::cost_router::budget::BudgetConfig {
+            task: crate::cost_router::budget::BudgetCeilings {
+                soft: 0.20,
+                gate: 0.25,
+                hard: 0.25,
+            },
+            session: crate::cost_router::budget::BudgetCeilings {
+                soft: 5.0,
+                gate: 10.0,
+                hard: 20.0,
+            },
+        };
+        let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let families = std::collections::BTreeSet::from(["anthropic".into()]);
+        for tier in [
+            crate::session::CostTier::LocalFree,
+            crate::session::CostTier::Subscription,
+            crate::session::CostTier::PaidApi,
+        ] {
+            let provider: Arc<dyn Provider> = Arc::new(NativeReviewRouteStub {
+                provider: "openai",
+                model_config: crate::model::ModelConfig::new("gpt-5.4-mini").unwrap(),
+                observed_models: observed.clone(),
+                tier,
+                audited: true,
+            });
+            let error = complete_native_reviewer_on_checked_route(
+                manager.clone(),
+                reviewer.clone(),
+                provider,
+                "review",
+                &[Message::user().with_text("candidate")],
+                &families,
+                0.60,
+                &cfg,
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                error.to_string().contains("original-task exposure"),
+                "{error}"
+            );
+        }
+        assert!(observed.lock().unwrap().is_empty());
+        let after: Vec<(String, String, f64)> = sqlx::query_as(
+            "SELECT reservation_id,state,amount_usd FROM cost_reservations ORDER BY reservation_id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            before, after,
+            "no UNKNOWN/pending liability may be released or replaced by cap refusal"
+        );
+        let calls: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM cost_ledger")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            calls, 1,
+            "refused review must not append an actual-cost row"
+        );
     }
 
     #[test]

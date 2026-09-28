@@ -232,14 +232,18 @@ pub(crate) async fn resolve_primary_checkout_from_worktree(worktree_path: &str) 
     Some(checkout.to_string_lossy().into_owned())
 }
 
-async fn git(root: &str, args: &[&str]) -> Option<(bool, String)> {
-    let out = tokio::process::Command::new("git")
+pub(crate) async fn git(root: &str, args: &[&str]) -> Option<(bool, String)> {
+    let mut command = tokio::process::Command::new("git");
+    command.kill_on_drop(true);
+    let output = command
         .arg("-C")
         .arg(root)
         .args(args)
         .stdin(Stdio::null())
-        .output()
+        .output();
+    let out = tokio::time::timeout(std::time::Duration::from_secs(10), output)
         .await
+        .ok()?
         .ok()?;
     let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
     Some((out.status.success(), text))
@@ -359,7 +363,51 @@ pub(crate) fn paths_match(a: &str, b: &str) -> bool {
 }
 
 /// Fast-forward the project's trunk onto an approved goal's work.
+/// Cross-process serialization for cooperating Permagent landing paths. Git's
+/// own ref/index locks still protect the mutation; external Git users do not
+/// participate in this advisory lock and can cause an honest landing refusal.
+pub(crate) struct LandingGuard {
+    _file: std::fs::File,
+    root: std::path::PathBuf,
+}
+
+pub(crate) async fn acquire_landing_guard(root: &str) -> Result<LandingGuard, String> {
+    use fs2::FileExt;
+    let root = std::fs::canonicalize(root).map_err(|e| e.to_string())?;
+    let (ok, common) = git(
+        root.to_str().ok_or("non-UTF8 repository root")?,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )
+    .await
+    .ok_or("cannot resolve Git common directory")?;
+    if !ok {
+        return Err("cannot resolve Git common directory".into());
+    }
+    let common = std::fs::canonicalize(common).map_err(|e| e.to_string())?;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(common.join("permagent-landing.lock"))
+        .map_err(|e| e.to_string())?;
+    file.try_lock_exclusive()
+        .map_err(|e| format!("another landing owns the repository lock: {e}"))?;
+    Ok(LandingGuard { _file: file, root })
+}
+
 pub async fn land(req: &LandRequest) -> LandOutcome {
+    let guard = match acquire_landing_guard(&req.repo_root).await {
+        Ok(guard) => guard,
+        Err(reason) => return LandOutcome::Skipped(reason),
+    };
+    land_under_guard(req, &guard).await
+}
+
+pub(crate) async fn land_under_guard(req: &LandRequest, guard: &LandingGuard) -> LandOutcome {
+    if std::fs::canonicalize(&req.repo_root).ok().as_ref() != Some(&guard.root) {
+        return LandOutcome::Skipped("landing lock does not match the repository root".into());
+    }
     let root = req.repo_root.as_str();
 
     let Some((ok, trunk)) = git(root, &["rev-parse", "--abbrev-ref", "HEAD"]).await else {
@@ -715,5 +763,25 @@ mod tests {
         verify_worktree_landing_target(&root, Some(&base), Some(&root))
             .await
             .expect("a matching known working dir plus real ancestry must be accepted");
+    }
+    #[tokio::test]
+    async fn concurrent_landing_lock_refuses_before_git_and_releases_on_drop() {
+        let (repo, _base, head) = repo_with_base_and_goal_branch();
+        let root = repo.path().to_string_lossy().into_owned();
+        let before = git_in(repo.path(), &["rev-parse", "HEAD"]);
+        let guard = acquire_landing_guard(&root).await.unwrap();
+        let outcome = land(&LandRequest {
+            repo_root: root.clone(),
+            branch: "goal/test".into(),
+            head_commit: head,
+        })
+        .await;
+        assert!(
+            matches!(outcome, LandOutcome::Skipped(ref reason) if reason.contains("repository lock"))
+        );
+        assert_eq!(git_in(repo.path(), &["rev-parse", "HEAD"]), before);
+        assert!(acquire_landing_guard(&root).await.is_err());
+        drop(guard);
+        assert!(acquire_landing_guard(&root).await.is_ok());
     }
 }

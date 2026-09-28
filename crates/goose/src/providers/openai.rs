@@ -525,6 +525,11 @@ impl ProviderDef for OpenAiProvider {
 
 #[async_trait]
 impl Provider for OpenAiProvider {
+    // Request/retry operations are direct awaits; no spawned request transport.
+    fn supports_native_pretransport_gate(&self) -> bool {
+        true
+    }
+
     fn get_name(&self) -> &str {
         &self.name
     }

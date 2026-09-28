@@ -1889,6 +1889,155 @@ async fn record_answered_effect_failure(pool: &Pool<Sqlite>, decision: &Decision
 /// headless Auto dispatch policy has `PERMAGENT_HEADLESS_AUTOLAND` on. Every
 /// other match arm in this function ignores both new arguments entirely —
 /// they are meaningful only to the `("approve_review", Some("approve"))` arm.
+/// Only the native reviewer caller can supply this in-memory binding after an
+/// actual Approved result. Display metadata and replayed outbox decisions do
+/// not reconstruct it. Approval and Git mutation share the native write fence.
+pub(crate) async fn apply_native_review_approval(
+    pool: &Pool<Sqlite>,
+    decision: &Decision,
+    proof: DecisionProof,
+    binding: &crate::goal_candidates::NativeReviewBinding,
+    auto_land_allowed: bool,
+    calling_session_id: Option<&str>,
+) -> Result<EffectResult, GuardError> {
+    use crate::{goal_candidates, goal_landing};
+    let denied = |e: String| GuardError::Denied(e);
+    let goal = &binding.lineage.candidate.goal_id;
+    if !auto_land_allowed
+        || decision.kind != "approve_review"
+        || decision.answer.as_deref() != Some("approve")
+        || decision.goal_id.as_deref() != Some(goal.as_str())
+    {
+        return Err(denied(
+            "native landing requires the actual approved goal decision".into(),
+        ));
+    }
+    let expected = goal_candidates::revalidate_review_binding(pool, binding)
+        .await
+        .map_err(|e| denied(e.to_string()))?;
+    let root = binding
+        .lineage
+        .canonical_root
+        .to_str()
+        .ok_or_else(|| denied("native canonical root is not UTF8".into()))?;
+    let project = crate::projects::get_project_by_id_or_slug(pool, &binding.lineage.project_id)
+        .await
+        .map_err(|e| GuardError::Db(e.to_string()))?
+        .ok_or_else(|| denied("native landing project disappeared".into()))?;
+    if let Some(configured) = project.root_path.as_deref() {
+        if !goal_landing::paths_match(root, configured) {
+            return Err(denied("project root changed since native dispatch".into()));
+        }
+    }
+    let root_common = goal_landing::git(
+        root,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )
+    .await;
+    let worker = binding
+        .lineage
+        .candidate
+        .worktree
+        .to_str()
+        .ok_or_else(|| denied("native candidate worktree is not UTF8".into()))?;
+    let worker_common = goal_landing::git(
+        worker,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )
+    .await;
+    match (root_common, worker_common) {
+        (Some((true, a)), Some((true, b))) if goal_landing::paths_match(&a, &b) => {}
+        _ => {
+            return Err(denied(
+                "native candidate belongs to a different Git repository".into(),
+            ))
+        }
+    }
+    let guard = goal_landing::acquire_landing_guard(root)
+        .await
+        .map_err(denied)?;
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| GuardError::Db(e.to_string()))?;
+    let actor = proof.acted_by().to_string();
+    let record = goal_transition::advance_goal_checked_in_tx_with_auto_land(
+        &mut tx,
+        goal,
+        GoalAction::Approve,
+        &actor,
+        Some(proof),
+        TransitionEffects {
+            expected_attempt: Some(expected.clone()),
+            review_notes: decision.answer_note.clone(),
+            ..Default::default()
+        },
+        auto_land_allowed,
+        calling_session_id,
+    )
+    .await?;
+    let approved =
+        goal_candidates::refresh_expected_after_transition_tx(&mut tx, &expected, &record)
+            .await
+            .map_err(|e| denied(e.to_string()))?;
+    goal_candidates::revalidate_review_binding_for_landing_tx(&mut tx, binding, &approved)
+        .await
+        .map_err(|e| denied(e.to_string()))?;
+    let request = goal_landing::LandRequest {
+        repo_root: root.to_string(),
+        branch: format!("native/{}", binding.lineage.candidate.attempt_id),
+        head_commit: binding.lineage.candidate.head.clone(),
+    };
+    let outcome = goal_landing::land_under_guard(&request, &guard).await;
+    if !outcome.is_landed() {
+        // Dropping the transaction rolls the Approve transition back. Rebase
+        // would alter the reviewed candidate and requires a new review.
+        return Err(denied(format!(
+            "native review approval was not applied: {}",
+            outcome.describe()
+        )));
+    }
+    let after = goal_landing::git(root, &["rev-parse", "HEAD"]).await;
+    if !matches!(after, Some((true, ref head)) if head == &request.head_commit) {
+        return Err(denied(
+            "Git contains the candidate but final HEAD differs; recovery/review is required".into(),
+        ));
+    }
+    if let Err(e) =
+        goal_candidates::revalidate_review_binding_for_landing_tx(&mut tx, binding, &approved).await
+    {
+        return Err(denied(format!(
+            "Git reached the candidate but final native fence failed; recovery required: {e}"
+        )));
+    }
+    tx.commit().await.map_err(|e| GuardError::Db(format!(
+        "Git reached the reviewed candidate but approval commit failed; recovery required, not retry success: {e}"
+    )))?;
+    drop(guard);
+    // These display receipts never supply future automatic landing authority.
+    if let Ok(Some(card)) = crate::cards::get_card(pool, goal).await {
+        persist_landing_outcome(pool, goal, &card, &outcome, None).await;
+    }
+    // Existing registered-program handoff follows the actual committed land.
+    let warning = match crate::agents::platform_extensions::program_bridge::handoff_registered_goal(
+        pool, goal,
+    )
+    .await
+    {
+        Ok(_) => None,
+        Err(e) => Some(format!(
+            "native candidate landed; registered continuation needs attention: {e}"
+        )),
+    };
+    Ok((
+        Some(format!(
+            "goal approved: Review → Complete; {}",
+            outcome.describe()
+        )),
+        warning,
+    ))
+}
+
 pub async fn apply_decision_effect_with_auto_land(
     pool: &Pool<Sqlite>,
     decision: &Decision,
