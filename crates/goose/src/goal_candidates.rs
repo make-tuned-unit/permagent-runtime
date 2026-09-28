@@ -797,10 +797,7 @@ pub(crate) async fn revalidate_review_binding(
     review: &NativeReviewBinding,
 ) -> Result<ExpectedAttempt> {
     let current = revalidate_candidate(pool, &review.lineage).await?;
-    if current.attempt_id != review.expected.attempt_id
-        || current.claim_id != review.expected.claim_id
-        || current.worker_session_id != review.expected.worker_session_id
-    {
+    if current != review.expected {
         bail!("Approved review belongs to a different native execution attempt");
     }
     match contributor_evidence(pool, &review.lineage).await? {
