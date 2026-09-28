@@ -18975,11 +18975,13 @@ async fn independent_review_before_auto_land(
         }
         Some((diff, dir, source)) => {
             let changes = crate::cost_router::detect_signature_changes(&diff);
-            let call_sites: usize = enumerate_signature_call_sites(&dir, &changes)
-                .await
-                .iter()
-                .map(|e| e.call_sites.len())
-                .sum();
+            let review_head = recorded_goal_head(&card.metadata_json).unwrap_or_default();
+            let call_sites: usize =
+                enumerate_signature_call_sites_pinned(&dir, &review_head, &changes)
+                    .await
+                    .iter()
+                    .map(|e| e.call_sites.len())
+                    .sum();
             let facts = crate::cost_router::recommend::ReviewFacts::from_diff(&diff, call_sites);
             match auto_land_review_requirement_for_goal(&facts, &card.metadata_json) {
                 AutoLandReviewRequirement::Skip { reason } => (
@@ -18999,6 +19001,7 @@ async fn independent_review_before_auto_land(
                     let verification_shown = verification
                         .as_ref()
                         .map(|v| serde_json::json!({ "command": v.command, "head": v.head }));
+                    let reviewed_head = recorded_goal_head(&card.metadata_json).unwrap_or_default();
                     // Lane R68a: wall-clock time actually spent across every
                     // reviewer call this review makes (first reviewer's
                     // attempts plus, on escalation, the escalated
@@ -19011,6 +19014,7 @@ async fn independent_review_before_auto_land(
                         card,
                         &dir,
                         diff,
+                        &reviewed_head,
                         &GoalReviewKind::Verified { verification },
                         calling_session_id,
                     )
@@ -26584,6 +26588,7 @@ async fn call_reviewer_provider(
     session: Session,
     prompt: &str,
     timeout: std::time::Duration,
+    system_prompt: &str,
 ) -> Result<crate::conversation::message::Message, ReviewerCallFailure> {
     let model_config = crate::model::ModelConfig::new(model_id)
         .map(|c| c.with_canonical_limits(provider_id))
@@ -26618,7 +26623,7 @@ async fn call_reviewer_provider(
             std::sync::Arc::new(SessionManager::instance()),
             session,
             provider,
-            crate::cost_router::REVIEW_SYSTEM_PROMPT,
+            system_prompt,
             &[user_message],
             &[],
             false,
@@ -26661,6 +26666,7 @@ async fn call_reviewer_provider_checked(
     session: Session,
     prompt: &str,
     timeout: std::time::Duration,
+    system_prompt: &str,
 ) -> Result<crate::conversation::message::Message, ReviewerCallFailure> {
     if let Some(sid) = session_id {
         if let Some(class) = crate::cost_router::provider_circuit::reason_if_open(sid, provider_id)
@@ -26671,7 +26677,15 @@ async fn call_reviewer_provider_checked(
             )));
         }
     }
-    call_reviewer_provider(provider_id, model_id, session, prompt, timeout).await
+    call_reviewer_provider(
+        provider_id,
+        model_id,
+        session,
+        prompt,
+        timeout,
+        system_prompt,
+    )
+    .await
 }
 
 /// What one reviewer-call CYCLE ([`run_reviewer_call_cycle`]) produced:
@@ -26793,8 +26807,32 @@ async fn call_reviewer_provider_with_timeout_retry(
     call_timeout: std::time::Duration,
     budget: &ReviewTimeBudget,
 ) -> ReviewCycleOutcome {
+    call_reviewer_provider_with_timeout_retry_and_system(
+        session_id,
+        provider_id,
+        model_id,
+        session,
+        prompt,
+        call_timeout,
+        budget,
+        crate::cost_router::REVIEW_SYSTEM_PROMPT.to_string(),
+    )
+    .await
+}
+
+async fn call_reviewer_provider_with_timeout_retry_and_system(
+    session_id: Option<&str>,
+    provider_id: &str,
+    model_id: &str,
+    session: Session,
+    prompt: &str,
+    call_timeout: std::time::Duration,
+    budget: &ReviewTimeBudget,
+    system_prompt: String,
+) -> ReviewCycleOutcome {
     run_reviewer_call_cycle(call_timeout, budget, move |attempt_timeout| {
         let session = session.clone();
+        let system_prompt = system_prompt.clone();
         async move {
             call_reviewer_provider_checked(
                 session_id,
@@ -26803,6 +26841,7 @@ async fn call_reviewer_provider_with_timeout_retry(
                 session,
                 prompt,
                 attempt_timeout,
+                &system_prompt,
             )
             .await
         }
@@ -27036,6 +27075,7 @@ fn call_sites_from_grep(
 /// Lane R62e: gather [`SalvageReviewContext`] for `diff` from the goal
 /// worktree with `git grep` over tracked files only. Every failure (no
 /// match exits 1, a timeout) degrades to less context, never an error.
+#[cfg(test)]
 async fn gather_salvage_review_context(
     worktree_path: &std::path::Path,
     diff: &str,
@@ -27056,6 +27096,52 @@ async fn gather_salvage_review_context(
         context
             .callee_definitions
             .extend(definition_lines_from_grep(&symbol, &grep));
+    }
+    context
+}
+
+async fn enumerate_signature_call_sites_pinned(
+    worktree_path: &std::path::Path,
+    candidate_sha: &str,
+    changes: &[crate::cost_router::SignatureChange],
+) -> Vec<crate::cost_router::CallSiteEnumeration> {
+    let mut enumerations = Vec::new();
+    for change in changes.iter().take(SALVAGE_REVIEW_CONTEXT_MAX_SYMBOLS) {
+        let lines = super::review_context::search_tracked_lines(
+            worktree_path,
+            candidate_sha,
+            &change.symbol,
+        )
+        .await
+        .unwrap_or_default();
+        enumerations.push(call_sites_from_grep(change, &lines.join("\n")));
+    }
+    enumerations
+}
+
+/// The independent review's repository context is pinned to the exact commit
+/// named in its prompt. Unlike delegate routing's best-effort context probe,
+/// this path never reads mutable working-tree files.
+async fn gather_pinned_goal_review_context(
+    worktree_path: &std::path::Path,
+    candidate_sha: &str,
+    diff: &str,
+) -> SalvageReviewContext {
+    let mut context = SalvageReviewContext::default();
+    let changes = crate::cost_router::detect_signature_changes(diff);
+    context.call_site_enumerations =
+        enumerate_signature_call_sites_pinned(worktree_path, candidate_sha, &changes).await;
+    for symbol in called_symbols_on_added_lines(diff) {
+        if changes.iter().any(|change| change.symbol == symbol) {
+            continue;
+        }
+        let lines =
+            super::review_context::search_tracked_lines(worktree_path, candidate_sha, &symbol)
+                .await
+                .unwrap_or_default();
+        context
+            .callee_definitions
+            .extend(definition_lines_from_grep(&symbol, &lines.join("\n")));
     }
     context
 }
@@ -27103,6 +27189,8 @@ fn build_salvage_review_prompt(
         &salvage_verify_output_lead(verify_note),
         context,
         None,
+        "0123456789abcdef0123456789abcdef01234567",
+        &[],
     )
 }
 
@@ -27283,6 +27371,14 @@ fn goal_review_task_spec(
     if let Some(contract) = reviewer_task_contract_block(metadata)? {
         spec.push_str(&contract);
     }
+    spec.push_str(
+        "\n\nBehavior evidence rule: if this change alters runtime or user-visible behavior, \
+         CHECKED must name task-relevant behavioral assertions/tests inspected in the supplied \
+         repository context and connect them to the verification evidence for the reviewed \
+         commit. Request missing test/source context during the context stage. If relevant \
+         behavior evidence cannot be established, return UNCERTAIN. This rule does not require \
+         behavioral tests for changes that are strictly cosmetic or documentation-only.",
+    );
     Ok(spec)
 }
 
@@ -27344,6 +27440,8 @@ fn build_goal_review_prompt(
     verify_output_lead: &str,
     context: &SalvageReviewContext,
     verification: Option<&GoalReviewVerification>,
+    reviewed_head: &str,
+    requested_context: &[String],
 ) -> String {
     let mut verify_output = verify_output_lead.to_string();
     if !context.callee_definitions.is_empty() {
@@ -27368,13 +27466,132 @@ fn build_goal_review_prompt(
             &crate::cost_router::render_call_site_section(&context.call_site_enumerations),
         )
     };
-    match verification {
+    let mut prompt = match verification {
         Some(v) => crate::cost_router::review_gate::with_review_data_section(
             &prompt,
             "VERIFICATION",
             &v.render(),
         ),
         None => prompt,
+    };
+    prompt = crate::cost_router::review_gate::with_review_data_section(
+        &prompt,
+        "REVIEWED_HEAD",
+        reviewed_head,
+    );
+    if !requested_context.is_empty() {
+        prompt = crate::cost_router::review_gate::with_review_data_section(
+            &prompt,
+            "REPOSITORY_CONTEXT",
+            &requested_context.join("\n\n"),
+        );
+    }
+    prompt
+}
+
+/// Continue an ordinary review only when its first verdict response explicitly
+/// asks for missing repository context. The default path pays no extra model
+/// call. Context and verdict calls share the caller's provider pick, accounting
+/// purpose, and existing wall-clock budget.
+#[allow(clippy::too_many_arguments)]
+async fn complete_review_after_context_requests(
+    first_message: crate::conversation::message::Message,
+    first_attempts: u32,
+    session_id: Option<&str>,
+    provider_id: &str,
+    model_id: &str,
+    session: Session,
+    worktree: &std::path::Path,
+    reviewed_head: &str,
+    task_spec: &str,
+    diff: &str,
+    verify_output_lead: &str,
+    context: &SalvageReviewContext,
+    verification: Option<&GoalReviewVerification>,
+    call_timeout: std::time::Duration,
+    budget: &ReviewTimeBudget,
+) -> Result<(crate::conversation::message::Message, u32, String), String> {
+    let system_prompt = format!(
+        "{}\n\n{}",
+        crate::cost_router::REVIEW_SYSTEM_PROMPT,
+        super::review_context::CONTEXT_REQUEST_SYSTEM_ADDENDUM
+    );
+    let mut message = first_message;
+    let mut attempts = first_attempts;
+    let mut requested_context = Vec::new();
+    let mut context_bytes = 0usize;
+    let mut context_rounds = 0usize;
+    let mut current_prompt = build_goal_review_prompt(
+        task_spec,
+        diff,
+        verify_output_lead,
+        context,
+        verification,
+        reviewed_head,
+        &requested_context,
+    );
+
+    loop {
+        let raw = message.as_concat_text();
+        let Some(request) =
+            super::review_context::ContextRequestEnvelope::parse_review_response(&raw)?
+        else {
+            return Ok((message, attempts, current_prompt));
+        };
+        if context_rounds >= super::review_context::MAX_CONTEXT_ROUNDS {
+            return Err("reviewer still needed context after the bounded request rounds".into());
+        }
+        let additions = super::review_context::resolve_context_requests(
+            worktree,
+            reviewed_head,
+            &request.requests,
+        )
+        .await?;
+        for item in additions {
+            context_bytes = context_bytes.saturating_add(item.len());
+            if context_bytes > super::review_context::MAX_CONTEXT_BYTES {
+                return Err("review context exceeded the cumulative byte cap".into());
+            }
+            requested_context.push(item);
+        }
+        context_rounds += 1;
+        current_prompt = build_goal_review_prompt(
+            task_spec,
+            diff,
+            verify_output_lead,
+            context,
+            verification,
+            reviewed_head,
+            &requested_context,
+        );
+        match call_reviewer_provider_with_timeout_retry_and_system(
+            session_id,
+            provider_id,
+            model_id,
+            session.clone(),
+            &current_prompt,
+            call_timeout,
+            budget,
+            system_prompt.clone(),
+        )
+        .await
+        {
+            ReviewCycleOutcome::Responded {
+                message: response,
+                attempts: response_attempts,
+            } => {
+                message = response;
+                attempts = attempts.saturating_add(response_attempts);
+            }
+            ReviewCycleOutcome::Errored { reason, .. }
+            | ReviewCycleOutcome::Other(reason)
+            | ReviewCycleOutcome::Unavailable(reason) => return Err(reason),
+            ReviewCycleOutcome::BudgetExhausted { remaining_secs } => {
+                return Err(format!(
+                    "review budget exhausted while reading requested context ({remaining_secs}s remain)"
+                ));
+            }
+        }
     }
 }
 
@@ -27418,6 +27635,21 @@ async fn dispatch_cross_family_reviewer_for_salvage(
     // empty even though real, unlanded work exists. Prefer the trunk-
     // relative range when a trusted trunk can be resolved; fall back to
     // the rolling `baseline..HEAD` otherwise (the pre-R22d range).
+    let reviewed_head = match git_in_worktree(worktree_path, &["rev-parse", "HEAD"]).await {
+        Ok(head) if super::review_context::validate_full_sha(head.trim()).is_ok() => {
+            head.trim().to_string()
+        }
+        Ok(_) => {
+            return ReviewerGateOutcome::Refused {
+                reason: "the salvage candidate did not resolve to a full commit SHA".into(),
+            }
+        }
+        Err(error) => {
+            return ReviewerGateOutcome::Refused {
+                reason: format!("could not pin the salvage candidate commit: {error}"),
+            }
+        }
+    };
     let diff_range_base = match resolve_trusted_landing_root(pool, card, worktree_path).await {
         Ok(root) => git_in_worktree(std::path::Path::new(&root), &["rev-parse", "HEAD"])
             .await
@@ -27426,7 +27658,7 @@ async fn dispatch_cross_family_reviewer_for_salvage(
     };
     let diff = git_in_worktree(
         worktree_path,
-        &["diff", &format!("{diff_range_base}..HEAD")],
+        &["diff", &format!("{diff_range_base}..{reviewed_head}")],
     )
     .await
     .unwrap_or_default();
@@ -27435,6 +27667,7 @@ async fn dispatch_cross_family_reviewer_for_salvage(
         card,
         worktree_path,
         diff,
+        &reviewed_head,
         &GoalReviewKind::Salvage { verify_note },
         calling_session_id,
     )
@@ -27454,9 +27687,15 @@ async fn review_goal_diff_with_cross_family_reviewer(
     card: &cards::Card,
     context_dir: &std::path::Path,
     diff: String,
+    reviewed_head: &str,
     kind: &GoalReviewKind<'_>,
     calling_session_id: Option<&str>,
 ) -> GoalReviewRun {
+    if let Err(reason) = super::review_context::validate_full_sha(reviewed_head) {
+        return GoalReviewRun::single(ReviewerGateOutcome::Refused {
+            reason: format!("the independent review has no valid pinned candidate SHA: {reason}"),
+        });
+    }
     // Refuse before provider selection when a saved contract cannot be shown
     // in full. A generic build/test criterion is not its replacement.
     let criteria = collect_acceptance_criteria(&card.metadata_json, &card.description);
@@ -27528,7 +27767,8 @@ async fn review_goal_diff_with_cross_family_reviewer(
     // here once and reused for the prompt) and assign the reviewer with the one
     // proportional selection rule, instead of the derived REVIEW entry (which
     // ranks the strongest cross-family verifier first).
-    let review_context = gather_salvage_review_context(context_dir, &diff_for_prompt).await;
+    let review_context =
+        gather_pinned_goal_review_context(context_dir, reviewed_head, &diff_for_prompt).await;
     let enumerated_call_sites: usize = review_context
         .call_site_enumerations
         .iter()
@@ -27599,12 +27839,19 @@ async fn review_goal_diff_with_cross_family_reviewer(
     // Lane R62e (A61 miss 1): give the reviewer the callee definitions and
     // E7 call sites the diff alone does not show (gathered above, before the
     // reviewer assignment that also reads them).
-    let prompt = build_goal_review_prompt(
+    let mut prompt = build_goal_review_prompt(
         &task_spec,
         &diff_for_prompt,
         &verify_output_lead,
         &review_context,
         verification,
+        reviewed_head,
+        &[],
+    );
+    let goal_review_system_prompt = format!(
+        "{}\n\n{}",
+        crate::cost_router::REVIEW_SYSTEM_PROMPT,
+        super::review_context::CONTEXT_REQUEST_SYSTEM_ADDENDUM
     );
 
     // Lane R28b (A27 Miss 3): the first attempt is always the selected
@@ -27631,7 +27878,7 @@ async fn review_goal_diff_with_cross_family_reviewer(
     // see `reviewer_gate_total_budget`'s doc comment for why and how it
     // combines with the goal's own remaining wall-clock budget.
     let budget = ReviewTimeBudget::new(reviewer_gate_total_budget(kind, &card.metadata_json));
-    let first: ReviewAttempt = match call_reviewer_provider_with_timeout_retry(
+    let first: ReviewAttempt = match call_reviewer_provider_with_timeout_retry_and_system(
         calling_session_id,
         &pick.provider,
         &pick.model,
@@ -27639,19 +27886,51 @@ async fn review_goal_diff_with_cross_family_reviewer(
         &prompt,
         call_timeout,
         &budget,
+        goal_review_system_prompt.clone(),
     )
     .await
     {
-        ReviewCycleOutcome::Responded { message, attempts } => ReviewAttempt {
-            round: review_round_from_response(
-                &message.as_concat_text(),
-                changed_lines,
-                &review_context.call_site_enumerations,
-            ),
-            provider: pick.provider.clone(),
-            model: pick.model.clone(),
-            attempts,
-        },
+        ReviewCycleOutcome::Responded { message, attempts } => {
+            let (message, attempts, reviewed_prompt) = match complete_review_after_context_requests(
+                message,
+                attempts,
+                calling_session_id,
+                &pick.provider,
+                &pick.model,
+                session.clone(),
+                context_dir,
+                reviewed_head,
+                &task_spec,
+                &diff_for_prompt,
+                &verify_output_lead,
+                &review_context,
+                verification,
+                call_timeout,
+                &budget,
+            )
+            .await
+            {
+                Ok(done) => done,
+                Err(reason) => {
+                    return GoalReviewRun::single(ReviewerGateOutcome::Refused {
+                        reason: format!(
+                            "bounded reviewer context could not be completed: {reason}"
+                        ),
+                    })
+                }
+            };
+            prompt = reviewed_prompt;
+            ReviewAttempt {
+                round: review_round_from_response(
+                    &message.as_concat_text(),
+                    changed_lines,
+                    &review_context.call_site_enumerations,
+                ),
+                provider: pick.provider.clone(),
+                model: pick.model.clone(),
+                attempts,
+            }
+        }
         ReviewCycleOutcome::Errored {
             reason,
             elapsed_secs,
@@ -27688,56 +27967,88 @@ async fn review_goal_diff_with_cross_family_reviewer(
             )
             .await
             {
-                Some((fb_provider, fb_model)) => match call_reviewer_provider_with_timeout_retry(
-                    calling_session_id,
-                    &fb_provider,
-                    &fb_model,
-                    session.clone(),
-                    &prompt,
-                    call_timeout,
-                    &budget,
-                )
-                .await
-                {
-                    ReviewCycleOutcome::Responded { message, attempts } => ReviewAttempt {
-                        round: review_round_from_response(
-                            &message.as_concat_text(),
-                            changed_lines,
-                            &review_context.call_site_enumerations,
-                        ),
-                        provider: fb_provider,
-                        model: fb_model,
-                        attempts,
-                    },
-                    ReviewCycleOutcome::Errored {
-                        reason,
-                        elapsed_secs,
-                    } => ReviewAttempt {
-                        round: ReviewRound::Errored {
+                Some((fb_provider, fb_model)) => {
+                    match call_reviewer_provider_with_timeout_retry_and_system(
+                        calling_session_id,
+                        &fb_provider,
+                        &fb_model,
+                        session.clone(),
+                        &prompt,
+                        call_timeout,
+                        &budget,
+                        goal_review_system_prompt.clone(),
+                    )
+                    .await
+                    {
+                        ReviewCycleOutcome::Responded { message, attempts } => {
+                            let (message, attempts, reviewed_prompt) = match complete_review_after_context_requests(
+                            message,
+                            attempts,
+                            calling_session_id,
+                            &fb_provider,
+                            &fb_model,
+                            session.clone(),
+                            context_dir,
+                            reviewed_head,
+                            &task_spec,
+                            &diff_for_prompt,
+                            &verify_output_lead,
+                            &review_context,
+                            verification,
+                            call_timeout,
+                            &budget,
+                        )
+                        .await
+                        {
+                            Ok(done) => done,
+                            Err(reason) => {
+                                return GoalReviewRun::single(ReviewerGateOutcome::Refused {
+                                    reason: format!("bounded reviewer context could not be completed: {reason}"),
+                                })
+                            }
+                        };
+                            prompt = reviewed_prompt;
+                            ReviewAttempt {
+                                round: review_round_from_response(
+                                    &message.as_concat_text(),
+                                    changed_lines,
+                                    &review_context.call_site_enumerations,
+                                ),
+                                provider: fb_provider,
+                                model: fb_model,
+                                attempts,
+                            }
+                        }
+                        ReviewCycleOutcome::Errored {
                             reason,
                             elapsed_secs,
+                        } => ReviewAttempt {
+                            round: ReviewRound::Errored {
+                                reason,
+                                elapsed_secs,
+                            },
+                            provider: fb_provider,
+                            model: fb_model,
+                            attempts: 2,
                         },
-                        provider: fb_provider,
-                        model: fb_model,
-                        attempts: 2,
-                    },
-                    ReviewCycleOutcome::BudgetExhausted { remaining_secs } => ReviewAttempt {
-                        round: review_budget_exhausted_round(remaining_secs),
-                        provider: fb_provider,
-                        model: fb_model,
-                        attempts: 0,
-                    },
-                    ReviewCycleOutcome::Unavailable(second_reason)
-                    | ReviewCycleOutcome::Other(second_reason) => {
-                        open_provider_circuit(calling_session_id, &fb_provider, &second_reason);
-                        return GoalReviewRun::single(ReviewerGateOutcome::Unreachable {
-                            reason: format!(
-                                "{first_reason}; retried on the session's own tier model \
+                        ReviewCycleOutcome::BudgetExhausted { remaining_secs } => ReviewAttempt {
+                            round: review_budget_exhausted_round(remaining_secs),
+                            provider: fb_provider,
+                            model: fb_model,
+                            attempts: 0,
+                        },
+                        ReviewCycleOutcome::Unavailable(second_reason)
+                        | ReviewCycleOutcome::Other(second_reason) => {
+                            open_provider_circuit(calling_session_id, &fb_provider, &second_reason);
+                            return GoalReviewRun::single(ReviewerGateOutcome::Unreachable {
+                                reason: format!(
+                                    "{first_reason}; retried on the session's own tier model \
                                  {fb_provider}/{fb_model}, which also failed: {second_reason}"
-                            ),
-                        });
+                                ),
+                            });
+                        }
                     }
-                },
+                }
                 None => {
                     return GoalReviewRun::single(ReviewerGateOutcome::Unreachable {
                         reason: first_reason,
@@ -60887,13 +61198,19 @@ mod r65a_tests {
                 "Verification passed",
                 &SalvageReviewContext::default(),
                 None,
+                "0123456789abcdef0123456789abcdef01234567",
+                &[],
             );
             assert!(prompt.contains("npm run build exits with code 0"));
             assert!(prompt.contains("npm run test exits with code 0"));
+            assert!(prompt.contains(
+                "BEGIN_REVIEWED_HEAD\n0123456789abcdef0123456789abcdef01234567\nEND_REVIEWED_HEAD"
+            ));
             assert!(
                 prompt.contains(&serde_json::to_string(contract).unwrap()),
                 "the complete JSON-quoted contract must reach the reviewer: {prompt}"
             );
+            assert!(prompt.contains("Behavior evidence rule"));
         }
     }
 
@@ -60934,6 +61251,8 @@ mod r65a_tests {
             VERIFIED_GOAL_WITH_EVIDENCE_LEAD,
             &context,
             Some(&verification),
+            "0123456789abcdef0123456789abcdef01234567",
+            &["PATH src/discover.ts LINES 1-2\n1: filter=known".to_string()],
         );
         let section = prompt
             .find("BEGIN_VERIFICATION\nhead: 0b8a39d7c1e4f2a6\ncommand: node --test src")
@@ -60944,6 +61263,10 @@ mod r65a_tests {
             .expect("the closing instruction stays last");
         assert!(section < end && end < closing, "{prompt}");
         assert!(prompt.contains("# pass 4\n# fail 0"));
+        assert!(prompt.contains(
+            "BEGIN_REVIEWED_HEAD\n0123456789abcdef0123456789abcdef01234567\nEND_REVIEWED_HEAD"
+        ));
+        assert!(prompt.contains("BEGIN_REPOSITORY_CONTEXT\nPATH src/discover.ts LINES 1-2"));
         assert!(prompt.contains("BEGIN_VERIFY_OUTPUT\nthe goal's worker recorded a passing verify"));
         assert!(
             prompt.contains("BEGIN_CALL_SITES"),
@@ -60962,6 +61285,8 @@ mod r65a_tests {
             VERIFIED_GOAL_VERIFY_OUTPUT_LEAD,
             &SalvageReviewContext::default(),
             None,
+            "0123456789abcdef0123456789abcdef01234567",
+            &[],
         );
         assert!(!without.contains("BEGIN_VERIFICATION"));
     }
