@@ -255,6 +255,7 @@ pub struct TransitionEffects {
     pub assigned_to: Option<String>,
     /// Native headless coordinator policy, never a tool argument.
     pub dispatch_budget: Option<HeadlessDispatchBudget>,
+    pub attempt_claim: Option<crate::goal_attempts::ClaimInput>,
 }
 
 pub const HEADLESS_DISPATCH_BUDGET_KEY: &str = "headless_dispatch_budget";
@@ -679,6 +680,17 @@ pub async fn advance_goal_checked_with_auto_land(
         None
     };
 
+    if let Some(input) = effects.attempt_claim.as_ref() {
+        if action != GoalAction::Dispatch {
+            return Err(GuardError::Invalid(
+                "Attempt claim requires Dispatch".into(),
+            ));
+        }
+        crate::goal_attempts::claim_tx(&mut tx, card_id, &goal.project_id, input)
+            .await
+            .map_err(|e| GuardError::Db(e.to_string()))?;
+    }
+
     // Build new metadata.
     let mut meta = goal.metadata;
     apply_patch(&mut meta, &effects.metadata_patch);
@@ -831,6 +843,16 @@ pub(crate) async fn advance_goal_checked_in_tx(
         Some(p) => (p.decision_id().to_string(), p.acted_by().to_string()),
         None => ("none".to_string(), actor.to_string()),
     };
+    if let Some(input) = effects.attempt_claim.as_ref() {
+        if action != GoalAction::Dispatch {
+            return Err(GuardError::Invalid(
+                "Attempt claim requires Dispatch".into(),
+            ));
+        }
+        crate::goal_attempts::claim_tx(tx, card_id, &goal.project_id, input)
+            .await
+            .map_err(|e| GuardError::Db(e.to_string()))?;
+    }
     let mut meta = goal.metadata;
     apply_patch(&mut meta, &effects.metadata_patch);
     if action == GoalAction::Dispatch {
@@ -1518,6 +1540,20 @@ pub async fn finalize_dispatch_claim(
         )));
     }
 
+    crate::goal_attempts::finalize_tx(
+        &mut tx,
+        card_id,
+        claim_id,
+        metadata_patch
+            .get("worker_session_id")
+            .and_then(|v| v.as_str()),
+        metadata_patch
+            .get("execution_receipt")
+            .and_then(|v| v.get("process_id"))
+            .and_then(|v| v.as_i64()),
+    )
+    .await
+    .map_err(|e| GuardError::Db(e.to_string()))?;
     let mut meta = goal.metadata;
     apply_patch(&mut meta, &metadata_patch);
     let meta_str = serde_json::to_string(&serde_json::Value::Object(meta))
@@ -1554,6 +1590,9 @@ pub async fn release_dispatch_claim(
         )));
     }
 
+    crate::goal_attempts::release_tx(&mut tx, card_id, claim_id, reason)
+        .await
+        .map_err(|e| GuardError::Db(e.to_string()))?;
     let journal_actor = journal_actor(decisions::ACTOR_SYSTEM, &goal.metadata);
     let mut meta = goal.metadata;
     meta.insert(

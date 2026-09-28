@@ -831,6 +831,7 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     // (the daemon, a second terminal) can tell a live foreign run from a dead
     // one.
     apply_harness_process_leases_schema(pool).await?;
+    crate::goal_attempts::apply_schema(pool).await?;
 
     // First-party analytics events (schema v38). Idempotent; shared with
     // migrate_v37_to_v38 so fresh installs get it on first boot.

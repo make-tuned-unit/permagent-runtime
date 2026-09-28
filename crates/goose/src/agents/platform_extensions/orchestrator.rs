@@ -4844,6 +4844,16 @@ async fn materialize_roadmap_transaction_with_budget(
             &serde_json::Value::Object(meta),
         )
         .await?;
+        crate::goal_attempts::bind_new_goal_tx(
+            &mut tx,
+            &card_id,
+            project_id,
+            budget_task_id,
+            calling_session_id,
+            proof.get(TASK_CONTRACT_METADATA_KEY),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
         index_to_card_id[idx] = card_id.clone();
         created_ids.push(card_id);
         if fail_after_cards == Some(created_ids.len()) {
@@ -9188,7 +9198,8 @@ pub(crate) async fn dispatch_goal_fn(
         context.session.as_ref().map(|session| session.id.as_str()),
     )
     .await?;
-    let task = goal_engine::GoalTask {
+    let mut task = goal_engine::GoalTask {
+        start_permit: None,
         card_title: card.title.clone(),
         instructions,
         working_dir,
@@ -9506,6 +9517,23 @@ pub(crate) async fn dispatch_goal_fn(
             serde_json::json!(checks_source),
         );
     }
+    task.start_permit = Some(crate::goal_attempts::StartPermit {
+        pool: pool.clone(),
+        goal_id: card_id.to_string(),
+        claim_id: dispatch_claim_id.clone(),
+    });
+    let native_claim = crate::goal_attempts::ClaimInput {
+        claim_id: dispatch_claim_id.clone(),
+        lifecycle_id: daemon_lifecycle_id().to_string(),
+        worker_key: worker_key.clone(),
+        execution_root: Some(
+            std::fs::canonicalize(&task.working_dir)
+                .map_err(|e| e.to_string())?
+                .to_string_lossy()
+                .into_owned(),
+        ),
+        input_head: baseline_commit.clone(),
+    };
     goal_transition::advance_goal_checked(
         &pool,
         card_id,
@@ -9516,19 +9544,14 @@ pub(crate) async fn dispatch_goal_fn(
             metadata_patch: claim_patch,
             assigned_to: Some(worker_key.clone()),
             dispatch_budget,
+            attempt_claim: Some(native_claim),
             ..Default::default()
         },
     )
     .await
     .map_err(String::from)?;
 
-    let goal_engine::DispatchedWork {
-        run_id: session_id,
-        process_id,
-        join,
-        kill,
-        steer,
-    } = match engine.spawn(task).await {
+    let prepared = match engine.prepare(task).await {
         Ok(work) => work,
         Err(error) => {
             let release_reason = format!("Worker spawn failed: {error}");
@@ -9545,6 +9568,169 @@ pub(crate) async fn dispatch_goal_fn(
             return Err(error);
         }
     };
+
+    let session_id = prepared.run_id.clone();
+    let process_id = None;
+
+    let mut worker_session_ids: Vec<String> = card
+        .metadata_json
+        .get("worker_session_ids")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    worker_session_ids.push(session_id.clone());
+
+    // #210: the initial execution receipt for THIS attempt — worker, routing
+    // snapshot, session id, owning lifecycle, and a heartbeat seeded at dispatch.
+    // It lands atomically with the dispatch transition below; the completion
+    // tracker then beats it and stamps its terminal state.
+    let receipt = ExecutionReceipt::new(
+        worker_key.clone(),
+        session_id.clone(),
+        capability_snapshot.clone(),
+        daemon_lifecycle_id().to_string(),
+        dispatched_at.clone(),
+        next_attempt,
+    )
+    .with_process_id(process_id);
+
+    let mut patch = serde_json::Map::new();
+    patch.insert("worker_key".to_string(), serde_json::json!(worker_key));
+    // #211: record the capability/routing snapshot alongside the chosen worker,
+    // so a goal preserves what the roster looked like when it was dispatched
+    // (not just the live roster at read time).
+    patch.insert(
+        "capability_snapshot".to_string(),
+        capability_snapshot.clone(),
+    );
+    if let Ok(receipt_json) = serde_json::to_value(&receipt) {
+        patch.insert("execution_receipt".to_string(), receipt_json);
+    }
+    patch.insert(
+        "worker_session_id".to_string(),
+        serde_json::json!(session_id),
+    );
+    patch.insert(
+        "worker_session_ids".to_string(),
+        serde_json::json!(worker_session_ids),
+    );
+    patch.insert(
+        "dispatched_at".to_string(),
+        serde_json::json!(dispatched_at),
+    );
+    if card.metadata_json.get("first_dispatched_at").is_none() {
+        patch.insert(
+            "first_dispatched_at".to_string(),
+            serde_json::json!(dispatched_at),
+        );
+    }
+    patch.insert("attempt_count".to_string(), serde_json::json!(next_attempt));
+    // Tag the dispatch with the current daemon lifecycle so restart-recovery
+    // won't reclaim this goal while its in-process tracker is still alive.
+    patch.insert(
+        "dispatched_lifecycle".to_string(),
+        serde_json::json!(daemon_lifecycle_id()),
+    );
+    if let Some(ref baseline) = baseline_commit {
+        patch.insert("baseline_commit".to_string(), serde_json::json!(baseline));
+    }
+    let have_seeded_checks = seeded_checks.is_some();
+    if let Some(checks) = seeded_checks {
+        tracing::info!(
+            target: "permagentd::brain",
+            "Seeding {} completion checks onto goal '{}': {}",
+            checks_source,
+            card.title,
+            checks
+        );
+        patch.insert("completion_checks".to_string(), checks);
+    }
+    if have_seeded_checks || card.metadata_json.get("completion_checks").is_some() {
+        patch.insert(
+            "completion_checks_source".to_string(),
+            serde_json::json!(checks_source),
+        );
+    }
+    if let Err(error) =
+        goal_transition::finalize_dispatch_claim(&pool, card_id, &dispatch_claim_id, patch).await
+    {
+        let release_result = goal_transition::release_dispatch_claim(
+            &pool,
+            card_id,
+            &dispatch_claim_id,
+            &format!("Failed to finalize worker dispatch: {error}"),
+        )
+        .await;
+        return Err(match release_result {
+            Ok(()) => error.to_string(),
+            Err(release_error) => {
+                format!("{error}; additionally failed to release dispatch claim: {release_error}")
+            }
+        });
+    }
+    let goal_engine::DispatchedWork {
+        run_id: session_id,
+        process_id,
+        join,
+        kill,
+        steer,
+    } = match prepared.start().await {
+        Ok(work) => work,
+        Err(error) => {
+            goal_transition::release_dispatch_claim(&pool, card_id, &dispatch_claim_id, &error)
+                .await
+                .map_err(|e| format!("{error}; release failed: {e}"))?;
+            return Err(error);
+        }
+    };
+    let mut started_guard = goal_engine::StartedWorkGuard::new(
+        &kill,
+        crate::goal_attempts::StartPermit {
+            pool: pool.clone(),
+            goal_id: card_id.to_string(),
+            claim_id: dispatch_claim_id.clone(),
+        },
+    );
+    if let Some(pid) = process_id {
+        if let Err(error) =
+            crate::goal_attempts::record_pid(&pool, card_id, &dispatch_claim_id, pid).await
+        {
+            kill.kill();
+            let _ = join.await;
+            let _ = goal_transition::release_dispatch_claim(
+                &pool,
+                card_id,
+                &dispatch_claim_id,
+                &error.to_string(),
+            )
+            .await;
+            return Err(error.to_string());
+        }
+        let with_pid = receipt.with_process_id(Some(pid));
+        // This is a display projection; native identity was persisted above.
+        if let Ok(value) = serde_json::to_value(with_pid) {
+            if let Err(error) = cards::set_goal_execution_receipt(&pool, card_id, value).await {
+                tracing::warn!("Failed to project native worker PID: {error}");
+            }
+        }
+    }
+    if zero_progress_breaker == ZeroProgressBreaker::Escalate {
+        let mut escalation = serde_json::Map::new();
+        escalation.insert(
+            goal_transition::ZERO_PROGRESS_ESCALATION_USED_METADATA_KEY.to_string(),
+            serde_json::json!(true),
+        );
+        if let Err(error) =
+            cards::merge_card_metadata(&pool, card_id, serde_json::Value::Object(escalation), false)
+                .await
+        {
+            tracing::warn!("Failed to project started worker escalation: {error}");
+        }
+    }
 
     // Lane R41a: the single choke point every real dispatch funnels through
     // — `goal_advance{dispatch}` directly (a pre-existing Ready card, e.g.
@@ -9600,6 +9786,7 @@ pub(crate) async fn dispatch_goal_fn(
     // signals `maybe_forgive_zero_progress_attempt` needs to decide whether
     // this attempt made any progress at all.
     let tracker_session_id = session_id.clone();
+    let tracker_claim_id = dispatch_claim_id.clone();
     // dagK Q2: this attempt's own number, stamped into the `worker_plan`
     // metadata write below alongside `tracker_session_id` — `next_attempt` is
     // `Copy`, so this is a cheap value capture, not a clone of shared state.
@@ -9637,6 +9824,9 @@ pub(crate) async fn dispatch_goal_fn(
                                 format!("Worker task panicked: {}", e),
                             ),
                         };
+                        if !crate::goal_attempts::is_current_worker(&tracker_pool, &tracker_card_id, &tracker_claim_id, &tracker_session_id).await.unwrap_or(false) {
+                            return;
+                        }
                         // The final stdout read happens before the join becomes
                         // ready, but both branches can be ready in this select.
                         // Drain queued events so a fast worker cannot finish
@@ -9647,10 +9837,12 @@ pub(crate) async fn dispatch_goal_fn(
                         break outcome;
                     }
                     _ = ticker.tick() => {
+                        if !crate::goal_attempts::is_current_worker(&tracker_pool, &tracker_card_id, &tracker_claim_id, &tracker_session_id).await.unwrap_or(false) { continue; }
                         beat_receipt(&tracker_pool, &tracker_card_id).await;
                     }
                     event = output_rx.recv(), if !output_rx.is_closed() => {
                         if let Some(event) = event {
+                            if !crate::goal_attempts::is_current_worker(&tracker_pool, &tracker_card_id, &tracker_claim_id, &tracker_session_id).await.unwrap_or(false) { continue; }
                             record_worker_output(&tracker_pool, &tracker_card_id, event).await;
                         }
                     }
@@ -9891,122 +10083,8 @@ pub(crate) async fn dispatch_goal_fn(
     // 'dispatch'): worker metadata, dispatch timestamps, attempt count,
     // baseline_commit, and the column move land in one audited transaction.
     // Per-attempt worker session history for token accounting (S4).
-    let mut worker_session_ids: Vec<String> = card
-        .metadata_json
-        .get("worker_session_ids")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
-    worker_session_ids.push(session_id.clone());
-
-    // #210: the initial execution receipt for THIS attempt — worker, routing
-    // snapshot, session id, owning lifecycle, and a heartbeat seeded at dispatch.
-    // It lands atomically with the dispatch transition below; the completion
-    // tracker then beats it and stamps its terminal state.
-    let receipt = ExecutionReceipt::new(
-        worker_key.clone(),
-        session_id.clone(),
-        capability_snapshot.clone(),
-        daemon_lifecycle_id().to_string(),
-        dispatched_at.clone(),
-        next_attempt,
-    )
-    .with_process_id(process_id);
-
-    let mut patch = serde_json::Map::new();
-    patch.insert("worker_key".to_string(), serde_json::json!(worker_key));
-    // #211: record the capability/routing snapshot alongside the chosen worker,
-    // so a goal preserves what the roster looked like when it was dispatched
-    // (not just the live roster at read time).
-    patch.insert(
-        "capability_snapshot".to_string(),
-        capability_snapshot.clone(),
-    );
-    if let Ok(receipt_json) = serde_json::to_value(&receipt) {
-        patch.insert("execution_receipt".to_string(), receipt_json);
-    }
-    patch.insert(
-        "worker_session_id".to_string(),
-        serde_json::json!(session_id),
-    );
-    patch.insert(
-        "worker_session_ids".to_string(),
-        serde_json::json!(worker_session_ids),
-    );
-    patch.insert(
-        "dispatched_at".to_string(),
-        serde_json::json!(dispatched_at),
-    );
-    if card.metadata_json.get("first_dispatched_at").is_none() {
-        patch.insert(
-            "first_dispatched_at".to_string(),
-            serde_json::json!(dispatched_at),
-        );
-    }
-    patch.insert("attempt_count".to_string(), serde_json::json!(next_attempt));
-    // Tag the dispatch with the current daemon lifecycle so restart-recovery
-    // won't reclaim this goal while its in-process tracker is still alive.
-    patch.insert(
-        "dispatched_lifecycle".to_string(),
-        serde_json::json!(daemon_lifecycle_id()),
-    );
-    if let Some(ref baseline) = baseline_commit {
-        patch.insert("baseline_commit".to_string(), serde_json::json!(baseline));
-    }
-    let have_seeded_checks = seeded_checks.is_some();
-    if let Some(checks) = seeded_checks {
-        tracing::info!(
-            target: "permagentd::brain",
-            "Seeding {} completion checks onto goal '{}': {}",
-            checks_source,
-            card.title,
-            checks
-        );
-        patch.insert("completion_checks".to_string(), checks);
-    }
-    if have_seeded_checks || card.metadata_json.get("completion_checks").is_some() {
-        patch.insert(
-            "completion_checks_source".to_string(),
-            serde_json::json!(checks_source),
-        );
-    }
-    // QA 2026-09-25: spend the breaker's one escalation for this goal.
-    // QA 2026-09-26: here, once the escalated worker has actually started —
-    // not in the claim patch, which a failed spawn releases back to Ready
-    // with every key it wrote, spending the escalation on a run that never
-    // happened.
-    if zero_progress_breaker == ZeroProgressBreaker::Escalate {
-        patch.insert(
-            goal_transition::ZERO_PROGRESS_ESCALATION_USED_METADATA_KEY.to_string(),
-            serde_json::json!(true),
-        );
-    }
-
-    if let Err(error) =
-        goal_transition::finalize_dispatch_claim(&pool, card_id, &dispatch_claim_id, patch).await
-    {
-        if let Some(kill) = take_goal_worker(card_id) {
-            kill.kill();
-        }
-        let release_result = goal_transition::release_dispatch_claim(
-            &pool,
-            card_id,
-            &dispatch_claim_id,
-            &format!("Failed to finalize worker dispatch: {error}"),
-        )
-        .await;
-        return Err(match release_result {
-            Ok(()) => error.to_string(),
-            Err(release_error) => {
-                format!("{error}; additionally failed to release dispatch claim: {release_error}")
-            }
-        });
-    }
     let _ = tracker_start_tx.send(());
+    started_guard.disarm();
 
     tracing::info!(
         target: "permagentd::brain",

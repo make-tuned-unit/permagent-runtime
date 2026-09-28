@@ -41,6 +41,7 @@ pub mod doctor;
 pub mod download_manager;
 pub mod echo;
 pub mod events;
+pub mod goal_attempts;
 pub mod executable_skills;
 pub mod execution;
 pub mod finance_indicators;

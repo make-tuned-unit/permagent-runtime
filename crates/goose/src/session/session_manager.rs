@@ -2525,6 +2525,7 @@ impl SessionStorage {
                     // reason, so an upgraded database gets the table on its
                     // first boot.
                     spectral_schema::apply_harness_process_leases_schema(&self.pool).await?;
+                    crate::goal_attempts::apply_schema(&self.pool).await?;
                     // v38: first-party analytics events (#23). New table +
                     // index, additive and idempotent.
                     if version < 38 {
