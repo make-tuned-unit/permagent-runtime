@@ -3122,19 +3122,20 @@ mod saved_scan_recovery_http_tests {
     #[serial_test::serial]
     async fn saved_scan_recovery_restores_authentic_rows_and_preserves_the_ledger() {
         let home = tempfile::tempdir().unwrap();
+        let canonical_home = home.path().canonicalize().unwrap();
         let root = crate::test_support::test_root();
         let _environment = env_lock::lock_env([
-            ("HOME", Some(home.path().to_str().unwrap())),
+            ("HOME", Some(canonical_home.to_str().unwrap())),
             ("PERMAGENT_PATH_ROOT", Some(root.to_str().unwrap())),
             ("PERMAGENT_DISABLE_KEYRING", Some("true")),
         ]);
-        let cache = home.path().join("Library/Caches/Fixture");
+        let cache = canonical_home.join("Library/Caches/Fixture");
         std::fs::create_dir_all(&cache).unwrap();
         let state = permagent_daemon::state::AppState::new(true).await.unwrap();
         let manager = state.session_manager();
         let session = manager
             .create_session(
-                home.path().to_path_buf(),
+                canonical_home.clone(),
                 "Saved scan fixture".into(),
                 permagent::session::SessionType::Scheduled,
                 permagent::config::GooseMode::Auto,
@@ -3203,12 +3204,15 @@ mod saved_scan_recovery_http_tests {
         let (status, recovered) = request(&app, "POST", &format!("{base}/recover-findings")).await;
         assert_eq!(status, StatusCode::OK, "{recovered}");
         assert_eq!(recovered["ledger_state"], "valid");
-        assert_eq!(recovered["findings"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            recovered["findings"].as_array().unwrap().len(),
+            1,
+            "{recovered}"
+        );
         assert_eq!(recovered["findings"][0]["id"], "cache-1");
         assert_eq!(recovered["created_at"], "2024-09-10T20:26:40+00:00");
         assert_ne!(recovered["created_at"], recovered["recovered_at"]);
-        let ledger = home
-            .path()
+        let ledger = canonical_home
             .join(".permagent/automation/findings")
             .join(format!("{}.json", session.id));
         let bytes = std::fs::read(&ledger).unwrap();
