@@ -396,6 +396,8 @@ pub(crate) struct CandidateLineage {
     pub editing_attempts: Vec<String>,
     pub task_id: String,
     pub contract_json: String,
+    pub project_id: String,
+    pub canonical_root: PathBuf,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum LineageResolution {
@@ -435,7 +437,7 @@ async fn resolve_candidate_inner(
     goal: &str,
 ) -> Result<LineageResolution> {
     let binding = sqlx::query(
-        "SELECT authority,task_id,contract_json FROM goal_execution_bindings WHERE goal_id=?",
+        "SELECT authority,task_id,contract_json,project_id,canonical_root,root_status FROM goal_execution_bindings WHERE goal_id=?",
     )
     .bind(goal)
     .fetch_optional(&mut *connection)
@@ -516,11 +518,21 @@ async fn resolve_candidate_inner(
     if !status.status.success() || !status.stdout.is_empty() {
         bail!("Sealed candidate worktree is dirty");
     }
+    if binding.try_get::<String, _>("root_status")? != "resolved" {
+        bail!("Code candidate has no resolved native root");
+    }
+    let canonical_root = PathBuf::from(binding.try_get::<String, _>("canonical_root")?);
+    if std::fs::canonicalize(&canonical_root)? != canonical_root {
+        bail!("Native root identity changed");
+    }
+    let project_id: String = binding.try_get("project_id")?;
     Ok(LineageResolution::Verified(CandidateLineage {
         candidate,
         editing_attempts,
         task_id,
         contract_json,
+        project_id,
+        canonical_root,
     }))
 }
 
