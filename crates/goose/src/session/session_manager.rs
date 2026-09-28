@@ -599,6 +599,11 @@ pub enum CostReservationOutcome {
     AlreadySettled {
         reservation_id: String,
     },
+    /// Exact invocation identity may already have reached transport. Refuse
+    /// replay while retaining the existing pending monetary hold unchanged.
+    AlreadyDispatched {
+        reservation_id: String,
+    },
     NeedsGate {
         scope: crate::cost_router::budget::BudgetScope,
         spent_usd: f64,
@@ -3793,8 +3798,8 @@ impl SessionStorage {
             } else {
                 if identity.is_some() && state == "pending" && dispatch_state != "not_started" {
                     tx.commit().await?;
-                    return Ok(CostReservationOutcome::Unknown {
-                        reason: "native provider invocation may already have been dispatched; refusing replay".into(),
+                    return Ok(CostReservationOutcome::AlreadyDispatched {
+                        reservation_id: existing_id,
                     });
                 }
                 tx.commit().await?;
@@ -5325,6 +5330,7 @@ mod tests {
         sm: &SessionManager,
         root: &Path,
     ) -> (Session, String, crate::goal_attempts::WorkerBinding) {
+        let root = std::fs::canonicalize(root).unwrap();
         let coordinator = sm
             .create_session(
                 root.to_path_buf(),
@@ -5395,7 +5401,7 @@ mod tests {
                 claim_id: claim_id.clone(),
                 lifecycle_id: format!("lifecycle-{claim_id}"),
                 worker_key: "test-worker".to_string(),
-                execution_root: None,
+                execution_root: Some(root.to_string_lossy().into_owned()),
                 input_head: None,
             },
         )

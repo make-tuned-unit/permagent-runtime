@@ -2260,6 +2260,11 @@ pub(crate) async fn reserve_provider_invocation_for_model(
             context.reservation_id = Some(reservation_id);
             Ok(context)
         }
+        crate::session::CostReservationOutcome::AlreadyDispatched { .. } => {
+            Err(ProviderAuthorizationFailure::Unknown {
+                reason: "provider invocation may already have reached transport; refusing replay while retaining its hold".into(),
+            })
+        }
         crate::session::CostReservationOutcome::AlreadySettled { .. } => {
             Err(ProviderAuthorizationFailure::Unknown {
                 reason: "provider invocation identity was already settled; refusing replay"
