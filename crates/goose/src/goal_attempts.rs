@@ -318,7 +318,8 @@ pub(crate) async fn is_current_worker(
 ) -> Result<bool> {
     Ok(sqlx::query_scalar::<_, i64>(
         "SELECT COUNT(*) FROM goal_attempts a JOIN cards c ON c.id=a.goal_id
-        WHERE a.goal_id=? AND a.claim_id=? AND a.worker_session_id=? AND a.execution_state='started'
+        JOIN board_columns bc ON bc.id=c.column_id
+        WHERE bc.state_binding='in_progress' AND a.goal_id=? AND a.claim_id=? AND a.worker_session_id=? AND a.execution_state='started'
         AND json_extract(c.metadata_json,'$.dispatch_claim_id')=?",
     )
     .bind(goal)

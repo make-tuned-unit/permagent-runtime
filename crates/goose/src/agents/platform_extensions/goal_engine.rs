@@ -571,8 +571,8 @@ impl PreparedWork {
 impl Drop for PreparedWork {
     fn drop(&mut self) {
         if let Some(cleanup) = self.cleanup.take() {
+            cleanup.kill_owned();
             if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-                cleanup.kill_owned();
                 runtime.spawn(cleanup.discard(true));
             }
         }

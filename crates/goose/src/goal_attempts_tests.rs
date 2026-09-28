@@ -410,6 +410,31 @@ async fn journal_identity_gates_finalize_start_and_late_callbacks() {
         .unwrap()
         .is_none());
 
+    // Leaving the active column revokes callbacks even if the claim projection
+    // and the pre-terminal-observation journal state are unchanged.
+    sqlx::query("INSERT INTO board_columns(id,state_binding) VALUES('review','review')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE cards SET column_id='review' WHERE id='goal-1'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(
+        !is_current_worker(&pool, "goal-1", "claim-1", "worker-session")
+            .await
+            .unwrap()
+    );
+    sqlx::query("UPDATE cards SET column_id='doing' WHERE id='goal-1'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(
+        is_current_worker(&pool, "goal-1", "claim-1", "worker-session")
+            .await
+            .unwrap()
+    );
+
     // Mutable card metadata alone cannot create or impersonate an attempt.
     sqlx::query("UPDATE cards SET metadata_json=? WHERE id='goal-1'")
         .bind(json!({"dispatch_claim_id":"forged-claim"}).to_string())
