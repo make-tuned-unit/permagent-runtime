@@ -1648,6 +1648,62 @@ pub fn assign_reviewer_at_least(
     worker: Option<(&str, &str)>,
     available: &[AvailableModel],
 ) -> ReviewerAssignment {
+    let worker_family = worker.map(|(p, m)| super::reviewer_pick::family_of(p, m));
+    assign_reviewer_with_family_policy(
+        facts,
+        minimum,
+        minimum_reason,
+        worker_family.clone(),
+        available,
+        |provider, model| {
+            worker_family
+                .as_ref()
+                .is_some_and(|family| super::reviewer_pick::family_of(provider, model) != *family)
+        },
+    )
+}
+
+/// Native automatic review assignment excludes the complete trusted contributor
+/// set. Unknown history never becomes an independent assignment. This is static
+/// capability/cost ranking; actual route, budget and candidate revalidation are
+/// still required at the physical call boundary.
+pub fn assign_reviewer_for_contributors(
+    facts: ReviewFacts,
+    minimum: ReviewComplexity,
+    minimum_reason: Option<&str>,
+    contributors: super::reviewer_pick::ContributorFamilies<'_>,
+    available: &[AvailableModel],
+) -> ReviewerAssignment {
+    let (known, display) = match contributors {
+        super::reviewer_pick::ContributorFamilies::Known(families) => (
+            Some(families),
+            Some(families.iter().cloned().collect::<Vec<_>>().join(",")),
+        ),
+        super::reviewer_pick::ContributorFamilies::Unknown => (None, None),
+    };
+    assign_reviewer_with_family_policy(
+        facts,
+        minimum,
+        minimum_reason,
+        display,
+        available,
+        |provider, model| {
+            known.is_some_and(|families| {
+                super::reviewer_pick::known_physical_family_of(provider, model)
+                    .is_some_and(|family| !families.contains(&family))
+            })
+        },
+    )
+}
+
+fn assign_reviewer_with_family_policy(
+    facts: ReviewFacts,
+    minimum: ReviewComplexity,
+    minimum_reason: Option<&str>,
+    worker_family: Option<String>,
+    available: &[AvailableModel],
+    family_eligible: impl Fn(&str, &str) -> bool,
+) -> ReviewerAssignment {
     let mut verdict = assess_review_complexity(&facts);
     if verdict.complexity < minimum {
         verdict.complexity = minimum;
@@ -1659,8 +1715,6 @@ pub fn assign_reviewer_at_least(
         );
     }
     let floor = verdict.floor;
-    let worker_family = worker.map(|(p, m)| super::reviewer_pick::family_of(p, m));
-
     struct Rated {
         provider: String,
         model: String,
@@ -1685,10 +1739,7 @@ pub fn assign_reviewer_at_least(
             k,
         });
     }
-    let is_eligible_family = |r: &Rated| match &worker_family {
-        Some(wf) => &r.family != wf,
-        None => false,
-    };
+    let is_eligible_family = |r: &Rated| family_eligible(&r.provider, &r.model);
     let is_retired = |r: &Rated| super::reviewer_pick::model_is_retired(&r.provider, &r.model);
     let pool: Vec<&Rated> = rated
         .iter()
@@ -1846,6 +1897,28 @@ pub fn escalate_reviewer_after_uncertain(
     worker: Option<(&str, &str)>,
     available: &[AvailableModel],
 ) -> ReviewerAssignment {
+    escalate_reviewer_with_assignment(first, answered, available, |facts, tier, note, pool| {
+        assign_reviewer_at_least(facts, tier, Some(note), worker, pool)
+    })
+}
+
+pub fn escalate_reviewer_for_contributors(
+    first: &ReviewerAssignment,
+    answered: (&str, &str),
+    contributors: super::reviewer_pick::ContributorFamilies<'_>,
+    available: &[AvailableModel],
+) -> ReviewerAssignment {
+    escalate_reviewer_with_assignment(first, answered, available, |facts, tier, note, pool| {
+        assign_reviewer_for_contributors(facts, tier, Some(note), contributors, pool)
+    })
+}
+
+fn escalate_reviewer_with_assignment(
+    first: &ReviewerAssignment,
+    answered: (&str, &str),
+    available: &[AvailableModel],
+    assign: impl Fn(ReviewFacts, ReviewComplexity, &str, &[AvailableModel]) -> ReviewerAssignment,
+) -> ReviewerAssignment {
     let answered_label = format!("{}/{}", answered.0, answered.1);
     let answered_strength = lookup(answered.0, answered.1)
         .map(|k| k.orchestration_strength)
@@ -1871,13 +1944,7 @@ pub fn escalate_reviewer_after_uncertain(
     );
 
     if let Some(tier) = next_review_tier(first.complexity) {
-        let mut next = assign_reviewer_at_least(
-            first.facts.clone(),
-            tier,
-            Some(&escalation_note),
-            worker,
-            &stronger,
-        );
+        let mut next = assign(first.facts.clone(), tier, &escalation_note, &stronger);
         if next.pick_provider.is_some() {
             next.why = format!("{escalation_note}: {}", next.why);
             return next;
@@ -1886,11 +1953,10 @@ pub fn escalate_reviewer_after_uncertain(
 
     // At COMPLEX (or nothing stronger clears the next floor): the strongest
     // cross-family model above the reviewer that was unsure.
-    let mut top = assign_reviewer_at_least(
+    let mut top = assign(
         first.facts.clone(),
         ReviewComplexity::Complex,
-        Some(&escalation_note),
-        worker,
+        &escalation_note,
         &stronger,
     );
     let eligible = |c: &ReviewerCandidate| {
@@ -2901,6 +2967,50 @@ diff --git a/src/api.rs b/src/api.rs\n\
             .iter()
             .map(|(p, m)| AvailableModel::new(p, m))
             .collect()
+    }
+
+    #[test]
+    fn native_reviewer_assignment_and_escalation_exclude_complete_contributor_set() {
+        let contributors =
+            std::collections::BTreeSet::from(["openai".to_string(), "anthropic".to_string()]);
+        let available = avail(&[
+            ("openai", "gpt-5.4-mini"),
+            ("anthropic", "claude-sonnet-5"),
+            ("minimax", "MiniMax-M2.5"),
+            ("google", "gemini-3-pro"),
+        ]);
+        let first = assign_reviewer_for_contributors(
+            ReviewFacts::from_diff(ROUTINE_DIFF, 0),
+            ReviewComplexity::Routine,
+            None,
+            super::super::reviewer_pick::ContributorFamilies::Known(&contributors),
+            &available,
+        );
+        let pick = first
+            .pick_role_model()
+            .expect("real known eligible cross-family row");
+        assert!(!contributors.contains(
+            &super::super::reviewer_pick::known_physical_family_of(&pick.provider, &pick.model)
+                .unwrap()
+        ));
+        let next = escalate_reviewer_for_contributors(
+            &first,
+            (&pick.provider, &pick.model),
+            super::super::reviewer_pick::ContributorFamilies::Known(&contributors),
+            &available,
+        );
+        assert!(
+            next.pick_role_model().is_none(),
+            "only contributor families are stronger than this pick; escalation must park"
+        );
+        let unknown = assign_reviewer_for_contributors(
+            ReviewFacts::from_diff(ROUTINE_DIFF, 0),
+            ReviewComplexity::Routine,
+            None,
+            super::super::reviewer_pick::ContributorFamilies::Unknown,
+            &available,
+        );
+        assert!(unknown.pick_role_model().is_none());
     }
 
     #[test]

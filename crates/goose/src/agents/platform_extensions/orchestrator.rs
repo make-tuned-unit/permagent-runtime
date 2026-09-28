@@ -27014,6 +27014,191 @@ enum ReviewerCallFailure {
     TimedOut,
 }
 
+#[derive(Clone)]
+struct NativeReviewerPolicy {
+    pool: sqlx::Pool<sqlx::Sqlite>,
+    lineage: crate::goal_candidates::CandidateLineage,
+    families: std::collections::BTreeSet<String>,
+    floor: f64,
+    invocation_ids: std::collections::BTreeSet<String>,
+}
+
+impl NativeReviewerPolicy {
+    async fn check_dispatch(
+        &self,
+        provider: &str,
+        model: &str,
+    ) -> Result<(), crate::providers::errors::ProviderError> {
+        use crate::providers::errors::ProviderError;
+        validate_native_reviewer_route(&self.families, self.floor, provider, model)
+            .map_err(ProviderError::NotSent)?;
+        crate::goal_candidates::revalidate_candidate(&self.pool, &self.lineage)
+            .await
+            .map_err(|error| {
+                ProviderError::NotSent(format!(
+                    "native review candidate changed before physical dispatch: {error}"
+                ))
+            })?;
+        match crate::goal_candidates::contributor_evidence(&self.pool, &self.lineage).await
+            .map_err(|error| ProviderError::NotSent(error.to_string()))? {
+            crate::goal_candidates::ContributorEvidence::Known { families, invocation_ids, .. }
+                if families == self.families && invocation_ids == self.invocation_ids => Ok(()),
+            _ => Err(ProviderError::NotSent("native contributor history changed or became unknown before physical review dispatch".into())),
+        }
+    }
+}
+
+async fn create_native_reviewer_session(
+    manager: &SessionManager,
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    lineage: &crate::goal_candidates::CandidateLineage,
+) -> anyhow::Result<Session> {
+    crate::goal_candidates::revalidate_candidate(pool, lineage).await?;
+    let contract: serde_json::Value = serde_json::from_str(&lineage.contract_json)?;
+    if contract.get("task_id").and_then(serde_json::Value::as_str) != Some(lineage.task_id.as_str())
+    {
+        return Err(anyhow::anyhow!(
+            "native reviewer contract is not bound to the original task"
+        ));
+    }
+    create_frozen_reviewer_child(
+        manager,
+        &lineage.candidate.worker_session_id,
+        &lineage.candidate.worktree,
+        &lineage.task_id,
+        &lineage.candidate.goal_id,
+        contract,
+    )
+    .await
+}
+
+async fn create_frozen_reviewer_child(
+    manager: &SessionManager,
+    parent: &str,
+    worktree: &std::path::Path,
+    task: &str,
+    goal: &str,
+    contract: serde_json::Value,
+) -> anyhow::Result<Session> {
+    // Existing child creation copies only budget_task, not grants or attempts.
+    // Override that inherited value with the protected original task: the
+    // parent may have since begun a different task. Never mint a new budget.
+    let child = manager
+        .create_session_with_parent(
+            Some(parent),
+            worktree.to_path_buf(),
+            format!("Independent native review {goal}"),
+            SessionType::Hidden,
+            GooseMode::Auto,
+        )
+        .await?;
+    let mut data = crate::session::ExtensionData::new();
+    data.set_extension_state(
+        crate::session::BUDGET_TASK_EXTENSION_NAME,
+        crate::session::BUDGET_TASK_EXTENSION_VERSION,
+        serde_json::json!(task),
+    );
+    data.set_extension_state(
+        crate::session::GOAL_ID_EXTENSION_NAME,
+        crate::session::GOAL_ID_EXTENSION_VERSION,
+        serde_json::json!(goal),
+    );
+    data.set_extension_state("budget_task_contract", "v1", contract);
+    manager
+        .update(&child.id)
+        .extension_data(data)
+        .apply()
+        .await?;
+    manager.get_session(&child.id, false).await
+}
+
+fn validate_native_reviewer_route(
+    families: &std::collections::BTreeSet<String>,
+    floor: f64,
+    provider: &str,
+    model: &str,
+) -> Result<(), String> {
+    let family = crate::cost_router::reviewer_pick::known_physical_family_of(provider, model)
+        .ok_or_else(|| {
+            format!("the actual reviewer route {provider}/{model} has no trusted physical family")
+        })?;
+    if families.contains(&family) {
+        return Err(format!(
+            "the actual reviewer route {provider}/{model} shares contributor family {family}"
+        ));
+    }
+    let knowledge = crate::cost_router::knowledge::lookup(provider, model)
+        .ok_or_else(|| "the actual reviewer capability is unknown".to_string())?;
+    if crate::cost_router::reviewer_pick::model_is_retired(provider, model)
+        || knowledge.orchestration_strength + 1e-9
+            < floor - crate::cost_router::recommend::MATERIAL_FLOOR_SHORTFALL
+    {
+        return Err(format!("the actual reviewer route {provider}/{model} does not meet this review's capability floor"));
+    }
+    Ok(())
+}
+
+/// Shared production seam for native review calls and deterministic provider
+/// stubs. Validation happens before any accounted dispatch; this deliberately
+/// uses the selected full model, even when the provider advertises a fast model.
+#[allow(clippy::too_many_arguments)]
+async fn complete_native_reviewer_on_checked_route(
+    manager: std::sync::Arc<SessionManager>,
+    session: Session,
+    provider: std::sync::Arc<dyn crate::providers::base::Provider>,
+    system: &str,
+    messages: &[Message],
+    families: &std::collections::BTreeSet<String>,
+    floor: f64,
+) -> anyhow::Result<(Message, crate::providers::base::ProviderUsage)> {
+    let actual_provider = provider.get_name().to_string();
+    let actual_model = provider.get_model_config().model_name;
+    validate_native_reviewer_route(families, floor, &actual_provider, &actual_model)
+        .map_err(anyhow::Error::msg)?;
+    let actual_role = crate::cost_router::role_map::RoleModel {
+        provider: actual_provider.clone(),
+        model: actual_model.clone(),
+    };
+    let selection = crate::cost_router::reviewer_pick::select_reviewer_for_contributors(
+        crate::cost_router::reviewer_pick::ContributorFamilies::Known(families),
+        Some(&actual_role),
+        None,
+        &[],
+        0,
+    );
+    let pick = selection
+        .pick()
+        .ok_or_else(|| anyhow::anyhow!("the actual reviewer route is not eligible"))?;
+    let cfg = crate::cost_router::budget::load_budget_config();
+    let verdict = crate::cost_router::budget_verdict(0.0, 0.0, &cfg);
+    if let crate::cost_router::SpendDecision::Refuse { reason } =
+        crate::cost_router::reviewer_spend_gate(pick, &verdict)
+    {
+        return Err(anyhow::anyhow!(reason));
+    }
+    let (response, usage) = AccountedFastCompletion::complete_accounted_with_purpose(
+        manager,
+        session,
+        provider,
+        system,
+        messages,
+        &[],
+        false,
+        CallPurpose::Verification,
+    )
+    .await?;
+    // A returned different/unknown model cannot attest independent approval.
+    // Accounting has already settled the real usage; never erase that cost.
+    validate_native_reviewer_route(families, floor, &actual_provider, &usage.model)
+        .map_err(anyhow::Error::msg)?;
+    if crate::cost_router::knowledge::lookup(&actual_provider, &actual_model).map(|k| k.model)
+        != crate::cost_router::knowledge::lookup(&actual_provider, &usage.model).map(|k| k.model)
+    {
+        return Err(anyhow::anyhow!("reviewer returned a different model than the checked route; settled usage is retained but cannot independently approve this candidate"));
+    }
+    Ok((response, usage))
+}
+
 /// Build the model config + provider for `(provider_id, model_id)` and run
 /// ONE salvage-reviewer completion against it, classifying any failure for
 /// the caller's retry decision. Shared by the initial reviewer pick and the
@@ -27028,7 +27213,14 @@ async fn call_reviewer_provider(
     prompt: &str,
     timeout: std::time::Duration,
     system_prompt: &str,
+    native_policy: Option<&NativeReviewerPolicy>,
 ) -> Result<crate::conversation::message::Message, ReviewerCallFailure> {
+    if let Some(policy) = native_policy {
+        policy
+            .check_dispatch(provider_id, model_id)
+            .await
+            .map_err(|error| ReviewerCallFailure::Other(error.to_string()))?;
+    }
     let model_config = crate::model::ModelConfig::new(model_id)
         .map(|c| c.with_canonical_limits(provider_id))
         .map_err(|e| {
@@ -27050,25 +27242,65 @@ async fn call_reviewer_provider(
             }
         })?;
 
+    if let Some(policy) = native_policy {
+        if provider.get_name() != provider_id || provider.get_model_config().model_name != model_id
+        {
+            return Err(ReviewerCallFailure::Other("reviewer adapter metadata changed the selected route; automatic review cannot attribute it safely".into()));
+        }
+        policy
+            .check_dispatch(provider.get_name(), &provider.get_model_config().model_name)
+            .await
+            .map_err(|error| ReviewerCallFailure::Other(error.to_string()))?;
+    }
     let user_message = Message::user().with_text(prompt);
 
     // 2026-09-25 DAG K cost fix (HARNESS_COST_TRACE.md Q1): the independent
     // reviewer's own call is exactly `CallPurpose::Verification`'s doc
     // comment ("a call whose job is to check other work") — tag it so it
     // stops falling into `unknown`.
-    let completion = tokio::time::timeout(
-        timeout,
-        AccountedFastCompletion::complete_fast_accounted_with_purpose(
-            std::sync::Arc::new(SessionManager::instance()),
-            session,
-            provider,
-            system_prompt,
-            &[user_message],
-            &[],
-            false,
-            CallPurpose::Verification,
-        ),
-    )
+    let completion = tokio::time::timeout(timeout, async {
+        if native_policy.is_some() {
+            // Full selected model; fast accounting substitutes the model
+            // after route validation and can perform another fallback.
+            let policy = native_policy.expect("native branch has policy");
+            let gate_policy = policy.clone();
+            let gate_provider = provider.get_name().to_string();
+            let gate_model = provider.get_model_config().model_name;
+            let gate: crate::cost_router::authorized_attempts::NativePretransportGate =
+                Arc::new(move || {
+                    let policy = gate_policy.clone();
+                    let provider = gate_provider.clone();
+                    let model = gate_model.clone();
+                    Box::pin(async move { policy.check_dispatch(&provider, &model).await })
+                });
+            crate::cost_router::authorized_attempts::with_native_pretransport_gate(
+                gate,
+                complete_native_reviewer_on_checked_route(
+                    std::sync::Arc::new(SessionManager::instance()),
+                    session,
+                    provider,
+                    system_prompt,
+                    &[user_message],
+                    &policy.families,
+                    policy.floor,
+                ),
+            )
+            .await
+        } else {
+            // Legacy advisory callers retain their existing fast behavior.
+            AccountedFastCompletion::complete_fast_accounted_with_purpose(
+                std::sync::Arc::new(SessionManager::instance()),
+                session,
+                provider,
+                system_prompt,
+                &[user_message],
+                &[],
+                false,
+                CallPurpose::Verification,
+            )
+            .await
+        }
+    })
     .await;
 
     match completion {
@@ -27106,6 +27338,7 @@ async fn call_reviewer_provider_checked(
     prompt: &str,
     timeout: std::time::Duration,
     system_prompt: &str,
+    native_policy: Option<&NativeReviewerPolicy>,
 ) -> Result<crate::conversation::message::Message, ReviewerCallFailure> {
     if let Some(sid) = session_id {
         if let Some(class) = crate::cost_router::provider_circuit::reason_if_open(sid, provider_id)
@@ -27123,6 +27356,7 @@ async fn call_reviewer_provider_checked(
         prompt,
         timeout,
         system_prompt,
+        native_policy,
     )
     .await
 }
@@ -27255,6 +27489,7 @@ async fn call_reviewer_provider_with_timeout_retry(
         call_timeout,
         budget,
         crate::cost_router::REVIEW_SYSTEM_PROMPT.to_string(),
+        None,
     )
     .await
 }
@@ -27268,6 +27503,7 @@ async fn call_reviewer_provider_with_timeout_retry_and_system(
     call_timeout: std::time::Duration,
     budget: &ReviewTimeBudget,
     system_prompt: String,
+    native_policy: Option<&NativeReviewerPolicy>,
 ) -> ReviewCycleOutcome {
     run_reviewer_call_cycle(call_timeout, budget, move |attempt_timeout| {
         let session = session.clone();
@@ -27281,6 +27517,7 @@ async fn call_reviewer_provider_with_timeout_retry_and_system(
                 prompt,
                 attempt_timeout,
                 &system_prompt,
+                native_policy,
             )
             .await
         }
@@ -27949,6 +28186,7 @@ async fn complete_review_after_context_requests(
     verification: Option<&GoalReviewVerification>,
     call_timeout: std::time::Duration,
     budget: &ReviewTimeBudget,
+    native_policy: &NativeReviewerPolicy,
 ) -> Result<(String, u32, String), String> {
     let system_prompt = format!(
         "{}\n\n{}",
@@ -27990,6 +28228,7 @@ async fn complete_review_after_context_requests(
                     call_timeout,
                     budget,
                     system_prompt,
+                    Some(native_policy),
                 )
                 .await
                 {
@@ -28034,7 +28273,7 @@ async fn dispatch_cross_family_reviewer_for_salvage(
     baseline: &str,
     verify_note: &str,
     calling_session_id: Option<&str>,
-) -> ReviewerGateOutcome {
+) -> GoalReviewRun {
     // Lane R22g: the diff-size check runs BEFORE any reviewer-selection
     // work — including the worker-session lookup that picks it (`select_
     // reviewer` needs the AUTHOR's family, read off the goal's worker
@@ -28059,14 +28298,14 @@ async fn dispatch_cross_family_reviewer_for_salvage(
             head.trim().to_string()
         }
         Ok(_) => {
-            return ReviewerGateOutcome::Refused {
+            return GoalReviewRun::single(ReviewerGateOutcome::Refused {
                 reason: "the salvage candidate did not resolve to a full commit SHA".into(),
-            }
+            })
         }
         Err(error) => {
-            return ReviewerGateOutcome::Refused {
+            return GoalReviewRun::single(ReviewerGateOutcome::Refused {
                 reason: format!("could not pin the salvage candidate commit: {error}"),
-            }
+            })
         }
     };
     let diff_range_base = match resolve_trusted_landing_root(pool, card, worktree_path).await {
@@ -28091,7 +28330,6 @@ async fn dispatch_cross_family_reviewer_for_salvage(
         calling_session_id,
     )
     .await
-    .outcome
 }
 
 /// The cross-family reviewer gate on a goal's diff, shared by the salvage path
@@ -28115,19 +28353,6 @@ async fn review_goal_diff_with_cross_family_reviewer(
             reason: format!("the independent review has no valid pinned candidate SHA: {reason}"),
         });
     }
-    // Refuse before provider selection when a saved contract cannot be shown
-    // in full. A generic build/test criterion is not its replacement.
-    let criteria = collect_acceptance_criteria(&card.metadata_json, &card.description);
-    let task_spec = match goal_review_task_spec(
-        &card.title,
-        &criteria,
-        &card.metadata_json,
-        matches!(kind, GoalReviewKind::Salvage { .. }),
-    ) {
-        Ok(spec) => spec,
-        Err(reason) => return GoalReviewRun::single(ReviewerGateOutcome::Refused { reason }),
-    };
-    let changed_lines = count_diff_changed_lines(&diff);
     // Lane R22c-e (G26 MED-2): character count, not `diff.len()` (bytes) —
     // `git diff` output is arbitrary UTF-8, so a byte-length comparison
     // could refuse a diff that is actually under the character window (or,
@@ -28144,39 +28369,109 @@ async fn review_goal_diff_with_cross_family_reviewer(
             ),
         });
     }
-    let diff_for_prompt = diff;
 
-    let Some(worker_session_id) = card
-        .metadata_json
-        .get("worker_session_id")
-        .and_then(|v| v.as_str())
-        .map(str::to_string)
-    else {
-        return GoalReviewRun::single(ReviewerGateOutcome::Refused {
-            reason: "no worker session recorded to attribute the review to".to_string(),
-        });
-    };
-    let manager = SessionManager::instance();
-    let session = match manager.get_session(&worker_session_id, false).await {
-        Ok(s) => s,
-        Err(e) => {
+    // Never attribute a candidate to only the latest worker's configured model.
+    // Native lineage binds the exact original candidate and every editing attempt.
+    let lineage = match crate::goal_candidates::resolve_candidate(pool, card).await {
+        Ok(crate::goal_candidates::LineageResolution::Verified(lineage)) => lineage,
+        Ok(crate::goal_candidates::LineageResolution::NoGit) => {
             return GoalReviewRun::single(ReviewerGateOutcome::Refused {
-                reason: format!(
-                    "the goal's worker session could not be read to pick an independent \
-                     reviewer: {e}"
-                ),
-            });
+                reason: "native independent diff review requires a Git candidate".into(),
+            })
+        }
+        Ok(crate::goal_candidates::LineageResolution::Unverifiable(reason)) => {
+            return GoalReviewRun::single(ReviewerGateOutcome::Refused { reason })
+        }
+        Err(error) => {
+            return GoalReviewRun::single(ReviewerGateOutcome::Refused {
+                reason: error.to_string(),
+            })
         }
     };
-    let worker = match (
-        session.provider_name.as_deref(),
-        session.model_config.as_ref().map(|m| m.model_name.as_str()),
+    if lineage.candidate.head != reviewed_head
+        || !matches!((std::fs::canonicalize(context_dir), std::fs::canonicalize(&lineage.candidate.worktree)), (Ok(input), Ok(bound)) if input == bound)
+    {
+        return GoalReviewRun::single(ReviewerGateOutcome::Refused {
+            reason: "review input does not match the protected original native candidate".into(),
+        });
+    }
+    let native_diff = match git_in_worktree(
+        &lineage.candidate.worktree,
+        &[
+            "diff",
+            &format!(
+                "{}..{}",
+                lineage.candidate.trunk_head, lineage.candidate.head
+            ),
+        ],
+    )
+    .await
+    {
+        Ok(diff) => diff,
+        Err(error) => {
+            return GoalReviewRun::single(ReviewerGateOutcome::Refused {
+                reason: format!("could not read whole native candidate diff: {error}"),
+            })
+        }
+    };
+    if native_diff.chars().count() > REVIEWER_GATE_MAX_DIFF_CHARS {
+        return GoalReviewRun::single(ReviewerGateOutcome::DiffTooLarge {
+            reason: "the whole native candidate exceeds the independent review window".into(),
+        });
+    }
+    let changed_lines = count_diff_changed_lines(&native_diff);
+    let diff_for_prompt = native_diff;
+    let native_contract: serde_json::Value = match serde_json::from_str(&lineage.contract_json) {
+        Ok(contract) => contract,
+        Err(error) => {
+            return GoalReviewRun::single(ReviewerGateOutcome::Refused {
+                reason: format!("native original task contract could not be decoded: {error}"),
+            })
+        }
+    };
+    let mut review_metadata = card.metadata_json.clone();
+    review_metadata[TASK_CONTRACT_METADATA_KEY] = native_contract;
+    let criteria = collect_acceptance_criteria(&review_metadata, &card.description);
+    let task_spec = match goal_review_task_spec(
+        &card.title,
+        &criteria,
+        &review_metadata,
+        matches!(kind, GoalReviewKind::Salvage { .. }),
     ) {
-        (Some(p), Some(m)) if !p.is_empty() && !m.is_empty() => {
-            Some((p.to_string(), m.to_string()))
-        }
-        _ => None,
+        Ok(spec) => spec,
+        Err(reason) => return GoalReviewRun::single(ReviewerGateOutcome::Refused { reason }),
     };
+    let (families, invocation_ids) =
+        match crate::goal_candidates::contributor_evidence(pool, &lineage).await {
+            Ok(crate::goal_candidates::ContributorEvidence::Known {
+                families,
+                invocation_ids,
+                ..
+            }) => (families, invocation_ids),
+            Ok(crate::goal_candidates::ContributorEvidence::Unknown(reason)) => {
+                return GoalReviewRun::single(ReviewerGateOutcome::Refused { reason })
+            }
+            Err(error) => {
+                return GoalReviewRun::single(ReviewerGateOutcome::Refused {
+                    reason: error.to_string(),
+                })
+            }
+        };
+    if let Err(error) = crate::goal_candidates::revalidate_candidate(pool, &lineage).await {
+        return GoalReviewRun::single(ReviewerGateOutcome::Refused {
+            reason: error.to_string(),
+        });
+    }
+    let worker_session_id = lineage.candidate.worker_session_id.clone();
+    let session =
+        match create_native_reviewer_session(&SessionManager::instance(), pool, &lineage).await {
+            Ok(session) => session,
+            Err(error) => {
+                return GoalReviewRun::single(ReviewerGateOutcome::Refused {
+                    reason: error.to_string(),
+                })
+            }
+        };
 
     // Ruling 2026-09-17 (reviewer selection): "it is fine to use it if it is
     // objectively true that its review will be magnitudes better than a cheaper
@@ -28194,15 +28489,30 @@ async fn review_goal_diff_with_cross_family_reviewer(
         .map(|e| e.call_sites.len())
         .sum();
     let available = crate::cost_router::discover_available_models_async().await;
-    let assignment = crate::cost_router::recommend::assign_reviewer(
+    let assignment = crate::cost_router::recommend::assign_reviewer_for_contributors(
         crate::cost_router::recommend::ReviewFacts::from_diff(
             &diff_for_prompt,
             enumerated_call_sites,
         ),
-        worker.as_ref().map(|(p, m)| (p.as_str(), m.as_str())),
+        crate::cost_router::recommend::ReviewComplexity::Routine,
+        None,
+        crate::cost_router::reviewer_pick::ContributorFamilies::Known(&families),
         &available,
     );
     let assigned = assignment.pick_role_model();
+    let native_policy = NativeReviewerPolicy {
+        pool: pool.clone(),
+        lineage,
+        families,
+        invocation_ids,
+        floor: assignment.floor.max(
+            if changed_lines > crate::cost_router::reviewer_pick::SMALL_DIFF_LINES {
+                crate::cost_router::reviewer_pick::REVIEWER_STRONG_ORCHESTRATION
+            } else {
+                crate::cost_router::reviewer_pick::REVIEWER_MIN_ORCHESTRATION
+            },
+        ),
+    };
 
     // The operator's explicit REVIEW mapping still wins (`select_reviewer`'s
     // step 1); otherwise the assignment's pick rides the derived slot. With no
@@ -28211,8 +28521,8 @@ async fn review_goal_diff_with_cross_family_reviewer(
     let configured = crate::cost_router::role_model(crate::cost_router::WorkflowRole::Review);
     let reviewer_pool: &[crate::cost_router::AvailableModel] =
         if assigned.is_some() { &available } else { &[] };
-    let selection = crate::cost_router::select_reviewer(
-        worker.as_ref().map(|(p, m)| (p.as_str(), m.as_str())),
+    let selection = crate::cost_router::reviewer_pick::select_reviewer_for_contributors(
+        crate::cost_router::reviewer_pick::ContributorFamilies::Known(&native_policy.families),
         configured.as_ref(),
         assigned.as_ref(),
         reviewer_pool,
@@ -28306,6 +28616,7 @@ async fn review_goal_diff_with_cross_family_reviewer(
         call_timeout,
         &budget,
         goal_review_system_prompt.clone(),
+        Some(&native_policy),
     )
     .await
     {
@@ -28327,6 +28638,7 @@ async fn review_goal_diff_with_cross_family_reviewer(
                     verification,
                     call_timeout,
                     &budget,
+                    &native_policy,
                 )
                 .await
                 {
@@ -28397,6 +28709,7 @@ async fn review_goal_diff_with_cross_family_reviewer(
                         call_timeout,
                         &budget,
                         goal_review_system_prompt.clone(),
+                        Some(&native_policy),
                     )
                     .await
                     {
@@ -28417,6 +28730,7 @@ async fn review_goal_diff_with_cross_family_reviewer(
                             verification,
                             call_timeout,
                             &budget,
+                            &native_policy,
                         )
                         .await
                         {
@@ -28479,23 +28793,60 @@ async fn review_goal_diff_with_cross_family_reviewer(
     };
 
     let escalate_uncertain = matches!(kind, GoalReviewKind::Verified { .. });
-    let worker_ref = worker.as_ref().map(|(p, m)| (p.as_str(), m.as_str()));
-    finish_goal_review_with_escalation(first, escalate_uncertain, |provider, model| {
-        escalated_goal_review(
-            &assignment,
-            (provider, model),
-            worker_ref,
-            &available,
-            changed_lines,
-            session.clone(),
-            &prompt,
-            &review_context.call_site_enumerations,
-            calling_session_id,
-            call_timeout,
-            &budget,
+    let mut run =
+        finish_goal_review_with_escalation(first, escalate_uncertain, |provider, model| {
+            escalated_goal_review(
+                &assignment,
+                (provider, model),
+                &native_policy,
+                &available,
+                changed_lines,
+                session.clone(),
+                &prompt,
+                &review_context.call_site_enumerations,
+                calling_session_id,
+                call_timeout,
+                &budget,
+            )
+        })
+        .await;
+    // An actual answered review carries an opaque native fence, never a
+    // model-writable card PASS. Recheck without replacing the approved scope.
+    if !run.reviews.is_empty() {
+        let expected = match crate::goal_candidates::revalidate_candidate(
+            pool,
+            &native_policy.lineage,
         )
-    })
-    .await
+        .await
+        {
+            Ok(expected) => expected,
+            Err(error) => {
+                return GoalReviewRun::single(ReviewerGateOutcome::Refused {
+                    reason: error.to_string(),
+                })
+            }
+        };
+        match crate::goal_candidates::contributor_evidence(pool, &native_policy.lineage).await {
+            Ok(crate::goal_candidates::ContributorEvidence::Known {
+                families,
+                invocation_ids,
+                ..
+            }) if families == native_policy.families
+                && invocation_ids == native_policy.invocation_ids => {}
+            _ => {
+                return GoalReviewRun::single(ReviewerGateOutcome::Refused {
+                    reason: "native contributor history changed during independent review".into(),
+                })
+            }
+        }
+        run.native_binding = Some(crate::goal_candidates::NativeReviewBinding {
+            lineage: native_policy.lineage,
+            families: native_policy.families,
+            invocation_ids: native_policy.invocation_ids,
+            expected,
+        });
+    }
+    run
 }
 
 /// Lane R68a: the round recorded when [`ReviewTimeBudget`] ran out before a
@@ -28526,7 +28877,7 @@ fn review_budget_exhausted_round(remaining_secs: u64) -> ReviewRound {
 async fn escalated_goal_review(
     assignment: &crate::cost_router::recommend::ReviewerAssignment,
     answered: (String, String),
-    worker_ref: Option<(&str, &str)>,
+    native_policy: &NativeReviewerPolicy,
     available: &[crate::cost_router::AvailableModel],
     changed_lines: usize,
     session: Session,
@@ -28539,10 +28890,10 @@ async fn escalated_goal_review(
     let (answered_provider, answered_model) = answered;
     // Ruling 2026-09-17: the one escalation goes to the next reviewer
     // the same objective ranking puts above the one that was unsure.
-    let escalation = crate::cost_router::recommend::escalate_reviewer_after_uncertain(
+    let escalation = crate::cost_router::recommend::escalate_reviewer_for_contributors(
         assignment,
         (answered_provider.as_str(), answered_model.as_str()),
-        worker_ref,
+        crate::cost_router::reviewer_pick::ContributorFamilies::Known(&native_policy.families),
         available,
     );
     let mut record = serde_json::json!({
@@ -28552,8 +28903,8 @@ async fn escalated_goal_review(
     let Some(escalated) = escalation.pick_role_model() else {
         return (Err(escalation.why.clone()), record);
     };
-    let selection = crate::cost_router::select_reviewer(
-        worker_ref,
+    let selection = crate::cost_router::reviewer_pick::select_reviewer_for_contributors(
+        crate::cost_router::reviewer_pick::ContributorFamilies::Known(&native_policy.families),
         None,
         Some(&escalated),
         available,
@@ -28577,6 +28928,10 @@ async fn escalated_goal_review(
         }
     };
     pick.why = escalation.why.clone();
+    let escalated_policy = NativeReviewerPolicy {
+        floor: native_policy.floor.max(escalation.floor),
+        ..native_policy.clone()
+    };
     if let Some(obj) = record.as_object_mut() {
         obj.insert(
             "to".to_string(),
@@ -28597,7 +28952,7 @@ async fn escalated_goal_review(
     // `ReviewRound::Errored` (round 2, recorded in `reviews`) rather than an
     // immediate `Err` that would short-circuit past `finish_goal_review_
     // with_escalation`'s own bookkeeping for this round.
-    match call_reviewer_provider_with_timeout_retry(
+    match call_reviewer_provider_with_timeout_retry_and_system(
         calling_session_id,
         &pick.provider,
         &pick.model,
@@ -28605,6 +28960,8 @@ async fn escalated_goal_review(
         prompt,
         call_timeout,
         budget,
+        crate::cost_router::REVIEW_SYSTEM_PROMPT.to_string(),
+        Some(&escalated_policy),
     )
     .await
     {
@@ -28823,6 +29180,7 @@ struct GoalReviewRun {
     /// Lane R66a: the concrete findings when the deciding round requested
     /// changes; empty for every other outcome.
     findings: Vec<String>,
+    native_binding: Option<crate::goal_candidates::NativeReviewBinding>,
 }
 
 impl GoalReviewRun {
@@ -28833,6 +29191,7 @@ impl GoalReviewRun {
             reviews: Vec::new(),
             escalation: None,
             findings: Vec::new(),
+            native_binding: None,
         }
     }
 }
@@ -28979,6 +29338,7 @@ where
             reviews,
             escalation: None,
             findings,
+            native_binding: None,
         };
     }
     let first_reviewer = first.reviewer();
@@ -29081,6 +29441,7 @@ where
         reviews,
         escalation: Some(escalation),
         findings,
+        native_binding: None,
     }
 }
 
@@ -56837,6 +57198,220 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
                 message, usage,
             ))
         }
+    }
+
+    #[tokio::test]
+    async fn native_reviewer_child_keeps_original_task_without_inheriting_editor_attempt() {
+        let tmp = tempfile::tempdir().unwrap();
+        let manager = SessionManager::new(tmp.path().to_path_buf());
+        let parent = manager
+            .create_session(
+                tmp.path().to_path_buf(),
+                "editor".into(),
+                SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let mut data = crate::session::ExtensionData::new();
+        data.set_extension_state(
+            crate::session::BUDGET_TASK_EXTENSION_NAME,
+            "v1",
+            serde_json::json!("newer-parent-task"),
+        );
+        data.set_extension_state("worker_attempt", "v1", serde_json::json!("parent-attempt"));
+        data.set_extension_state("provider_grants", "v1", serde_json::json!("parent-grant"));
+        manager
+            .update(&parent.id)
+            .extension_data(data)
+            .apply()
+            .await
+            .unwrap();
+        let child = create_frozen_reviewer_child(
+            &manager,
+            &parent.id,
+            tmp.path(),
+            "original-task",
+            "native-goal",
+            serde_json::json!({"task_id":"original-task","text":"original brief"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(child.parent_session_id.as_deref(), Some(parent.id.as_str()));
+        assert_eq!(
+            crate::session::budget_task_id(&child.extension_data).as_deref(),
+            Some("original-task")
+        );
+        assert_eq!(
+            crate::session::goal_id(&child.extension_data).as_deref(),
+            Some("native-goal")
+        );
+        assert_eq!(
+            crate::session::session_manager::budget_task_contract(&child.extension_data).unwrap()
+                ["text"],
+            "original brief"
+        );
+        assert!(child
+            .extension_data
+            .get_extension_state("worker_attempt", "v1")
+            .is_none());
+        assert!(child
+            .extension_data
+            .get_extension_state("provider_grants", "v1")
+            .is_none());
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE cards(id TEXT PRIMARY KEY)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO cards(id) VALUES ('native-goal')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        crate::goal_attempts::apply_schema(&pool).await.unwrap();
+        sqlx::query("INSERT INTO goal_execution_bindings(goal_id,project_id,task_id,authority) VALUES ('native-goal','p','original-task','native')").execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO goal_attempts(attempt_id,goal_id,ordinal,claim_id,lifecycle_id,worker_key,worker_session_id,execution_state) VALUES ('parent-attempt','native-goal',1,'claim','life','worker',?,'started')")
+            .bind(&parent.id).execute(&pool).await.unwrap();
+        assert!(crate::goal_attempts::worker_binding(&pool, &parent.id)
+            .await
+            .unwrap()
+            .is_some());
+        assert!(
+            crate::goal_attempts::worker_binding(&pool, &child.id)
+                .await
+                .unwrap()
+                .is_none(),
+            "review child must never inherit editor physical-call attribution"
+        );
+    }
+
+    struct NativeReviewRouteStub {
+        provider: &'static str,
+        model_config: crate::model::ModelConfig,
+        observed_models: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for NativeReviewRouteStub {
+        fn get_name(&self) -> &str {
+            self.provider
+        }
+        fn cost_tier(&self) -> crate::session::CostTier {
+            crate::session::CostTier::LocalFree
+        }
+        fn get_model_config(&self) -> crate::model::ModelConfig {
+            self.model_config.clone()
+        }
+        async fn stream(
+            &self,
+            config: &crate::model::ModelConfig,
+            _session_id: &str,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<crate::providers::base::MessageStream, crate::providers::errors::ProviderError>
+        {
+            self.observed_models
+                .lock()
+                .unwrap()
+                .push(config.model_name.clone());
+            let usage = crate::providers::base::ProviderUsage::new(
+                config.model_name.clone(),
+                crate::providers::base::Usage {
+                    input_tokens: Some(10),
+                    output_tokens: Some(1),
+                    total_tokens: Some(11),
+                    ..Default::default()
+                },
+            );
+            Ok(crate::providers::base::stream_from_single_message(
+                Message::assistant().with_text("VERDICT: PASS\nCHECKED: fixture"),
+                usage,
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn native_reviewer_actual_dispatch_refuses_contributor_fallback_and_keeps_selected_full_model(
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let manager = Arc::new(SessionManager::new(tmp.path().to_path_buf()));
+        let session = manager
+            .create_session(
+                tmp.path().to_path_buf(),
+                "native-review-route".into(),
+                SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let provider: Arc<dyn Provider> = Arc::new(NativeReviewRouteStub {
+            provider: "openai",
+            model_config: crate::model::ModelConfig::new("gpt-5.4-mini")
+                .unwrap()
+                .with_fast("unmapped-fast-proxy", "openai")
+                .unwrap(),
+            observed_models: observed.clone(),
+        });
+        let contributors =
+            std::collections::BTreeSet::from(["openai".to_string(), "minimax".to_string()]);
+        assert!(complete_native_reviewer_on_checked_route(
+            manager.clone(),
+            session.clone(),
+            provider.clone(),
+            "review",
+            &[Message::user().with_text("candidate")],
+            &contributors,
+            0.60
+        )
+        .await
+        .is_err());
+        assert!(
+            observed.lock().unwrap().is_empty(),
+            "excluded fallback must never reach physical provider dispatch"
+        );
+        let contributors =
+            std::collections::BTreeSet::from(["anthropic".to_string(), "minimax".to_string()]);
+        let (_, usage) = complete_native_reviewer_on_checked_route(
+            manager,
+            session,
+            provider,
+            "review",
+            &[Message::user().with_text("candidate")],
+            &contributors,
+            0.60,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            observed.lock().unwrap().as_slice(),
+            &["gpt-5.4-mini"],
+            "strict native review must not substitute the provider fast model"
+        );
+        assert_eq!(usage.model, "gpt-5.4-mini");
+    }
+
+    #[test]
+    fn native_reviewer_actual_route_refuses_opaque_family_and_below_complexity_floor() {
+        let contributors = std::collections::BTreeSet::from(["anthropic".to_string()]);
+        assert!(validate_native_reviewer_route(
+            &contributors,
+            0.60,
+            "openrouter",
+            "unknown-proxy-model"
+        )
+        .is_err());
+        assert!(
+            validate_native_reviewer_route(&contributors, 0.75, "openai", "gpt-5.4-mini").is_err()
+        );
+        assert!(
+            validate_native_reviewer_route(&contributors, 0.60, "openai", "gpt-5.4-mini").is_ok()
+        );
     }
 
     /// Build a real `OrchestratorClient` wired to an in-memory session, a
