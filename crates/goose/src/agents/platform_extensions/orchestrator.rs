@@ -18951,7 +18951,12 @@ async fn independent_review_before_auto_land(
         .and_then(|v| v.as_str())
         .map(std::path::PathBuf::from)
         .unwrap_or_default();
-    let measured = goal_trunk_relative_diff(pool, card, &session_dir, false).await;
+    let reviewed_head = recorded_goal_head(&card.metadata_json)
+        .filter(|head| super::review_context::validate_full_sha(head).is_ok());
+    let measured = match reviewed_head.as_deref() {
+        Some(head) => goal_trunk_relative_diff(pool, card, &session_dir, false, Some(head)).await,
+        None => None,
+    };
     let (outcome, mut record) = match measured {
         None if card.metadata_json.get(TASK_CONTRACT_METADATA_KEY).is_some() => {
             let reason = "the goal carries an original task contract, but no change against trunk could be measured for its required independent review".to_string();
@@ -18975,7 +18980,7 @@ async fn independent_review_before_auto_land(
         }
         Some((diff, dir, source)) => {
             let changes = crate::cost_router::detect_signature_changes(&diff);
-            let review_head = recorded_goal_head(&card.metadata_json).unwrap_or_default();
+            let review_head = reviewed_head.as_deref().unwrap_or_default();
             let call_sites: usize =
                 enumerate_signature_call_sites_pinned(&dir, &review_head, &changes)
                     .await
@@ -19001,7 +19006,7 @@ async fn independent_review_before_auto_land(
                     let verification_shown = verification
                         .as_ref()
                         .map(|v| serde_json::json!({ "command": v.command, "head": v.head }));
-                    let reviewed_head = recorded_goal_head(&card.metadata_json).unwrap_or_default();
+                    let reviewed_head = reviewed_head.as_deref().unwrap_or_default();
                     // Lane R68a: wall-clock time actually spent across every
                     // reviewer call this review makes (first reviewer's
                     // attempts plus, on escalation, the escalated
@@ -19014,7 +19019,7 @@ async fn independent_review_before_auto_land(
                         card,
                         &dir,
                         diff,
-                        &reviewed_head,
+                        reviewed_head,
                         &GoalReviewKind::Verified { verification },
                         calling_session_id,
                     )
@@ -27510,89 +27515,69 @@ async fn complete_review_after_context_requests(
     verification: Option<&GoalReviewVerification>,
     call_timeout: std::time::Duration,
     budget: &ReviewTimeBudget,
-) -> Result<(crate::conversation::message::Message, u32, String), String> {
+) -> Result<(String, u32, String), String> {
     let system_prompt = format!(
         "{}\n\n{}",
         crate::cost_router::REVIEW_SYSTEM_PROMPT,
         super::review_context::CONTEXT_REQUEST_SYSTEM_ADDENDUM
     );
-    let mut message = first_message;
-    let mut attempts = first_attempts;
-    let mut requested_context = Vec::new();
-    let mut context_bytes = 0usize;
-    let mut context_rounds = 0usize;
-    let mut current_prompt = build_goal_review_prompt(
-        task_spec,
-        diff,
-        verify_output_lead,
-        context,
-        verification,
-        reviewed_head,
-        &requested_context,
-    );
-
-    loop {
-        let raw = message.as_concat_text();
-        let Some(request) =
-            super::review_context::ContextRequestEnvelope::parse_review_response(&raw)?
-        else {
-            return Ok((message, attempts, current_prompt));
-        };
-        if context_rounds >= super::review_context::MAX_CONTEXT_ROUNDS {
-            return Err("reviewer still needed context after the bounded request rounds".into());
-        }
-        let additions = super::review_context::resolve_context_requests(
-            worktree,
-            reviewed_head,
-            &request.requests,
-        )
-        .await?;
-        for item in additions {
-            context_bytes = context_bytes.saturating_add(item.len());
-            if context_bytes > super::review_context::MAX_CONTEXT_BYTES {
-                return Err("review context exceeded the cumulative byte cap".into());
-            }
-            requested_context.push(item);
-        }
-        context_rounds += 1;
-        current_prompt = build_goal_review_prompt(
+    let mut build_prompt = |requested_context: &[String]| {
+        build_goal_review_prompt(
             task_spec,
             diff,
             verify_output_lead,
             context,
             verification,
             reviewed_head,
-            &requested_context,
-        );
-        match call_reviewer_provider_with_timeout_retry_and_system(
-            session_id,
-            provider_id,
-            model_id,
-            session.clone(),
-            &current_prompt,
-            call_timeout,
-            budget,
-            system_prompt.clone(),
+            requested_context,
         )
-        .await
-        {
-            ReviewCycleOutcome::Responded {
-                message: response,
-                attempts: response_attempts,
-            } => {
-                message = response;
-                attempts = attempts.saturating_add(response_attempts);
+    };
+    let sid = session_id.map(str::to_string);
+    let provider = provider_id.to_string();
+    let model = model_id.to_string();
+    let (response, extra_attempts, prompt) = super::review_context::run_context_request_protocol(
+        first_message.as_concat_text(),
+        worktree,
+        reviewed_head,
+        &mut build_prompt,
+        |prompt| {
+            let session = session.clone();
+            let sid = sid.clone();
+            let provider = provider.clone();
+            let model = model.clone();
+            let system_prompt = system_prompt.clone();
+            async move {
+                match call_reviewer_provider_with_timeout_retry_and_system(
+                    sid.as_deref(),
+                    &provider,
+                    &model,
+                    session,
+                    &prompt,
+                    call_timeout,
+                    budget,
+                    system_prompt,
+                )
+                .await
+                {
+                    ReviewCycleOutcome::Responded { message, attempts } => {
+                        Ok((message.as_concat_text(), attempts))
+                    }
+                    ReviewCycleOutcome::Errored { reason, .. }
+                    | ReviewCycleOutcome::Other(reason)
+                    | ReviewCycleOutcome::Unavailable(reason) => Err(reason),
+                    ReviewCycleOutcome::BudgetExhausted { remaining_secs } => Err(format!(
+                        "review budget exhausted while reading requested context ({remaining_secs}s remain)"
+                    )),
+                }
             }
-            ReviewCycleOutcome::Errored { reason, .. }
-            | ReviewCycleOutcome::Other(reason)
-            | ReviewCycleOutcome::Unavailable(reason) => return Err(reason),
-            ReviewCycleOutcome::BudgetExhausted { remaining_secs } => {
-                return Err(format!(
-                    "review budget exhausted while reading requested context ({remaining_secs}s remain)"
-                ));
-            }
-        }
-    }
+        },
+    )
+    .await?;
+    Ok((
+        response,
+        first_attempts.saturating_add(extra_attempts),
+        prompt,
+    ))
 }
 
 /// Lane R22c-c: dispatch the SAME cross-family reviewer gate a live
@@ -27891,38 +27876,39 @@ async fn review_goal_diff_with_cross_family_reviewer(
     .await
     {
         ReviewCycleOutcome::Responded { message, attempts } => {
-            let (message, attempts, reviewed_prompt) = match complete_review_after_context_requests(
-                message,
-                attempts,
-                calling_session_id,
-                &pick.provider,
-                &pick.model,
-                session.clone(),
-                context_dir,
-                reviewed_head,
-                &task_spec,
-                &diff_for_prompt,
-                &verify_output_lead,
-                &review_context,
-                verification,
-                call_timeout,
-                &budget,
-            )
-            .await
-            {
-                Ok(done) => done,
-                Err(reason) => {
-                    return GoalReviewRun::single(ReviewerGateOutcome::Refused {
-                        reason: format!(
-                            "bounded reviewer context could not be completed: {reason}"
-                        ),
-                    })
-                }
-            };
+            let (response, attempts, reviewed_prompt) =
+                match complete_review_after_context_requests(
+                    message,
+                    attempts,
+                    calling_session_id,
+                    &pick.provider,
+                    &pick.model,
+                    session.clone(),
+                    context_dir,
+                    reviewed_head,
+                    &task_spec,
+                    &diff_for_prompt,
+                    &verify_output_lead,
+                    &review_context,
+                    verification,
+                    call_timeout,
+                    &budget,
+                )
+                .await
+                {
+                    Ok(done) => done,
+                    Err(reason) => {
+                        return GoalReviewRun::single(ReviewerGateOutcome::Refused {
+                            reason: format!(
+                                "bounded reviewer context could not be completed: {reason}"
+                            ),
+                        })
+                    }
+                };
             prompt = reviewed_prompt;
             ReviewAttempt {
                 round: review_round_from_response(
-                    &message.as_concat_text(),
+                    &response,
                     changed_lines,
                     &review_context.call_site_enumerations,
                 ),
@@ -27981,7 +27967,7 @@ async fn review_goal_diff_with_cross_family_reviewer(
                     .await
                     {
                         ReviewCycleOutcome::Responded { message, attempts } => {
-                            let (message, attempts, reviewed_prompt) = match complete_review_after_context_requests(
+                            let (response, attempts, reviewed_prompt) = match complete_review_after_context_requests(
                             message,
                             attempts,
                             calling_session_id,
@@ -28010,7 +27996,7 @@ async fn review_goal_diff_with_cross_family_reviewer(
                             prompt = reviewed_prompt;
                             ReviewAttempt {
                                 round: review_round_from_response(
-                                    &message.as_concat_text(),
+                                    &response,
                                     changed_lines,
                                     &review_context.call_site_enumerations,
                                 ),
@@ -28827,7 +28813,8 @@ pub(crate) async fn assign_delegate_reviewer(
     };
     let mut measured: Option<(String, std::path::PathBuf, ReviewDiffSource)> = None;
     if let (Some(pool), Some((card, is_worker))) = (pool, goal.as_ref()) {
-        measured = goal_trunk_relative_diff(pool, card, &session.working_dir, *is_worker).await;
+        measured =
+            goal_trunk_relative_diff(pool, card, &session.working_dir, *is_worker, None).await;
     }
     if measured.is_none() {
         if let Some(diff) = git_in_worktree(&session.working_dir, &["diff", "HEAD"])
@@ -28977,6 +28964,7 @@ async fn goal_trunk_relative_diff(
     card: &cards::Card,
     session_dir: &std::path::Path,
     is_worker: bool,
+    reviewed_head: Option<&str>,
 ) -> Option<(String, std::path::PathBuf, ReviewDiffSource)> {
     let meta = &card.metadata_json;
     let nonempty = |s: &String| !s.trim().is_empty();
@@ -29054,7 +29042,29 @@ async fn goal_trunk_relative_diff(
         }
     }
 
-    let head = recorded_goal_head(meta)?;
+    let head = reviewed_head
+        .map(str::to_string)
+        .or_else(|| recorded_goal_head(meta))?;
+    super::review_context::validate_full_sha(&head).ok()?;
+    if let Some(pinned_head) = reviewed_head {
+        if recorded_goal_head(meta).as_deref() != Some(pinned_head) {
+            return None;
+        }
+    }
+    let resolved_head = git_in_worktree(
+        &git_dir,
+        &[
+            "rev-parse",
+            "--verify",
+            "--end-of-options",
+            &format!("{head}^{{commit}}"),
+        ],
+    )
+    .await
+    .ok()?;
+    if resolved_head.trim() != head {
+        return None;
+    }
     let landed = match &trunk_tip {
         Some(tip) => git_in_worktree(&git_dir, &["merge-base", "--is-ancestor", &head, tip])
             .await
@@ -61212,6 +61222,75 @@ mod r65a_tests {
             );
             assert!(prompt.contains("Behavior evidence rule"));
         }
+    }
+
+    #[tokio::test]
+    async fn context_followups_rebuild_the_real_prompt_with_full_contract_and_pinned_sha() {
+        let root = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .current_dir(root.path())
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            String::from_utf8(output.stdout).unwrap().trim().to_string()
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.email", "review-test@example.com"]);
+        git(&["config", "user.name", "Review Test"]);
+        git(&["config", "commit.gpgsign", "false"]);
+        std::fs::create_dir_all(root.path().join("src")).unwrap();
+        std::fs::write(root.path().join("src/behavior.rs"), "input = parsed\n").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "candidate"]);
+        let head = git(&["rev-parse", "HEAD"]);
+        let contract = "Preserve the exact public input contract across retries.";
+        let metadata = serde_json::json!({TASK_CONTRACT_METADATA_KEY: {"text": contract}});
+        let task_spec =
+            goal_review_task_spec("Review input parsing", &[], &metadata, false).unwrap();
+        let request = r#"CONTEXT_REQUEST: {"status":"need_context","requests":[{"kind":"read","criterion":"input parsing behavior","path":"src/behavior.rs","start_line":1,"end_line":1}]}"#;
+        let prompts = std::sync::Mutex::new(Vec::new());
+        let calls = AtomicUsize::new(0);
+        let repeat_request = request.to_string();
+        let result = super::super::review_context::run_context_request_protocol(
+            request.into(),
+            root.path(),
+            &head,
+            |items| {
+                build_goal_review_prompt(
+                    &task_spec,
+                    "diff --git a/src/behavior.rs b/src/behavior.rs\n+input = parsed",
+                    "Verification passed",
+                    &SalvageReviewContext::default(),
+                    None,
+                    &head,
+                    items,
+                )
+            },
+            |prompt| {
+                let call = calls.fetch_add(1, Ordering::SeqCst);
+                prompts.lock().unwrap().push(prompt);
+                let response = if call == 0 {
+                    repeat_request.clone()
+                } else {
+                    "VERDICT: APPROVE\nCHECKED: input parsing".into()
+                };
+                async move { Ok((response, 1)) }
+            },
+        )
+        .await
+        .unwrap();
+        assert!(result.0.contains("VERDICT: APPROVE"));
+        let expected_contract = serde_json::to_string(contract).unwrap();
+        let prompts = prompts.lock().unwrap();
+        assert_eq!(prompts.len(), 2);
+        for prompt in prompts.iter() {
+            assert!(prompt.contains(&expected_contract));
+            assert!(prompt.contains(&format!("BEGIN_REVIEWED_HEAD\n{head}\nEND_REVIEWED_HEAD")));
+        }
+        assert!(prompts[0].contains("input = parsed"));
+        assert!(prompts[1].contains("input = parsed"));
     }
 
     #[test]
