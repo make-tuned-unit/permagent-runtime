@@ -177,6 +177,9 @@ pub fn known_physical_family_of(provider: &str, model: &str) -> Option<String> {
 
 /// Choose a reviewer independent of ALL contributors. Unlike the legacy API,
 /// configured conflicts are not a fallback and unknown history fails closed.
+/// This proves family exclusion only. Budget/runtime eligibility, empirical
+/// local-model qualification, and rechecking the actual physical reviewer route
+/// remain caller obligations before dispatch and before accepting a verdict.
 pub fn select_reviewer_for_contributors(
     contributors: ContributorFamilies<'_>,
     configured: Option<&RoleModel>,
@@ -681,7 +684,7 @@ mod tests {
     }
 
     #[test]
-    fn contributor_set_qualified_known_local_reviewer_wins_on_price() {
+    fn contributor_set_known_local_above_capability_floor_wins_on_price() {
         let families = contributor_set(&["anthropic", "openai"]);
         let local = KNOWN_MODELS
             .iter()
@@ -691,7 +694,7 @@ mod tests {
                     && known_physical_family_of(model.provider, model.model)
                         .is_some_and(|family| !families.contains(&family))
             })
-            .expect("the KB contains a qualified known local reviewer");
+            .expect("the KB contains a known local reviewer above the static capability floor");
         let cloud = KNOWN_MODELS
             .iter()
             .find(|model| {
@@ -701,7 +704,9 @@ mod tests {
                     && known_physical_family_of(model.provider, model.model)
                         .is_some_and(|family| !families.contains(&family))
             })
-            .expect("a qualified independent paid reviewer exists too");
+            .expect(
+                "a known independent paid reviewer above the static capability floor exists too",
+            );
         let selection = select_reviewer_for_contributors(
             ContributorFamilies::Known(&families),
             None,
@@ -712,7 +717,9 @@ mod tests {
             ],
             10,
         );
-        let pick = selection.pick().expect("qualified independent local model");
+        let pick = selection
+            .pick()
+            .expect("known independent local model above the static capability floor");
         assert!(pick.is_local);
         assert_eq!(pick.model, local.model);
         assert_eq!(pick.cost_hint_per_mtok, 0.0);
