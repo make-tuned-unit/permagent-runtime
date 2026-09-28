@@ -732,7 +732,7 @@ mod tests {
 
         let pool = manager.pool_clone().await.unwrap();
         let before: (String, f64, String) = sqlx::query_as(
-            "SELECT state,amount,dispatch_state FROM cost_reservations WHERE invocation_id='dup-1'",
+            "SELECT state,amount_usd,dispatch_state FROM cost_reservations WHERE invocation_id='dup-1'",
         )
         .fetch_one(&pool)
         .await
@@ -742,7 +742,7 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, MeteredCallError::InvocationNotFresh { .. }));
         let after: (String, f64, String) = sqlx::query_as(
-            "SELECT state,amount,dispatch_state FROM cost_reservations WHERE invocation_id='dup-1'",
+            "SELECT state,amount_usd,dispatch_state FROM cost_reservations WHERE invocation_id='dup-1'",
         )
         .fetch_one(&pool)
         .await
