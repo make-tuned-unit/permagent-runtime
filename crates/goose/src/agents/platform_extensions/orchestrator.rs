@@ -18951,14 +18951,24 @@ async fn independent_review_before_auto_land(
         .and_then(|v| v.as_str())
         .map(std::path::PathBuf::from)
         .unwrap_or_default();
-    let reviewed_head = recorded_goal_head(&card.metadata_json)
-        .filter(|head| super::review_context::validate_full_sha(head).is_ok());
-    let measured = match reviewed_head.as_deref() {
-        Some(head) => goal_trunk_relative_diff(pool, card, &session_dir, false, Some(head)).await,
-        None => None,
+    let head_validation = validate_auto_land_review_head(&card.metadata_json);
+    let measured = match &head_validation {
+        Ok(head) => Some(
+            goal_trunk_relative_diff(pool, card, &session_dir, false, Some(head.as_str())).await,
+        ),
+        Err(_) => None,
     };
-    let (outcome, mut record) = match measured {
-        None if card.metadata_json.get(TASK_CONTRACT_METADATA_KEY).is_some() => {
+    let (outcome, mut record) = match (head_validation, measured) {
+        (Err(reason), _) => auto_land_review_head_failure(&reason),
+        (Ok(_), None) => auto_land_review_head_failure(
+            "the independent review could not bind its diff to the validated candidate SHA",
+        ),
+        (Ok(_), Some(Err(reason))) => auto_land_review_head_failure(&format!(
+            "the independent review could not measure a diff for the validated candidate SHA: {reason}"
+        )),
+        (Ok(_), Some(Ok(None)))
+            if card.metadata_json.get(TASK_CONTRACT_METADATA_KEY).is_some() =>
+        {
             let reason = "the goal carries an original task contract, but no change against trunk could be measured for its required independent review".to_string();
             (
                 AutoLandReview::Refused {
@@ -18967,7 +18977,7 @@ async fn independent_review_before_auto_land(
                 serde_json::json!({ "required": true, "outcome": "refused", "reason": reason }),
             )
         }
-        None => {
+        (Ok(_), Some(Ok(None))) => {
             let reason = "no change against trunk could be measured, so there is nothing for a \
                           reviewer to read"
                 .to_string();
@@ -18978,9 +18988,9 @@ async fn independent_review_before_auto_land(
                 serde_json::json!({ "required": false, "reason": reason }),
             )
         }
-        Some((diff, dir, source)) => {
+        (Ok(reviewed_head), Some(Ok(Some((diff, dir, source))))) => {
             let changes = crate::cost_router::detect_signature_changes(&diff);
-            let review_head = reviewed_head.as_deref().unwrap_or_default();
+            let review_head = reviewed_head.as_str();
             let call_sites: usize =
                 enumerate_signature_call_sites_pinned(&dir, &review_head, &changes)
                     .await
@@ -19006,7 +19016,6 @@ async fn independent_review_before_auto_land(
                     let verification_shown = verification
                         .as_ref()
                         .map(|v| serde_json::json!({ "command": v.command, "head": v.head }));
-                    let reviewed_head = reviewed_head.as_deref().unwrap_or_default();
                     // Lane R68a: wall-clock time actually spent across every
                     // reviewer call this review makes (first reviewer's
                     // attempts plus, on escalation, the escalated
@@ -19105,6 +19114,28 @@ async fn independent_review_before_auto_land(
     );
     record_auto_land_review(pool, &card.id, record).await;
     outcome
+}
+
+fn validate_auto_land_review_head(meta: &serde_json::Value) -> Result<String, String> {
+    let head = recorded_goal_head(meta).ok_or_else(|| {
+        "no pinned candidate commit SHA is recorded for independent review".to_string()
+    })?;
+    super::review_context::validate_full_sha(&head)
+        .map_err(|_| "the recorded candidate is not a valid full Git commit SHA".to_string())?;
+    Ok(head)
+}
+
+fn auto_land_review_head_failure(reason: &str) -> (AutoLandReview, serde_json::Value) {
+    (
+        AutoLandReview::Refused {
+            reason: reason.to_string(),
+        },
+        serde_json::json!({
+            "required": true,
+            "outcome": "refused",
+            "reason": reason,
+        }),
+    )
 }
 
 /// Write `auto_land_review` on the card. Lane R66a: a goal sent back once
@@ -28813,8 +28844,18 @@ pub(crate) async fn assign_delegate_reviewer(
     };
     let mut measured: Option<(String, std::path::PathBuf, ReviewDiffSource)> = None;
     if let (Some(pool), Some((card, is_worker))) = (pool, goal.as_ref()) {
-        measured =
-            goal_trunk_relative_diff(pool, card, &session.working_dir, *is_worker, None).await;
+        measured = match goal_trunk_relative_diff(
+            pool,
+            card,
+            &session.working_dir,
+            *is_worker,
+            None,
+        )
+        .await
+        {
+            Ok(diff) => diff,
+            Err(_) => None,
+        };
     }
     if measured.is_none() {
         if let Some(diff) = git_in_worktree(&session.working_dir, &["diff", "HEAD"])
@@ -28958,14 +28999,16 @@ fn recorded_goal_head(meta: &serde_json::Value) -> Option<String> {
 /// - a recorded head that is not on trunk: `merge-base <trunk> <head>..<head>`;
 /// - a recorded head already on trunk (landed): `baseline_commit..<head>`.
 ///
-/// `None` when nothing non-empty can be read.
+/// `Ok(None)` only when a valid pinned range was measured and is empty. Errors
+/// mean the range could not be established and must not be treated as a
+/// successful no-change result by an auto-land gate.
 async fn goal_trunk_relative_diff(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     card: &cards::Card,
     session_dir: &std::path::Path,
     is_worker: bool,
     reviewed_head: Option<&str>,
-) -> Option<(String, std::path::PathBuf, ReviewDiffSource)> {
+) -> Result<Option<(String, std::path::PathBuf, ReviewDiffSource)>, String> {
     let meta = &card.metadata_json;
     let nonempty = |s: &String| !s.trim().is_empty();
     let worktree: Option<std::path::PathBuf> = if is_worker {
@@ -29036,7 +29079,11 @@ async fn goal_trunk_relative_diff(
                     .ok()
                     .filter(nonempty)
                 {
-                    return Some((diff, wt.clone(), ReviewDiffSource::GoalWorktreeForkPoint));
+                    return Ok(Some((
+                        diff,
+                        wt.clone(),
+                        ReviewDiffSource::GoalWorktreeForkPoint,
+                    )));
                 }
             }
         }
@@ -29044,11 +29091,13 @@ async fn goal_trunk_relative_diff(
 
     let head = reviewed_head
         .map(str::to_string)
-        .or_else(|| recorded_goal_head(meta))?;
-    super::review_context::validate_full_sha(&head).ok()?;
+        .or_else(|| recorded_goal_head(meta))
+        .ok_or_else(|| "no recorded candidate head is available".to_string())?;
+    super::review_context::validate_full_sha(&head)
+        .map_err(|_| "recorded candidate head is not a full Git object ID".to_string())?;
     if let Some(pinned_head) = reviewed_head {
         if recorded_goal_head(meta).as_deref() != Some(pinned_head) {
-            return None;
+            return Err("recorded candidate head changed before diff measurement".to_string());
         }
     }
     let resolved_head = git_in_worktree(
@@ -29061,9 +29110,9 @@ async fn goal_trunk_relative_diff(
         ],
     )
     .await
-    .ok()?;
+    .map_err(|e| format!("could not resolve pinned candidate commit: {e}"))?;
     if resolved_head.trim() != head {
-        return None;
+        return Err("pinned candidate SHA did not resolve to its exact commit".to_string());
     }
     let landed = match &trunk_tip {
         Some(tip) => git_in_worktree(&git_dir, &["merge-base", "--is-ancestor", &head, tip])
@@ -29072,7 +29121,10 @@ async fn goal_trunk_relative_diff(
         None => false,
     };
     let (base, source) = if landed {
-        (baseline?, ReviewDiffSource::GoalLandedRange)
+        (
+            baseline.ok_or_else(|| "no baseline exists for the landed candidate".to_string())?,
+            ReviewDiffSource::GoalLandedRange,
+        )
     } else {
         let fork_point = match &trunk_tip {
             Some(tip) => git_in_worktree(&git_dir, &["merge-base", tip, &head])
@@ -29081,13 +29133,21 @@ async fn goal_trunk_relative_diff(
                 .filter(nonempty),
             None => None,
         };
-        (fork_point.or(baseline)?, ReviewDiffSource::GoalForkPoint)
+        (
+            fork_point
+                .or(baseline)
+                .ok_or_else(|| "no trunk fork point or baseline is available".to_string())?,
+            ReviewDiffSource::GoalForkPoint,
+        )
     };
     let diff = git_in_worktree(&git_dir, &["diff", &format!("{base}..{head}")])
         .await
-        .ok()
-        .filter(nonempty)?;
-    Some((diff, git_dir, source))
+        .map_err(|e| format!("could not measure pinned candidate diff: {e}"))?;
+    if diff.trim().is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some((diff, git_dir, source)))
+    }
 }
 
 /// Lane R22c-e (clippy `too_many_arguments`): bundles the three reviewer-
@@ -61302,6 +61362,26 @@ mod r65a_tests {
         ] {
             let metadata = serde_json::json!({TASK_CONTRACT_METADATA_KEY: contract});
             assert!(goal_review_task_spec("Goal", &[], &metadata, false).is_err());
+        }
+    }
+
+    #[test]
+    fn non_contract_goal_with_missing_or_invalid_review_head_is_refused() {
+        for metadata in [
+            serde_json::json!({"goal_kind": "ordinary", "dispatch_evidence": {}}),
+            serde_json::json!({
+                "goal_kind": "ordinary",
+                "dispatch_evidence": {"head_commit": "abcd1234"}
+            }),
+        ] {
+            assert!(metadata.get(TASK_CONTRACT_METADATA_KEY).is_none());
+            let (outcome, record) = match validate_auto_land_review_head(&metadata) {
+                Ok(_) => panic!("missing or partial candidate SHA must fail closed"),
+                Err(reason) => auto_land_review_head_failure(&reason),
+            };
+            assert!(matches!(outcome, AutoLandReview::Refused { .. }));
+            assert_eq!(record["required"], true);
+            assert_eq!(record["outcome"], "refused");
         }
     }
 
