@@ -19028,7 +19028,7 @@ async fn independent_review_before_auto_land(
                         card,
                         &dir,
                         diff,
-                        reviewed_head,
+                        &reviewed_head,
                         &GoalReviewKind::Verified { verification },
                         calling_session_id,
                     )
