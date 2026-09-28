@@ -2036,11 +2036,20 @@ mod tests {
 
     #[test]
     fn contained_and_blocked_findings_are_not_removable() {
+        struct IdleProbe;
+        impl ActivityProbe for IdleProbe {
+            fn check(
+                &self,
+                _: &Path,
+            ) -> Result<Vec<permagent::storage_health::inuse::ProcessRef>, String> {
+                Ok(Vec::new())
+            }
+        }
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path().canonicalize().unwrap();
         let mut contained = categorized("child", "/tmp/child", classify::CAT_SAFE, 10);
         contained.contained_in = Some("parent".into());
-        let result = eligibility(&mut contained, true, true, &home, &idle());
+        let result = eligibility(&mut contained, true, true, &home, &IdleProbe);
         assert!(!result.eligible);
         assert_eq!(
             result.reason,
@@ -2055,7 +2064,7 @@ mod tests {
             refused.consequence.as_deref(),
             Some("Contains an in-use or protected item")
         );
-        let observed = eligibility(&mut blocked, true, true, &home, &idle());
+        let observed = eligibility(&mut blocked, true, true, &home, &IdleProbe);
         assert!(!observed.eligible);
         assert_eq!(observed.reason, "Contains an in-use or protected item");
         assert_eq!(blocked.category, classify::CAT_SAFE);
