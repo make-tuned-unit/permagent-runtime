@@ -1450,6 +1450,10 @@ impl GoalEngine for ExternalCliEngine {
                 .prepare_worker(&run_id, &worktree, task.budget_task_id.as_deref())
                 .await
                 .map_err(|e| e.to_string())?;
+            permit
+                .mark_external_execution(&run_id)
+                .await
+                .map_err(|e| e.to_string())?;
         }
         let start_kill = prepared
             .cleanup

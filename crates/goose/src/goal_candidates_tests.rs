@@ -42,11 +42,15 @@ impl Fixture {
         let anchor = git_sync(&root, &["rev-parse", "HEAD"]);
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
-            .connect("sqlite::memory:")
+            .connect_with(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .filename(temp.path().join("lineage.sqlite"))
+                    .create_if_missing(true),
+            )
             .await
             .unwrap();
         for statement in [
-            "CREATE TABLE cards(id TEXT PRIMARY KEY,column_id TEXT,metadata_json TEXT)",
+            "CREATE TABLE cards(id TEXT PRIMARY KEY,column_id TEXT,metadata_json TEXT,archived_at TEXT)",
             "CREATE TABLE sessions(id TEXT PRIMARY KEY)",
             "CREATE TABLE board_columns(id TEXT PRIMARY KEY,state_binding TEXT)",
             "INSERT INTO board_columns VALUES('active','in_progress')",
@@ -54,6 +58,9 @@ impl Fixture {
             "CREATE TABLE cost_reservations(session_id TEXT,goal_attempt_id TEXT,provider TEXT,model TEXT,state TEXT,dispatch_state TEXT,invocation_id TEXT)",
         ] { sqlx::query(statement).execute(&pool).await.unwrap(); }
         goal_attempts::apply_schema(&pool).await.unwrap();
+        crate::session::spectral_schema::apply_harness_process_leases_schema(&pool)
+            .await
+            .unwrap();
         let fixture = Self {
             _temp: temp,
             pool,
@@ -64,7 +71,7 @@ impl Fixture {
         fixture
     }
     async fn add_goal(&self, goal: &str) {
-        sqlx::query("INSERT INTO cards VALUES(?,'active','{}')")
+        sqlx::query("INSERT INTO cards VALUES(?,'active','{}',NULL)")
             .bind(goal)
             .execute(&self.pool)
             .await
@@ -837,4 +844,292 @@ async fn checked_review_and_approval_derive_next_stage_tokens_in_their_transacti
         resolve_candidate(&pool, &card.id).await.unwrap(),
         LineageResolution::Unverifiable(_)
     ));
+}
+
+// An actual short-lived process uses the production native claim/prepare/start
+// gate. Parent tests can then prove owner absence without guessing/backfilling
+// the owner PID after death. This child never constructs a provider or model.
+#[tokio::test]
+async fn native_loss_journal_child_producer() {
+    let Ok(database) = std::env::var("PERMAGENT_TEST_NATIVE_LOSS_DB") else {
+        return;
+    };
+    let root = PathBuf::from(std::env::var("PERMAGENT_TEST_NATIVE_LOSS_ROOT").unwrap());
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(sqlx::sqlite::SqliteConnectOptions::new().filename(database))
+        .await
+        .unwrap();
+    let (head, _) = dispatch_baseline(&pool, "goal", &root)
+        .await
+        .unwrap()
+        .unwrap();
+    let head = head.unwrap();
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.unwrap();
+    sqlx::query("UPDATE cards SET metadata_json=json_set(metadata_json,'$.dispatch_claim_id','child-claim') WHERE id='goal'").execute(&mut *tx).await.unwrap();
+    goal_attempts::claim_tx(
+        &mut tx,
+        "goal",
+        "project",
+        &ClaimInput {
+            claim_id: "child-claim".into(),
+            lifecycle_id: "child-lifecycle".into(),
+            worker_key: "native-test".into(),
+            execution_root: Some(root.to_string_lossy().into_owned()),
+            input_head: Some(head.clone()),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let worktree = crate::agents::platform_extensions::goal_engine::create_goal_worktree(
+        &root,
+        &head,
+        "child-worker",
+    )
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO sessions(id) VALUES('child-worker')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let permit = StartPermit {
+        pool: pool.clone(),
+        goal_id: "goal".into(),
+        claim_id: "child-claim".into(),
+    };
+    permit
+        .prepare_worker("child-worker", &worktree, Some("task"))
+        .await
+        .unwrap();
+    permit
+        .mark_provider_accounting("child-worker")
+        .await
+        .unwrap();
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.unwrap();
+    goal_attempts::finalize_tx(&mut tx, "goal", "child-claim", Some("child-worker"), None)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    permit.start().await.unwrap();
+    commit(&worktree, "lost-candidate.txt");
+}
+
+async fn produce_dead_native_worker(fixture: &Fixture) -> u32 {
+    let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
+    command
+        .args([
+            "--exact",
+            "goal_candidates::tests::native_loss_journal_child_producer",
+            "--nocapture",
+        ])
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env(
+            "PERMAGENT_TEST_NATIVE_LOSS_DB",
+            fixture._temp.path().join("lineage.sqlite"),
+        )
+        .env("PERMAGENT_TEST_NATIVE_LOSS_ROOT", &fixture.root)
+        .kill_on_drop(true);
+    if let Some(value) = std::env::var_os("DYLD_LIBRARY_PATH") {
+        command.env("DYLD_LIBRARY_PATH", value);
+    }
+    let mut child = command.spawn().unwrap();
+    let pid = child.id().unwrap();
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_secs(60), child.wait())
+            .await
+            .unwrap()
+            .unwrap()
+            .success()
+    );
+    pid
+}
+
+#[tokio::test]
+async fn actual_native_owner_producer_and_boot_live_loss_inspection_preserve_task_and_holds() {
+    use crate::goal_recovery::{self, NativeInspection};
+    let fixture = Fixture::new().await;
+    let pid = produce_dead_native_worker(&fixture).await;
+    let row=sqlx::query("SELECT owner_process_id,execution_kind,execution_state FROM goal_attempts WHERE worker_session_id='child-worker'").fetch_one(&fixture.pool).await.unwrap();
+    assert_eq!(row.get::<i64, _>("owner_process_id"), i64::from(pid));
+    assert_eq!(row.get::<String, _>("execution_kind"), "internal");
+    assert_eq!(row.get::<String, _>("execution_state"), "started");
+    // Actual CLI production fields project_id/repo_root are optional. This
+    // missing identity is not used as proof: the native producer's immutable
+    // PID plus internal execution-kind establish positive process absence.
+    let claimed: String = sqlx::query_scalar(
+        "SELECT claimed_at FROM goal_attempts WHERE worker_session_id='child-worker'",
+    )
+    .fetch_one(&fixture.pool)
+    .await
+    .unwrap();
+    let lease_stamp = crate::harness_lease::lease_timestamp(
+        chrono::DateTime::parse_from_rfc3339(&claimed)
+            .unwrap()
+            .with_timezone(&chrono::Utc)
+            - chrono::Duration::seconds(1),
+    );
+    sqlx::query("INSERT INTO harness_process_leases(lease_id,lifecycle_id,session_id,working_dir,mode,pid,phase,started_at,heartbeat_at) VALUES('ended','child-lifecycle','coordinator',?,'headless',?,'exited',?,?)")
+        .bind(fixture.root.to_string_lossy().as_ref()).bind(i64::from(pid)).bind(&lease_stamp).bind(&lease_stamp).execute(&fixture.pool).await.unwrap();
+    let original: String = sqlx::query_scalar(
+        "SELECT contract_json FROM goal_execution_bindings WHERE goal_id='goal'",
+    )
+    .fetch_one(&fixture.pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO cost_reservations VALUES('held-session',NULL,'openai','gpt-5.4-mini','unknown','started_possible','retained-hold')").execute(&fixture.pool).await.unwrap();
+    let hold_before: Vec<(String, String)> =
+        sqlx::query_as("SELECT invocation_id,state FROM cost_reservations")
+            .fetch_all(&fixture.pool)
+            .await
+            .unwrap();
+    let NativeInspection::Candidate(boot) =
+        goal_recovery::observe_lost_native_worker(&fixture.pool, None, "goal")
+            .await
+            .unwrap()
+    else {
+        panic!("Expected actual owner loss observation");
+    };
+    let NativeInspection::Candidate(live) =
+        goal_recovery::inspect_native_goal(&fixture.pool, None, "goal")
+            .await
+            .unwrap()
+    else {
+        panic!("Expected same retained candidate");
+    };
+    assert_eq!(boot, live);
+    assert!(matches!(boot, LineageResolution::Verified(_)));
+    let state: String = sqlx::query_scalar(
+        "SELECT execution_state FROM goal_attempts WHERE worker_session_id='child-worker'",
+    )
+    .fetch_one(&fixture.pool)
+    .await
+    .unwrap();
+    assert_eq!(state, "lost");
+    let unchanged: String = sqlx::query_scalar(
+        "SELECT contract_json FROM goal_execution_bindings WHERE goal_id='goal'",
+    )
+    .fetch_one(&fixture.pool)
+    .await
+    .unwrap();
+    assert_eq!(original, unchanged);
+    let hold_after: Vec<(String, String)> =
+        sqlx::query_as("SELECT invocation_id,state FROM cost_reservations")
+            .fetch_all(&fixture.pool)
+            .await
+            .unwrap();
+    assert_eq!(hold_before, hold_after);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM cost_ledger")
+            .fetch_one(&fixture.pool)
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM goal_attempt_provider_calls")
+            .fetch_one(&fixture.pool)
+            .await
+            .unwrap(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn actual_live_foreign_lease_and_human_cancel_refuse_native_loss() {
+    use crate::goal_recovery::{self, NativeInspection};
+    let fixture = Fixture::new().await;
+    produce_dead_native_worker(&fixture).await;
+    let mut live = tokio::process::Command::new("/bin/sleep")
+        .arg("60")
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let now = crate::harness_lease::lease_timestamp(chrono::Utc::now());
+    sqlx::query("INSERT INTO harness_process_leases(lease_id,lifecycle_id,session_id,working_dir,mode,pid,phase,started_at,heartbeat_at) VALUES('foreign','child-lifecycle','coordinator',?,'headless',?,'turn',?,?)")
+        .bind(fixture.root.to_string_lossy().as_ref()).bind(i64::from(live.id().unwrap())).bind(&now).bind(&now).execute(&fixture.pool).await.unwrap();
+    assert!(matches!(
+        goal_recovery::observe_lost_native_worker(&fixture.pool, None, "goal")
+            .await
+            .unwrap(),
+        NativeInspection::StillOwned(_)
+    ));
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM goal_candidate_observations")
+            .fetch_one(&fixture.pool)
+            .await
+            .unwrap(),
+        0
+    );
+    live.kill().await.unwrap();
+    live.wait().await.unwrap();
+    sqlx::query("DELETE FROM harness_process_leases WHERE lease_id='foreign'")
+        .execute(&fixture.pool)
+        .await
+        .unwrap();
+    assert!(matches!(
+        goal_recovery::inspect_native_goal(&fixture.pool, None, "goal")
+            .await
+            .unwrap(),
+        NativeInspection::Lost(_)
+    ));
+    sqlx::query("INSERT INTO board_columns VALUES('cancelled','cancelled')")
+        .execute(&fixture.pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE cards SET column_id='cancelled' WHERE id='goal'")
+        .execute(&fixture.pool)
+        .await
+        .unwrap();
+    assert!(matches!(
+        goal_recovery::observe_lost_native_worker(&fixture.pool, None, "goal")
+            .await
+            .unwrap(),
+        NativeInspection::Unverifiable(_)
+    ));
+    assert!(matches!(
+        observe_worker_terminal(
+            &fixture.pool,
+            "goal",
+            "child-claim",
+            "child-worker",
+            TerminalState::Lost,
+            "old loss callback resumed",
+            ReceiptState::Failed
+        )
+        .await
+        .unwrap(),
+        TerminalObservation::Stale
+    ));
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM goal_candidate_observations")
+            .fetch_one(&fixture.pool)
+            .await
+            .unwrap(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn ownership_migration_keeps_legacy_pid_and_execution_kind_unknown() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    sqlx::query("CREATE TABLE goal_attempts(attempt_id TEXT PRIMARY KEY,execution_state TEXT)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO goal_attempts VALUES('legacy','started')")
+        .execute(&pool)
+        .await
+        .unwrap();
+    crate::goal_recovery::apply_schema(&pool).await.unwrap();
+    crate::goal_recovery::apply_schema(&pool).await.unwrap();
+    let row=sqlx::query("SELECT owner_process_id,execution_kind,execution_state FROM goal_attempts WHERE attempt_id='legacy'").fetch_one(&pool).await.unwrap();
+    assert!(row.get::<Option<i64>, _>("owner_process_id").is_none());
+    assert!(row.get::<Option<String>, _>("execution_kind").is_none());
+    assert_eq!(row.get::<String, _>("execution_state"), "started");
 }

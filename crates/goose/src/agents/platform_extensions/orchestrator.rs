@@ -31913,6 +31913,9 @@ pub fn classify_restart_charge(meta: &serde_json::Value) -> RestartCharge {
 pub enum ResumeDisposition {
     /// Dispatched in THIS lifecycle — a live tracker owns it; not an orphan.
     OwnedByLiveTracker,
+    /// Native terminal execution was inspected; candidate may be unverifiable.
+    /// No review, repair, task reset or successful completion was asserted.
+    NativeAttemptInspected,
     /// Owned by a live process OTHER than this one: a terminal harness run
     /// with a live lease, or a lifecycle whose worker receipt is still being
     /// heartbeated. Left untouched. `recheck` is set when only the receipt
@@ -31941,6 +31944,7 @@ pub struct ReconcileReport {
     /// In-flight goal cards found, including those a live tracker owns.
     pub examined: usize,
     pub owned_by_live_tracker: usize,
+    pub native_attempts_inspected: usize,
     /// In-flight goals owned by a live process elsewhere, left untouched.
     pub owned_by_live_foreign_process: usize,
     pub reattached: usize,
@@ -31972,6 +31976,7 @@ impl ReconcileReport {
     fn record(&mut self, disposition: ResumeDisposition) {
         match disposition {
             ResumeDisposition::OwnedByLiveTracker => self.owned_by_live_tracker += 1,
+            ResumeDisposition::NativeAttemptInspected => self.native_attempts_inspected += 1,
             ResumeDisposition::OwnedByLiveForeignProcess { .. } => {
                 self.owned_by_live_foreign_process += 1
             }
@@ -31987,6 +31992,7 @@ impl ReconcileReport {
     /// tracker in this same process already owns.
     pub fn reconciled(&self) -> usize {
         self.reattached
+            + self.native_attempts_inspected
             + self.resumed_to_review
             + self.requeued_no_charge
             + self.requeued_charged
@@ -32007,7 +32013,7 @@ impl ReconcileReport {
     /// zero: a report that omits its empty rows cannot be told from a report
     /// that never looked (the `job_health` rule).
     pub fn detail(&self) -> String {
-        format!(
+        let legacy_detail = format!(
             "Boot reconciliation of in-flight goals (daemon lifecycle {}):\n\
              - examined: {} in-flight goal(s); {} already owned by a live tracker in this process\n\
              - {} left untouched: owned by a live process elsewhere (terminal harness lease or fresh worker receipt)\n\
@@ -32037,7 +32043,8 @@ impl ReconcileReport {
             self.pending_dispatch_deferred,
             self.pending_dispatch_unscanned,
             self.pending_dispatch_errors,
-        )
+        );
+        format!("{legacy_detail}\n- {} native terminal attempts inspected (candidate may be unverifiable; no automatic recovery) (no review or dispatch)", self.native_attempts_inspected)
     }
 
     fn severity(&self) -> crate::briefings::Severity {
@@ -32657,6 +32664,28 @@ async fn resume_single_goal(
     let card = cards::get_card(pool, card_id)
         .await?
         .ok_or_else(|| format!("Card {} not found during resume", card_id))?;
+
+    match crate::goal_recovery::observe_lost_native_worker(pool, manager.as_ref(), card_id)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        crate::goal_recovery::NativeInspection::LegacyUnverified => {}
+        crate::goal_recovery::NativeInspection::StillOwned(reason) => {
+            tracing::info!(target:"permagentd::brain",goal_id=%card_id,"Native recovery remains owned: {reason}");
+            return Ok(ResumeDisposition::OwnedByLiveForeignProcess { recheck: false });
+        }
+        crate::goal_recovery::NativeInspection::Candidate(resolution) => {
+            tracing::info!(target:"permagentd::brain",goal_id=%card_id,candidate_verified=matches!(resolution,crate::goal_candidates::LineageResolution::Verified(_)),
+                "Native terminal execution retained for inspection; no automatic review or redispatch");
+            return Ok(ResumeDisposition::NativeAttemptInspected);
+        }
+        crate::goal_recovery::NativeInspection::Unverifiable(reason) => {
+            return Err(format!("Native recovery remains unverified: {reason}"));
+        }
+        crate::goal_recovery::NativeInspection::Lost(_) => {
+            return Err("Native loss observation did not produce a sealed outcome".into());
+        }
+    }
 
     let meta = card.metadata_json.as_object();
 

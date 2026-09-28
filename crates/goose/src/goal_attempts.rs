@@ -43,6 +43,7 @@ pub(crate) async fn apply_schema(pool: &Pool<Sqlite>) -> Result<()> {
         started_at TEXT, finalized_at TEXT, ended_at TEXT, terminal_reason TEXT,
         UNIQUE(goal_id, ordinal))").execute(pool).await?;
     crate::goal_candidates::apply_schema(pool).await?;
+    crate::goal_recovery::apply_schema(pool).await?;
     crate::native_provider_calls::apply_schema(pool).await?;
     Ok(())
 }
@@ -207,10 +208,10 @@ pub(crate) async fn claim_tx(
             .fetch_one(&mut **tx)
             .await?;
     sqlx::query("INSERT INTO goal_attempts
-        (attempt_id,goal_id,ordinal,claim_id,lifecycle_id,worker_key,execution_root,input_head,parent_candidate_attempt_id,baseline_authority,execution_state)
-        VALUES (?,?,?,?,?,?,?,?,?,?,'claimed')")
+        (attempt_id,goal_id,ordinal,claim_id,lifecycle_id,worker_key,execution_root,input_head,parent_candidate_attempt_id,baseline_authority,owner_process_id,execution_state)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,'claimed')")
         .bind(uuid::Uuid::now_v7().to_string()).bind(goal_id).bind(ordinal).bind(&input.claim_id)
-        .bind(&input.lifecycle_id).bind(&input.worker_key).bind(&input.execution_root).bind(&input.input_head).bind(parent).bind(baseline_authority)
+        .bind(&input.lifecycle_id).bind(&input.worker_key).bind(&input.execution_root).bind(&input.input_head).bind(parent).bind(baseline_authority).bind(i64::from(std::process::id()))
         .execute(&mut **tx).await?;
     Ok(())
 }
@@ -233,10 +234,19 @@ impl StartPermit {
     }
 
     pub(crate) async fn mark_provider_accounting(&self, session: &str) -> Result<()> {
-        let changed=sqlx::query("UPDATE goal_attempts SET accounting_authority=? WHERE goal_id=? AND claim_id=? AND worker_session_id=? AND execution_state='prepared'")
+        let changed=sqlx::query("UPDATE goal_attempts SET accounting_authority=?,execution_kind='internal' WHERE goal_id=? AND claim_id=? AND worker_session_id=? AND execution_state='prepared' AND (execution_kind IS NULL OR execution_kind='internal')")
             .bind(crate::native_provider_calls::COVERAGE_VERSION).bind(&self.goal_id).bind(&self.claim_id).bind(session).execute(&self.pool).await?.rows_affected();
         if changed != 1 {
             bail!("Provider accounting cannot bind a different native worker");
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn mark_external_execution(&self, session: &str) -> Result<()> {
+        let changed=sqlx::query("UPDATE goal_attempts SET execution_kind='external' WHERE goal_id=? AND claim_id=? AND worker_session_id=? AND execution_state='prepared' AND (execution_kind IS NULL OR execution_kind='external')")
+            .bind(&self.goal_id).bind(&self.claim_id).bind(session).execute(&self.pool).await?.rows_affected();
+        if changed != 1 {
+            bail!("External execution cannot bind a different prepared worker");
         }
         Ok(())
     }
@@ -372,8 +382,8 @@ pub(crate) async fn record_pid(
     claim: &str,
     pid: u32,
 ) -> Result<()> {
-    let changed = sqlx::query("UPDATE goal_attempts SET process_id=? WHERE goal_id=? AND claim_id=? AND execution_state='started' AND finalized_at IS NOT NULL")
-        .bind(i64::from(pid)).bind(goal).bind(claim).execute(pool).await?.rows_affected();
+    let changed = sqlx::query("UPDATE goal_attempts SET process_id=? WHERE goal_id=? AND claim_id=? AND execution_state='started' AND finalized_at IS NOT NULL AND (process_id IS NULL OR process_id=?)")
+        .bind(i64::from(pid)).bind(goal).bind(claim).bind(i64::from(pid)).execute(pool).await?.rows_affected();
     if changed != 1 {
         bail!("PID does not belong to a started native attempt");
     }

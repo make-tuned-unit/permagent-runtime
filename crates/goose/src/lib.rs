@@ -51,6 +51,7 @@ pub mod forecaster;
 pub mod gateway;
 pub mod goal_attempts;
 pub mod goal_candidates;
+pub(crate) mod goal_recovery;
 pub mod goal_landing;
 pub mod goal_refinement;
 pub mod goal_state;
