@@ -1,0 +1,42 @@
+{
+  "status": "completed; downloaded; inspected; held from runtime",
+  "estimated_fal_cost_usd": 0.45,
+  "combined_fal_trials_estimated_usd": 3.075,
+  "jobs_completed": 2,
+  "library_registered": true,
+  "archive_bytes": 365188753,
+  "archive_sha256": "f865b9d6d100a2d1e25a52425b7308329bfbfdb918ca73e67ba420a822dbf5ad",
+  "vertices": 7910122,
+  "triangles": 15950359,
+  "review": {
+    "origin": "Promising composition, but segmented sky/architecture cutouts and broken solar arch geometry visible.",
+    "offset": "One provider unit sideways exposes stretched vegetation, columns and foreground surfaces; no metre calibration assumed.",
+    "decision": "Keep as composition/material reference, not a walkable runtime replacement."
+  },
+  "native_integration": false,
+  "diagnostic": {
+    "triangles": 1063665,
+    "method": "Unmodified original triangles conservatively selected for two camera frusta; baked vertex colors; float32 diagnostic positions.",
+    "camera_fov_horizontal": 75,
+    "resolution": [
+      768,
+      432
+    ],
+    "samples": 4,
+    "cpu_threads": 1,
+    "elapsed_seconds": 10.1,
+    "previews": [
+      "previews/origin.png",
+      "previews/offset.png"
+    ]
+  },
+  "unverified": [
+    "collision",
+    "navigation",
+    "world-scale calibration",
+    "full free movement",
+    "native frame-time performance",
+    "relighting"
+  ],
+  "private_url": "Signed query excluded from committed result and download ledgers; raw archive retained locally."
+}

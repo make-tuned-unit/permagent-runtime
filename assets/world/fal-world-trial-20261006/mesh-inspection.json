@@ -1,0 +1,86 @@
+{
+  "layers": [
+    {
+      "source": "mesh_layer0.ply",
+      "vertices": 470206,
+      "triangles": 1022395,
+      "bounds": [
+        [
+          -8.410079956054688,
+          -18.218624114990234,
+          -0.31405067443847656
+        ],
+        [
+          0.36704519391059875,
+          2.186229705810547,
+          43.99758529663086
+        ]
+      ],
+      "diagnostic_vertices": 11290,
+      "diagnostic_triangles": 25433,
+      "diagnostic_bytes": 500217
+    },
+    {
+      "source": "mesh_layer1.ply",
+      "vertices": 5596716,
+      "triangles": 11245404,
+      "bounds": [
+        [
+          -7.43856143951416,
+          -7.418460369110107,
+          -0.4219941794872284
+        ],
+        [
+          6.211462497711182,
+          7.184995651245117,
+          7.287116527557373
+        ]
+      ],
+      "diagnostic_vertices": 422328,
+      "diagnostic_triangles": 848445,
+      "diagnostic_bytes": 17364945
+    },
+    {
+      "source": "mesh_layer2.ply",
+      "vertices": 1843200,
+      "triangles": 3682560,
+      "bounds": [
+        [
+          -49.295799255371094,
+          -49.295799255371094,
+          -49.295867919921875
+        ],
+        [
+          49.295799255371094,
+          49.295799255371094,
+          49.295867919921875
+        ]
+      ],
+      "diagnostic_vertices": 95527,
+      "diagnostic_triangles": 189787,
+      "diagnostic_bytes": 3900375
+    }
+  ],
+  "total_triangles": 15950359,
+  "views": [
+    {
+      "name": "origin",
+      "position": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "offset",
+      "position": [
+        0,
+        1,
+        0
+      ]
+    }
+  ],
+  "horizontal_fov_degrees": 75,
+  "method": "Conservative original-triangle frustum selection for two fixed views; positions reduced from float64 to float32 for rendering only, RGB retained. Not a full scene export or geometry simplification. Scale is provider units, not calibrated metres.",
+  "orientation_source": "https://github.com/Tencent-Hunyuan/HunyuanWorld-1.0/blob/main/modelviewer.html"
+}

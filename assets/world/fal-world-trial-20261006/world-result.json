@@ -1,0 +1,24 @@
+{
+  "status": "completed",
+  "endpoint_id": "fal-ai/hunyuan_world/image-to-world",
+  "request_id": "01a11293-a0ac-72b1-b1ec-0298aa46a5d3",
+  "response_url": "https://queue.fal.run/fal-ai/hunyuan_world/requests/01a11293-a0ac-72b1-b1ec-0298aa46a5d3",
+  "result": {
+    "world_file": {
+      "url": "https://storage.googleapis.com/fal_file_storage/ff64b7a732924538a0f5299f91e71619_tmpcgfhmzda.zip",
+      "content_type": "application/octet-stream",
+      "file_name": "tmpcgfhmzda.zip",
+      "file_size": 365188753
+    }
+  },
+  "media": [
+    {
+      "url": "https://storage.googleapis.com/fal_file_storage/ff64b7a732924538a0f5299f91e71619_tmpcgfhmzda.zip",
+      "json_path": "result.world_file.url",
+      "content_type": "application/octet-stream",
+      "file_name": "tmpcgfhmzda.zip"
+    }
+  ],
+  "display_hint": "Present completed media to the user. Forward attached image content blocks to the host's image display helper (for example, image(block)); do not stringify image blocks as text. For Markdown previews use previews[].preview_url, and separately link original_url as the full-resolution file. If no preview is available, show a clearly labeled original-file link. Do not claim a preview rendered unless it is visible. Video, audio and 3D URLs are original result files, not queue URLs.",
+  "acquisition_note": "Provider returned a temporary signed Google Cloud Storage URL; query omitted from this committed receipt. Private receipt is stored locally with mode 0600 and is ignored by Git. Re-fetch the existing completed request if access expires."
+}

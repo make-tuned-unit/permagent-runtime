@@ -1,0 +1,24 @@
+{
+  "status": "submitted",
+  "recipe": {
+    "endpoint_id": "fal-ai/hunyuan_world/image-to-world",
+    "input": {
+      "image_url": "https://v3b.fal.media/files/b/0aad539d/QFZDWgQWK8waMe7lU5j6N.png",
+      "labels_fg1": "plants, shrubs, flowers",
+      "labels_fg2": "trees",
+      "classes": "outdoor",
+      "export_drc": false
+    },
+    "note": "These are the submitted inputs, not resolved server defaults. For a variation, copy them and change only requested fields; reuse returned_seed when supported by the schema. Source URLs may expire."
+  },
+  "request_id": "01a11293-a0ac-72b1-b1ec-0298aa46a5d3",
+  "endpoint_id": "fal-ai/hunyuan_world/image-to-world",
+  "status_url": "https://queue.fal.run/fal-ai/hunyuan_world/requests/01a11293-a0ac-72b1-b1ec-0298aa46a5d3/status",
+  "response_url": "https://queue.fal.run/fal-ai/hunyuan_world/requests/01a11293-a0ac-72b1-b1ec-0298aa46a5d3",
+  "cancel_url": "https://queue.fal.run/fal-ai/hunyuan_world/requests/01a11293-a0ac-72b1-b1ec-0298aa46a5d3/cancel",
+  "poll_after_seconds": 20,
+  "polling_hint": "Wait poll_after_seconds before calling check_job with the same request_id and status_url. This interval is not an ETA. Report meaningful status changes rather than repeating unchanged progress. Do not submit another job to check progress.",
+  "hint": "Job submitted. Use check_job with status_url to check status, then get_job_result with response_url when it completes.",
+  "estimated_usd": 0.3,
+  "selection": "Catalog-confirmed scene-scale mesh endpoint, following official panorama-then-scene workflow; per-object Hunyuan3D recommendations do not satisfy whole environment reconstruction."
+}

@@ -1,0 +1,62 @@
+{
+  "path": "world.zip",
+  "request_id": "01a11293-a0ac-72b1-b1ec-0298aa46a5d3",
+  "url": "https://storage.googleapis.com/fal_file_storage/ff64b7a732924538a0f5299f91e71619_tmpcgfhmzda.zip",
+  "bytes": 365188753,
+  "sha256": "f865b9d6d100a2d1e25a52425b7308329bfbfdb918ca73e67ba420a822dbf5ad",
+  "method": "Verified HTTPS; public DNS answer provided to curl per request when system DNS fails; signed queries omitted from ledger",
+  "archive_members": [
+    {
+      "path": "mesh_layer2.ply",
+      "bytes": 97639951
+    },
+    {
+      "path": "image.png",
+      "bytes": 3292632
+    },
+    {
+      "path": "sky_image.png",
+      "bytes": 2033591
+    },
+    {
+      "path": "fg2.json",
+      "bytes": 605
+    },
+    {
+      "path": "remove_fg2_image_sr.png",
+      "bytes": 11258865
+    },
+    {
+      "path": "fg2_mask.png",
+      "bytes": 25771
+    },
+    {
+      "path": "mesh_layer0.ply",
+      "bytes": 37271968
+    },
+    {
+      "path": "remove_fg2_image.png",
+      "bytes": 3062329
+    },
+    {
+      "path": "mesh_layer1.ply",
+      "bytes": 431623097
+    },
+    {
+      "path": "full_image.png",
+      "bytes": 3292632
+    },
+    {
+      "path": "sky_image_sr.png",
+      "bytes": 7674474
+    },
+    {
+      "path": "full_image_sr.png",
+      "bytes": 11909883
+    },
+    {
+      "path": "sky_mask.png",
+      "bytes": 18906
+    }
+  ]
+}

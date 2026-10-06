@@ -1,0 +1,21 @@
+{
+  "status": "submitted",
+  "recipe": {
+    "endpoint_id": "fal-ai/hunyuan_world",
+    "input": {
+      "image_url": "https://v3b.fal.media/files/b/0aad537a/iDMdriT2XFOVYXp52dlDL_orbital-garden-v1.png",
+      "prompt": "A 360 degree panoramic view from human eye level inside this peaceful solarpunk orbital garden. Preserve the forward view's carved cream limestone reading pavilion, warm walnut shelves, bronze architectural details, rooted mature trees, planted beds, broad connected stone paths, water garden, glass observatory and distant giant planet. Extend a coherent continuous garden all around the camera with an open walking area in the foreground. All architecture stands on connected ground. Warm architectural lighting and cool celestial ambient light. No people, no robots, no text, no signs, no UI."
+    },
+    "note": "These are the submitted inputs, not resolved server defaults. For a variation, copy them and change only requested fields; reuse returned_seed when supported by the schema. Source URLs may expire."
+  },
+  "request_id": "01a1128d-aa29-7f53-b94a-9900e8a51bae",
+  "endpoint_id": "fal-ai/hunyuan_world",
+  "status_url": "https://queue.fal.run/fal-ai/hunyuan_world/requests/01a1128d-aa29-7f53-b94a-9900e8a51bae/status",
+  "response_url": "https://queue.fal.run/fal-ai/hunyuan_world/requests/01a1128d-aa29-7f53-b94a-9900e8a51bae",
+  "cancel_url": "https://queue.fal.run/fal-ai/hunyuan_world/requests/01a1128d-aa29-7f53-b94a-9900e8a51bae/cancel",
+  "poll_after_seconds": 20,
+  "polling_hint": "Wait poll_after_seconds before calling check_job with the same request_id and status_url. This interval is not an ETA. Report meaningful status changes rather than repeating unchanged progress. Do not submit another job to check progress.",
+  "hint": "Job submitted. Use check_job with status_url to check status, then get_job_result with response_url when it completes.",
+  "estimated_usd": 0.15,
+  "selection": "The official world pipeline requires a panorama first; evaluated separately from the live habitat."
+}

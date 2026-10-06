@@ -1,0 +1,7 @@
+/world.zip
+/.world-result-private.json
+/unpacked/
+/diagnostic-meshes/
+/*.partial
+__pycache__/
+*.blend1
