@@ -1,0 +1,3389 @@
+{
+  "copied_or_verified": [
+    {
+      "crate": "adler2-2.0.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/adler2-2.0.1.crate",
+      "bytes": 13366,
+      "sha256": "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
+    },
+    {
+      "crate": "aho-corasick-1.1.4.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/aho-corasick-1.1.4.crate",
+      "bytes": 184015,
+      "sha256": "ddd31a130427c27518df266943a5308ed92d4b226cc639f5a8f1002816174301"
+    },
+    {
+      "crate": "alloc-no-stdlib-2.0.4.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/alloc-no-stdlib-2.0.4.crate",
+      "bytes": 10105,
+      "sha256": "cc7bb162ec39d46ab1ca8c77bf72e890535becd1751bb45f64c597edb4c8c6b3"
+    },
+    {
+      "crate": "alloc-stdlib-0.2.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/alloc-stdlib-0.2.2.crate",
+      "bytes": 6693,
+      "sha256": "94fb8275041c72129eb51b7d0322c29b8387a0386127718b096429201a5d6ece"
+    },
+    {
+      "crate": "android_system_properties-0.1.5.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/android_system_properties-0.1.5.crate",
+      "bytes": 5243,
+      "sha256": "819e7219dbd41043ac279b19830f2efc897156490d7fd6ea916720117ee66311"
+    },
+    {
+      "crate": "anyhow-1.0.102.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/anyhow-1.0.102.crate",
+      "bytes": 48658,
+      "sha256": "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
+    },
+    {
+      "crate": "arbitrary-1.4.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/arbitrary-1.4.2.crate",
+      "bytes": 38307,
+      "sha256": "c3d036a3c4ab069c7b410a2ce876bd74808d2d0888a82667669f8e783a898bf1"
+    },
+    {
+      "crate": "async-broadcast-0.7.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/async-broadcast-0.7.2.crate",
+      "bytes": 22746,
+      "sha256": "435a87a52755b8f27fcf321ac4f04b2802e337c8c4872923137471ec39c37532"
+    },
+    {
+      "crate": "async-channel-2.5.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/async-channel-2.5.0.crate",
+      "bytes": 18624,
+      "sha256": "924ed96dd52d1b75e9c1a3e6275715fd320f5f9439fb5a4a11fa51f4221158d2"
+    },
+    {
+      "crate": "async-executor-1.14.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/async-executor-1.14.0.crate",
+      "bytes": 28804,
+      "sha256": "c96bf972d85afc50bf5ab8fe2d54d1586b4e0b46c97c50a0c9e71e2f7bcd812a"
+    },
+    {
+      "crate": "async-io-2.6.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/async-io-2.6.0.crate",
+      "bytes": 51062,
+      "sha256": "456b8a8feb6f42d237746d4b3e9a178494627745c3c56c6ea55d92ba50d026fc"
+    },
+    {
+      "crate": "async-lock-3.4.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/async-lock-3.4.2.crate",
+      "bytes": 39826,
+      "sha256": "290f7f2596bd5b78a9fec8088ccd89180d7f9f55b94b0576823bbbdc72ee8311"
+    },
+    {
+      "crate": "async-process-2.5.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/async-process-2.5.0.crate",
+      "bytes": 27552,
+      "sha256": "fc50921ec0055cdd8a16de48773bfeec5c972598674347252c0399676be7da75"
+    },
+    {
+      "crate": "async-recursion-1.1.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/async-recursion-1.1.1.crate",
+      "bytes": 14874,
+      "sha256": "3b43422f69d8ff38f95f1b2bb76517c91589a924d1559a0e935d7c8ce0274c11"
+    },
+    {
+      "crate": "async-signal-0.2.14.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/async-signal-0.2.14.crate",
+      "bytes": 16447,
+      "sha256": "52b5aaafa020cf5053a01f2a60e8ff5dccf550f0f77ec54a4e47285ac2bab485"
+    },
+    {
+      "crate": "async-task-4.7.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/async-task-4.7.1.crate",
+      "bytes": 38077,
+      "sha256": "8b75356056920673b02621b35afd0f7dda9306d03c79a30f5c56c44cf256e3de"
+    },
+    {
+      "crate": "async-trait-0.1.89.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/async-trait-0.1.89.crate",
+      "bytes": 32171,
+      "sha256": "9035ad2d096bed7955a320ee7e2230574d28fd3c3a0f186cbea1ff3c7eed5dbb"
+    },
+    {
+      "crate": "atk-0.18.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/atk-0.18.2.crate",
+      "bytes": 34179,
+      "sha256": "241b621213072e993be4f6f3a9e4b45f65b7e6faad43001be957184b7bb1824b"
+    },
+    {
+      "crate": "atk-sys-0.18.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/atk-sys-0.18.2.crate",
+      "bytes": 22997,
+      "sha256": "c5e48b684b0ca77d2bbadeef17424c2ea3c897d44d566a1617e7e8f30614d086"
+    },
+    {
+      "crate": "atomic-waker-1.1.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/atomic-waker-1.1.2.crate",
+      "bytes": 12422,
+      "sha256": "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
+    },
+    {
+      "crate": "autocfg-1.5.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/autocfg-1.5.0.crate",
+      "bytes": 18729,
+      "sha256": "c08606f8c3cbf4ce6ec8e28fb0014a2c086708fe954eaa885384a6165172e7e8"
+    },
+    {
+      "crate": "base64-0.21.7.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/base64-0.21.7.crate",
+      "bytes": 82576,
+      "sha256": "9d297deb1925b89f2ccc13d7635fa0714f12c87adce1c75356b39ca9b7178567"
+    },
+    {
+      "crate": "base64-0.22.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/base64-0.22.1.crate",
+      "bytes": 81597,
+      "sha256": "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
+    },
+    {
+      "crate": "bit-set-0.8.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/bit-set-0.8.0.crate",
+      "bytes": 16289,
+      "sha256": "08807e080ed7f9d5433fa9b275196cfc35414f66a0c79d864dc51a0d825231a3"
+    },
+    {
+      "crate": "bit-vec-0.8.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/bit-vec-0.8.0.crate",
+      "bytes": 24132,
+      "sha256": "5e764a1d40d510daf35e07be9eb06e75770908c27d411ee6c92109c9840eaaf7"
+    },
+    {
+      "crate": "bitflags-1.3.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/bitflags-1.3.2.crate",
+      "bytes": 23021,
+      "sha256": "bef38d45163c2f1dde094a7dfd33ccf595c92905c8f8f4fdc18d06fb1037718a"
+    },
+    {
+      "crate": "bitflags-2.11.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/bitflags-2.11.1.crate",
+      "bytes": 49082,
+      "sha256": "c4512299f36f043ab09a583e57bceb5a5aab7a73db1805848e8fef3c9e8c78b3"
+    },
+    {
+      "crate": "block-buffer-0.10.4.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/block-buffer-0.10.4.crate",
+      "bytes": 10538,
+      "sha256": "3078c7629b62d3f0439517fa394996acacc5cbc91c5a20d8c658e77abd503a71"
+    },
+    {
+      "crate": "block2-0.6.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/block2-0.6.2.crate",
+      "bytes": 34505,
+      "sha256": "cdeb9d870516001442e364c5220d3574d2da8dc765554b4a617230d33fa58ef5"
+    },
+    {
+      "crate": "blocking-1.6.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/blocking-1.6.2.crate",
+      "bytes": 17754,
+      "sha256": "e83f8d02be6967315521be875afa792a316e28d57b5a2d401897e2a7921b7f21"
+    },
+    {
+      "crate": "brotli-8.0.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/brotli-8.0.2.crate",
+      "bytes": 741739,
+      "sha256": "4bd8b9603c7aa97359dbd97ecf258968c95f3adddd6db2f7e7a5bef101c84560"
+    },
+    {
+      "crate": "brotli-decompressor-5.0.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/brotli-decompressor-5.0.0.crate",
+      "bytes": 195282,
+      "sha256": "874bb8112abecc98cbd6d81ea4fa7e94fb9449648c93cc89aa40c81c24d7de03"
+    },
+    {
+      "crate": "bumpalo-3.20.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/bumpalo-3.20.2.crate",
+      "bytes": 97696,
+      "sha256": "5d20789868f4b01b2f2caec9f5c4e0213b41e3e5702a50157d699ae31ced2fcb"
+    },
+    {
+      "crate": "bytemuck-1.25.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/bytemuck-1.25.0.crate",
+      "bytes": 53466,
+      "sha256": "c8efb64bd706a16a1bdde310ae86b351e4d21550d98d056f22f8a7f7a2183fec"
+    },
+    {
+      "crate": "byteorder-1.5.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/byteorder-1.5.0.crate",
+      "bytes": 23288,
+      "sha256": "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
+    },
+    {
+      "crate": "bytes-1.11.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/bytes-1.11.1.crate",
+      "bytes": 78584,
+      "sha256": "1e748733b7cbc798e1434b6ac524f0c1ff2ab456fe201501e6497c8417a4fc33"
+    },
+    {
+      "crate": "cairo-rs-0.18.5.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/cairo-rs-0.18.5.crate",
+      "bytes": 54235,
+      "sha256": "8ca26ef0159422fb77631dc9d17b102f253b876fe1586b03b803e63a309b4ee2"
+    },
+    {
+      "crate": "cairo-sys-rs-0.18.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/cairo-sys-rs-0.18.2.crate",
+      "bytes": 11855,
+      "sha256": "685c9fa8e590b8b3d678873528d83411db17242a73fccaed827770ea0fedda51"
+    },
+    {
+      "crate": "camino-1.2.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/camino-1.2.2.crate",
+      "bytes": 41202,
+      "sha256": "e629a66d692cb9ff1a1c664e41771b3dcaf961985a9774c0eb0bd1b51cf60a48"
+    },
+    {
+      "crate": "cargo-platform-0.1.9.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/cargo-platform-0.1.9.crate",
+      "bytes": 12010,
+      "sha256": "e35af189006b9c0f00a064685c727031e3ed2d8020f7ba284d78cc2671bd36ea"
+    },
+    {
+      "crate": "cargo_metadata-0.19.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/cargo_metadata-0.19.2.crate",
+      "bytes": 28370,
+      "sha256": "dd5eb614ed4c27c5d706420e4320fbe3216ab31fa1c33cd8246ac36dae4479ba"
+    },
+    {
+      "crate": "cargo_toml-0.22.3.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/cargo_toml-0.22.3.crate",
+      "bytes": 33780,
+      "sha256": "374b7c592d9c00c1f4972ea58390ac6b18cbb6ab79011f3bdc90a0b82ca06b77"
+    },
+    {
+      "crate": "cc-1.2.61.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/cc-1.2.61.crate",
+      "bytes": 97163,
+      "sha256": "d16d90359e986641506914ba71350897565610e87ce0ad9e6f28569db3dd5c6d"
+    },
+    {
+      "crate": "cesu8-1.1.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/cesu8-1.1.0.crate",
+      "bytes": 10555,
+      "sha256": "6d43a04d8753f35258c91f8ec639f792891f748a1edbd759cf1dcea3382ad83c"
+    },
+    {
+      "crate": "cfb-0.7.3.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/cfb-0.7.3.crate",
+      "bytes": 63277,
+      "sha256": "d38f2da7a0a2c4ccf0065be06397cc26a81f4e528be095826eee9d4adbb8c60f"
+    },
+    {
+      "crate": "cfg-expr-0.15.8.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/cfg-expr-0.15.8.crate",
+      "bytes": 42108,
+      "sha256": "d067ad48b8650848b989a59a86c6c36a995d02d2bf778d45c3c5d57bc2718f02"
+    },
+    {
+      "crate": "cfg-if-1.0.4.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/cfg-if-1.0.4.crate",
+      "bytes": 9360,
+      "sha256": "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
+    },
+    {
+      "crate": "cfg_aliases-0.1.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/cfg_aliases-0.1.1.crate",
+      "bytes": 6009,
+      "sha256": "fd16c4719339c4530435d38e511904438d07cce7950afa3718a84ac36c10e89e"
+    },
+    {
+      "crate": "cfg_aliases-0.2.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/cfg_aliases-0.2.1.crate",
+      "bytes": 6355,
+      "sha256": "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
+    },
+    {
+      "crate": "chrono-0.4.44.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/chrono-0.4.44.crate",
+      "bytes": 240549,
+      "sha256": "c673075a2e0e5f4a1dde27ce9dee1ea4558c7ffe648f576438a20ca1d2acc4b0"
+    },
+    {
+      "crate": "combine-4.6.7.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/combine-4.6.7.crate",
+      "bytes": 134808,
+      "sha256": "ba5a308b75df32fe02788e748662718f03fde005016435c444eea572398219fd"
+    },
+    {
+      "crate": "concurrent-queue-2.5.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/concurrent-queue-2.5.0.crate",
+      "bytes": 22654,
+      "sha256": "4ca0197aee26d1ae37445ee532fefce43251d24cc7c166799f4d46817f1d3973"
+    },
+    {
+      "crate": "cookie-0.18.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/cookie-0.18.1.crate",
+      "bytes": 43551,
+      "sha256": "4ddef33a339a91ea89fb53151bd0a4689cfce27055c291dfa69945475d22c747"
+    },
+    {
+      "crate": "core-foundation-0.10.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/core-foundation-0.10.1.crate",
+      "bytes": 28886,
+      "sha256": "b2a6cd9ae233e7f62ba4e9353e81a88df7fc8a5987b8d445b4d90c879bd156f6"
+    },
+    {
+      "crate": "core-foundation-sys-0.8.7.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/core-foundation-sys-0.8.7.crate",
+      "bytes": 37712,
+      "sha256": "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
+    },
+    {
+      "crate": "core-graphics-0.25.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/core-graphics-0.25.0.crate",
+      "bytes": 34487,
+      "sha256": "064badf302c3194842cf2c5d61f56cc88e54a759313879cdf03abdd27d0c3b97"
+    },
+    {
+      "crate": "core-graphics-types-0.2.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/core-graphics-types-0.2.0.crate",
+      "bytes": 7098,
+      "sha256": "3d44a101f213f6c4cdc1853d4b78aef6db6bdfa3468798cc1d9912f4735013eb"
+    },
+    {
+      "crate": "cpufeatures-0.2.17.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/cpufeatures-0.2.17.crate",
+      "bytes": 13466,
+      "sha256": "59ed5838eebb26a2bb2e58f6d5b5316989ae9d08bab10e0e6d103e656d1b0280"
+    },
+    {
+      "crate": "crc32fast-1.5.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/crc32fast-1.5.0.crate",
+      "bytes": 40723,
+      "sha256": "9481c1c90cbf2ac953f07c8d4a58aa3945c425b7185c9154d67a65e4230da511"
+    },
+    {
+      "crate": "crossbeam-channel-0.5.15.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/crossbeam-channel-0.5.15.crate",
+      "bytes": 92716,
+      "sha256": "82b8f8f868b36967f9606790d1903570de9ceaf870a7bf9fbbd3016d636a2cb2"
+    },
+    {
+      "crate": "crossbeam-utils-0.8.21.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/crossbeam-utils-0.8.21.crate",
+      "bytes": 42691,
+      "sha256": "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
+    },
+    {
+      "crate": "crypto-common-0.1.7.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/crypto-common-0.1.7.crate",
+      "bytes": 9619,
+      "sha256": "78c8292055d1c1df0cce5d180393dc8cce0abec0a7102adb6c7b1eef6016d60a"
+    },
+    {
+      "crate": "cssparser-0.36.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/cssparser-0.36.0.crate",
+      "bytes": 56357,
+      "sha256": "dae61cf9c0abb83bd659dab65b7e4e38d8236824c85f0f804f173567bda257d2"
+    },
+    {
+      "crate": "cssparser-macros-0.6.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/cssparser-macros-0.6.1.crate",
+      "bytes": 7914,
+      "sha256": "13b588ba4ac1a99f7f2964d24b3d896ddc6bf847ee3855dbd4366f058cfcd331"
+    },
+    {
+      "crate": "ctor-0.8.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/ctor-0.8.0.crate",
+      "bytes": 15646,
+      "sha256": "352d39c2f7bef1d6ad73db6f5160efcaed66d94ef8c6c573a8410c00bf909a98"
+    },
+    {
+      "crate": "ctor-proc-macro-0.0.7.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/ctor-proc-macro-0.0.7.crate",
+      "bytes": 6462,
+      "sha256": "52560adf09603e58c9a7ee1fe1dcb95a16927b17c127f0ac02d6e768a0e25bc1"
+    },
+    {
+      "crate": "darling-0.23.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/darling-0.23.0.crate",
+      "bytes": 43298,
+      "sha256": "25ae13da2f202d56bd7f91c25fba009e7717a1e4a1cc98a76d844b65ae912e9d"
+    },
+    {
+      "crate": "darling_core-0.23.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/darling_core-0.23.0.crate",
+      "bytes": 74564,
+      "sha256": "9865a50f7c335f53564bb694ef660825eb8610e0a53d3e11bf1b0d3df31e03b0"
+    },
+    {
+      "crate": "darling_macro-0.23.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/darling_macro-0.23.0.crate",
+      "bytes": 2480,
+      "sha256": "ac3984ec7bd6cfa798e62b4a642426a5be0e68f9401cfc2a01e3fa9ea2fcdb8d"
+    },
+    {
+      "crate": "dbus-0.9.11.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/dbus-0.9.11.crate",
+      "bytes": 105956,
+      "sha256": "b942602992bb7acfd1f51c49811c58a610ef9181b6e66f3e519d79b540a3bf73"
+    },
+    {
+      "crate": "deranged-0.5.8.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/deranged-0.5.8.crate",
+      "bytes": 26885,
+      "sha256": "7cd812cc2bc1d69d4764bd80df88b4317eaef9e773c75226407d9bc0876b211c"
+    },
+    {
+      "crate": "derive_arbitrary-1.4.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/derive_arbitrary-1.4.2.crate",
+      "bytes": 12290,
+      "sha256": "1e567bd82dcff979e4b03460c307b3cdc9e96fde3d73bed1496d2bc75d9dd62a"
+    },
+    {
+      "crate": "derive_more-2.1.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/derive_more-2.1.1.crate",
+      "bytes": 88632,
+      "sha256": "d751e9e49156b02b44f9c1815bcb94b984cdcc4396ecc32521c739452808b134"
+    },
+    {
+      "crate": "derive_more-impl-2.1.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/derive_more-impl-2.1.1.crate",
+      "bytes": 99094,
+      "sha256": "799a97264921d8623a957f6c3b9011f3b5492f557bbb7a5a19b7fa6d06ba8dcb"
+    },
+    {
+      "crate": "digest-0.10.7.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/digest-0.10.7.crate",
+      "bytes": 19557,
+      "sha256": "9ed9a281f7bc9b7576e61468ba615a66a5c8cfdff42420a70aa82701a3b1e292"
+    },
+    {
+      "crate": "dirs-6.0.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/dirs-6.0.0.crate",
+      "bytes": 14190,
+      "sha256": "c3e8aa94d75141228480295a7d0e7feb620b1a5ad9f12bc40be62411e38cce4e"
+    },
+    {
+      "crate": "dirs-sys-0.5.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/dirs-sys-0.5.0.crate",
+      "bytes": 10157,
+      "sha256": "e01a3366d27ee9890022452ee61b2b63a67e6f13f58900b651ff5665f0bb1fab"
+    },
+    {
+      "crate": "dispatch2-0.3.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/dispatch2-0.3.1.crate",
+      "bytes": 55299,
+      "sha256": "1e0e367e4e7da84520dedcac1901e4da967309406d1e51017ae1abfb97adbd38"
+    },
+    {
+      "crate": "displaydoc-0.2.5.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/displaydoc-0.2.5.crate",
+      "bytes": 24219,
+      "sha256": "97369cbbc041bc366949bc74d34658d6cda5621039731c6310521892a3a20ae0"
+    },
+    {
+      "crate": "dlopen2-0.8.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/dlopen2-0.8.2.crate",
+      "bytes": 27695,
+      "sha256": "5e2c5bd4158e66d1e215c49b837e11d62f3267b30c92f1d171c4d3105e3dc4d4"
+    },
+    {
+      "crate": "dlopen2_derive-0.4.3.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/dlopen2_derive-0.4.3.crate",
+      "bytes": 7032,
+      "sha256": "0fbbb781877580993a8707ec48672673ec7b81eeba04cfd2310bd28c08e47c8f"
+    },
+    {
+      "crate": "dom_query-0.27.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/dom_query-0.27.0.crate",
+      "bytes": 94297,
+      "sha256": "521e380c0c8afb8d9a1e83a1822ee03556fc3e3e7dbc1fd30be14e37f9cb3f89"
+    },
+    {
+      "crate": "downcast-rs-1.2.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/downcast-rs-1.2.1.crate",
+      "bytes": 11821,
+      "sha256": "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2"
+    },
+    {
+      "crate": "dpi-0.1.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/dpi-0.1.2.crate",
+      "bytes": 14812,
+      "sha256": "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
+    },
+    {
+      "crate": "dtoa-1.0.11.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/dtoa-1.0.11.crate",
+      "bytes": 21122,
+      "sha256": "4c3cf4824e2d5f025c7b531afcb2325364084a16806f6d47fbc1f5fbd9960590"
+    },
+    {
+      "crate": "dtoa-short-0.3.5.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/dtoa-short-0.3.5.crate",
+      "bytes": 8287,
+      "sha256": "cd1511a7b6a56299bd043a9c167a6d2bfb37bf84a6dfceaba651168adfb43c87"
+    },
+    {
+      "crate": "dtor-0.3.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/dtor-0.3.0.crate",
+      "bytes": 12595,
+      "sha256": "f1057d6c64987086ff8ed0fd3fbf377a6b7d205cc7715868cd401705f715cbe4"
+    },
+    {
+      "crate": "dtor-proc-macro-0.0.6.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/dtor-proc-macro-0.0.6.crate",
+      "bytes": 6448,
+      "sha256": "f678cf4a922c215c63e0de95eb1ff08a958a81d47e485cf9da1e27bf6305cfa5"
+    },
+    {
+      "crate": "dunce-1.0.5.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/dunce-1.0.5.crate",
+      "bytes": 8244,
+      "sha256": "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
+    },
+    {
+      "crate": "dyn-clone-1.0.20.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/dyn-clone-1.0.20.crate",
+      "bytes": 13134,
+      "sha256": "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
+    },
+    {
+      "crate": "embed-resource-3.0.9.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/embed-resource-3.0.9.crate",
+      "bytes": 20676,
+      "sha256": "c31a88c8d26de40ed18fe748c547845aa39de1db3afd958f8cb91579f3644bcb"
+    },
+    {
+      "crate": "embed_plist-1.2.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/embed_plist-1.2.2.crate",
+      "bytes": 13024,
+      "sha256": "4ef6b89e5b37196644d8796de5268852ff179b44e96276cf4290264843743bb7"
+    },
+    {
+      "crate": "encoding_rs-0.8.35.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/encoding_rs-0.8.35.crate",
+      "bytes": 1381050,
+      "sha256": "75030f3c4f45dafd7586dd6780965a8c7e8e285a5ecb86713e63a79c5b2766f3"
+    },
+    {
+      "crate": "endi-1.1.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/endi-1.1.1.crate",
+      "bytes": 5045,
+      "sha256": "66b7e2430c6dff6a955451e2cfc438f09cea1965a9d6f87f7e3b90decc014099"
+    },
+    {
+      "crate": "enumflags2-0.7.12.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/enumflags2-0.7.12.crate",
+      "bytes": 17544,
+      "sha256": "1027f7680c853e056ebcec683615fb6fbbc07dbaa13b4d5d9442b146ded4ecef"
+    },
+    {
+      "crate": "enumflags2_derive-0.7.12.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/enumflags2_derive-0.7.12.crate",
+      "bytes": 8573,
+      "sha256": "67c78a4d8fdf9953a5c9d458f9efe940fd97a0cab0941c075a813ac594733827"
+    },
+    {
+      "crate": "equivalent-1.0.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/equivalent-1.0.2.crate",
+      "bytes": 7419,
+      "sha256": "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
+    },
+    {
+      "crate": "erased-serde-0.4.10.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/erased-serde-0.4.10.crate",
+      "bytes": 31339,
+      "sha256": "d2add8a07dd6a8d93ff627029c51de145e12686fbc36ecb298ac22e74cf02dec"
+    },
+    {
+      "crate": "errno-0.3.14.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/errno-0.3.14.crate",
+      "bytes": 12002,
+      "sha256": "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
+    },
+    {
+      "crate": "event-listener-5.4.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/event-listener-5.4.1.crate",
+      "bytes": 43782,
+      "sha256": "e13b66accf52311f30a0db42147dadea9850cb48cd070028831ae5f5d4b856ab"
+    },
+    {
+      "crate": "event-listener-strategy-0.5.4.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/event-listener-strategy-0.5.4.crate",
+      "bytes": 16179,
+      "sha256": "8be9f3dfaaffdae2972880079a491a1a8bb7cbed0b8dd7a347f668b4150a3b93"
+    },
+    {
+      "crate": "fastrand-2.4.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/fastrand-2.4.1.crate",
+      "bytes": 20773,
+      "sha256": "9f1f227452a390804cdb637b74a86990f2a7d7ba4b7d5693aac9b4dd6defd8d6"
+    },
+    {
+      "crate": "fdeflate-0.3.7.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/fdeflate-0.3.7.crate",
+      "bytes": 27188,
+      "sha256": "1e6853b52649d4ac5c0bd02320cddc5ba956bdb407c4b75a2c6b75bf51500f8c"
+    },
+    {
+      "crate": "field-offset-0.3.6.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/field-offset-0.3.6.crate",
+      "bytes": 10032,
+      "sha256": "38e2275cc4e4fc009b0669731a1e5ab7ebf11f469eaede2bab9309a5b4d6057f"
+    },
+    {
+      "crate": "filedescriptor-0.8.3.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/filedescriptor-0.8.3.crate",
+      "bytes": 12635,
+      "sha256": "e40758ed24c9b2eeb76c35fb0aebc66c626084edd827e07e1552279814c6682d"
+    },
+    {
+      "crate": "filetime-0.2.29.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/filetime-0.2.29.crate",
+      "bytes": 16977,
+      "sha256": "5c287a33c7f0a620c38e641e7f60827713987b3c0f26e8ddc9462cc69cf75759"
+    },
+    {
+      "crate": "find-msvc-tools-0.1.9.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/find-msvc-tools-0.1.9.crate",
+      "bytes": 31493,
+      "sha256": "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
+    },
+    {
+      "crate": "flate2-1.1.9.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/flate2-1.1.9.crate",
+      "bytes": 82745,
+      "sha256": "843fba2746e448b37e26a819579957415c8cef339bf08564fe8b7ddbd959573c"
+    },
+    {
+      "crate": "fnv-1.0.7.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/fnv-1.0.7.crate",
+      "bytes": 11266,
+      "sha256": "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
+    },
+    {
+      "crate": "foldhash-0.1.5.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/foldhash-0.1.5.crate",
+      "bytes": 21901,
+      "sha256": "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
+    },
+    {
+      "crate": "foldhash-0.2.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/foldhash-0.2.0.crate",
+      "bytes": 23329,
+      "sha256": "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
+    },
+    {
+      "crate": "foreign-types-0.5.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/foreign-types-0.5.0.crate",
+      "bytes": 7824,
+      "sha256": "d737d9aa519fb7b749cbc3b962edcf310a8dd1f4b67c91c4f83975dbdd17d965"
+    },
+    {
+      "crate": "foreign-types-macros-0.2.3.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/foreign-types-macros-0.2.3.crate",
+      "bytes": 7635,
+      "sha256": "1a5c6c585bc94aaf2c7b51dd4c2ba22680844aba4c687be581871a6f518c5742"
+    },
+    {
+      "crate": "foreign-types-shared-0.3.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/foreign-types-shared-0.3.1.crate",
+      "bytes": 6006,
+      "sha256": "aa9a19cbb55df58761df49b23516a86d432839add4af60fc256da840f66ed35b"
+    },
+    {
+      "crate": "form_urlencoded-1.2.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/form_urlencoded-1.2.2.crate",
+      "bytes": 9347,
+      "sha256": "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
+    },
+    {
+      "crate": "futures-channel-0.3.32.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/futures-channel-0.3.32.crate",
+      "bytes": 33213,
+      "sha256": "07bbe89c50d7a535e539b8c17bc0b49bdb77747034daa8087407d655f3f7cc1d"
+    },
+    {
+      "crate": "futures-core-0.3.32.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/futures-core-0.3.32.crate",
+      "bytes": 14684,
+      "sha256": "7e3450815272ef58cec6d564423f6e755e25379b217b0bc688e295ba24df6b1d"
+    },
+    {
+      "crate": "futures-executor-0.3.32.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/futures-executor-0.3.32.crate",
+      "bytes": 18581,
+      "sha256": "baf29c38818342a3b26b5b923639e7b1f4a61fc5e76102d4b1981c6dc7a7579d"
+    },
+    {
+      "crate": "futures-io-0.3.32.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/futures-io-0.3.32.crate",
+      "bytes": 9191,
+      "sha256": "cecba35d7ad927e23624b22ad55235f2239cfa44fd10428eecbeba6d6a717718"
+    },
+    {
+      "crate": "futures-lite-2.6.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/futures-lite-2.6.1.crate",
+      "bytes": 46095,
+      "sha256": "f78e10609fe0e0b3f4157ffab1876319b5b0db102a2c60dc4626306dc46b44ad"
+    },
+    {
+      "crate": "futures-macro-0.3.32.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/futures-macro-0.3.32.crate",
+      "bytes": 11929,
+      "sha256": "e835b70203e41293343137df5c0664546da5745f82ec9b84d40be8336958447b"
+    },
+    {
+      "crate": "futures-sink-0.3.32.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/futures-sink-0.3.32.crate",
+      "bytes": 8106,
+      "sha256": "c39754e157331b013978ec91992bde1ac089843443c49cbc7f46150b0fad0893"
+    },
+    {
+      "crate": "futures-task-0.3.32.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/futures-task-0.3.32.crate",
+      "bytes": 11377,
+      "sha256": "037711b3d59c33004d3856fbdc83b99d4ff37a24768fa1be9ce3538a1cde4393"
+    },
+    {
+      "crate": "futures-util-0.3.32.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/futures-util-0.3.32.crate",
+      "bytes": 168797,
+      "sha256": "389ca41296e6190b48053de0321d02a77f32f8a5d2461dd38762c0593805c6d6"
+    },
+    {
+      "crate": "gdk-0.18.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/gdk-0.18.2.crate",
+      "bytes": 86561,
+      "sha256": "d9f245958c627ac99d8e529166f9823fb3b838d1d41fd2b297af3075093c2691"
+    },
+    {
+      "crate": "gdk-pixbuf-0.18.5.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/gdk-pixbuf-0.18.5.crate",
+      "bytes": 18176,
+      "sha256": "50e1f5f1b0bfb830d6ccc8066d18db35c487b1b2b1e8589b5dfe9f07e8defaec"
+    },
+    {
+      "crate": "gdk-pixbuf-sys-0.18.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/gdk-pixbuf-sys-0.18.0.crate",
+      "bytes": 9674,
+      "sha256": "3f9839ea644ed9c97a34d129ad56d38a25e6756f99f3a88e15cd39c20629caf7"
+    },
+    {
+      "crate": "gdk-sys-0.18.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/gdk-sys-0.18.2.crate",
+      "bytes": 73345,
+      "sha256": "5c2d13f38594ac1e66619e188c6d5a1adb98d11b2fcf7894fc416ad76aa2f3f7"
+    },
+    {
+      "crate": "gdkwayland-sys-0.18.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/gdkwayland-sys-0.18.2.crate",
+      "bytes": 2967,
+      "sha256": "140071d506d223f7572b9f09b5e155afbd77428cd5cc7af8f2694c41d98dfe69"
+    },
+    {
+      "crate": "gdkx11-0.18.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/gdkx11-0.18.2.crate",
+      "bytes": 9281,
+      "sha256": "3caa00e14351bebbc8183b3c36690327eb77c49abc2268dd4bd36b856db3fbfe"
+    },
+    {
+      "crate": "gdkx11-sys-0.18.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/gdkx11-sys-0.18.2.crate",
+      "bytes": 4791,
+      "sha256": "6e2e7445fe01ac26f11601db260dd8608fe172514eb63b3b5e261ea6b0f4428d"
+    },
+    {
+      "crate": "generic-array-0.14.7.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/generic-array-0.14.7.crate",
+      "bytes": 15950,
+      "sha256": "85649ca51fd72272d7821adaf274ad91c288277713d9c18820d8499a7ff69e9a"
+    },
+    {
+      "crate": "getrandom-0.2.17.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/getrandom-0.2.17.crate",
+      "bytes": 40780,
+      "sha256": "ff2abc00be7fca6ebc474524697ae276ad847ad0a6b3faa4bcb027e9a4614ad0"
+    },
+    {
+      "crate": "getrandom-0.3.4.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/getrandom-0.3.4.crate",
+      "bytes": 50932,
+      "sha256": "899def5c37c4fd7b2664648c28120ecec138e4d395b459e5ca34f9cce2dd77fd"
+    },
+    {
+      "crate": "getrandom-0.4.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/getrandom-0.4.2.crate",
+      "bytes": 53905,
+      "sha256": "0de51e6874e94e7bf76d726fc5d13ba782deca734ff60d5bb2fb2607c7406555"
+    },
+    {
+      "crate": "gio-0.18.4.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/gio-0.18.4.crate",
+      "bytes": 206027,
+      "sha256": "d4fc8f532f87b79cbc51a79748f16a6828fb784be93145a322fa14d06d354c73"
+    },
+    {
+      "crate": "gio-sys-0.18.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/gio-sys-0.18.1.crate",
+      "bytes": 81369,
+      "sha256": "37566df850baf5e4cb0dfb78af2e4b9898d817ed9263d1090a2df958c64737d2"
+    },
+    {
+      "crate": "glib-0.18.5.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/glib-0.18.5.crate",
+      "bytes": 267679,
+      "sha256": "233daaf6e83ae6a12a52055f568f9d7cf4671dabb78ff9560ab6da230ce00ee5"
+    },
+    {
+      "crate": "glib-macros-0.18.5.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/glib-macros-0.18.5.crate",
+      "bytes": 50911,
+      "sha256": "0bb0228f477c0900c880fd78c8759b95c7636dbd7842707f49e132378aa2acdc"
+    },
+    {
+      "crate": "glib-sys-0.18.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/glib-sys-0.18.1.crate",
+      "bytes": 60464,
+      "sha256": "063ce2eb6a8d0ea93d2bf8ba1957e78dbab6be1c2220dd3daca57d5a9d869898"
+    },
+    {
+      "crate": "glob-0.3.3.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/glob-0.3.3.crate",
+      "bytes": 22861,
+      "sha256": "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
+    },
+    {
+      "crate": "gobject-sys-0.18.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/gobject-sys-0.18.0.crate",
+      "bytes": 18699,
+      "sha256": "0850127b514d1c4a4654ead6dedadb18198999985908e6ffe4436f53c785ce44"
+    },
+    {
+      "crate": "gtk-0.18.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/gtk-0.18.2.crate",
+      "bytes": 400997,
+      "sha256": "fd56fb197bfc42bd5d2751f4f017d44ff59fbb58140c6b49f9b3b2bdab08506a"
+    },
+    {
+      "crate": "gtk-sys-0.18.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/gtk-sys-0.18.2.crate",
+      "bytes": 137210,
+      "sha256": "8f29a1c21c59553eb7dd40e918be54dccd60c52b049b75119d5d96ce6b624414"
+    },
+    {
+      "crate": "gtk3-macros-0.18.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/gtk3-macros-0.18.2.crate",
+      "bytes": 5508,
+      "sha256": "52ff3c5b21f14f0736fed6dcfc0bfb4225ebf5725f3c0209edeec181e4d73e9d"
+    },
+    {
+      "crate": "hashbrown-0.12.3.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/hashbrown-0.12.3.crate",
+      "bytes": 102968,
+      "sha256": "8a9ee70c43aaf417c914396645a0fa852624801b24ebb7ae78fe8272889ac888"
+    },
+    {
+      "crate": "hashbrown-0.15.5.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/hashbrown-0.15.5.crate",
+      "bytes": 140908,
+      "sha256": "9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1"
+    },
+    {
+      "crate": "hashbrown-0.17.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/hashbrown-0.17.0.crate",
+      "bytes": 154597,
+      "sha256": "4f467dd6dccf739c208452f8014c75c18bb8301b050ad1cfb27153803edb0f51"
+    },
+    {
+      "crate": "heck-0.4.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/heck-0.4.1.crate",
+      "bytes": 11567,
+      "sha256": "95505c38b4572b2d910cecb0281560f54b440a19336cbbcb27bf6ce6adc6f5a8"
+    },
+    {
+      "crate": "heck-0.5.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/heck-0.5.0.crate",
+      "bytes": 11517,
+      "sha256": "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
+    },
+    {
+      "crate": "hermit-abi-0.5.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/hermit-abi-0.5.2.crate",
+      "bytes": 17435,
+      "sha256": "fc0fef456e4baa96da950455cd02c081ca953b141298e41db3fc7e36b1da849c"
+    },
+    {
+      "crate": "hex-0.4.3.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/hex-0.4.3.crate",
+      "bytes": 13299,
+      "sha256": "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
+    },
+    {
+      "crate": "html5ever-0.38.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/html5ever-0.38.0.crate",
+      "bytes": 81128,
+      "sha256": "1054432bae2f14e0061e33d23402fbaa67a921d319d56adc6bcf887ddad1cbc2"
+    },
+    {
+      "crate": "http-1.4.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/http-1.4.0.crate",
+      "bytes": 106978,
+      "sha256": "e3ba2a386d7f85a81f119ad7498ebe444d2e22c2af0b86b069416ace48b3311a"
+    },
+    {
+      "crate": "http-body-1.0.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/http-body-1.0.1.crate",
+      "bytes": 6125,
+      "sha256": "1efedce1fb8e6913f23e0c92de8e62cd5b772a67e7b3946df930a62566c93184"
+    },
+    {
+      "crate": "http-body-util-0.1.3.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/http-body-util-0.1.3.crate",
+      "bytes": 16975,
+      "sha256": "b021d93e26becf5dc7e1b75b1bed1fd93124b374ceb73f43d4d4eafec896a64a"
+    },
+    {
+      "crate": "httparse-1.10.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/httparse-1.10.1.crate",
+      "bytes": 45190,
+      "sha256": "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
+    },
+    {
+      "crate": "hyper-1.9.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/hyper-1.9.0.crate",
+      "bytes": 160126,
+      "sha256": "6299f016b246a94207e63da54dbe807655bf9e00044f73ded42c3ac5305fbcca"
+    },
+    {
+      "crate": "hyper-rustls-0.27.9.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/hyper-rustls-0.27.9.crate",
+      "bytes": 22935,
+      "sha256": "33ca68d021ef39cf6463ab54c1d0f5daf03377b70561305bb89a8f83aab66e0f"
+    },
+    {
+      "crate": "hyper-util-0.1.20.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/hyper-util-0.1.20.crate",
+      "bytes": 112807,
+      "sha256": "96547c2556ec9d12fb1578c4eaf448b04993e7fb79cbaad930a656880a6bdfa0"
+    },
+    {
+      "crate": "iana-time-zone-0.1.65.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/iana-time-zone-0.1.65.crate",
+      "bytes": 34079,
+      "sha256": "e31bc9ad994ba00e440a8aa5c9ef0ec67d5cb5e5cb0cc7f8b744a35b389cc470"
+    },
+    {
+      "crate": "iana-time-zone-haiku-0.1.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/iana-time-zone-haiku-0.1.2.crate",
+      "bytes": 7185,
+      "sha256": "f31827a206f56af32e590ba56d5d2d085f558508192593743f16b2306495269f"
+    },
+    {
+      "crate": "ico-0.5.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/ico-0.5.0.crate",
+      "bytes": 69982,
+      "sha256": "3e795dff5605e0f04bff85ca41b51a96b83e80b281e96231bcaaf1ac35103371"
+    },
+    {
+      "crate": "icu_collections-2.2.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/icu_collections-2.2.0.crate",
+      "bytes": 88011,
+      "sha256": "2984d1cd16c883d7935b9e07e44071dca8d917fd52ecc02c04d5fa0b5a3f191c"
+    },
+    {
+      "crate": "icu_locale_core-2.2.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/icu_locale_core-2.2.0.crate",
+      "bytes": 78639,
+      "sha256": "92219b62b3e2b4d88ac5119f8904c10f8f61bf7e95b640d25ba3075e6cac2c29"
+    },
+    {
+      "crate": "icu_normalizer-2.2.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.2.0.crate",
+      "bytes": 78154,
+      "sha256": "c56e5ee99d6e3d33bd91c5d85458b6005a22140021cc324cea84dd0e72cff3b4"
+    },
+    {
+      "crate": "icu_normalizer_data-2.2.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/icu_normalizer_data-2.2.0.crate",
+      "bytes": 67134,
+      "sha256": "da3be0ae77ea334f4da67c12f149704f19f81d1adf7c51cf482943e84a2bad38"
+    },
+    {
+      "crate": "icu_properties-2.2.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/icu_properties-2.2.0.crate",
+      "bytes": 63950,
+      "sha256": "bee3b67d0ea5c2cca5003417989af8996f8604e34fb9ddf96208a033901e70de"
+    },
+    {
+      "crate": "icu_properties_data-2.2.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/icu_properties_data-2.2.0.crate",
+      "bytes": 168901,
+      "sha256": "8e2bbb201e0c04f7b4b3e14382af113e17ba4f63e2c9d2ee626b720cbce54a14"
+    },
+    {
+      "crate": "icu_provider-2.2.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/icu_provider-2.2.0.crate",
+      "bytes": 51620,
+      "sha256": "139c4cf31c8b5f33d7e199446eff9c1e02decfc2f0eec2c8d71f65befa45b421"
+    },
+    {
+      "crate": "id-arena-2.3.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/id-arena-2.3.0.crate",
+      "bytes": 12883,
+      "sha256": "3d3067d79b975e8844ca9eb072e16b31c3c1c36928edf9c6789548c524d0d954"
+    },
+    {
+      "crate": "ident_case-1.0.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/ident_case-1.0.1.crate",
+      "bytes": 3492,
+      "sha256": "b9e0384b61958566e926dc50660321d12159025e767c18e043daf26b70104c39"
+    },
+    {
+      "crate": "idna-1.1.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/idna-1.1.0.crate",
+      "bytes": 148747,
+      "sha256": "3b0875f23caa03898994f6ddc501886a45c7d3d62d04d2d90788d47be1b1e4de"
+    },
+    {
+      "crate": "idna_adapter-1.2.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/idna_adapter-1.2.2.crate",
+      "bytes": 10444,
+      "sha256": "cb68373c0d6620ef8105e855e7745e18b0d00d3bdb07fb532e434244cdb9a714"
+    },
+    {
+      "crate": "indexmap-1.9.3.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/indexmap-1.9.3.crate",
+      "bytes": 54653,
+      "sha256": "bd070e393353796e801d209ad339e89596eb4c8d430d18ede6a1cced8fafbd99"
+    },
+    {
+      "crate": "indexmap-2.14.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/indexmap-2.14.0.crate",
+      "bytes": 104085,
+      "sha256": "d466e9454f08e4a911e14806c24e16fba1b4c121d1ea474396f396069cf949d9"
+    },
+    {
+      "crate": "infer-0.19.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/infer-0.19.0.crate",
+      "bytes": 19091,
+      "sha256": "a588916bfdfd92e71cacef98a63d9b1f0d74d6599980d11894290e7ddefffcf7"
+    },
+    {
+      "crate": "ipnet-2.12.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/ipnet-2.12.0.crate",
+      "bytes": 31000,
+      "sha256": "d98f6fed1fde3f8c21bc40a1abb88dd75e67924f9cffc3ef95607bad8017f8e2"
+    },
+    {
+      "crate": "iri-string-0.7.12.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/iri-string-0.7.12.crate",
+      "bytes": 161843,
+      "sha256": "25e659a4bb38e810ebc252e53b5814ff908a8c58c2a9ce2fae1bbec24cbf4e20"
+    },
+    {
+      "crate": "is-docker-0.2.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/is-docker-0.2.0.crate",
+      "bytes": 2664,
+      "sha256": "928bae27f42bc99b60d9ac7334e3a21d10ad8f1835a4e12ec3ec0464765ed1b3"
+    },
+    {
+      "crate": "is-wsl-0.4.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/is-wsl-0.4.0.crate",
+      "bytes": 3264,
+      "sha256": "173609498df190136aa7dea1a91db051746d339e18476eed5ca40521f02d7aa5"
+    },
+    {
+      "crate": "itoa-1.0.18.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/itoa-1.0.18.crate",
+      "bytes": 15935,
+      "sha256": "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
+    },
+    {
+      "crate": "javascriptcore-rs-1.1.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/javascriptcore-rs-1.1.2.crate",
+      "bytes": 17456,
+      "sha256": "ca5671e9ffce8ffba57afc24070e906da7fc4b1ba66f2cabebf61bf2ea257fcc"
+    },
+    {
+      "crate": "javascriptcore-rs-sys-1.1.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/javascriptcore-rs-sys-1.1.1.crate",
+      "bytes": 9704,
+      "sha256": "af1be78d14ffa4b75b66df31840478fef72b51f8c2465d4ca7c194da9f7a5124"
+    },
+    {
+      "crate": "jni-0.21.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/jni-0.21.1.crate",
+      "bytes": 105028,
+      "sha256": "1a87aa2bb7d2af34197c04845522473242e1aa17c12f4935d5856491a7fb8c97"
+    },
+    {
+      "crate": "jni-0.22.4.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/jni-0.22.4.crate",
+      "bytes": 199347,
+      "sha256": "5efd9a482cf3a427f00d6b35f14332adc7902ce91efb778580e180ff90fa3498"
+    },
+    {
+      "crate": "jni-macros-0.22.4.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/jni-macros-0.22.4.crate",
+      "bytes": 63557,
+      "sha256": "a00109accc170f0bdb141fed3e393c565b6f5e072365c3bd58f5b062591560a3"
+    },
+    {
+      "crate": "jni-sys-0.3.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/jni-sys-0.3.1.crate",
+      "bytes": 11570,
+      "sha256": "41a652e1f9b6e0275df1f15b32661cf0d4b78d4d87ddec5e0c3c20f097433258"
+    },
+    {
+      "crate": "jni-sys-0.4.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/jni-sys-0.4.1.crate",
+      "bytes": 13249,
+      "sha256": "c6377a88cb3910bee9b0fa88d4f42e1d2da8e79915598f65fb0c7ee14c878af2"
+    },
+    {
+      "crate": "jni-sys-macros-0.4.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/jni-sys-macros-0.4.1.crate",
+      "bytes": 3301,
+      "sha256": "38c0b942f458fe50cdac086d2f946512305e5631e720728f2a61aabcd47a6264"
+    },
+    {
+      "crate": "js-sys-0.3.97.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/js-sys-0.3.97.crate",
+      "bytes": 106322,
+      "sha256": "a1840c94c045fbcf8ba2812c95db44499f7c64910a912551aaaa541decebcacf"
+    },
+    {
+      "crate": "json-patch-3.0.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/json-patch-3.0.1.crate",
+      "bytes": 22046,
+      "sha256": "863726d7afb6bc2590eeff7135d923545e5e964f004c2ccf8716c25e70a86f08"
+    },
+    {
+      "crate": "jsonptr-0.6.3.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/jsonptr-0.6.3.crate",
+      "bytes": 46086,
+      "sha256": "5dea2b27dd239b2556ed7a25ba842fe47fd602e7fc7433c2a8d6106d4d9edd70"
+    },
+    {
+      "crate": "keyboard-types-0.7.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/keyboard-types-0.7.0.crate",
+      "bytes": 37068,
+      "sha256": "b750dcadc39a09dbadd74e118f6dd6598df77fa01df0cfcdc52c28dece74528a"
+    },
+    {
+      "crate": "lazy_static-1.5.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/lazy_static-1.5.0.crate",
+      "bytes": 14025,
+      "sha256": "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
+    },
+    {
+      "crate": "leb128fmt-0.1.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/leb128fmt-0.1.0.crate",
+      "bytes": 14138,
+      "sha256": "09edd9e8b54e49e587e4f6295a7d29c3ea94d469cb40ab8ca70b288248a81db2"
+    },
+    {
+      "crate": "libappindicator-0.9.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/libappindicator-0.9.0.crate",
+      "bytes": 53678,
+      "sha256": "03589b9607c868cc7ae54c0b2a22c8dc03dd41692d48f2d7df73615c6a95dc0a"
+    },
+    {
+      "crate": "libappindicator-sys-0.9.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/libappindicator-sys-0.9.0.crate",
+      "bytes": 7370,
+      "sha256": "6e9ec52138abedcc58dc17a7c6c0c00a2bdb4f3427c7f63fa97fd0d859155caf"
+    },
+    {
+      "crate": "libc-0.2.186.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/libc-0.2.186.crate",
+      "bytes": 821883,
+      "sha256": "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
+    },
+    {
+      "crate": "libdbus-sys-0.2.7.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/libdbus-sys-0.2.7.crate",
+      "bytes": 1105992,
+      "sha256": "328c4789d42200f1eeec05bd86c9c13c7f091d2ba9a6ea35acdf51f31bc0f043"
+    },
+    {
+      "crate": "libloading-0.7.4.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/libloading-0.7.4.crate",
+      "bytes": 27580,
+      "sha256": "b67380fd3b2fbe7527a606e18729d21c6f3951633d0500574c4dc22d2d638b9f"
+    },
+    {
+      "crate": "libredox-0.1.16.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/libredox-0.1.16.crate",
+      "bytes": 9600,
+      "sha256": "e02f3bb43d335493c96bf3fd3a321600bf6bd07ed34bc64118e9293bdffea46c"
+    },
+    {
+      "crate": "linux-raw-sys-0.12.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/linux-raw-sys-0.12.1.crate",
+      "bytes": 3006116,
+      "sha256": "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
+    },
+    {
+      "crate": "litemap-0.8.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/litemap-0.8.2.crate",
+      "bytes": 34572,
+      "sha256": "92daf443525c4cce67b150400bc2316076100ce0b3686209eb8cf3c31612e6f0"
+    },
+    {
+      "crate": "lock_api-0.4.14.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/lock_api-0.4.14.crate",
+      "bytes": 29249,
+      "sha256": "224399e74b87b5f3557511d98dff8b14089b3dadafcab6bb93eab67d3aace965"
+    },
+    {
+      "crate": "log-0.4.29.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/log-0.4.29.crate",
+      "bytes": 51515,
+      "sha256": "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
+    },
+    {
+      "crate": "lru-slab-0.1.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/lru-slab-0.1.2.crate",
+      "bytes": 9090,
+      "sha256": "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
+    },
+    {
+      "crate": "markup5ever-0.38.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/markup5ever-0.38.0.crate",
+      "bytes": 16157,
+      "sha256": "8983d30f2915feeaaab2d6babdd6bc7e9ed1a00b66b5e6d74df19aa9c0e91862"
+    },
+    {
+      "crate": "memchr-2.8.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/memchr-2.8.0.crate",
+      "bytes": 97780,
+      "sha256": "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
+    },
+    {
+      "crate": "memoffset-0.9.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/memoffset-0.9.1.crate",
+      "bytes": 9032,
+      "sha256": "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
+    },
+    {
+      "crate": "mime-0.3.17.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/mime-0.3.17.crate",
+      "bytes": 15712,
+      "sha256": "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
+    },
+    {
+      "crate": "minisign-verify-0.2.5.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/minisign-verify-0.2.5.crate",
+      "bytes": 24812,
+      "sha256": "22f9645cb765ea72b8111f36c522475d2daa0d22c957a9826437e97534bc4e9e"
+    },
+    {
+      "crate": "miniz_oxide-0.8.9.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/miniz_oxide-0.8.9.crate",
+      "bytes": 67132,
+      "sha256": "1fa76a2c86f704bdb222d66965fb3d63269ce38518b83cb0575fca855ebb6316"
+    },
+    {
+      "crate": "mio-1.2.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/mio-1.2.0.crate",
+      "bytes": 106403,
+      "sha256": "50b7e5b27aa02a74bac8c3f23f448f8d87ff11f92d3aac1a6ed369ee08cc56c1"
+    },
+    {
+      "crate": "muda-0.19.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/muda-0.19.1.crate",
+      "bytes": 90355,
+      "sha256": "0ae8844f63b5b118e334e205585b8c5c17b984121dbdb179d44aeb087ffad3cb"
+    },
+    {
+      "crate": "ndk-0.9.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/ndk-0.9.0.crate",
+      "bytes": 84865,
+      "sha256": "c3f42e7bbe13d351b6bead8286a43aac9534b82bd3cc43e47037f012ebfd62d4"
+    },
+    {
+      "crate": "ndk-sys-0.6.0+11769913.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/ndk-sys-0.6.0+11769913.crate",
+      "bytes": 329984,
+      "sha256": "ee6cda3051665f1fb8d9e08fc35c96d5a244fb1be711a03b71118828afc9a873"
+    },
+    {
+      "crate": "new_debug_unreachable-1.0.6.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/new_debug_unreachable-1.0.6.crate",
+      "bytes": 2582,
+      "sha256": "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086"
+    },
+    {
+      "crate": "nix-0.28.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/nix-0.28.0.crate",
+      "bytes": 311086,
+      "sha256": "ab2156c4fce2f8df6c499cc1c763e4394b7482525bf2a9701c9d79d215f519e4"
+    },
+    {
+      "crate": "num-conv-0.2.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/num-conv-0.2.1.crate",
+      "bytes": 7099,
+      "sha256": "c6673768db2d862beb9b39a78fdcb1a69439615d5794a1be50caa9bc92c81967"
+    },
+    {
+      "crate": "num-traits-0.2.19.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/num-traits-0.2.19.crate",
+      "bytes": 51631,
+      "sha256": "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
+    },
+    {
+      "crate": "num_enum-0.7.6.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/num_enum-0.7.6.crate",
+      "bytes": 21741,
+      "sha256": "5d0bca838442ec211fa11de3a8b0e0e8f3a4522575b5c4c06ed722e005036f26"
+    },
+    {
+      "crate": "num_enum_derive-0.7.6.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/num_enum_derive-0.7.6.crate",
+      "bytes": 18789,
+      "sha256": "680998035259dcfcafe653688bf2aa6d3e2dc05e98be6ab46afb089dc84f1df8"
+    },
+    {
+      "crate": "objc2-0.6.4.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/objc2-0.6.4.crate",
+      "bytes": 275200,
+      "sha256": "3a12a8ed07aefc768292f076dc3ac8c48f3781c8f2d5851dd3d98950e8c5a89f"
+    },
+    {
+      "crate": "objc2-app-kit-0.3.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/objc2-app-kit-0.3.2.crate",
+      "bytes": 531744,
+      "sha256": "d49e936b501e5c5bf01fda3a9452ff86dc3ea98ad5f283e1455153142d97518c"
+    },
+    {
+      "crate": "objc2-av-foundation-0.3.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/objc2-av-foundation-0.3.2.crate",
+      "bytes": 502179,
+      "sha256": "478ae33fcac9df0a18db8302387c666b8ef08a3e2d62b510ca4fc278a384b6c0"
+    },
+    {
+      "crate": "objc2-cloud-kit-0.3.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/objc2-cloud-kit-0.3.2.crate",
+      "bytes": 68818,
+      "sha256": "73ad74d880bb43877038da939b7427bba67e9dd42004a18b809ba7d87cee241c"
+    },
+    {
+      "crate": "objc2-core-audio-0.3.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/objc2-core-audio-0.3.2.crate",
+      "bytes": 32748,
+      "sha256": "e1eebcea8b0dbff5f7c8504f3107c68fc061a3eb44932051c8cf8a68d969c3b2"
+    },
+    {
+      "crate": "objc2-core-audio-types-0.3.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/objc2-core-audio-types-0.3.2.crate",
+      "bytes": 20525,
+      "sha256": "5a89f2ec274a0cf4a32642b2991e8b351a404d290da87bb6a9a9d8632490bd1c"
+    },
+    {
+      "crate": "objc2-core-data-0.3.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/objc2-core-data-0.3.2.crate",
+      "bytes": 39186,
+      "sha256": "0b402a653efbb5e82ce4df10683b6b28027616a2715e90009947d50b8dd298fa"
+    },
+    {
+      "crate": "objc2-core-foundation-0.3.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/objc2-core-foundation-0.3.2.crate",
+      "bytes": 180804,
+      "sha256": "2a180dd8642fa45cdb7dd721cd4c11b1cadd4929ce112ebd8b9f5803cc79d536"
+    },
+    {
+      "crate": "objc2-core-graphics-0.3.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/objc2-core-graphics-0.3.2.crate",
+      "bytes": 84981,
+      "sha256": "e022c9d066895efa1345f8e33e584b9f958da2fd4cd116792e15e07e4720a807"
+    },
+    {
+      "crate": "objc2-core-image-0.3.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/objc2-core-image-0.3.2.crate",
+      "bytes": 95862,
+      "sha256": "e5d563b38d2b97209f8e861173de434bd0214cf020e3423a52624cd1d989f006"
+    },
+    {
+      "crate": "objc2-core-location-0.3.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/objc2-core-location-0.3.2.crate",
+      "bytes": 17032,
+      "sha256": "ca347214e24bc973fc025fd0d36ebb179ff30536ed1f80252706db19ee452009"
+    },
+    {
+      "crate": "objc2-core-media-0.3.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/objc2-core-media-0.3.2.crate",
+      "bytes": 118638,
+      "sha256": "05ec576860167a15dd9fce7fbee7512beb4e31f532159d3482d1f9c6caedf31d"
+    },
+    {
+      "crate": "objc2-core-text-0.3.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/objc2-core-text-0.3.2.crate",
+      "bytes": 96485,
+      "sha256": "0cde0dfb48d25d2b4862161a4d5fcc0e3c24367869ad306b0c9ec0073bfed92d"
+    },
+    {
+      "crate": "objc2-core-video-0.3.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/objc2-core-video-0.3.2.crate",
+      "bytes": 39345,
+      "sha256": "d425caf1df73233f29fd8a5c3e5edbc30d2d4307870f802d18f00d83dc5141a6"
+    },
+    {
+      "crate": "objc2-encode-4.1.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/objc2-encode-4.1.0.crate",
+      "bytes": 21004,
+      "sha256": "ef25abbcd74fb2609453eb695bd2f860d389e457f67dc17cafc8b8cbc89d0c33"
+    },
+    {
+      "crate": "objc2-event-kit-0.3.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/objc2-event-kit-0.3.2.crate",
+      "bytes": 28373,
+      "sha256": "51bc9ad7325642172110196bacd6af64027ec5549ded7fc6589ea03e0f792bf8"
+    },
+    {
+      "crate": "objc2-exception-helper-0.1.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/objc2-exception-helper-0.1.1.crate",
+      "bytes": 5199,
+      "sha256": "c7a1c5fbb72d7735b076bb47b578523aedc40f3c439bea6dfd595c089d79d98a"
+    },
+    {
+      "crate": "objc2-foundation-0.3.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/objc2-foundation-0.3.2.crate",
+      "bytes": 345384,
+      "sha256": "e3e0adef53c21f888deb4fa59fc59f7eb17404926ee8a6f59f5df0fd7f9f3272"
+    },
+    {
+      "crate": "objc2-io-surface-0.3.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/objc2-io-surface-0.3.2.crate",
+      "bytes": 11722,
+      "sha256": "180788110936d59bab6bd83b6060ffdfffb3b922ba1396b312ae795e1de9d81d"
+    },
+    {
+      "crate": "objc2-osa-kit-0.3.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/objc2-osa-kit-0.3.2.crate",
+      "bytes": 7581,
+      "sha256": "f112d1746737b0da274ef79a23aac283376f335f4095a083a267a082f21db0c0"
+    },
+    {
+      "crate": "objc2-quartz-core-0.3.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/objc2-quartz-core-0.3.2.crate",
+      "bytes": 30036,
+      "sha256": "96c1358452b371bf9f104e21ec536d37a650eb10f7ee379fff67d2e08d537f1f"
+    },
+    {
+      "crate": "objc2-screen-capture-kit-0.3.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/objc2-screen-capture-kit-0.3.2.crate",
+      "bytes": 20675,
+      "sha256": "74b7c5390f477482f001bc354d6571a70db7e4f8d5288e860c45521fbce11394"
+    },
+    {
+      "crate": "objc2-ui-kit-0.3.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/objc2-ui-kit-0.3.2.crate",
+      "bytes": 551453,
+      "sha256": "d87d638e33c06f577498cbcc50491496a3ed4246998a7fbba7ccb98b1e7eab22"
+    },
+    {
+      "crate": "objc2-uniform-type-identifiers-0.3.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/objc2-uniform-type-identifiers-0.3.2.crate",
+      "bytes": 16935,
+      "sha256": "7902ac02859fc1f7045f8b598c63f1ae0cc7efeaa06a9bc9f3d9a3c955974fa4"
+    },
+    {
+      "crate": "objc2-user-notifications-0.3.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/objc2-user-notifications-0.3.2.crate",
+      "bytes": 12257,
+      "sha256": "9df9128cbbfef73cda168416ccf7f837b62737d748333bfe9ab71c245d76613e"
+    },
+    {
+      "crate": "objc2-web-kit-0.3.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/objc2-web-kit-0.3.2.crate",
+      "bytes": 153073,
+      "sha256": "b2e5aaab980c433cf470df9d7af96a7b46a9d892d521a2cbbb2f8a4c16751e7f"
+    },
+    {
+      "crate": "once_cell-1.21.4.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/once_cell-1.21.4.crate",
+      "bytes": 35010,
+      "sha256": "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
+    },
+    {
+      "crate": "open-5.3.4.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/open-5.3.4.crate",
+      "bytes": 28196,
+      "sha256": "9f3bab717c29a857abf75fcef718d441ec7cb2725f937343c734740a985d37fd"
+    },
+    {
+      "crate": "openssl-probe-0.2.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/openssl-probe-0.2.1.crate",
+      "bytes": 9155,
+      "sha256": "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
+    },
+    {
+      "crate": "option-ext-0.2.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/option-ext-0.2.0.crate",
+      "bytes": 7345,
+      "sha256": "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
+    },
+    {
+      "crate": "ordered-stream-0.2.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/ordered-stream-0.2.0.crate",
+      "bytes": 19077,
+      "sha256": "9aa2b01e1d916879f73a53d01d1d6cee68adbb31d6d9177a8cfce093cced1d50"
+    },
+    {
+      "crate": "os_pipe-1.2.3.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/os_pipe-1.2.3.crate",
+      "bytes": 10467,
+      "sha256": "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
+    },
+    {
+      "crate": "osakit-0.3.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/osakit-0.3.1.crate",
+      "bytes": 16176,
+      "sha256": "732c71caeaa72c065bb69d7ea08717bd3f4863a4f451402fc9513e29dbd5261b"
+    },
+    {
+      "crate": "pango-0.18.3.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/pango-0.18.3.crate",
+      "bytes": 47591,
+      "sha256": "7ca27ec1eb0457ab26f3036ea52229edbdb74dee1edd29063f5b9b010e7ebee4"
+    },
+    {
+      "crate": "pango-sys-0.18.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/pango-sys-0.18.0.crate",
+      "bytes": 24709,
+      "sha256": "436737e391a843e5933d6d9aa102cb126d501e815b83601365a948a518555dc5"
+    },
+    {
+      "crate": "parking-2.2.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/parking-2.2.1.crate",
+      "bytes": 10685,
+      "sha256": "f38d5652c16fde515bb1ecef450ab0f6a219d619a7274976324d5e377f7dceba"
+    },
+    {
+      "crate": "parking_lot-0.12.5.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/parking_lot-0.12.5.crate",
+      "bytes": 46735,
+      "sha256": "93857453250e3077bd71ff98b6a65ea6621a19bb0f559a85248955ac12c45a1a"
+    },
+    {
+      "crate": "parking_lot_core-0.9.12.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/parking_lot_core-0.9.12.crate",
+      "bytes": 34110,
+      "sha256": "2621685985a2ebf1c516881c026032ac7deafcda1a2c9b7850dc81e3dfcb64c1"
+    },
+    {
+      "crate": "pathdiff-0.2.3.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/pathdiff-0.2.3.crate",
+      "bytes": 7495,
+      "sha256": "df94ce210e5bc13cb6651479fa48d14f601d9858cfe0467f43ae157023b938d3"
+    },
+    {
+      "crate": "percent-encoding-2.3.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/percent-encoding-2.3.2.crate",
+      "bytes": 11583,
+      "sha256": "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
+    },
+    {
+      "crate": "phf-0.11.3.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/phf-0.11.3.crate",
+      "bytes": 23231,
+      "sha256": "1fd6780a80ae0c52cc120a26a1a42c1ae51b247a253e4e06113d23d2c2edd078"
+    },
+    {
+      "crate": "phf-0.13.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/phf-0.13.1.crate",
+      "bytes": 24786,
+      "sha256": "c1562dc717473dbaa4c1f85a36410e03c047b2e7df7f45ee938fbef64ae7fadf"
+    },
+    {
+      "crate": "phf_codegen-0.13.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/phf_codegen-0.13.1.crate",
+      "bytes": 14774,
+      "sha256": "49aa7f9d80421bca176ca8dbfebe668cc7a2684708594ec9f3c0db0805d5d6e1"
+    },
+    {
+      "crate": "phf_generator-0.11.3.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/phf_generator-0.11.3.crate",
+      "bytes": 15431,
+      "sha256": "3c80231409c20246a13fddb31776fb942c38553c51e871f8cbd687a4cfb5843d"
+    },
+    {
+      "crate": "phf_generator-0.13.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/phf_generator-0.13.1.crate",
+      "bytes": 15952,
+      "sha256": "135ace3a761e564ec88c03a77317a7c6b80bb7f7135ef2544dbe054243b89737"
+    },
+    {
+      "crate": "phf_macros-0.11.3.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/phf_macros-0.11.3.crate",
+      "bytes": 18436,
+      "sha256": "f84ac04429c13a7ff43785d75ad27569f2951ce0ffd30a3321230db2fc727216"
+    },
+    {
+      "crate": "phf_macros-0.13.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/phf_macros-0.13.1.crate",
+      "bytes": 21732,
+      "sha256": "812f032b54b1e759ccd5f8b6677695d5268c588701effba24601f6932f8269ef"
+    },
+    {
+      "crate": "phf_shared-0.11.3.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/phf_shared-0.11.3.crate",
+      "bytes": 15199,
+      "sha256": "67eabc2ef2a60eb7faa00097bd1ffdb5bd28e62bf39990626a582201b7a754e5"
+    },
+    {
+      "crate": "phf_shared-0.13.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/phf_shared-0.13.1.crate",
+      "bytes": 16141,
+      "sha256": "e57fef6bc5981e38c2ce2d63bfa546861309f875b8a75f092d1d54ae2d64f266"
+    },
+    {
+      "crate": "pin-project-lite-0.2.17.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/pin-project-lite-0.2.17.crate",
+      "bytes": 31034,
+      "sha256": "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
+    },
+    {
+      "crate": "piper-0.2.5.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/piper-0.2.5.crate",
+      "bytes": 23908,
+      "sha256": "c835479a4443ded371d6c535cbfd8d31ad92c5d23ae9770a61bc155e4992a3c1"
+    },
+    {
+      "crate": "pkg-config-0.3.33.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/pkg-config-0.3.33.crate",
+      "bytes": 21590,
+      "sha256": "19f132c84eca552bf34cab8ec81f1c1dcc229b811638f9d283dceabe58c5569e"
+    },
+    {
+      "crate": "plist-1.9.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/plist-1.9.0.crate",
+      "bytes": 54769,
+      "sha256": "092791278e026273c1b65bbdcfbba3a300f2994c896bd01ab01da613c29c46f1"
+    },
+    {
+      "crate": "png-0.17.16.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/png-0.17.16.crate",
+      "bytes": 117975,
+      "sha256": "82151a2fc869e011c153adc57cf2789ccb8d9906ce52c0b39a6b5697749d7526"
+    },
+    {
+      "crate": "png-0.18.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/png-0.18.1.crate",
+      "bytes": 125800,
+      "sha256": "60769b8b31b2a9f263dae2776c37b1b28ae246943cf719eb6946a1db05128a61"
+    },
+    {
+      "crate": "polling-3.11.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/polling-3.11.0.crate",
+      "bytes": 59387,
+      "sha256": "5d0e4f59085d47d8241c88ead0f274e8a0cb551f3625263c05eb8dd897c34218"
+    },
+    {
+      "crate": "portable-pty-0.9.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/portable-pty-0.9.0.crate",
+      "bytes": 29466,
+      "sha256": "b4a596a2b3d2752d94f51fac2d4a96737b8705dddd311a32b9af47211f08671e"
+    },
+    {
+      "crate": "potential_utf-0.1.5.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/potential_utf-0.1.5.crate",
+      "bytes": 10189,
+      "sha256": "0103b1cef7ec0cf76490e969665504990193874ea05c85ff9bab8b911d0a0564"
+    },
+    {
+      "crate": "powerfmt-0.2.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/powerfmt-0.2.0.crate",
+      "bytes": 15165,
+      "sha256": "439ee305def115ba05938db6eb1644ff94165c5ab5e9420d1c1bcedbba909391"
+    },
+    {
+      "crate": "ppv-lite86-0.2.21.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/ppv-lite86-0.2.21.crate",
+      "bytes": 22522,
+      "sha256": "85eae3c4ed2f50dcfe72643da4befc30deadb458a9b590d720cde2f2b1e97da9"
+    },
+    {
+      "crate": "precomputed-hash-0.1.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/precomputed-hash-0.1.1.crate",
+      "bytes": 1640,
+      "sha256": "925383efa346730478fb4838dbe9137d2a47675ad789c546d150a6e1dd4ab31c"
+    },
+    {
+      "crate": "prettyplease-0.2.37.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/prettyplease-0.2.37.crate",
+      "bytes": 72033,
+      "sha256": "479ca8adacdd7ce8f1fb39ce9ecccbfe93a3f1344b3d0d97f20bc0196208f62b"
+    },
+    {
+      "crate": "proc-macro-crate-1.3.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/proc-macro-crate-1.3.1.crate",
+      "bytes": 9678,
+      "sha256": "7f4c021e1093a56626774e81216a4ce732a735e5bad4868a03f3ed65ca0c3919"
+    },
+    {
+      "crate": "proc-macro-crate-2.0.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/proc-macro-crate-2.0.2.crate",
+      "bytes": 11145,
+      "sha256": "b00f26d3400549137f92511a46ac1cd8ce37cb5598a96d382381458b992a5d24"
+    },
+    {
+      "crate": "proc-macro-crate-3.5.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/proc-macro-crate-3.5.0.crate",
+      "bytes": 12709,
+      "sha256": "e67ba7e9b2b56446f1d419b1d807906278ffa1a658a8a5d8a39dcb1f5a78614f"
+    },
+    {
+      "crate": "proc-macro-error-1.0.4.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/proc-macro-error-1.0.4.crate",
+      "bytes": 25293,
+      "sha256": "da25490ff9892aab3fcf7c36f08cfb902dd3e71ca0f9f9517bea02a73a5ce38c"
+    },
+    {
+      "crate": "proc-macro-error-attr-1.0.4.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/proc-macro-error-attr-1.0.4.crate",
+      "bytes": 7971,
+      "sha256": "a1be40180e52ecc98ad80b184934baf3d0d29f979574e439af5a55274b35f869"
+    },
+    {
+      "crate": "proc-macro2-1.0.106.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/proc-macro2-1.0.106.crate",
+      "bytes": 59765,
+      "sha256": "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934"
+    },
+    {
+      "crate": "quick-xml-0.39.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/quick-xml-0.39.2.crate",
+      "bytes": 213616,
+      "sha256": "958f21e8e7ceb5a1aa7fa87fab28e7c75976e0bfe7e23ff069e0a260f894067d"
+    },
+    {
+      "crate": "quinn-0.11.9.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/quinn-0.11.9.crate",
+      "bytes": 83606,
+      "sha256": "b9e20a958963c291dc322d98411f541009df2ced7b5a4f2bd52337638cfccf20"
+    },
+    {
+      "crate": "quinn-proto-0.11.14.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/quinn-proto-0.11.14.crate",
+      "bytes": 244123,
+      "sha256": "434b42fec591c96ef50e21e886936e66d3cc3f737104fdb9b737c40ffb94c098"
+    },
+    {
+      "crate": "quinn-udp-0.5.14.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/quinn-udp-0.5.14.crate",
+      "bytes": 33436,
+      "sha256": "addec6a0dcad8a8d96a771f815f0eaf55f9d1805756410b39f5fa81332574cbd"
+    },
+    {
+      "crate": "quote-1.0.45.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/quote-1.0.45.crate",
+      "bytes": 31564,
+      "sha256": "41f2619966050689382d2b44f664f4bc593e129785a36d6ee376ddf37259b924"
+    },
+    {
+      "crate": "r-efi-5.3.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/r-efi-5.3.0.crate",
+      "bytes": 64532,
+      "sha256": "69cdb34c158ceb288df11e18b4bd39de994f6657d83847bdffdbd7f346754b0f"
+    },
+    {
+      "crate": "r-efi-6.0.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/r-efi-6.0.0.crate",
+      "bytes": 65303,
+      "sha256": "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
+    },
+    {
+      "crate": "rand-0.8.6.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/rand-0.8.6.crate",
+      "bytes": 83339,
+      "sha256": "5ca0ecfa931c29007047d1bc58e623ab12e5590e8c7cc53200d5202b69266d8a"
+    },
+    {
+      "crate": "rand-0.9.4.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/rand-0.9.4.crate",
+      "bytes": 99786,
+      "sha256": "44c5af06bb1b7d3216d91932aed5265164bf384dc89cd6ba05cf59a35f5f76ea"
+    },
+    {
+      "crate": "rand_chacha-0.9.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/rand_chacha-0.9.0.crate",
+      "bytes": 18258,
+      "sha256": "d3022b5f1df60f26e1ffddd6c66e8aa15de382ae63b3a0c1bfc0e4d3e3f325cb"
+    },
+    {
+      "crate": "rand_core-0.6.4.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/rand_core-0.6.4.crate",
+      "bytes": 22666,
+      "sha256": "ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c"
+    },
+    {
+      "crate": "rand_core-0.9.5.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/rand_core-0.9.5.crate",
+      "bytes": 24129,
+      "sha256": "76afc826de14238e6e8c374ddcc1fa19e374fd8dd986b0d2af0d02377261d83c"
+    },
+    {
+      "crate": "raw-window-handle-0.6.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/raw-window-handle-0.6.2.crate",
+      "bytes": 20234,
+      "sha256": "20675572f6f24e9e76ef639bc5552774ed45f1c30e2951e1e99c59888861c539"
+    },
+    {
+      "crate": "redox_syscall-0.5.18.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/redox_syscall-0.5.18.crate",
+      "bytes": 30747,
+      "sha256": "ed2bf2547551a7053d6fdfafda3f938979645c44812fbfcda098faae3f1a362d"
+    },
+    {
+      "crate": "redox_users-0.5.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/redox_users-0.5.2.crate",
+      "bytes": 17280,
+      "sha256": "a4e608c6638b9c18977b00b475ac1f28d14e84b27d8d42f70e0bf1e3dec127ac"
+    },
+    {
+      "crate": "ref-cast-1.0.25.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/ref-cast-1.0.25.crate",
+      "bytes": 15192,
+      "sha256": "f354300ae66f76f1c85c5f84693f0ce81d747e2c3f21a45fef496d89c960bf7d"
+    },
+    {
+      "crate": "ref-cast-impl-1.0.25.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/ref-cast-impl-1.0.25.crate",
+      "bytes": 10167,
+      "sha256": "b7186006dcb21920990093f30e3dea63b7d6e977bf1256be20c3563a5db070da"
+    },
+    {
+      "crate": "regex-1.12.3.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/regex-1.12.3.crate",
+      "bytes": 153392,
+      "sha256": "e10754a14b9137dd7b1e3e5b0493cc9171fdd105e0ab477f51b72e7f3ac0e276"
+    },
+    {
+      "crate": "regex-automata-0.4.14.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/regex-automata-0.4.14.crate",
+      "bytes": 618012,
+      "sha256": "6e1dd4122fc1595e8162618945476892eefca7b88c52820e74af6262213cae8f"
+    },
+    {
+      "crate": "regex-syntax-0.8.10.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/regex-syntax-0.8.10.crate",
+      "bytes": 358781,
+      "sha256": "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
+    },
+    {
+      "crate": "reqwest-0.12.28.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/reqwest-0.12.28.crate",
+      "bytes": 157031,
+      "sha256": "eddd3ca559203180a307f12d114c268abf583f59b03cb906fd0b3ff8646c1147"
+    },
+    {
+      "crate": "reqwest-0.13.3.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/reqwest-0.13.3.crate",
+      "bytes": 159191,
+      "sha256": "62e0021ea2c22aed41653bc7e1419abb2c97e038ff2c33d0e1309e49a97deec0"
+    },
+    {
+      "crate": "ring-0.17.14.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/ring-0.17.14.crate",
+      "bytes": 1502610,
+      "sha256": "a4689e6c2294d81e88dc6261c768b63bc4fcdb852be6d1352498b114f61383b7"
+    },
+    {
+      "crate": "rustc-hash-2.1.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/rustc-hash-2.1.2.crate",
+      "bytes": 14754,
+      "sha256": "94300abf3f1ae2e2b8ffb7b58043de3d399c73fa6f4b73826402a5c457614dbe"
+    },
+    {
+      "crate": "rustc_version-0.4.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/rustc_version-0.4.1.crate",
+      "bytes": 12245,
+      "sha256": "cfcb3a22ef46e85b45de6ee7e79d063319ebb6594faafcf1c225ea92ab6e9b92"
+    },
+    {
+      "crate": "rustix-1.1.4.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/rustix-1.1.4.crate",
+      "bytes": 425241,
+      "sha256": "b6fe4565b9518b83ef4f91bb47ce29620ca828bd32cb7e408f0062e9930ba190"
+    },
+    {
+      "crate": "rustls-0.23.40.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/rustls-0.23.40.crate",
+      "bytes": 373839,
+      "sha256": "ef86cd5876211988985292b91c96a8f2d298df24e75989a43a3c73f2d4d8168b"
+    },
+    {
+      "crate": "rustls-native-certs-0.8.4.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/rustls-native-certs-0.8.4.crate",
+      "bytes": 22129,
+      "sha256": "dab5152771c58876a2146916e53e35057e1a4dfa2b9df0f0305b07f611fdea4d"
+    },
+    {
+      "crate": "rustls-pki-types-1.14.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/rustls-pki-types-1.14.1.crate",
+      "bytes": 35567,
+      "sha256": "30a7197ae7eb376e574fe940d068c30fe0462554a3ddbe4eca7838e049c937a9"
+    },
+    {
+      "crate": "rustls-platform-verifier-0.7.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/rustls-platform-verifier-0.7.0.crate",
+      "bytes": 58733,
+      "sha256": "26d1e2536ce4f35f4846aa13bff16bd0ff40157cdb14cc056c7b14ba41233ba0"
+    },
+    {
+      "crate": "rustls-platform-verifier-android-0.1.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/rustls-platform-verifier-android-0.1.1.crate",
+      "bytes": 13919,
+      "sha256": "f87165f0995f63a9fbeea62b64d10b4d9d8e78ec6d7d51fb2125fda7bb36788f"
+    },
+    {
+      "crate": "rustls-webpki-0.103.13.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/rustls-webpki-0.103.13.crate",
+      "bytes": 87513,
+      "sha256": "61c429a8649f110dddef65e2a5ad240f747e85f7758a6bccc7e5777bd33f756e"
+    },
+    {
+      "crate": "rustversion-1.0.22.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/rustversion-1.0.22.crate",
+      "bytes": 21096,
+      "sha256": "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
+    },
+    {
+      "crate": "ryu-1.0.23.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/ryu-1.0.23.crate",
+      "bytes": 52823,
+      "sha256": "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
+    },
+    {
+      "crate": "same-file-1.0.6.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/same-file-1.0.6.crate",
+      "bytes": 10183,
+      "sha256": "93fc1dc3aaa9bfed95e02e6eadabb4baf7e3078b0bd1b4d7b6b0b68378900502"
+    },
+    {
+      "crate": "schannel-0.1.29.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/schannel-0.1.29.crate",
+      "bytes": 34352,
+      "sha256": "91c1b7e4904c873ef0710c1f407dde2e6287de2bebc1bbbf7d430bb7cbffd939"
+    },
+    {
+      "crate": "schemars-0.8.22.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/schemars-0.8.22.crate",
+      "bytes": 59214,
+      "sha256": "3fbf2ae1b8bc8e02df939598064d22402220cd5bbcca1c76f7d6a310974d5615"
+    },
+    {
+      "crate": "schemars-0.9.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/schemars-0.9.0.crate",
+      "bytes": 80032,
+      "sha256": "4cd191f9397d57d581cddd31014772520aa448f65ef991055d7f61582c65165f"
+    },
+    {
+      "crate": "schemars-1.2.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/schemars-1.2.1.crate",
+      "bytes": 94403,
+      "sha256": "a2b42f36aa1cd011945615b92222f6bf73c599a102a300334cd7f8dbeec726cc"
+    },
+    {
+      "crate": "schemars_derive-0.8.22.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/schemars_derive-0.8.22.crate",
+      "bytes": 19542,
+      "sha256": "32e265784ad618884abaea0600a9adf15393368d840e0222d101a072f3f7534d"
+    },
+    {
+      "crate": "scopeguard-1.2.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/scopeguard-1.2.0.crate",
+      "bytes": 11619,
+      "sha256": "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
+    },
+    {
+      "crate": "security-framework-3.7.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/security-framework-3.7.0.crate",
+      "bytes": 89115,
+      "sha256": "b7f4bc775c73d9a02cde8bf7b2ec4c9d12743edf609006c7facc23998404cd1d"
+    },
+    {
+      "crate": "security-framework-sys-2.17.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/security-framework-sys-2.17.0.crate",
+      "bytes": 21078,
+      "sha256": "6ce2691df843ecc5d231c0b14ece2acc3efb62c0a398c7e1d875f3983ce020e3"
+    },
+    {
+      "crate": "selectors-0.36.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/selectors-0.36.1.crate",
+      "bytes": 69832,
+      "sha256": "c5d9c0c92a92d33f08817311cf3f2c29a3538a8240e94a6a3c622ce652d7e00c"
+    },
+    {
+      "crate": "semver-1.0.28.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/semver-1.0.28.crate",
+      "bytes": 33064,
+      "sha256": "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
+    },
+    {
+      "crate": "serde-1.0.228.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/serde-1.0.228.crate",
+      "bytes": 83652,
+      "sha256": "9a8e94ea7f378bd32cbbd37198a4a91436180c5bb472411e48b5ec2e2124ae9e"
+    },
+    {
+      "crate": "serde-untagged-0.1.9.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/serde-untagged-0.1.9.crate",
+      "bytes": 17718,
+      "sha256": "f9faf48a4a2d2693be24c6289dbe26552776eb7737074e6722891fadbe6c5058"
+    },
+    {
+      "crate": "serde_core-1.0.228.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/serde_core-1.0.228.crate",
+      "bytes": 63111,
+      "sha256": "41d385c7d4ca58e59fc732af25c3983b67ac852c1a25000afe1175de458b67ad"
+    },
+    {
+      "crate": "serde_derive-1.0.228.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/serde_derive-1.0.228.crate",
+      "bytes": 59605,
+      "sha256": "d540f220d3187173da220f885ab66608367b6574e925011a9353e4badda91d79"
+    },
+    {
+      "crate": "serde_derive_internals-0.29.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/serde_derive_internals-0.29.1.crate",
+      "bytes": 26189,
+      "sha256": "18d26a20a969b9e3fdf2fc2d9f21eda6c40e2de84c9408bb5d3b05d499aae711"
+    },
+    {
+      "crate": "serde_json-1.0.149.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/serde_json-1.0.149.crate",
+      "bytes": 155994,
+      "sha256": "83fc039473c5595ace860d8c4fafa220ff474b3fc6bfdb4293327f1a37e94d86"
+    },
+    {
+      "crate": "serde_repr-0.1.20.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/serde_repr-0.1.20.crate",
+      "bytes": 12627,
+      "sha256": "175ee3e80ae9982737ca543e96133087cbd9a485eecc3bc4de9c1a37b47ea59c"
+    },
+    {
+      "crate": "serde_spanned-0.6.9.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/serde_spanned-0.6.9.crate",
+      "bytes": 10210,
+      "sha256": "bf41e0cfaf7226dca15e8197172c295a782857fcb97fad1808a166870dee75a3"
+    },
+    {
+      "crate": "serde_spanned-1.1.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/serde_spanned-1.1.1.crate",
+      "bytes": 11025,
+      "sha256": "6662b5879511e06e8999a8a235d848113e942c9124f211511b16466ee2995f26"
+    },
+    {
+      "crate": "serde_urlencoded-0.7.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/serde_urlencoded-0.7.1.crate",
+      "bytes": 12822,
+      "sha256": "d3491c14715ca2294c4d6a88f15e84739788c1d030eed8c110436aafdaa2f3fd"
+    },
+    {
+      "crate": "serde_with-3.18.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/serde_with-3.18.0.crate",
+      "bytes": 199584,
+      "sha256": "dd5414fad8e6907dbdd5bc441a50ae8d6e26151a03b1de04d89a5576de61d01f"
+    },
+    {
+      "crate": "serde_with_macros-3.18.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/serde_with_macros-3.18.0.crate",
+      "bytes": 38080,
+      "sha256": "d3db8978e608f1fe7357e211969fd9abdcae80bac1ba7a3369bb7eb6b404eb65"
+    },
+    {
+      "crate": "serial2-0.2.36.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/serial2-0.2.36.crate",
+      "bytes": 35029,
+      "sha256": "fcdbc46aa3882ec3d48ec2b5abcb4f0d863a13d7599265f3faa6d851f23c12f3"
+    },
+    {
+      "crate": "serialize-to-javascript-0.1.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/serialize-to-javascript-0.1.2.crate",
+      "bytes": 9958,
+      "sha256": "04f3666a07a197cdb77cdf306c32be9b7f598d7060d50cfd4d5aa04bfd92f6c5"
+    },
+    {
+      "crate": "serialize-to-javascript-impl-0.1.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/serialize-to-javascript-impl-0.1.2.crate",
+      "bytes": 6809,
+      "sha256": "772ee033c0916d670af7860b6e1ef7d658a4629a6d0b4c8c3e67f09b3765b75d"
+    },
+    {
+      "crate": "servo_arc-0.4.3.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/servo_arc-0.4.3.crate",
+      "bytes": 17887,
+      "sha256": "170fb83ab34de17dc69aa7c67482b22218ddb85da56546f9bd6b929e32a05930"
+    },
+    {
+      "crate": "sha2-0.10.9.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/sha2-0.10.9.crate",
+      "bytes": 29271,
+      "sha256": "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283"
+    },
+    {
+      "crate": "shared_child-1.1.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/shared_child-1.1.1.crate",
+      "bytes": 14191,
+      "sha256": "1e362d9935bc50f019969e2f9ecd66786612daae13e8f277be7bfb66e8bed3f7"
+    },
+    {
+      "crate": "shared_library-0.1.9.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/shared_library-0.1.9.crate",
+      "bytes": 10566,
+      "sha256": "5a9e7e0f2bfae24d8a5b5a66c5b257a83c7412304311512a0c054cd5e619da11"
+    },
+    {
+      "crate": "shell-words-1.1.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/shell-words-1.1.1.crate",
+      "bytes": 10012,
+      "sha256": "dc6fe69c597f9c37bfeeeeeb33da3530379845f10be461a66d16d03eca2ded77"
+    },
+    {
+      "crate": "shlex-1.3.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/shlex-1.3.0.crate",
+      "bytes": 18713,
+      "sha256": "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
+    },
+    {
+      "crate": "sigchld-0.2.4.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/sigchld-0.2.4.crate",
+      "bytes": 9955,
+      "sha256": "47106eded3c154e70176fc83df9737335c94ce22f821c32d17ed1db1f83badb1"
+    },
+    {
+      "crate": "signal-hook-0.3.18.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/signal-hook-0.3.18.crate",
+      "bytes": 50862,
+      "sha256": "d881a16cf4426aa584979d30bd82cb33429027e42122b169753d6ef1085ed6e2"
+    },
+    {
+      "crate": "signal-hook-registry-1.4.8.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/signal-hook-registry-1.4.8.crate",
+      "bytes": 21668,
+      "sha256": "c4db69cba1110affc0e9f7bcd48bbf87b3f4fc7c61fc9155afd4c469eb3d6c1b"
+    },
+    {
+      "crate": "simd-adler32-0.3.9.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/simd-adler32-0.3.9.crate",
+      "bytes": 18572,
+      "sha256": "703d5c7ef118737c72f1af64ad2f6f8c5e1921f818cdcb97b8fe6fc69bf66214"
+    },
+    {
+      "crate": "simd_cesu8-1.2.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/simd_cesu8-1.2.0.crate",
+      "bytes": 320024,
+      "sha256": "11031e251abf8611c80f460e19dbdeb54a66db918e49c65a7065b46ac7aec520"
+    },
+    {
+      "crate": "simdutf8-0.1.5.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/simdutf8-0.1.5.crate",
+      "bytes": 28488,
+      "sha256": "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
+    },
+    {
+      "crate": "siphasher-1.0.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/siphasher-1.0.2.crate",
+      "bytes": 11416,
+      "sha256": "b2aa850e253778c88a04c3d7323b043aeda9d3e30d5971937c1855769763678e"
+    },
+    {
+      "crate": "slab-0.4.12.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/slab-0.4.12.crate",
+      "bytes": 19080,
+      "sha256": "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
+    },
+    {
+      "crate": "smallvec-1.15.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/smallvec-1.15.1.crate",
+      "bytes": 38116,
+      "sha256": "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
+    },
+    {
+      "crate": "socket2-0.6.3.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/socket2-0.6.3.crate",
+      "bytes": 59330,
+      "sha256": "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
+    },
+    {
+      "crate": "softbuffer-0.4.8.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/softbuffer-0.4.8.crate",
+      "bytes": 64637,
+      "sha256": "aac18da81ebbf05109ab275b157c22a653bb3c12cf884450179942f81bcbf6c3"
+    },
+    {
+      "crate": "soup3-0.5.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/soup3-0.5.0.crate",
+      "bytes": 44040,
+      "sha256": "471f924a40f31251afc77450e781cb26d55c0b650842efafc9c6cbd2f7cc4f9f"
+    },
+    {
+      "crate": "soup3-sys-0.5.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/soup3-sys-0.5.0.crate",
+      "bytes": 19781,
+      "sha256": "7ebe8950a680a12f24f15ebe1bf70db7af98ad242d9db43596ad3108aab86c27"
+    },
+    {
+      "crate": "stable_deref_trait-1.2.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/stable_deref_trait-1.2.1.crate",
+      "bytes": 8186,
+      "sha256": "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
+    },
+    {
+      "crate": "string_cache-0.9.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/string_cache-0.9.0.crate",
+      "bytes": 17402,
+      "sha256": "a18596f8c785a729f2819c0f6a7eae6ebeebdfffbfe4214ae6b087f690e31901"
+    },
+    {
+      "crate": "string_cache_codegen-0.6.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/string_cache_codegen-0.6.1.crate",
+      "bytes": 8968,
+      "sha256": "585635e46db231059f76c5849798146164652513eb9e8ab2685939dd90f29b69"
+    },
+    {
+      "crate": "strsim-0.11.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/strsim-0.11.1.crate",
+      "bytes": 14266,
+      "sha256": "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
+    },
+    {
+      "crate": "subtle-2.6.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/subtle-2.6.1.crate",
+      "bytes": 14562,
+      "sha256": "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
+    },
+    {
+      "crate": "swift-rs-1.0.7.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/swift-rs-1.0.7.crate",
+      "bytes": 20697,
+      "sha256": "4057c98e2e852d51fdcfca832aac7b571f6b351ad159f9eda5db1655f8d0c4d7"
+    },
+    {
+      "crate": "syn-1.0.109.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/syn-1.0.109.crate",
+      "bytes": 237611,
+      "sha256": "72b64191b275b66ffe2469e8af2c1cfe3bafa67b529ead792a6d0160888b4237"
+    },
+    {
+      "crate": "syn-2.0.117.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/syn-2.0.117.crate",
+      "bytes": 306011,
+      "sha256": "e665b8803e7b1d2a727f4023456bbbbe74da67099c585258af0ad9c5013b9b99"
+    },
+    {
+      "crate": "sync_wrapper-1.0.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/sync_wrapper-1.0.2.crate",
+      "bytes": 6958,
+      "sha256": "0bf256ce5efdfa370213c1dabab5935a12e49f2c58d15e9eac2870d3b4f27263"
+    },
+    {
+      "crate": "synstructure-0.13.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/synstructure-0.13.2.crate",
+      "bytes": 18950,
+      "sha256": "728a70f3dbaf5bab7f0c4b1ac8d7ae5ea60a4b5549c8a5914361c99147a709d2"
+    },
+    {
+      "crate": "system-deps-6.2.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/system-deps-6.2.2.crate",
+      "bytes": 25546,
+      "sha256": "a3e535eb8dded36d55ec13eddacd30dec501792ff23a0b1682c38601b8cf2349"
+    },
+    {
+      "crate": "tao-0.35.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/tao-0.35.0.crate",
+      "bytes": 307559,
+      "sha256": "1cf65722394c2ac443e80120064987f8914ee1d4e4e36e63cdf10f2990f01159"
+    },
+    {
+      "crate": "tao-macros-0.1.3.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/tao-macros-0.1.3.crate",
+      "bytes": 6171,
+      "sha256": "f4e16beb8b2ac17db28eab8bca40e62dbfbb34c0fcdc6d9826b11b7b5d047dfd"
+    },
+    {
+      "crate": "tar-0.4.46.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/tar-0.4.46.crate",
+      "bytes": 70809,
+      "sha256": "3f6221d9a6003c78398e3b239969f352578258df48c8eb051caadae0015bc840"
+    },
+    {
+      "crate": "target-lexicon-0.12.16.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/target-lexicon-0.12.16.crate",
+      "bytes": 26488,
+      "sha256": "61c41af27dd6d1e27b1b16b489db798443478cef1f06a660c96db617ba5de3b1"
+    },
+    {
+      "crate": "tauri-2.11.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/tauri-2.11.0.crate",
+      "bytes": 296671,
+      "sha256": "d059f2527558d9dba6f186dec4772610e1aecfd3f94002397613e7e648752b66"
+    },
+    {
+      "crate": "tauri-build-2.6.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/tauri-build-2.6.0.crate",
+      "bytes": 39738,
+      "sha256": "be9aa8c59a894f76c29a002501c589de5eb4987a5913d62a6e0a47f320901988"
+    },
+    {
+      "crate": "tauri-codegen-2.6.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/tauri-codegen-2.6.0.crate",
+      "bytes": 37609,
+      "sha256": "d3e4e8230d565106aa19dfbaa01a7ed01abf78047fe0577a83377224bd1bf20e"
+    },
+    {
+      "crate": "tauri-macros-2.6.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/tauri-macros-2.6.0.crate",
+      "bytes": 35214,
+      "sha256": "bc8de2cddbbc33dbdf4c84f170121886595efdbcc9cb4b3d76342b79d082cedc"
+    },
+    {
+      "crate": "tauri-plugin-2.6.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/tauri-plugin-2.6.0.crate",
+      "bytes": 20802,
+      "sha256": "f8d5f58bfd0cdcfdbc0a68dc08b354eea2afc551b421de91b07b69e0dd769d57"
+    },
+    {
+      "crate": "tauri-plugin-shell-2.3.5.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/tauri-plugin-shell-2.3.5.crate",
+      "bytes": 119776,
+      "sha256": "8457dbf9e2bab1edd8df22bb2c20857a59a9868e79cb3eac5ed639eec4d0c73b"
+    },
+    {
+      "crate": "tauri-plugin-single-instance-2.4.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/tauri-plugin-single-instance-2.4.1.crate",
+      "bytes": 93815,
+      "sha256": "a33a5b7d78f0dec4406b003ea87c40bf928d801b6fd9323a556172c91d8712c1"
+    },
+    {
+      "crate": "tauri-plugin-updater-2.10.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/tauri-plugin-updater-2.10.1.crate",
+      "bytes": 125525,
+      "sha256": "806d9dac662c2e4594ff03c647a552f2c9bd544e7d0f683ec58f872f952ce4af"
+    },
+    {
+      "crate": "tauri-runtime-2.11.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/tauri-runtime-2.11.0.crate",
+      "bytes": 44380,
+      "sha256": "1e42bbcb76237351fbaa02f08d808c537dc12eb5a6eabbf3e517b50056334d95"
+    },
+    {
+      "crate": "tauri-runtime-wry-2.11.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/tauri-runtime-wry-2.11.0.crate",
+      "bytes": 71177,
+      "sha256": "2cadb13dad0c681e1e0a2c49ae488f0e2906ded3d57e7a0017f4aaf46e387117"
+    },
+    {
+      "crate": "tauri-utils-2.9.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/tauri-utils-2.9.0.crate",
+      "bytes": 149760,
+      "sha256": "55f61d2bf7188fbcf2b0ed095b67a6bc498f713c939314bb19eb700118a573b7"
+    },
+    {
+      "crate": "tauri-winres-0.3.6.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/tauri-winres-0.3.6.crate",
+      "bytes": 25419,
+      "sha256": "cc65d45c68858bfe420dd29e834b5d15dbecf8a07a8a16cf4d532c7b1f69d4b6"
+    },
+    {
+      "crate": "tempfile-3.27.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/tempfile-3.27.0.crate",
+      "bytes": 44780,
+      "sha256": "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
+    },
+    {
+      "crate": "tendril-0.5.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/tendril-0.5.0.crate",
+      "bytes": 45170,
+      "sha256": "c4790fc369d5a530f4b544b094e31388b9b3a37c0f4652ade4505945f5660d24"
+    },
+    {
+      "crate": "thiserror-1.0.69.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/thiserror-1.0.69.crate",
+      "bytes": 22198,
+      "sha256": "b6aaf5339b578ea85b50e080feb250a3e8ae8cfcdff9a461c9ec2904bc923f52"
+    },
+    {
+      "crate": "thiserror-2.0.18.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/thiserror-2.0.18.crate",
+      "bytes": 28875,
+      "sha256": "4288b5bcbc7920c07a1149a35cf9590a2aa808e0bc1eafaade0b80947865fbc4"
+    },
+    {
+      "crate": "thiserror-impl-1.0.69.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/thiserror-impl-1.0.69.crate",
+      "bytes": 18365,
+      "sha256": "4fee6c4efc90059e10f81e6d42c60a18f76588c3d74cb83a0b242a2b6c7504c1"
+    },
+    {
+      "crate": "thiserror-impl-2.0.18.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/thiserror-impl-2.0.18.crate",
+      "bytes": 21413,
+      "sha256": "ebc4ee7f67670e9b64d05fa4253e753e016c6c95ff35b89b7941d6b856dec1d5"
+    },
+    {
+      "crate": "time-0.3.47.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/time-0.3.47.crate",
+      "bytes": 225161,
+      "sha256": "743bd48c283afc0388f9b8827b976905fb217ad9e647fae3a379a9283c4def2c"
+    },
+    {
+      "crate": "time-core-0.1.8.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/time-core-0.1.8.crate",
+      "bytes": 9634,
+      "sha256": "7694e1cfe791f8d31026952abf09c69ca6f6fa4e1a1229e18988f06a04a12dca"
+    },
+    {
+      "crate": "time-macros-0.2.27.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/time-macros-0.2.27.crate",
+      "bytes": 25144,
+      "sha256": "2e70e4c5a0e0a8a4823ad65dfe1a6930e4f4d756dcd9dd7939022b5e8c501215"
+    },
+    {
+      "crate": "tinystr-0.8.3.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/tinystr-0.8.3.crate",
+      "bytes": 24710,
+      "sha256": "c8323304221c2a851516f22236c5722a72eaa19749016521d6dff0824447d96d"
+    },
+    {
+      "crate": "tinyvec-1.11.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/tinyvec-1.11.0.crate",
+      "bytes": 53096,
+      "sha256": "3e61e67053d25a4e82c844e8424039d9745781b3fc4f32b8d55ed50f5f667ef3"
+    },
+    {
+      "crate": "tinyvec_macros-0.1.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/tinyvec_macros-0.1.1.crate",
+      "bytes": 5865,
+      "sha256": "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
+    },
+    {
+      "crate": "tokio-1.52.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/tokio-1.52.1.crate",
+      "bytes": 900270,
+      "sha256": "b67dee974fe86fd92cc45b7a95fdd2f99a36a6d7b0d431a231178d3d670bbcc6"
+    },
+    {
+      "crate": "tokio-rustls-0.26.4.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/tokio-rustls-0.26.4.crate",
+      "bytes": 35430,
+      "sha256": "1729aa945f29d91ba541258c8df89027d5792d85a8841fb65e8bf0f4ede4ef61"
+    },
+    {
+      "crate": "tokio-util-0.7.18.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/tokio-util-0.7.18.crate",
+      "bytes": 140550,
+      "sha256": "9ae9cec805b01e8fc3fd2fe289f89149a9b66dd16786abd8b19cfa7b48cb0098"
+    },
+    {
+      "crate": "toml-0.8.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/toml-0.8.2.crate",
+      "bytes": 50425,
+      "sha256": "185d8ab0dfbb35cf1399a6344d8484209c088f75f8f68230da55d48d95d43e3d"
+    },
+    {
+      "crate": "toml-0.9.12+spec-1.1.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/toml-0.9.12+spec-1.1.0.crate",
+      "bytes": 56485,
+      "sha256": "cf92845e79fc2e2def6a5d828f0801e29a2f8acc037becc5ab08595c7d5e9863"
+    },
+    {
+      "crate": "toml-1.1.2+spec-1.1.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/toml-1.1.2+spec-1.1.0.crate",
+      "bytes": 56327,
+      "sha256": "81f3d15e84cbcd896376e6730314d59fb5a87f31e4b038454184435cd57defee"
+    },
+    {
+      "crate": "toml_datetime-0.6.3.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/toml_datetime-0.6.3.crate",
+      "bytes": 10770,
+      "sha256": "7cda73e2f1397b1262d6dfdcef8aafae14d1de7748d66822d3bfeeb6d03e5e4b"
+    },
+    {
+      "crate": "toml_datetime-0.7.5+spec-1.1.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/toml_datetime-0.7.5+spec-1.1.0.crate",
+      "bytes": 17975,
+      "sha256": "92e1cfed4a3038bc5a127e35a2d360f145e1f4b971b551a2ba5fd7aedf7e1347"
+    },
+    {
+      "crate": "toml_datetime-1.1.1+spec-1.1.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/toml_datetime-1.1.1+spec-1.1.0.crate",
+      "bytes": 17982,
+      "sha256": "3165f65f62e28e0115a00b2ebdd37eb6f3b641855f9d636d3cd4103767159ad7"
+    },
+    {
+      "crate": "toml_edit-0.19.15.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/toml_edit-0.19.15.crate",
+      "bytes": 95324,
+      "sha256": "1b5bb770da30e5cbfde35a2d7b9b8a2c4b8ef89548a7a6aeab5c9a576e3e7421"
+    },
+    {
+      "crate": "toml_edit-0.20.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/toml_edit-0.20.2.crate",
+      "bytes": 96487,
+      "sha256": "396e4d48bbb2b7554c944bde63101b5ae446cff6ec4a24227428f15eb72ef338"
+    },
+    {
+      "crate": "toml_edit-0.25.11+spec-1.1.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/toml_edit-0.25.11+spec-1.1.0.crate",
+      "bytes": 68598,
+      "sha256": "0b59c4d22ed448339746c59b905d24568fcbb3ab65a500494f7b8c3e97739f2b"
+    },
+    {
+      "crate": "toml_parser-1.1.2+spec-1.1.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/toml_parser-1.1.2+spec-1.1.0.crate",
+      "bytes": 35485,
+      "sha256": "a2abe9b86193656635d2411dc43050282ca48aa31c2451210f4202550afb7526"
+    },
+    {
+      "crate": "toml_writer-1.1.1+spec-1.1.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/toml_writer-1.1.1+spec-1.1.0.crate",
+      "bytes": 18841,
+      "sha256": "756daf9b1013ebe47a8776667b466417e2d4c5679d441c26230efd9ef78692db"
+    },
+    {
+      "crate": "tower-0.5.3.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/tower-0.5.3.crate",
+      "bytes": 110488,
+      "sha256": "ebe5ef63511595f1344e2d5cfa636d973292adc0eec1f0ad45fae9f0851ab1d4"
+    },
+    {
+      "crate": "tower-http-0.6.8.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/tower-http-0.6.8.crate",
+      "bytes": 135827,
+      "sha256": "d4e6559d53cc268e5031cd8429d05415bc4cb4aefc4aa5d6cc35fbf5b924a1f8"
+    },
+    {
+      "crate": "tower-layer-0.3.3.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/tower-layer-0.3.3.crate",
+      "bytes": 6180,
+      "sha256": "121c2a6cda46980bb0fcd1647ffaf6cd3fc79a013de288782836f6df9c48780e"
+    },
+    {
+      "crate": "tower-service-0.3.3.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/tower-service-0.3.3.crate",
+      "bytes": 6950,
+      "sha256": "8df9b6e13f2d32c91b9bd719c00d1958837bc7dec474d94952798cc8e69eeec3"
+    },
+    {
+      "crate": "tracing-0.1.44.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/tracing-0.1.44.crate",
+      "bytes": 463135,
+      "sha256": "63e71662fa4b2a2c3a26f570f037eb95bb1f85397f3cd8076caed2f026a6d100"
+    },
+    {
+      "crate": "tracing-attributes-0.1.31.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/tracing-attributes-0.1.31.crate",
+      "bytes": 39733,
+      "sha256": "7490cfa5ec963746568740651ac6781f701c9c5ea257c58e057f3ba8cf69e8da"
+    },
+    {
+      "crate": "tracing-core-0.1.36.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/tracing-core-0.1.36.crate",
+      "bytes": 63967,
+      "sha256": "db97caf9d906fbde555dd62fa95ddba9eecfd14cb388e4f491a66d74cd5fb79a"
+    },
+    {
+      "crate": "tray-icon-0.23.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/tray-icon-0.23.1.crate",
+      "bytes": 56669,
+      "sha256": "15edbb0d80583e85ee8df283410038e17314df5cba30da2087a54a85216c0773"
+    },
+    {
+      "crate": "try-lock-0.2.5.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/try-lock-0.2.5.crate",
+      "bytes": 4314,
+      "sha256": "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
+    },
+    {
+      "crate": "typeid-1.0.3.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/typeid-1.0.3.crate",
+      "bytes": 9006,
+      "sha256": "bc7d623258602320d5c55d1bc22793b57daff0ec7efc270ea7d55ce1d5f5471c"
+    },
+    {
+      "crate": "typenum-1.20.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/typenum-1.20.0.crate",
+      "bytes": 105530,
+      "sha256": "40ce102ab67701b8526c123c1bab5cbe42d7040ccfd0f64af1a385808d2f43de"
+    },
+    {
+      "crate": "uds_windows-1.2.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/uds_windows-1.2.1.crate",
+      "bytes": 21931,
+      "sha256": "f2f6fb2847f6742cd76af783a2a2c49e9375d0a111c7bef6f71cd9e738c72d6e"
+    },
+    {
+      "crate": "unic-char-property-0.9.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/unic-char-property-0.9.0.crate",
+      "bytes": 6809,
+      "sha256": "a8c57a407d9b6fa02b4795eb81c5b6652060a15a7903ea981f3d723e6c0be221"
+    },
+    {
+      "crate": "unic-char-range-0.9.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/unic-char-range-0.9.0.crate",
+      "bytes": 7020,
+      "sha256": "0398022d5f700414f6b899e10b8348231abf9173fa93144cbc1a43b9793c1fbc"
+    },
+    {
+      "crate": "unic-common-0.9.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/unic-common-0.9.0.crate",
+      "bytes": 2558,
+      "sha256": "80d7ff825a6a654ee85a63e80f92f054f904f21e7d12da4e22f9834a4aaa35bc"
+    },
+    {
+      "crate": "unic-ucd-ident-0.9.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/unic-ucd-ident-0.9.0.crate",
+      "bytes": 16128,
+      "sha256": "e230a37c0381caa9219d67cf063aa3a375ffed5bf541a452db16e744bdab6987"
+    },
+    {
+      "crate": "unic-ucd-version-0.9.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/unic-ucd-version-0.9.0.crate",
+      "bytes": 2246,
+      "sha256": "96bd2f2237fe450fcd0a1d2f5f4e91711124f7857ba2e964247776ebeeb7b0c4"
+    },
+    {
+      "crate": "unicode-ident-1.0.24.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/unicode-ident-1.0.24.crate",
+      "bytes": 49298,
+      "sha256": "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
+    },
+    {
+      "crate": "unicode-segmentation-1.13.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/unicode-segmentation-1.13.2.crate",
+      "bytes": 111829,
+      "sha256": "9629274872b2bfaf8d66f5f15725007f635594914870f65218920345aa11aa8c"
+    },
+    {
+      "crate": "unicode-xid-0.2.6.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/unicode-xid-0.2.6.crate",
+      "bytes": 15744,
+      "sha256": "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
+    },
+    {
+      "crate": "untrusted-0.9.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/untrusted-0.9.0.crate",
+      "bytes": 14447,
+      "sha256": "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
+    },
+    {
+      "crate": "url-2.5.8.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/url-2.5.8.crate",
+      "bytes": 86512,
+      "sha256": "ff67a8a4397373c3ef660812acab3268222035010ab8680ec4215f38ba3d0eed"
+    },
+    {
+      "crate": "urlpattern-0.3.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/urlpattern-0.3.0.crate",
+      "bytes": 28180,
+      "sha256": "70acd30e3aa1450bc2eece896ce2ad0d178e9c079493819301573dae3c37ba6d"
+    },
+    {
+      "crate": "utf-8-0.7.6.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/utf-8-0.7.6.crate",
+      "bytes": 10422,
+      "sha256": "09cc8ee72d2a9becf2f2febe0205bbed8fc6615b7cb429ad062dc7b7ddd036a9"
+    },
+    {
+      "crate": "utf8_iter-1.0.4.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/utf8_iter-1.0.4.crate",
+      "bytes": 10437,
+      "sha256": "b6c140620e7ffbb22c2dee59cafe6084a59b5ffc27a8859a5f0d494b5d52b6be"
+    },
+    {
+      "crate": "uuid-1.23.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/uuid-1.23.1.crate",
+      "bytes": 62932,
+      "sha256": "ddd74a9687298c6858e9b88ec8935ec45d22e8fd5e6394fa1bd4e99a87789c76"
+    },
+    {
+      "crate": "version-compare-0.2.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/version-compare-0.2.1.crate",
+      "bytes": 14245,
+      "sha256": "03c2856837ef78f57382f06b2b8563a2f512f7185d732608fd9176cb3b8edf0e"
+    },
+    {
+      "crate": "version_check-0.9.5.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/version_check-0.9.5.crate",
+      "bytes": 15554,
+      "sha256": "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+    },
+    {
+      "crate": "vswhom-0.1.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/vswhom-0.1.0.crate",
+      "bytes": 9420,
+      "sha256": "be979b7f07507105799e854203b470ff7c78a1639e330a58f183b5fea574608b"
+    },
+    {
+      "crate": "vswhom-sys-0.1.3.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/vswhom-sys-0.1.3.crate",
+      "bytes": 16242,
+      "sha256": "fb067e4cbd1ff067d1df46c9194b5de0e98efd2810bbc95c5d5e5f25a3231150"
+    },
+    {
+      "crate": "walkdir-2.5.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/walkdir-2.5.0.crate",
+      "bytes": 23951,
+      "sha256": "29790946404f91d9c5d06f9874efddea1dc06c5efe94541a7d6863108e3a5e4b"
+    },
+    {
+      "crate": "want-0.3.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/want-0.3.1.crate",
+      "bytes": 6398,
+      "sha256": "bfa7760aed19e106de2c7c0b581b509f2f25d3dacaf737cb82ac61bc6d760b0e"
+    },
+    {
+      "crate": "wasi-0.11.1+wasi-snapshot-preview1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/wasi-0.11.1+wasi-snapshot-preview1.crate",
+      "bytes": 28477,
+      "sha256": "ccf3ec651a847eb01de73ccad15eb7d99f80485de043efb2f370cd654f4ea44b"
+    },
+    {
+      "crate": "wasip2-1.0.3+wasi-0.2.9.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/wasip2-1.0.3+wasi-0.2.9.crate",
+      "bytes": 134512,
+      "sha256": "20064672db26d7cdc89c7798c48a0fdfac8213434a1186e5ef29fd560ae223d6"
+    },
+    {
+      "crate": "wasip3-0.4.0+wasi-0.3.0-rc-2026-01-06.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/wasip3-0.4.0+wasi-0.3.0-rc-2026-01-06.crate",
+      "bytes": 123354,
+      "sha256": "5428f8bf88ea5ddc08faddef2ac4a67e390b88186c703ce6dbd955e1c145aca5"
+    },
+    {
+      "crate": "wasm-bindgen-0.2.120.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/wasm-bindgen-0.2.120.crate",
+      "bytes": 63555,
+      "sha256": "df52b6d9b87e0c74c9edfa1eb2d9bf85e5d63515474513aa50fa181b3c4f5db1"
+    },
+    {
+      "crate": "wasm-bindgen-futures-0.4.70.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/wasm-bindgen-futures-0.4.70.crate",
+      "bytes": 8243,
+      "sha256": "af934872acec734c2d80e6617bbb5ff4f12b052dd8e6332b0817bce889516084"
+    },
+    {
+      "crate": "wasm-bindgen-macro-0.2.120.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/wasm-bindgen-macro-0.2.120.crate",
+      "bytes": 9293,
+      "sha256": "78b1041f495fb322e64aca85f5756b2172e35cd459376e67f2a6c9dffcedb103"
+    },
+    {
+      "crate": "wasm-bindgen-macro-support-0.2.120.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/wasm-bindgen-macro-support-0.2.120.crate",
+      "bytes": 69005,
+      "sha256": "9dcd0ff20416988a18ac686d4d4d0f6aae9ebf08a389ff5d29012b05af2a1b41"
+    },
+    {
+      "crate": "wasm-bindgen-shared-0.2.120.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/wasm-bindgen-shared-0.2.120.crate",
+      "bytes": 10596,
+      "sha256": "49757b3c82ebf16c57d69365a142940b384176c24df52a087fb748e2085359ea"
+    },
+    {
+      "crate": "wasm-encoder-0.244.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/wasm-encoder-0.244.0.crate",
+      "bytes": 85804,
+      "sha256": "990065f2fe63003fe337b932cfb5e3b80e0b4d0f5ff650e6985b1048f62c8319"
+    },
+    {
+      "crate": "wasm-metadata-0.244.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/wasm-metadata-0.244.0.crate",
+      "bytes": 21500,
+      "sha256": "bb0e353e6a2fbdc176932bbaab493762eb1255a7900fe0fea1a2f96c296cc909"
+    },
+    {
+      "crate": "wasm-streams-0.5.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/wasm-streams-0.5.0.crate",
+      "bytes": 37790,
+      "sha256": "9d1ec4f6517c9e11ae630e200b2b65d193279042e28edd4a2cda233e46670bbb"
+    },
+    {
+      "crate": "wasmparser-0.244.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/wasmparser-0.244.0.crate",
+      "bytes": 265607,
+      "sha256": "47b807c72e1bac69382b3a6fb3dbe8ea4c0ed87ff5629b8685ae6b9a611028fe"
+    },
+    {
+      "crate": "web-sys-0.3.97.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/web-sys-0.3.97.crate",
+      "bytes": 674185,
+      "sha256": "2eadbac71025cd7b0834f20d1fe8472e8495821b4e9801eb0a60bd1f19827602"
+    },
+    {
+      "crate": "web-time-1.1.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/web-time-1.1.0.crate",
+      "bytes": 18026,
+      "sha256": "5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb"
+    },
+    {
+      "crate": "web_atoms-0.2.4.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/web_atoms-0.2.4.crate",
+      "bytes": 27897,
+      "sha256": "d7cff6eef815df1834fd250e3a2ff436044d82a9f1bc1980ca1dbdf07effc538"
+    },
+    {
+      "crate": "webkit2gtk-2.0.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/webkit2gtk-2.0.2.crate",
+      "bytes": 79590,
+      "sha256": "a1027150013530fb2eaf806408df88461ae4815a45c541c8975e61d6f2fc4793"
+    },
+    {
+      "crate": "webkit2gtk-sys-2.0.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/webkit2gtk-sys-2.0.2.crate",
+      "bytes": 29591,
+      "sha256": "916a5f65c2ef0dfe12fff695960a2ec3d4565359fdbb2e9943c974e06c734ea5"
+    },
+    {
+      "crate": "webpki-root-certs-1.0.9.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/webpki-root-certs-1.0.9.crate",
+      "bytes": 149167,
+      "sha256": "b96554aa2acc8ccdb7e1c9a58a7a68dd5d13bccc69cd124cb09406db612a1c9b"
+    },
+    {
+      "crate": "webpki-roots-1.0.7.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/webpki-roots-1.0.7.crate",
+      "bytes": 213706,
+      "sha256": "52f5ee44c96cf55f1b349600768e3ece3a8f26010c05265ab73f945bb1a2eb9d"
+    },
+    {
+      "crate": "webview2-com-0.38.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/webview2-com-0.38.2.crate",
+      "bytes": 19290,
+      "sha256": "7130243a7a5b33c54a444e54842e6a9e133de08b5ad7b5861cd8ed9a6a5bc96a"
+    },
+    {
+      "crate": "webview2-com-macros-0.8.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/webview2-com-macros-0.8.1.crate",
+      "bytes": 3416,
+      "sha256": "67a921c1b6914c367b2b823cd4cde6f96beec77d30a939c8199bb377cf9b9b54"
+    },
+    {
+      "crate": "webview2-com-sys-0.38.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/webview2-com-sys-0.38.2.crate",
+      "bytes": 5764987,
+      "sha256": "381336cfffd772377d291702245447a5251a2ffa5bad679c99e61bc48bacbf9c"
+    },
+    {
+      "crate": "winapi-0.3.9.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/winapi-0.3.9.crate",
+      "bytes": 1200382,
+      "sha256": "5c839a674fcd7a98952e593242ea400abe93992746761e38641405d28b00f419"
+    },
+    {
+      "crate": "winapi-i686-pc-windows-gnu-0.4.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/winapi-i686-pc-windows-gnu-0.4.0.crate",
+      "bytes": 2918815,
+      "sha256": "ac3b87c63620426dd9b991e5ce0329eff545bccbbb34f3be09ff6fb6ab51b7b6"
+    },
+    {
+      "crate": "winapi-util-0.1.11.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/winapi-util-0.1.11.crate",
+      "bytes": 13368,
+      "sha256": "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
+    },
+    {
+      "crate": "winapi-x86_64-pc-windows-gnu-0.4.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/winapi-x86_64-pc-windows-gnu-0.4.0.crate",
+      "bytes": 2947998,
+      "sha256": "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
+    },
+    {
+      "crate": "window-vibrancy-0.6.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/window-vibrancy-0.6.0.crate",
+      "bytes": 1407663,
+      "sha256": "d9bec5a31f3f9362f2258fd0e9c9dd61a9ca432e7306cc78c444258f0dce9a9c"
+    },
+    {
+      "crate": "windows-0.61.3.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/windows-0.61.3.crate",
+      "bytes": 9372520,
+      "sha256": "9babd3a767a4c1aef6900409f85f5d53ce2544ccdfaa86dad48c91782c6d6893"
+    },
+    {
+      "crate": "windows-collections-0.2.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/windows-collections-0.2.0.crate",
+      "bytes": 13579,
+      "sha256": "3beeceb5e5cfd9eb1d76b381630e82c4241ccd0d27f1a39ed41b2760b255c5e8"
+    },
+    {
+      "crate": "windows-core-0.61.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/windows-core-0.61.2.crate",
+      "bytes": 36771,
+      "sha256": "c0fdd3ddb90610c7638aa2b3a3ab2904fb9e5cdbecc643ddb3647212781c4ae3"
+    },
+    {
+      "crate": "windows-core-0.62.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/windows-core-0.62.2.crate",
+      "bytes": 36932,
+      "sha256": "b8e83a14d34d0623b51dce9581199302a221863196a1dde71a7663a4c2be9deb"
+    },
+    {
+      "crate": "windows-future-0.2.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/windows-future-0.2.1.crate",
+      "bytes": 17532,
+      "sha256": "fc6a41e98427b19fe4b73c550f060b59fa592d7d686537eebf9385621bfbad8e"
+    },
+    {
+      "crate": "windows-implement-0.60.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/windows-implement-0.60.2.crate",
+      "bytes": 15325,
+      "sha256": "053e2e040ab57b9dc951b72c264860db7eb3b0200ba345b4e4c3b14f67855ddf"
+    },
+    {
+      "crate": "windows-interface-0.59.3.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/windows-interface-0.59.3.crate",
+      "bytes": 11809,
+      "sha256": "3f316c4a2570ba26bbec722032c4099d8c8bc095efccdc15688708623367e358"
+    },
+    {
+      "crate": "windows-link-0.1.3.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/windows-link-0.1.3.crate",
+      "bytes": 6154,
+      "sha256": "5e6ad25900d524eaabdbbb96d20b4311e1e7ae1699af4fb28c17ae66c80d798a"
+    },
+    {
+      "crate": "windows-link-0.2.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/windows-link-0.2.1.crate",
+      "bytes": 6133,
+      "sha256": "f0805222e57f7521d6a62e36fa9163bc891acd422f971defe97d64e70d0a4fe5"
+    },
+    {
+      "crate": "windows-numerics-0.2.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/windows-numerics-0.2.0.crate",
+      "bytes": 9686,
+      "sha256": "9150af68066c4c5c07ddc0ce30421554771e528bde427614c61038bc2c92c2b1"
+    },
+    {
+      "crate": "windows-result-0.3.4.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/windows-result-0.3.4.crate",
+      "bytes": 13418,
+      "sha256": "56f42bd332cc6c8eac5af113fc0c1fd6a8fd2aa08a0119358686e5160d0586c6"
+    },
+    {
+      "crate": "windows-result-0.4.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/windows-result-0.4.1.crate",
+      "bytes": 13381,
+      "sha256": "7781fa89eaf60850ac3d2da7af8e5242a5ea78d1a11c49bf2910bb5a73853eb5"
+    },
+    {
+      "crate": "windows-strings-0.4.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/windows-strings-0.4.2.crate",
+      "bytes": 13983,
+      "sha256": "56e6c93f3a0c3b36176cb1327a4958a0353d5d166c2a35cb268ace15e91d3b57"
+    },
+    {
+      "crate": "windows-strings-0.5.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/windows-strings-0.5.1.crate",
+      "bytes": 13966,
+      "sha256": "7837d08f69c77cf6b07689544538e017c1bfcf57e34b4c0ff58e6c2cd3b37091"
+    },
+    {
+      "crate": "windows-sys-0.45.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/windows-sys-0.45.0.crate",
+      "bytes": 2568659,
+      "sha256": "75283be5efb2831d37ea142365f009c02ec203cd29a3ebecbc093d52315b66d0"
+    },
+    {
+      "crate": "windows-sys-0.52.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/windows-sys-0.52.0.crate",
+      "bytes": 2576877,
+      "sha256": "282be5f36a8ce781fad8c8ae18fa3f9beff57ec1b52cb3de0789201425d9a33d"
+    },
+    {
+      "crate": "windows-sys-0.59.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/windows-sys-0.59.0.crate",
+      "bytes": 2387323,
+      "sha256": "1e38bc4d79ed67fd075bcc251a1c39b32a1776bbe92e5bef1f0bf1f8c531853b"
+    },
+    {
+      "crate": "windows-sys-0.60.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/windows-sys-0.60.2.crate",
+      "bytes": 2518479,
+      "sha256": "f2f500e4d28234f72040990ec9d39e3a6b950f9f22d3dba18416c35882612bcb"
+    },
+    {
+      "crate": "windows-sys-0.61.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/windows-sys-0.61.2.crate",
+      "bytes": 2517186,
+      "sha256": "ae137229bcbd6cdf0f7b80a31df61766145077ddf49416a728b02cb3921ff3fc"
+    },
+    {
+      "crate": "windows-targets-0.42.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/windows-targets-0.42.2.crate",
+      "bytes": 5492,
+      "sha256": "8e5180c00cd44c9b1c88adb3693291f1cd93605ded80c250a75d472756b4d071"
+    },
+    {
+      "crate": "windows-targets-0.52.6.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/windows-targets-0.52.6.crate",
+      "bytes": 6403,
+      "sha256": "9b724f72796e036ab90c1021d4780d4d3d648aca59e491e6b98e725b84e99973"
+    },
+    {
+      "crate": "windows-targets-0.53.5.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/windows-targets-0.53.5.crate",
+      "bytes": 7126,
+      "sha256": "4945f9f551b88e0d65f3db0bc25c33b8acea4d9e41163edf90dcd0b19f9069f3"
+    },
+    {
+      "crate": "windows-threading-0.1.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/windows-threading-0.1.0.crate",
+      "bytes": 9085,
+      "sha256": "b66463ad2e0ea3bbf808b7f1d371311c80e115c0b71d60efc142cafbcfb057a6"
+    },
+    {
+      "crate": "windows-version-0.1.7.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/windows-version-0.1.7.crate",
+      "bytes": 7739,
+      "sha256": "e4060a1da109b9d0326b7262c8e12c84df67cc0dbc9e33cf49e01ccc2eb63631"
+    },
+    {
+      "crate": "windows_aarch64_gnullvm-0.42.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/windows_aarch64_gnullvm-0.42.2.crate",
+      "bytes": 364071,
+      "sha256": "597a5118570b68bc08d8d59125332c54f1ba9d9adeedeef5b99b02ba2b0698f8"
+    },
+    {
+      "crate": "windows_aarch64_gnullvm-0.52.6.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/windows_aarch64_gnullvm-0.52.6.crate",
+      "bytes": 435718,
+      "sha256": "32a4622180e7a0ec044bb555404c800bc9fd9ec262ec147edd5989ccd0c02cd3"
+    },
+    {
+      "crate": "windows_aarch64_gnullvm-0.53.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/windows_aarch64_gnullvm-0.53.1.crate",
+      "bytes": 787748,
+      "sha256": "a9d8416fa8b42f5c947f8482c43e7d89e73a173cead56d044f6a56104a6d1b53"
+    },
+    {
+      "crate": "windows_aarch64_msvc-0.42.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/windows_aarch64_msvc-0.42.2.crate",
+      "bytes": 666981,
+      "sha256": "e08e8864a60f06ef0d0ff4ba04124db8b0fb3be5776a5cd47641e942e58c4d43"
+    },
+    {
+      "crate": "windows_aarch64_msvc-0.52.6.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/windows_aarch64_msvc-0.52.6.crate",
+      "bytes": 832615,
+      "sha256": "09ec2a7bb152e2252b53fa7803150007879548bc709c039df7627cabbd05d469"
+    },
+    {
+      "crate": "windows_aarch64_msvc-0.53.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/windows_aarch64_msvc-0.53.1.crate",
+      "bytes": 838009,
+      "sha256": "b9d782e804c2f632e395708e99a94275910eb9100b2114651e04744e9b125006"
+    },
+    {
+      "crate": "windows_i686_gnu-0.42.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/windows_i686_gnu-0.42.2.crate",
+      "bytes": 736236,
+      "sha256": "c61d927d8da41da96a81f029489353e68739737d3beca43145c8afec9a31a84f"
+    },
+    {
+      "crate": "windows_i686_gnu-0.52.6.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/windows_i686_gnu-0.52.6.crate",
+      "bytes": 880402,
+      "sha256": "8e9b5ad5ab802e97eb8e295ac6720e509ee4c243f69d781394014ebfe8bbfa0b"
+    },
+    {
+      "crate": "windows_i686_gnu-0.53.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/windows_i686_gnu-0.53.1.crate",
+      "bytes": 939775,
+      "sha256": "960e6da069d81e09becb0ca57a65220ddff016ff2d6af6a223cf372a506593a3"
+    },
+    {
+      "crate": "windows_i686_gnullvm-0.52.6.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/windows_i686_gnullvm-0.52.6.crate",
+      "bytes": 475940,
+      "sha256": "0eee52d38c090b3caa76c563b86c3a4bd71ef1a819287c19d586d7334ae8ed66"
+    },
+    {
+      "crate": "windows_i686_gnullvm-0.53.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/windows_i686_gnullvm-0.53.1.crate",
+      "bytes": 857396,
+      "sha256": "fa7359d10048f68ab8b09fa71c3daccfb0e9b559aed648a8f95469c27057180c"
+    },
+    {
+      "crate": "windows_i686_msvc-0.42.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/windows_i686_msvc-0.42.2.crate",
+      "bytes": 724951,
+      "sha256": "44d840b6ec649f480a41c8d80f9c65108b92d89345dd94027bfe06ac444d1060"
+    },
+    {
+      "crate": "windows_i686_msvc-0.52.6.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/windows_i686_msvc-0.52.6.crate",
+      "bytes": 901163,
+      "sha256": "240948bc05c5e7c6dabba28bf89d89ffce3e303022809e73deaefe4f6ec56c66"
+    },
+    {
+      "crate": "windows_i686_msvc-0.53.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/windows_i686_msvc-0.53.1.crate",
+      "bytes": 907688,
+      "sha256": "1e7ac75179f18232fe9c285163565a57ef8d3c89254a30685b57d83a38d326c2"
+    },
+    {
+      "crate": "windows_x86_64_gnu-0.42.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/windows_x86_64_gnu-0.42.2.crate",
+      "bytes": 699373,
+      "sha256": "8de912b8b8feb55c064867cf047dda097f92d51efad5b491dfb98f6bbb70cb36"
+    },
+    {
+      "crate": "windows_x86_64_gnu-0.52.6.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/windows_x86_64_gnu-0.52.6.crate",
+      "bytes": 836363,
+      "sha256": "147a5c80aabfbf0c7d901cb5895d1de30ef2907eb21fbbab29ca94c5b08b1a78"
+    },
+    {
+      "crate": "windows_x86_64_gnu-0.53.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/windows_x86_64_gnu-0.53.1.crate",
+      "bytes": 903712,
+      "sha256": "9c3842cdd74a865a8066ab39c8a7a473c0778a3f29370b5fd6b4b9aa7df4a499"
+    },
+    {
+      "crate": "windows_x86_64_gnullvm-0.42.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/windows_x86_64_gnullvm-0.42.2.crate",
+      "bytes": 364068,
+      "sha256": "26d41b46a36d453748aedef1486d5c7a85db22e56aff34643984ea85514e94a3"
+    },
+    {
+      "crate": "windows_x86_64_gnullvm-0.52.6.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/windows_x86_64_gnullvm-0.52.6.crate",
+      "bytes": 435707,
+      "sha256": "24d5b23dc417412679681396f2b49f3de8c1473deb516bd34410872eff51ed0d"
+    },
+    {
+      "crate": "windows_x86_64_gnullvm-0.53.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/windows_x86_64_gnullvm-0.53.1.crate",
+      "bytes": 787739,
+      "sha256": "0ffa179e2d07eee8ad8f57493436566c7cc30ac536a3379fdf008f47f6bb7ae1"
+    },
+    {
+      "crate": "windows_x86_64_msvc-0.42.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/windows_x86_64_msvc-0.42.2.crate",
+      "bytes": 666936,
+      "sha256": "9aec5da331524158c6d1a4ac0ab1541149c0b9505fde06423b02f5ef0106b9f0"
+    },
+    {
+      "crate": "windows_x86_64_msvc-0.52.6.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/windows_x86_64_msvc-0.52.6.crate",
+      "bytes": 832564,
+      "sha256": "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
+    },
+    {
+      "crate": "windows_x86_64_msvc-0.53.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/windows_x86_64_msvc-0.53.1.crate",
+      "bytes": 837950,
+      "sha256": "d6bbff5f0aada427a1e5a6da5f1f98158182f26556f345ac9e04d36d0ebed650"
+    },
+    {
+      "crate": "winnow-0.5.40.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/winnow-0.5.40.crate",
+      "bytes": 159316,
+      "sha256": "f593a95398737aeed53e489c785df13f3618e41dbcd6718c6addbf1395aa6876"
+    },
+    {
+      "crate": "winnow-0.7.15.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/winnow-0.7.15.crate",
+      "bytes": 187092,
+      "sha256": "df79d97927682d2fd8adb29682d1140b343be4ac0f08fd68b7765d9c059d3945"
+    },
+    {
+      "crate": "winnow-1.0.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/winnow-1.0.2.crate",
+      "bytes": 188047,
+      "sha256": "2ee1708bef14716a11bae175f579062d4554d95be2c6829f518df847b7b3fdd0"
+    },
+    {
+      "crate": "winreg-0.10.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/winreg-0.10.1.crate",
+      "bytes": 25725,
+      "sha256": "80d0f4e272c85def139476380b12f9ac60926689dd2e01d4923222f40580869d"
+    },
+    {
+      "crate": "winreg-0.55.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/winreg-0.55.0.crate",
+      "bytes": 31048,
+      "sha256": "cb5a765337c50e9ec252c2069be9bf91c7df47afb103b642ba3a53bf8101be97"
+    },
+    {
+      "crate": "wit-bindgen-0.51.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/wit-bindgen-0.51.0.crate",
+      "bytes": 68035,
+      "sha256": "d7249219f66ced02969388cf2bb044a09756a083d0fab1e566056b04d9fbcaa5"
+    },
+    {
+      "crate": "wit-bindgen-0.57.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/wit-bindgen-0.57.1.crate",
+      "bytes": 71227,
+      "sha256": "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
+    },
+    {
+      "crate": "wit-bindgen-core-0.51.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/wit-bindgen-core-0.51.0.crate",
+      "bytes": 35048,
+      "sha256": "ea61de684c3ea68cb082b7a88508a8b27fcc8b797d738bfc99a82facf1d752dc"
+    },
+    {
+      "crate": "wit-bindgen-rust-0.51.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/wit-bindgen-rust-0.51.0.crate",
+      "bytes": 57051,
+      "sha256": "b7c566e0f4b284dd6561c786d9cb0142da491f46a9fbed79ea69cdad5db17f21"
+    },
+    {
+      "crate": "wit-bindgen-rust-macro-0.51.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/wit-bindgen-rust-macro-0.51.0.crate",
+      "bytes": 14283,
+      "sha256": "0c0f9bfd77e6a48eccf51359e3ae77140a7f50b1e2ebfe62422d8afdaffab17a"
+    },
+    {
+      "crate": "wit-component-0.244.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/wit-component-0.244.0.crate",
+      "bytes": 256882,
+      "sha256": "9d66ea20e9553b30172b5e831994e35fbde2d165325bec84fc43dbf6f4eb9cb2"
+    },
+    {
+      "crate": "wit-parser-0.244.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/wit-parser-0.244.0.crate",
+      "bytes": 159371,
+      "sha256": "ecc8ac4bc1dc3381b7f59c34f00b67e18f910c2c0f50015669dde7def656a736"
+    },
+    {
+      "crate": "writeable-0.6.3.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/writeable-0.6.3.crate",
+      "bytes": 26685,
+      "sha256": "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
+    },
+    {
+      "crate": "wry-0.55.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/wry-0.55.0.crate",
+      "bytes": 204815,
+      "sha256": "3013fd6116aac351dd2e18f349b28b2cfef3a5ff3253a9d0ce2d7193bb1b4429"
+    },
+    {
+      "crate": "x11-2.21.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/x11-2.21.0.crate",
+      "bytes": 67810,
+      "sha256": "502da5464ccd04011667b11c435cb992822c2c0dbde1770c988480d312a0db2e"
+    },
+    {
+      "crate": "x11-dl-2.21.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/x11-dl-2.21.0.crate",
+      "bytes": 66823,
+      "sha256": "38735924fedd5314a6e548792904ed8c6de6636285cb9fec04d5b1db85c1516f"
+    },
+    {
+      "crate": "xattr-1.6.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/xattr-1.6.1.crate",
+      "bytes": 15952,
+      "sha256": "32e45ad4206f6d2479085147f02bc2ef834ac85886624a23575ae137c8aa8156"
+    },
+    {
+      "crate": "yoke-0.8.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/yoke-0.8.2.crate",
+      "bytes": 32790,
+      "sha256": "abe8c5fda708d9ca3df187cae8bfb9ceda00dd96231bed36e445a1a48e66f9ca"
+    },
+    {
+      "crate": "yoke-derive-0.8.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/yoke-derive-0.8.2.crate",
+      "bytes": 15077,
+      "sha256": "de844c262c8848816172cef550288e7dc6c7b7814b4ee56b3e1553f275f1858e"
+    },
+    {
+      "crate": "zbus-5.15.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/zbus-5.15.0.crate",
+      "bytes": 180214,
+      "sha256": "c3bcbf15c8708d7fc1be0c993622e0a5cbd5e8b52bfa40afa4c3e0cd8d724ac1"
+    },
+    {
+      "crate": "zbus_macros-5.15.0.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/zbus_macros-5.15.0.crate",
+      "bytes": 39734,
+      "sha256": "51fa5406ad9175a8c825a931f8cf347116b531b3634fcb0b627c290f1f2516ff"
+    },
+    {
+      "crate": "zbus_names-4.3.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/zbus_names-4.3.2.crate",
+      "bytes": 18088,
+      "sha256": "7074f3e50b894eac91750142016d30d0a89be8e67dbfd9704fb875825760e52d"
+    },
+    {
+      "crate": "zerocopy-0.8.48.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/zerocopy-0.8.48.crate",
+      "bytes": 287554,
+      "sha256": "eed437bf9d6692032087e337407a86f04cd8d6a16a37199ed57949d415bd68e9"
+    },
+    {
+      "crate": "zerocopy-derive-0.8.48.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/zerocopy-derive-0.8.48.crate",
+      "bytes": 97646,
+      "sha256": "70e3cd084b1788766f53af483dd21f93881ff30d7320490ec3ef7526d203bad4"
+    },
+    {
+      "crate": "zerofrom-0.1.7.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/zerofrom-0.1.7.crate",
+      "bytes": 6140,
+      "sha256": "69faa1f2a1ea75661980b013019ed6687ed0e83d069bc1114e2cc74c6c04c4df"
+    },
+    {
+      "crate": "zerofrom-derive-0.1.7.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/zerofrom-derive-0.1.7.crate",
+      "bytes": 8853,
+      "sha256": "11532158c46691caf0f2593ea8358fed6bbf68a0315e80aae9bd41fbade684a1"
+    },
+    {
+      "crate": "zeroize-1.8.2.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/zeroize-1.8.2.crate",
+      "bytes": 20907,
+      "sha256": "b97154e67e32c85465826e8bcc1c59429aaaf107c1e4a9e53c8d8ccd5eff88d0"
+    },
+    {
+      "crate": "zerotrie-0.2.4.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/zerotrie-0.2.4.crate",
+      "bytes": 83690,
+      "sha256": "0f9152d31db0792fa83f70fb2f83148effb5c1f5b8c7686c3459e361d9bc20bf"
+    },
+    {
+      "crate": "zerovec-0.11.6.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/zerovec-0.11.6.crate",
+      "bytes": 128583,
+      "sha256": "90f911cbc359ab6af17377d242225f4d75119aec87ea711a880987b18cd7b239"
+    },
+    {
+      "crate": "zerovec-derive-0.11.3.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/zerovec-derive-0.11.3.crate",
+      "bytes": 22115,
+      "sha256": "625dc425cab0dca6dc3c3319506e6593dcb08a9f387ea3b284dbd52a92c40555"
+    },
+    {
+      "crate": "zip-4.6.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/zip-4.6.1.crate",
+      "bytes": 115842,
+      "sha256": "caa8cd6af31c3b31c6631b8f483848b91589021b28fffe50adada48d4f4d2ed1"
+    },
+    {
+      "crate": "zmij-1.0.21.crate",
+      "source": "/Users/j/Documents/dev/permagent-worktrees/harness-verify-20260928/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/zmij-1.0.21.crate",
+      "bytes": 26665,
+      "sha256": "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
+    },
+    {
+      "crate": "zvariant-5.10.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/zvariant-5.10.1.crate",
+      "bytes": 93316,
+      "sha256": "c4db0ecb8987cf5e92653c57c098f7f0e39a03112edb796f4fe089fb7eaa14ff"
+    },
+    {
+      "crate": "zvariant_derive-5.10.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/zvariant_derive-5.10.1.crate",
+      "bytes": 16806,
+      "sha256": "5b949b639ab1b4bed763aa7481ba0e368af68d8b55532f8ed4bec86a59f2ca98"
+    },
+    {
+      "crate": "zvariant_utils-3.3.1.crate",
+      "source": "/Users/j/Documents/dev/permagent-runtime/.hermit/rust/registry/cache/index.crates.io-1949cf8c6b5b557f/zvariant_utils-3.3.1.crate",
+      "bytes": 15680,
+      "sha256": "6d464f5733ffa07a3164d656f18533caace9d0638596721355d73256a410d691"
+    }
+  ],
+  "missing_locked_archives_all_platforms": []
+}
