@@ -421,7 +421,7 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
         <group visible={!agoraOpen}>
           {compact ? <><HabitatScene directing={directing} onDirected={(_,ok)=>{if(ok)setDirecting(null);}} />{kitReady && <GardenAssetBoundary onFailure={kitFailure}><Suspense fallback={null}><HeroGardenDecor /></Suspense></GardenAssetBoundary>}</> : <VaultBoundary fallback={<Fallback />}><Suspense fallback={<Fallback />}><ForumAsset /></Suspense></VaultBoundary>}
           <ForumEnvironment appearance={appearance} />
-          {compact && <HabitatOrrery conversation={conversation} onOverview={()=>{setOverview(true);setFollow(null);setDirecting(null);}} />}
+          {compact && <HabitatOrrery conversation={conversation} onOverview={()=>{setWalking(false);setFlying(false);setFocusAgent(null);setOverview(true);setFollow(null);setDirecting(null);}} />}
           {!compact && <ForumWater />}
           {!compact && <Suspense fallback={null}><ForumShips /></Suspense>}
           <Suspense fallback={null}>{compact && kitReady ? <GardenAssetBoundary onFailure={kitFailure}><HeroGardenAgents conversation={conversation} selected={selected} hovered={hovered} orchestratorName={configuredName||'Your orchestrator'} onHover={setHovered} onSelect={id=>{setSelected(id);setDirecting(null);setTab('meet');}} /></GardenAssetBoundary> : <ForumAgents compact={compact} hoveredAgent={hovered} onHoverAgent={setHovered} onSelectAgent={id => { setSelected(id); setTab('meet'); setSaved(false); }} />}</Suspense>

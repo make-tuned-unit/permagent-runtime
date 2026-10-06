@@ -87,3 +87,6 @@ Current stage is **r10**, built, signed, launched and visually reviewed through 
 
 
 Latest compiled binary is **r11**, raw SHA256 `553acf2a9895d10e1a05107121a49f746544aa0caf0b893851aa3c722eeb9968`, with matching embedding ledger. Current stage remains the running, visually reviewed **r10**. Refresh refused while it is running; CUA again reports `cgWindowNotFound`. Recover window access and quit through CUA before refreshing. R11 adds the team globe and specialist work-pose refinements and still needs screenshot/interaction review.
+
+
+Latest compiled binary is now **r12**, raw SHA256 `c4aaf7913e7656bb6ce092896b26c11cf62fec39c7425aac460e7fc91cbac117`, with verified embedding ledger. It adds a small globe click/drag and walk-mode transition correction to r11. Current running stage remains **r10**, visibly reviewed. The same CUA window blocker prevents its supported quit/refresh/relaunch; do not confuse compiled r12 with staged r10.

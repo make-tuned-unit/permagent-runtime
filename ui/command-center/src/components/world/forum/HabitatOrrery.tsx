@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { Html } from '@react-three/drei';
+import { Html, useCursor } from '@react-three/drei';
 import { useFrame } from '@react-three/fiber';
 import type { Group } from 'three';
 import { getReduceMotion } from '../../../styles/tokens';
@@ -33,11 +33,12 @@ const globeFragment = `
 export function HabitatOrrery({ conversation, onOverview }: { conversation: boolean; onOverview: () => void }) {
   const globe = useRef<Group>(null);
   const [hovered, setHovered] = useState(false);
+  useCursor(hovered&&!conversation);
   useFrame((_, dt) => {
     if (globe.current && !conversation && !getReduceMotion()) globe.current.rotation.y += Math.min(dt,.05)*.09;
   });
   return <group visible={!conversation} name="Commons team globe" position={[-3,1.51,3]}
-    onClick={e=>{e.stopPropagation();setHovered(false);onOverview();}}
+    onClick={e=>{e.stopPropagation();if(e.delta>4)return;setHovered(false);onOverview();}}
     onPointerOver={e=>{e.stopPropagation();setHovered(true);}}
     onPointerOut={()=>setHovered(false)}>
     <group ref={globe} rotation-z={.18}>
