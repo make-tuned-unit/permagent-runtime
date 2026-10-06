@@ -1,9 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { Box3, BoxGeometry, Group, InstancedMesh, Matrix3, Matrix4, Mesh, MeshStandardMaterial, Sphere, Vector3 } from 'three';
+import { Box3, BoxGeometry, Group, InstancedMesh, Matrix3, Matrix4, Mesh, MeshStandardMaterial, Sphere, Vector3, DoubleSide, SRGBColorSpace } from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { instanceGardenDecor } from './staticGardenInstances';
-import { GARDEN_DECOR, type GardenDecorPlacement } from './gardenLayout';
+import { GARDEN_DECOR, PLANT_BASE_Y, type GardenDecorPlacement } from './gardenLayout';
 
 const closeVector=(a:Vector3,b:Vector3)=>expect(a.distanceTo(b)).toBeLessThan(2e-5);
 function count(geometry: Mesh['geometry']) { return Math.min(geometry.drawRange.count,(geometry.index?.count??geometry.getAttribute('position').count)-geometry.drawRange.start)/3; }
@@ -51,14 +51,39 @@ describe('static garden instance parity',()=>{
     expect(sourceDisposals).toBe(0);expect(materialDisposals).toBe(0);source.geometry.dispose();hidden.geometry.dispose();materials.forEach(m=>m.dispose());
   });
   it('batches the actual committed GLB placements without losing a visible primitive or triangle',async()=>{
-    const bytes=readFileSync('public/world/garden-hero/hero-kit.glb');
-    const gltf=await new GLTFLoader().parseAsync(bytes.buffer.slice(bytes.byteOffset,bytes.byteOffset+bytes.byteLength),'');
+    const bytes=readFileSync('public/world/garden-hero/hero-kit-v3b.glb');
+    // CPU-only embedded PNG decode; no browser/WebGL/network rendering.
+    const oldBitmap=globalThis.createImageBitmap;
+    const oldSelf=globalThis.self;globalThis.self=globalThis as unknown as Window & typeof globalThis;
+    const sharp=(await import('sharp')).default;
+    globalThis.createImageBitmap=async(blob:Blob)=>{const decoded=await sharp(Buffer.from(await blob.arrayBuffer())).ensureAlpha().raw().toBuffer({resolveWithObject:true});return {width:decoded.info.width,height:decoded.info.height,data:decoded.data,close(){}} as unknown as ImageBitmap;};
+    let gltf;
+    try{gltf=await new GLTFLoader().parseAsync(bytes.buffer.slice(bytes.byteOffset,bytes.byteOffset+bytes.byteLength),'');}finally{globalThis.createImageBitmap=oldBitmap;globalThis.self=oldSelf;}
     const result=instanceGardenDecor(gltf.scene,GARDEN_DECOR);
     const counts=new Map<string,number>();GARDEN_DECOR.forEach(p=>counts.set(p.asset,(counts.get(p.asset)??0)+1));
     let referenceTriangles=0,referenceDraws=0;
     for(const placement of GARDEN_DECOR){const root=gltf.scene.getObjectByName(placement.asset)!;root.traverseVisible(o=>{if(o instanceof Mesh){referenceTriangles+=count(o.geometry);referenceDraws+=Array.isArray(o.material)?o.geometry.groups.length:1;}});}
     try{
-      expect(result.census).toEqual({placements:55,primitiveBatches:42,instances:269,triangles:354658});
+      expect(result.census).toEqual({placements:55,primitiveBatches:34,instances:201,triangles:651030});
+      // Woody geometry is conservative inside proxies through the 1.85 m head envelope.
+      for(const placement of GARDEN_DECOR.filter(p=>p.supportY!==undefined)){
+        const asset=gltf.scene.getObjectByName(placement.asset)!;
+        let minY=Infinity, woodyCount=0;
+        asset.traverseVisible(o=>{if(!(o instanceof Mesh))return;
+          const material=o.material as MeshStandardMaterial;
+          const wood=/Bark|branch/i.test(material.name);
+          const vertices=o.geometry.getAttribute('position');
+          for(let i=0;i<vertices.count;i++){
+            const point=new Vector3().fromBufferAttribute(vertices,i).applyMatrix4(o.matrixWorld);
+            minY=Math.min(minY,point.y);
+            if(wood&&point.y*placement.scale+placement.position[1]<=1.85){woodyCount++;expect(Math.hypot(point.x,point.z)).toBeLessThanOrEqual(placement.solid![0]/2*Math.cos(Math.PI/24));}
+          }
+          if(material.map){expect(material.map.image.width).toBe(1254);expect(material.map.colorSpace).toBe(SRGBColorSpace);expect(material.alphaTest).toBe(.55);expect(material.side).toBe(DoubleSide);expect(material.transparent).toBe(false);expect(o.geometry.getAttribute('uv')).toBeDefined();}
+        });
+        expect(minY).toBeCloseTo(PLANT_BASE_Y[placement.asset as keyof typeof PLANT_BASE_Y],6);
+        expect(minY*placement.scale+placement.position[1]).toBeCloseTo(placement.supportY!,6);
+        if(placement.asset==='canopy'||placement.asset==='shrub')expect(woodyCount).toBeGreaterThan(0);
+      }
       expect(referenceTriangles).toBe(result.census.triangles);expect(referenceDraws).toBe(result.census.instances);
       result.group.children.forEach(object=>{const batch=object as InstancedMesh;expect(batch.count).toBe(counts.get(batch.userData.asset));expect(batch.boundingBox).toBeInstanceOf(Box3);expect(batch.boundingSphere).toBeInstanceOf(Sphere);expect(batch.boundingSphere!.radius).toBeGreaterThan(0);});
     }finally{result.dispose();const materials=new Set<MeshStandardMaterial>();const geometries=new Set<Mesh['geometry']>();gltf.scene.traverse(o=>{if(o instanceof Mesh){geometries.add(o.geometry);for(const material of Array.isArray(o.material)?o.material:[o.material])materials.add(material as MeshStandardMaterial);}});geometries.forEach(g=>g.dispose());materials.forEach(m=>m.dispose());}

@@ -11,7 +11,7 @@ import { GARDEN_DECOR, GARDEN_AGENT_SEATS } from './gardenLayout';
 import { instanceGardenDecor } from './staticGardenInstances';
 import { getReduceMotion } from '../../../styles/tokens';
 
-const KIT_URL = `${import.meta.env.BASE_URL}world/garden-hero/hero-kit.glb?v=99a1ad1632e4`;
+const KIT_URL = `${import.meta.env.BASE_URL}world/garden-hero/hero-kit-v3b.glb?v=e114f28bedaa`;
 function cloneAsset(scene: Object3D, name: string) {
   const original=scene.getObjectByName(name);
   if(!original)throw new Error(`Hero kit missing ${name}`);

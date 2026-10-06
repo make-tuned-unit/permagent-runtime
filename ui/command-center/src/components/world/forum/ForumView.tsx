@@ -223,7 +223,7 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
   const [kitReady, setKitReady] = useState(false);
   const [assetNotice,setAssetNotice]=useState('');
   const kitFailure=useCallback(()=>{setKitReady(false);setAssetNotice('Detailed assets could not load. The walkable garden and agent controls remain available.');},[]);
-  useEffect(()=>{let cancelled=false;fetch(`${import.meta.env.BASE_URL}world/garden-hero/manifest.json`).then(r=>r.ok?r.json():null).then(value=>{if(!cancelled && (value?.version?.startsWith('hero-kit-v1.1') || value?.version?.startsWith('hero-kit-v2')))setKitReady(true);}).catch(()=>{});return()=>{cancelled=true;};},[]);
+  useEffect(()=>{let cancelled=false;fetch(`${import.meta.env.BASE_URL}world/garden-hero/manifest.json`).then(r=>r.ok?r.json():null).then(value=>{if(!cancelled && (value?.version?.startsWith('hero-kit-v1.1') || value?.version?.startsWith('hero-kit-v2') || value?.version === 'hero-kit-v3b'))setKitReady(true);}).catch(()=>{});return()=>{cancelled=true;};},[]);
   const places = compact ? GARDEN_PLACES : DISTRICTS;
   // The agent wears the name its user gave it, everywhere. `useOrchestratorName`
   // reads that from the daemon; the store's `agentName` is the same name kept

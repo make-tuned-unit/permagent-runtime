@@ -1,0 +1,145 @@
+{
+  "basis": "Committed v3b GLB evaluated primitive counts and runtime placements, CPU-only; no rendered timing",
+  "assetSha256": "e114f28bedaafa2f337c9d0b0e893e3b8f03a337d37bd9f9d177ccaff30d2300",
+  "rows": [
+    {
+      "asset": "bench",
+      "placements": 3,
+      "primitivesEach": 4,
+      "trianglesEach": 2156,
+      "unbatchedDraws": 12,
+      "submittedTriangles": 6468
+    },
+    {
+      "asset": "canopy",
+      "placements": 5,
+      "primitivesEach": 2,
+      "trianglesEach": 32636,
+      "unbatchedDraws": 10,
+      "submittedTriangles": 163180
+    },
+    {
+      "asset": "fern",
+      "placements": 14,
+      "primitivesEach": 5,
+      "trianglesEach": 2816,
+      "unbatchedDraws": 70,
+      "submittedTriangles": 39424
+    },
+    {
+      "asset": "flowers",
+      "placements": 5,
+      "primitivesEach": 6,
+      "trianglesEach": 39114,
+      "unbatchedDraws": 30,
+      "submittedTriangles": 195570
+    },
+    {
+      "asset": "instrument",
+      "placements": 1,
+      "primitivesEach": 4,
+      "trianglesEach": 1172,
+      "unbatchedDraws": 4,
+      "submittedTriangles": 1172
+    },
+    {
+      "asset": "planter",
+      "placements": 9,
+      "primitivesEach": 2,
+      "trianglesEach": 2876,
+      "unbatchedDraws": 18,
+      "submittedTriangles": 25884
+    },
+    {
+      "asset": "shrub",
+      "placements": 12,
+      "primitivesEach": 2,
+      "trianglesEach": 17136,
+      "unbatchedDraws": 24,
+      "submittedTriangles": 205632
+    },
+    {
+      "asset": "table",
+      "placements": 1,
+      "primitivesEach": 3,
+      "trianglesEach": 5120,
+      "unbatchedDraws": 3,
+      "submittedTriangles": 5120
+    },
+    {
+      "asset": "vine",
+      "placements": 5,
+      "primitivesEach": 6,
+      "trianglesEach": 1716,
+      "unbatchedDraws": 30,
+      "submittedTriangles": 8580
+    },
+    {
+      "asset": "robot",
+      "placements": 12,
+      "primitivesEach": 22,
+      "trianglesEach": 57996,
+      "unbatchedDraws": 264,
+      "submittedTriangles": 695952
+    }
+  ],
+  "formula": "draws=sum(placements*primitiveCount); triangles=sum(placements*indexCount/3); batching changes draws, not submitted instance triangles",
+  "static": {
+    "placements": 55,
+    "drawsBefore": 201,
+    "batchesAfter": 34,
+    "primitiveInstances": 201,
+    "triangles": 651030
+  },
+  "robotsUnchanged": {
+    "identities": 12,
+    "draws": 264,
+    "triangles": 695952
+  },
+  "structure": {
+    "draws": 63,
+    "triangles": 28332,
+    "shadowDraws": 33,
+    "shadowTriangles": 23628,
+    "roundedSlabCount": 33,
+    "roundedSlabTrianglesEach": 716
+  },
+  "ceilingAssumptions": [
+    "All eligible scene and shadow bounds intersect their cameras",
+    "One directional shadow map updates per frame; other lights do not cast shadows",
+    "Opaque double-sided kit primitives each submit once per pass",
+    "Bloom5downsample+4upsample+luminance+combinedgrade=11fullscreen draws",
+    "Night sky5draws(max meteor active); day sky75draws(includes14birds*5primitives)",
+    "Initialization environment capture/PMREM excluded; steady frame only",
+    "Actual per-camera culling and GPU/CPU timings unmeasured"
+  ],
+  "boundsTradeoff": "Each InstancedMesh has computed aggregate bounds. Whole batches can be frustum culled; individual instances are not CPU-culled. Spatial batching remains a measured future tradeoff.",
+  "ownership": "Own cloned primitive geometry baked with nested transforms and instance buffers; borrow cached loader materials/textures; dispose only owned resources",
+  "transformContract": "Exact old cloneAsset+place: root position/scale replaced, root Y Euler replaced by heading, authored root X/Z retained. Descendant transforms baked. All actual committed GLB root TRS identity.",
+  "otherFindings": [
+    "Robot22primitives*12=264owned material clones; eyes only need per-agent mutation (deferred)",
+    "kitReady=false may launch12legacy outfit requests totaling5103248bytes before manifest resolves (deferred)",
+    "Fiveflowerclusters consume195570triangles (deferred art/LOD gate)",
+    "No FPS, rendered memory, native delivery or final visual acceptance claim",
+    "One embedded1254RGBA leafcolor-opacity atlas, decoded6290064 bytes (~8386752withmips); MASK.55 double-sided, sRGB, no normal/roughness leafmaps",
+    "No FPS, native delivery or final visual acceptance claim"
+  ],
+  "groundSoil": {
+    "instances": 27,
+    "batches": 1,
+    "triangles": 2592,
+    "castShadow": false,
+    "receiveShadow": true,
+    "topY": 0.004,
+    "collision": "4mm support within level-floor contact tolerance; rigid plant proxies separately registered"
+  },
+  "afterIntegration": {
+    "estimatedNightSubmissions": 708,
+    "estimatedDaySubmissions": 778,
+    "estimatedNightTrianglesWithShadow": 2753359,
+    "estimatedDayTrianglesWithShadow": 2760269,
+    "deltaFromBatchedV2Draws": -15,
+    "deltaFromBatchedV2Triangles": 595336,
+    "calculation": "8 fewer color and 8 fewer shadow kit batches, plus 1 color soil batch; 296372 extra kit triangles per pass plus2592soil triangles"
+  }
+}

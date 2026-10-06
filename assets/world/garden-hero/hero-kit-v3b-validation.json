@@ -1,0 +1,25 @@
+{
+  "file": "/Users/j/Documents/dev/permagent-assets/world-hero-20261006/exports/hero-kit-v3b.glb",
+  "sha256": "e114f28bedaafa2f337c9d0b0e893e3b8f03a337d37bd9f9d177ccaff30d2300",
+  "bytes": 5889960,
+  "triangles": 162738,
+  "mesh_primitives": 56,
+  "embedded_images": 1,
+  "texture_bindings": 1,
+  "samplers": 1,
+  "atlas_rgba_bytes": 6290064,
+  "atlas_mips_rgba_estimate_bytes": 8386752,
+  "v2_hash_preserved": true,
+  "checks": [
+    "GLB header/version/length",
+    "buffer views/accessor and material references",
+    "embedded media only",
+    "all roots and robot pivots",
+    "single shared atlas image/texture/material",
+    "double-sided alpha MASK.55",
+    "normals",
+    "v2 unchanged",
+    "40MiB ceiling"
+  ],
+  "runtime_acceptance": false
+}

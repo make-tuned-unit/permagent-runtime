@@ -43,6 +43,8 @@ describe('compact garden traversal against production collision geometry', () =>
       expect(getForumColliders().some(m=>m.name==='bench')).toBe(true);
       expect(getForumColliders().some(m=>m.name==='planter')).toBe(true);
       expect(getForumColliders().some(m=>m.name==='canopy')).toBe(true);
+      expect(getForumColliders().some(m=>m.name==='shrub')).toBe(true);
+      expect(attemptWalk(new Vector3(7.2,0,9),.15,0)).toBe(false);
       expect(getForumColliders().some(m=>m.name==='agent body')).toBe(true);
       expect(attemptWalk(new Vector3(1.7,0,-2),.5,0)).toBe(false);
       expect(attemptWalk(new Vector3(-1.5,0,3),-.2,0)).toBe(false);

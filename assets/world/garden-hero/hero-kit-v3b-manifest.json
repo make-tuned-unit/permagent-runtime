@@ -1,0 +1,134 @@
+{
+  "version": "hero-kit-v3b",
+  "status": "improved draft foliage, parent approved advance; runtime/final acceptance open",
+  "file": "hero-kit-v3b.glb",
+  "bytes": 5889960,
+  "sha256": "e114f28bedaafa2f337c9d0b0e893e3b8f03a337d37bd9f9d177ccaff30d2300",
+  "triangles": 162738,
+  "mesh_primitives": 56,
+  "node_count": 71,
+  "embedded_images": 1,
+  "texture_bindings": 1,
+  "source_exports": {
+    "bench": {
+      "bytes": 74304,
+      "sha256": "2f14f912d5867dcb136d8435bd5fe59150083f8201ccf21e668c3bbce767cde4",
+      "original_export": "bench.glb",
+      "preserved_as": {
+        "file": "hero-kit.glb",
+        "root": "bench"
+      },
+      "note": "Individual original export hash recorded for provenance; embedded root preserved in v2 mono."
+    },
+    "canopy": {
+      "path": "assets/world/garden-hero/source/foliage-v3b-exports/canopy.glb",
+      "bytes": 2160512,
+      "sha256": "a9ca9af68d84c1c8ea72288d553df60fc3d714f9cb22efd2f00acd7e83eef08f"
+    },
+    "fern": {
+      "bytes": 214148,
+      "sha256": "717d4451bb9eef9faceb8858585939af6145f98c1e28a5896c548f794059d5f0",
+      "original_export": "fern.glb",
+      "preserved_as": {
+        "file": "hero-kit.glb",
+        "root": "fern"
+      },
+      "note": "Individual original export hash recorded for provenance; embedded root preserved in v2 mono."
+    },
+    "flowers": {
+      "bytes": 1219772,
+      "sha256": "3d2b3f9057d988d2423527079779e70611e0fb87976a12485c527dc4ff01703f",
+      "original_export": "flowers.glb",
+      "preserved_as": {
+        "file": "hero-kit.glb",
+        "root": "flowers"
+      },
+      "note": "Individual original export hash recorded for provenance; embedded root preserved in v2 mono."
+    },
+    "instrument": {
+      "bytes": 42732,
+      "sha256": "1c83217ea71af3b91509f83ecfcffe834fab08505aca8ae8e1c49669c01ffb53",
+      "original_export": "instrument.glb",
+      "preserved_as": {
+        "file": "hero-kit.glb",
+        "root": "instrument"
+      },
+      "note": "Individual original export hash recorded for provenance; embedded root preserved in v2 mono."
+    },
+    "planter": {
+      "bytes": 93512,
+      "sha256": "35e09bd6f00bc3bc6212d0327c665e182371050649fece6fcd9023a9597c5981",
+      "original_export": "planter.glb",
+      "preserved_as": {
+        "file": "hero-kit.glb",
+        "root": "planter"
+      },
+      "note": "Individual original export hash recorded for provenance; embedded root preserved in v2 mono."
+    },
+    "robot": {
+      "bytes": 1320232,
+      "sha256": "925701137a657b6796b8352f07df94d339159542b74f4e6323db5abc609f34f6",
+      "original_export": "robot.glb",
+      "preserved_as": {
+        "file": "hero-kit.glb",
+        "root": "robot"
+      },
+      "note": "Individual original export hash recorded for provenance; embedded root preserved in v2 mono."
+    },
+    "shrub": {
+      "path": "assets/world/garden-hero/source/foliage-v3b-exports/shrub.glb",
+      "bytes": 1711204,
+      "sha256": "6b29711788ed18300351536061132bac1bc8292b699e159380692d0a9efa9345"
+    },
+    "table": {
+      "bytes": 167380,
+      "sha256": "993d1a86e874ac83adec03fc9ea90e61b05b886030f5395a455b5dde27e2dcb6",
+      "original_export": "table.glb",
+      "preserved_as": {
+        "file": "hero-kit.glb",
+        "root": "table"
+      },
+      "note": "Individual original export hash recorded for provenance; embedded root preserved in v2 mono."
+    },
+    "vine": {
+      "bytes": 120392,
+      "sha256": "d9acd5c8801b3e025dfde512c2f483d4d7793099fbd43cd09b0ac944e57775a6",
+      "original_export": "vine.glb",
+      "preserved_as": {
+        "file": "hero-kit.glb",
+        "root": "vine"
+      },
+      "note": "Individual original export hash recorded for provenance; embedded root preserved in v2 mono."
+    }
+  },
+  "editable_source": {
+    "base_kit": "assets/world/garden-hero/source/hero-kit.blend",
+    "robot": "assets/world/garden-hero/source/robot-v2.blend",
+    "foliage": "assets/world/garden-hero/source/foliage-v3b.blend",
+    "assembler": "assets/world/garden-hero/source/assemble_kit_v3b.py"
+  },
+  "atlas": {
+    "source": "assets/world/garden-hero/source/foliage-v3/broadleaf-atlas-v1.png",
+    "provenance": "assets/world/garden-hero/source/foliage-v3/PROVENANCE.md",
+    "width": 1254,
+    "height": 1254,
+    "decoded_rgba_bytes": 6290064,
+    "mips_rgba_estimate_bytes": 8386752,
+    "alpha_mode": "MASK",
+    "alpha_cutoff": 0.55,
+    "colorspace": "sRGB",
+    "deduplication": "identical embedded PNG byte hash; shared image, sampler, texture and material binding"
+  },
+  "collision": {
+    "canopy_solid_radial_exclusion_metres": 0.49,
+    "scale_applies": true,
+    "route_clearance_add_player_radius_metres": 0.28,
+    "below_2m_wood_radial_extent_metres": 0.4653503951,
+    "lowest_primary_branch_underside_metres": 1.555,
+    "source_measurements": "assets/world/garden-hero/foliage-v3b-stats.json",
+    "ground_support_metres": 0.004,
+    "canopy_head_envelope_metres": 1.85,
+    "shrub_woody_radius_metres": 0.72
+  },
+  "preserved_v2": "hero-kit.glb"
+}

@@ -41,3 +41,7 @@ The browser's staged mono output is
 Its normalized public manifest marks this a draft, with visual acceptance and
 hero texture enrichment pending. Geometry validation and offline diagnostics do
 not establish runtime quality, FPS, full walkability or packaged delivery.
+
+## Foliage v3b draft integration
+
+Runtime now uses `hero-kit-v3b.glb`, SHA256 e114f28bedaafa2f337c9d0b0e893e3b8f03a337d37bd9f9d177ccaff30d2300. v2 mono remains unchanged. Editable foliage source, assembly/validation scripts, atlas plus exact AI-image prompt/provenance and isolated512px diagnostic are preserved here. Current atlas is generated color-opacity,1254RGBA MASK.55 sRGB, not scanned species or complete PBR. Parent approved draft advancement; runtime alpha edges, camera/motion/performance and final quality remain open. The unchanged base/robot remain v2.

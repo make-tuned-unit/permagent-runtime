@@ -24,22 +24,27 @@ export const GARDEN_OBSTACLES = [
   { name: 'north border', center: [0,.5,-11.8], size: [18,1,.4] },
   { name: 'south border', center: [0,.5,11.8], size: [18,1,.4] },
 ] as const;
-export type GardenDecorPlacement = {asset:string;position:[number,number,number];scale:number;heading:number;solid?:[number,number,number]};
+export type GardenDecorPlacement = {asset:string;position:[number,number,number];scale:number;heading:number;solid?:[number,number,number];supportY?:number};
+export const GARDEN_SOIL_Y = .004;
+// Actual v3b/baseline export minima, tested against the committed GLB.
+export const PLANT_BASE_Y = {canopy:-.011091665364801884,shrub:.017311472445726395,fern:.032241806387901306,flowers:0};
 /** One placement manifest drives visible geometry and its solid collision proxies. */
 export const GARDEN_DECOR: GardenDecorPlacement[] = [
   {asset:'table',position:[-3,0,3],scale:1,heading:0},
   {asset:'instrument',position:[-3,.85,3],scale:1,heading:0},
   ...([[-4.5,0,5.4],[-4.5,0,-10.2],[3,0,9.8]] as [number,number,number][]).map((position,i)=>({asset:'bench',position,scale:1,heading:i===1?0:Math.PI,solid:[1.62,1.015,.54043] as [number,number,number]})),
-  ...([[-8,.15,7],[-8,.15,0],[-8,.15,-9],[8,.15,8],[8,.15,-8]] as [number,number,number][]).map((position,i)=>({asset:'canopy',position,scale:.88+i%3*.06,heading:i*1.2,solid:[.32,3.15,.32] as [number,number,number]})),
+  ...([[-8,0,7],[-8,0,0],[-8,0,-9],[8,0,8],[8,0,-8]] as [number,number,number][]).map(([x,,z],i)=>{const scale=.88+i%3*.06;return {asset:'canopy',position:[x,GARDEN_SOIL_Y-PLANT_BASE_Y.canopy*scale,z] as [number,number,number],scale,heading:i*1.2,supportY:GARDEN_SOIL_Y,solid:[.98,3.15,.98] as [number,number,number]};}),
 ];
 const planters: [number,number,number][]=[[-8,0,4],[-8,0,-3],[-8,0,-6],[8,0,5],[8,0,-4],[3,0,-10],[5,0,-10],[-3,0,-10],[4,0,1.7]];
 planters.forEach((position,i)=>{
   GARDEN_DECOR.push({asset:'planter',position,scale:.72,heading:0,solid:[1.1,.67,1.1]});
-  GARDEN_DECOR.push({asset:i%2?'shrub':'fern',position:[position[0],.44,position[2]],scale:.7,heading:i*.81});
+  const asset=i%2?'shrub':'fern';
+  GARDEN_DECOR.push({asset,position:[position[0],.575*.72-PLANT_BASE_Y[asset]*.7,position[2]],scale:.7,heading:i*.81,supportY:.575*.72,...(asset==='shrub'?{solid:[1.44,.97,1.44] as [number,number,number]}:{})});
 });
-for(let i=0;i<14;i++)GARDEN_DECOR.push({asset:i%3===0?'flowers':'fern',position:[-8+.28*(i%2),.1,9.5-i*1.4],scale:.42,heading:i*1.8});
-for(let i=0;i<8;i++)GARDEN_DECOR.push({asset:'shrub',position:[8,.05,9-i*2.6],scale:.65,heading:i*.63});
+for(let i=0;i<14;i++){const asset=i%3===0?'flowers':'fern';GARDEN_DECOR.push({asset,position:[-8+.28*(i%2),GARDEN_SOIL_Y-PLANT_BASE_Y[asset]*.42,9.5-i*1.4],scale:.42,heading:i*1.8,supportY:GARDEN_SOIL_Y});}
+for(let i=0;i<8;i++)GARDEN_DECOR.push({asset:'shrub',position:[8,GARDEN_SOIL_Y-PLANT_BASE_Y.shrub*.65,9-i*2.6],scale:.65,heading:i*.63,supportY:GARDEN_SOIL_Y,solid:[1.44,.97,1.44]});
 for(let i=0;i<5;i++)GARDEN_DECOR.push({asset:'vine',position:[-7+i*1.5,3.25,1],scale:.8,heading:i%2*.2});
+export const GARDEN_SOIL_PATCHES = GARDEN_DECOR.filter(p=>p.supportY===GARDEN_SOIL_Y).map(p=>({position:[p.position[0],GARDEN_SOIL_Y/2,p.position[2]] as [number,number,number],radius:p.asset==='canopy'?.62:p.asset==='shrub'?.55:.25}));
 export const GARDEN_AGENT_SEATS: [number,number,number][]=[[-1.1,0,3.1],[-4.8,0,-7.5],[6.2,0,4],[-1.3,0,-10.2],[-6.7,0,.5],[.5,0,9.4],[6.2,0,6.2],[-6.8,0,8.5],[.5,0,-5.5],[-4.5,0,-2],[.5,0,0],[5,0,-8.3]];
 export function gardenCollisionSource() {
   const root = new Group();
@@ -55,7 +60,7 @@ export function gardenCollisionSource() {
   for(const item of GARDEN_DECOR){
     if(!item.solid)continue;
     const [sx,sy,sz]=item.solid.map(v=>v*item.scale);
-    const shape = item.asset === 'planter' || item.asset === 'canopy' ? new CylinderGeometry(sx/2,sx/2,sy,24) : new BoxGeometry(sx,sy,sz);
+    const shape = item.asset === 'planter' || item.asset === 'canopy' || item.asset === 'shrub' ? new CylinderGeometry(sx/2,sx/2,sy,24) : new BoxGeometry(sx,sy,sz);
     const collider=new Mesh(shape,material);
     collider.name=item.asset;collider.position.set(item.position[0],item.position[1]+sy/2,item.position[2]);collider.rotation.y=item.heading;root.add(collider);
   }

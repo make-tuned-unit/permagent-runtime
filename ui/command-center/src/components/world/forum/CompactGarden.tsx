@@ -1,8 +1,8 @@
 import { Suspense, useEffect, useMemo, useRef } from 'react';
 import { OrbitControls, RoundedBox, useTexture } from '@react-three/drei';
 import { useFrame, useThree } from '@react-three/fiber';
-import { Group, Mesh, MeshStandardMaterial, PerspectiveCamera, RepeatWrapping, SRGBColorSpace, Vector2 } from 'three';
-import { GARDEN_ARRIVAL, gardenCollisionSource } from './gardenLayout';
+import { CylinderGeometry, Group, InstancedMesh, Matrix4, Mesh, MeshStandardMaterial, PerspectiveCamera, RepeatWrapping, SRGBColorSpace, Vector2 } from 'three';
+import { GARDEN_ARRIVAL, GARDEN_SOIL_PATCHES, GARDEN_SOIL_Y, gardenCollisionSource } from './gardenLayout';
 import { registerForumCollision } from './walkCollision';
 import { getReduceMotion } from '../../../styles/tokens';
 import { advanceForumSurfaceClock, releaseForumSurfaceClock, applyForumSurfaceMaterials } from './ForumSurfaceMaterials';
@@ -21,6 +21,18 @@ function GardenPaving() {
   const tiles = useMemo(() => Array.from({ length: 24 }, (_, i) => [i % 4 * 4.45 - 6.675, Math.floor(i / 4) * 3.96 - 9.9] as const), []);
   return <group>{tiles.map(([x,z], i) => <mesh key={i} position={[x,-.02,z]} receiveShadow><boxGeometry args={[4.4,.04,3.91]} /><meshStandardMaterial color={i%3===0?'#c1bba9':'#ddd7c5'} map={maps[0]} normalMap={maps[1]} normalScale={new Vector2(.45,-.45)} roughnessMap={maps[2]} roughness={.9} name="Stone" /></mesh>)}</group>;
 }
+function GardenSoil() {
+  const patches=useMemo(()=>{
+    const geometry=new CylinderGeometry(1,1,GARDEN_SOIL_Y,24);
+    const material=new MeshStandardMaterial({color:'#514333',roughness:1,name:'Soil'});
+    const mesh=new InstancedMesh(geometry,material,GARDEN_SOIL_PATCHES.length);
+    mesh.name='ground planting soil';mesh.receiveShadow=true;
+    GARDEN_SOIL_PATCHES.forEach((patch,i)=>{const matrix=new Matrix4().makeScale(patch.radius,1,patch.radius);matrix.setPosition(...patch.position);mesh.setMatrixAt(i,matrix);});
+    mesh.instanceMatrix.needsUpdate=true;mesh.computeBoundingBox();mesh.computeBoundingSphere();return mesh;
+  },[]);
+  useEffect(()=>()=>{patches.dispose();patches.geometry.dispose();(patches.material as MeshStandardMaterial).dispose();},[patches]);
+  return <primitive object={patches} dispose={null} />;
+}
 export function CompactGarden({ onEvidence, kitReady = false }: { onEvidence: () => void; kitReady?: boolean }) {
   const root = useRef<Group>(null);
   useFrame((_,delta)=>{if(!getReduceMotion())advanceForumSurfaceClock(Math.min(delta,.05));});
@@ -36,6 +48,7 @@ export function CompactGarden({ onEvidence, kitReady = false }: { onEvidence: ()
   return <group ref={root}>
     <Slab at={[0,-.22,0]} size={[18,.44,24]} />
     <VaultBoundary fallback={null}><Suspense fallback={null}><GardenPaving /></Suspense></VaultBoundary>
+    <GardenSoil />
     {/* Real edge walls, not a destination beyond an invisible boundary. */}
     {([-8.8,8.8] as const).map(x => <Slab key={x} at={[x,.45,0]} size={[.4,.9,24]} />)}
     {([-11.8,11.8] as const).map(z => <Slab key={z} at={[0,.45,z]} size={[18,.9,.4]} />)}

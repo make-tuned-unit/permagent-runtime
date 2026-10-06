@@ -1,0 +1,135 @@
+{
+  "canopy": {
+    "triangles_authored": 32636,
+    "materials": 2,
+    "branches": 212,
+    "placed_leaves": 1152,
+    "leaf_prototype_profiles": 3,
+    "leaf_prototype_vertices": 45,
+    "leaf_prototype_triangles": 48,
+    "actual_gpu_instances": 0,
+    "storage": "expanded geometry batched into two mesh nodes; no instance-count claim",
+    "leaf_mesh_vertices": 17280,
+    "blender_solid_bounds_below_2m": [
+      [
+        -0.4215521812438965,
+        -0.45426979660987854,
+        -0.011091665364801884
+      ],
+      [
+        0.4653427302837372,
+        0.4543088376522064,
+        2.0
+      ]
+    ],
+    "max_radial_wood_extent_below_2m": 0.46535039510188325,
+    "lowest_primary_branch_centerline_m": 1.6,
+    "lowest_primary_branch_radius_m": 0.045,
+    "lowest_primary_branch_underside_m": 1.555,
+    "trunk_collar_base_radius_m": 0.27,
+    "root_flare_tip_radius_m": 0.46,
+    "export": {
+      "file": "/Users/j/Documents/dev/permagent-assets/world-hero-20261006/exports/foliage-v3b/canopy.glb",
+      "bytes": 2160512,
+      "sha256": "a9ca9af68d84c1c8ea72288d553df60fc3d714f9cb22efd2f00acd7e83eef08f",
+      "triangles": 32636,
+      "mesh_primitives": 2,
+      "materials": 2,
+      "embedded_images": 1
+    },
+    "gltf_full_bounds": [
+      [
+        -1.96080482006073,
+        -0.011091665364801884,
+        -1.8892093896865845
+      ],
+      [
+        1.7455530166625977,
+        4.559788227081299,
+        2.0020101070404053
+      ]
+    ]
+  },
+  "shrub": {
+    "triangles_authored": 17136,
+    "materials": 2,
+    "branches": 120,
+    "placed_leaves": 576,
+    "leaf_prototype_profiles": 3,
+    "leaf_prototype_vertices": 45,
+    "leaf_prototype_triangles": 48,
+    "actual_gpu_instances": 0,
+    "storage": "expanded geometry batched into two mesh nodes; no instance-count claim",
+    "leaf_mesh_vertices": 8640,
+    "blender_solid_bounds_below_2m": [
+      [
+        -0.6411924958229065,
+        -0.607862114906311,
+        0.017311472445726395
+      ],
+      [
+        0.6869608759880066,
+        0.6226047277450562,
+        0.9547446966171265
+      ]
+    ],
+    "max_radial_wood_extent_below_2m": 0.6976483896837445,
+    "export": {
+      "file": "/Users/j/Documents/dev/permagent-assets/world-hero-20261006/exports/foliage-v3b/shrub.glb",
+      "bytes": 1711204,
+      "sha256": "6b29711788ed18300351536061132bac1bc8292b699e159380692d0a9efa9345",
+      "triangles": 17136,
+      "mesh_primitives": 2,
+      "materials": 2,
+      "embedded_images": 1
+    },
+    "gltf_full_bounds": [
+      [
+        -0.8012786507606506,
+        0.017311472445726395,
+        -0.7591357827186584
+      ],
+      [
+        0.7569179534912109,
+        1.1111146211624146,
+        0.816787600517273
+      ]
+    ]
+  },
+  "atlas": {
+    "path": "/Users/j/Documents/dev/permagent-assets/world-hero-20261006/source/foliage-v3/broadleaf-atlas-v1.png",
+    "sha256": "f7670a211a56ce45f412bd354506ba831fbffb87f54f2feff31a2f0666dd22d5",
+    "bytes": 1228468,
+    "width": 1254,
+    "height": 1254,
+    "rgba_decoded_bytes": 6290064,
+    "grid": [
+      2,
+      2
+    ],
+    "used_tiles_bottom_origin": [
+      1,
+      2,
+      3
+    ],
+    "alpha_mode": "MASK",
+    "alpha_cutoff": 0.55,
+    "provenance": "parent supplied AI RGBA general broadleaf atlas, not species/scanned/full PBR; original PROVENANCE.md accompanies source; young tile omitted for visible fringe"
+  },
+  "total_export_bytes": 3871716,
+  "diagnostic": {
+    "file": "/Users/j/Documents/dev/permagent-assets/world-hero-20261006/previews/foliage-v3b-export-diagnostic-512.png",
+    "cpu_threads": 1,
+    "samples": 4,
+    "resolution": [
+      512,
+      512
+    ],
+    "seconds": 3.07,
+    "peak_rss_kib": 382432,
+    "free_disk_gib_end": 5.07,
+    "camera_method": "evaluated imported GLB world bounds projected into camera; optical centre shifted to projection bounds centre; ortho scale1.10 of longest side",
+    "inspected": "full crown/root/shrub fit; continuous taper improved; low-sample noise limits detailed fringe acceptance",
+    "kit_v2_and_v3_preserved": true
+  }
+}

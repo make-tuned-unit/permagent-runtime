@@ -95,3 +95,17 @@ The plan now includes August 2026 WorldClaw and Buffalo research, Lyra 2.0, SAM 
 6. Compare the same accepted scene in Unreal, including packaging and real agent integration, before selecting the final renderer.
 
 The goal remains incomplete. Richness, immersion and speed have not been accepted. Free space fluctuates around 6–7 GiB after the resource incident, below the 10 GiB native-build guard; the storage request remains unanswered at this checkpoint.
+
+## Bounded continuation: botanical detail and rendering cost
+
+The next goal turn rechecked actual state: free disk about 6.1 GiB, swap in use about 8.9 GB, and memory-pressure reporting 73% free. The native build guard still prevented that phase. A normal browser preview retry again failed admin-policy verification; no bypass was attempted. This allowed a narrowly bounded asset improvement, not a native or Unreal build.
+
+The parent generated and inspected a general broadleaf RGBA atlas with the built-in Image Generation tool. Source is saved at `assets/world/garden-hero-ai/broadleaf-atlas-v1.png` in the main workspace, with exact prompt and provenance. Actual dimensions are 1254 × 1254; PNG size is 1,228,468 bytes; decoded RGBA is 6,290,064 bytes before mipmaps. SHA256: `f7670a211a56ce45f412bd354506ba831fbffb87f54f2feff31a2f0666dd22d5`. It is AI color/opacity artwork, not a scan, scientific species identification or complete PBR material. The young leaf's fringe was rejected for current use; the three mature tiles are used unchanged with a material alpha cutoff.
+
+Sol replaced the sparse horizontal-leaf construction with connected branching, curved and variably oriented leaves, clustered crown gaps and a fuller shrub. The parent viewed the v3 export diagnostic, rejected its clipped crown and abrupt lower-trunk pinch, and requested a targeted correction. The parent then viewed `foliage-v3b-export-diagnostic-512.png`: the full silhouette fits and the trunk/root collar is continuous. It is accepted as an improved draft asset for integration, not final botanical or runtime approval. Low-sample noise limits fine-edge judgments.
+
+The v3b canopy has 32,636 triangles and two material primitives; the shrub has 17,136 triangles and two. Leaf geometry is expanded and batched within each asset, with zero actual GPU instances in the asset itself. The integration worker separately implements runtime instancing for repeated static placements. The tree's wood below two metres reaches about 0.465 metres from its axis, so the previous 0.16-metre-radius trunk proxy cannot remain. The proposed 0.49-metre radius before placement scale must be validated against player clearance and visible routes.
+
+The bounded v3b diagnostic used one CPU thread, four samples and 512 × 512 output; Sol reports 3.07 seconds and about 374 MiB peak RSS. Free disk remained about 5.07 GiB. Old v2 kit and versioned diagnostic evidence were preserved. No native runtime or FPS result follows from this offline render.
+
+Sol's source audit of the committed pre-optimization scene counted 55 static placements at 269 primitive submissions / 354,658 triangles, plus twelve robots at 264 submissions / 695,952 triangles per uncullled scene pass. Shadows and post-processing add further work. These are source estimates, not observed GPU timings. Static instancing is the immediate authorized optimization; reducing actor count is deferred until actual composition review. Cached GLTF geometry does not by itself reduce draw submissions.
