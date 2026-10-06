@@ -1,0 +1,30 @@
+{
+  "bookcase": {
+    "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/assets/world/crafted-garden-r15/references/bookcase-v1.png",
+    "bytes": 2398224,
+    "source": "/Users/j/.codex/generated_images/01a11260-660d-7a83-95df-259ff40542a8/exec-9a144058-2eab-4faf-9370-189d0396f736.png",
+    "method": "built-in image generation",
+    "prompt": "bookcase-v1-prompt.txt"
+  },
+  "column": {
+    "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/assets/world/crafted-garden-r15/references/column-v1.png",
+    "bytes": 1715822,
+    "source": "/Users/j/.codex/generated_images/01a11260-660d-7a83-95df-259ff40542a8/exec-78264167-3c56-418d-b14c-9456ffdcff31.png",
+    "method": "built-in image generation",
+    "prompt": "column-v1-prompt.txt"
+  },
+  "fern": {
+    "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/assets/world/crafted-garden-r15/references/fern-v1.png",
+    "bytes": 2833247,
+    "source": "/Users/j/.codex/generated_images/01a11260-660d-7a83-95df-259ff40542a8/exec-1cdc3210-7c5d-4f77-ba61-bba2a7ad5ee8.png",
+    "method": "built-in image generation",
+    "prompt": "fern-v1-prompt.txt"
+  },
+  "leaf": {
+    "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/assets/world/crafted-garden-r15/references/leaf-v1.png",
+    "bytes": 1540998,
+    "source": "/Users/j/.codex/generated_images/01a11260-660d-7a83-95df-259ff40542a8/exec-32d83284-0d7c-4d3b-81d7-e458ed781b3d.png",
+    "method": "built-in image generation",
+    "prompt": "leaf-v1-prompt.txt"
+  }
+}

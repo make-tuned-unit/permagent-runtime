@@ -1,0 +1,105 @@
+{
+  "name": "table",
+  "variant": "hunyuan",
+  "source": "raw/table.glb",
+  "output": "processed/table-v1.glb",
+  "sha256": "7b1136d250a182706d46039d306dc482f3045679da562f73aeca1e44575ecfce",
+  "before": {
+    "bytes": 47752084,
+    "triangles": 40004,
+    "bounds": {
+      "min": [
+        -0.5508570075035095,
+        -2.184943781484106e-09,
+        -0.5450400206166476
+      ],
+      "max": [
+        0.5436509847640991,
+        0.4808050128011071,
+        0.5496041364770852
+      ]
+    },
+    "textures": [
+      {
+        "size": [
+          4096,
+          4096
+        ],
+        "mimeType": "image/png"
+      },
+      {
+        "size": [
+          4096,
+          4096
+        ],
+        "mimeType": "image/png"
+      },
+      {
+        "size": [
+          4096,
+          4096
+        ],
+        "mimeType": "image/png"
+      }
+    ]
+  },
+  "repair": null,
+  "after": {
+    "bytes": 1523268,
+    "triangles": 18000,
+    "bounds": {
+      "min": [
+        -1.12,
+        6.776263578034403e-21,
+        -1.12
+      ],
+      "max": [
+        1.1199999999999999,
+        0.825,
+        1.1199999999999999
+      ]
+    },
+    "primitives": 1,
+    "textures": [
+      {
+        "size": [
+          2048,
+          2048
+        ],
+        "mimeType": "image/webp"
+      },
+      {
+        "size": [
+          2048,
+          2048
+        ],
+        "mimeType": "image/webp"
+      },
+      {
+        "size": [
+          2048,
+          2048
+        ],
+        "mimeType": "image/webp"
+      }
+    ]
+  },
+  "normalization": {
+    "scale": [
+      2.0470061744685397,
+      1.715961507708138,
+      2.0466766961892575
+    ],
+    "offset": [
+      0.003716498613357544,
+      -2.499746038923512e-05,
+      -0.002188568092720833
+    ],
+    "dimensions": [
+      2.24,
+      0.825,
+      2.24
+    ]
+  },
+  "review": "accepted actual front/reverse geometry and 2mm usable tabletop variation; source integration and collision/contact tests pass; native visual acceptance pending"
+}

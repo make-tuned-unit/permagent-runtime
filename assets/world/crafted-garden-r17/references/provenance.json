@@ -1,0 +1,8 @@
+{
+  "source": "/Users/j/.codex/generated_images/01a11260-660d-7a83-95df-259ff40542a8/exec-756445b6-07de-4fdc-a121-4387fcca5afd.png",
+  "file": "assets/world/crafted-garden-r17/references/table-v1.png",
+  "bytes": 2085267,
+  "sha256": "e19840c9ff35196f50674458edb34805458b3a352330e01aeccf93a1e2cc1643",
+  "method": "builtin imagegen",
+  "prompt": "table-v1-prompt.txt"
+}

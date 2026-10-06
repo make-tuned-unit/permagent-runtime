@@ -1,0 +1,110 @@
+[
+  {
+    "url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/2k/monastery_stone_floor/monastery_stone_floor_diff_2k.jpg",
+    "file": "raw/monastery_stone_floor_diff_2k.jpg",
+    "bytes": 3021140,
+    "sha256": "aa12137fff1728bbbfe98b30480e33a34cba3b5c096575702c1d66939214e14a",
+    "asset": "monastery_stone_floor",
+    "channel": "Diffuse",
+    "author": "Amal Kumar",
+    "metres": 1.8,
+    "license": "CC0",
+    "source": "https://polyhaven.com/a/monastery_stone_floor",
+    "license_url": "https://polyhaven.com/license",
+    "runtime": {
+      "file": "ui/command-center/public/world/garden-materials/monastery_stone_floor_diffuse_2k.webp",
+      "bytes": 1174410,
+      "sha256": "81b2b460dc78d669fb893575040fc9fa08627aa8dadb69e8da63e7dab115dac4"
+    }
+  },
+  {
+    "url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/2k/monastery_stone_floor/monastery_stone_floor_nor_gl_2k.jpg",
+    "file": "raw/monastery_stone_floor_nor_gl_2k.jpg",
+    "bytes": 4248820,
+    "sha256": "8f3e131a9d6d9c3a95c872173393830f7c1de389cd60d4878b2211058d706d2c",
+    "asset": "monastery_stone_floor",
+    "channel": "nor_gl",
+    "author": "Amal Kumar",
+    "metres": 1.8,
+    "license": "CC0",
+    "source": "https://polyhaven.com/a/monastery_stone_floor",
+    "license_url": "https://polyhaven.com/license",
+    "runtime": {
+      "file": "ui/command-center/public/world/garden-materials/monastery_stone_floor_nor_gl_2k.webp",
+      "bytes": 1675326,
+      "sha256": "bff6dc72628942804f90f8a76bef0b4f689f183940532211d62cc22326562323"
+    }
+  },
+  {
+    "url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/2k/monastery_stone_floor/monastery_stone_floor_rough_2k.jpg",
+    "file": "raw/monastery_stone_floor_rough_2k.jpg",
+    "bytes": 1744682,
+    "sha256": "61f87f8049b21153b6db25fdcd184c4297642ada2e31c07db03f6810c9f952c3",
+    "asset": "monastery_stone_floor",
+    "channel": "Rough",
+    "author": "Amal Kumar",
+    "metres": 1.8,
+    "license": "CC0",
+    "source": "https://polyhaven.com/a/monastery_stone_floor",
+    "license_url": "https://polyhaven.com/license",
+    "runtime": {
+      "file": "ui/command-center/public/world/garden-materials/monastery_stone_floor_rough_2k.webp",
+      "bytes": 401344,
+      "sha256": "6066df96851ddc9dbc6babad76d5b4ac4082aad037c759ed03b9df3893ce078e"
+    }
+  },
+  {
+    "url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/2k/wood_floor/wood_floor_diff_2k.jpg",
+    "file": "raw/wood_floor_diff_2k.jpg",
+    "bytes": 2983667,
+    "sha256": "7c3ff1164c8dd0758ef2c048e9a266d28174120de01052ec40e6ca486177345c",
+    "asset": "wood_floor",
+    "channel": "Diffuse",
+    "author": "Dimitrios Savva",
+    "metres": 1.7,
+    "license": "CC0",
+    "source": "https://polyhaven.com/a/wood_floor",
+    "license_url": "https://polyhaven.com/license",
+    "runtime": {
+      "file": "ui/command-center/public/world/garden-materials/wood_floor_diffuse_2k.webp",
+      "bytes": 1075928,
+      "sha256": "02c201c3818e5af8b7bc45035fef7cd68b146f2da8e37ef5ded546a1c91ddc5c"
+    }
+  },
+  {
+    "url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/2k/wood_floor/wood_floor_nor_gl_2k.jpg",
+    "file": "raw/wood_floor_nor_gl_2k.jpg",
+    "bytes": 1863576,
+    "sha256": "eff2e4db46bab930dc05997faf5085157eec4fd652cdfc6cd01fa11edd56ef10",
+    "asset": "wood_floor",
+    "channel": "nor_gl",
+    "author": "Dimitrios Savva",
+    "metres": 1.7,
+    "license": "CC0",
+    "source": "https://polyhaven.com/a/wood_floor",
+    "license_url": "https://polyhaven.com/license",
+    "runtime": {
+      "file": "ui/command-center/public/world/garden-materials/wood_floor_nor_gl_2k.webp",
+      "bytes": 303686,
+      "sha256": "d1c9a765bf666565f512f0a6a6a96554058169b23c9b273d936f00026ef88a27"
+    }
+  },
+  {
+    "url": "https://dl.polyhaven.org/file/ph-assets/Textures/jpg/2k/wood_floor/wood_floor_rough_2k.jpg",
+    "file": "raw/wood_floor_rough_2k.jpg",
+    "bytes": 2267559,
+    "sha256": "297eda0d75f2020cc541dbf242e1f5fd058053249567f49a4506fc2c5b1a172b",
+    "asset": "wood_floor",
+    "channel": "Rough",
+    "author": "Dimitrios Savva",
+    "metres": 1.7,
+    "license": "CC0",
+    "source": "https://polyhaven.com/a/wood_floor",
+    "license_url": "https://polyhaven.com/license",
+    "runtime": {
+      "file": "ui/command-center/public/world/garden-materials/wood_floor_rough_2k.webp",
+      "bytes": 871888,
+      "sha256": "9491a1e1ef039ed484e3cb12e8317decc769bfc1a60350a216e78f156506fcf1"
+    }
+  }
+]

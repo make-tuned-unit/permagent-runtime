@@ -1,8 +1,8 @@
 {
   "staged_app": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/staged/Permagent World Review.app",
   "native_build_binary": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/permagent-app",
-  "native_build_sha256": "5c0dbf4cb1c11293a6db52e14e16eb8409dbba82ae23e079b362bcda9014269f",
-  "staged_binary_sha256": "e1adf3f6f866acdb39f0cfc614700a415e1f5ec74b1a9ff22aa338d4b77c1bb1",
+  "native_build_sha256": "fe5224ca07bad86ab7707c2e2f0e20c94cdca10cabb4528abf8cf0547353963d",
+  "staged_binary_sha256": "1b76d7cd36d4cea0bb9bf19967c419d6341c6b18862196151d44f5c9ca89e1b3",
   "architecture": "arm64",
   "identifier": "ai.permagent.world-review-20261006",
   "name": "Permagent World Review",
@@ -4634,24 +4634,20 @@
     "Contents/Resources/mcp-runtime/node_modules/pkce-challenge/dist/index.browser.d.ts": "8c377c4daf607632c7934d1450ae7b203a441a649823160eb4c9c3f6cc050629"
   },
   "signature_check": "--prepared:/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/staged/Permagent World Review.app/Contents/MacOS/permagent\n--validated:/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/staged/Permagent World Review.app/Contents/MacOS/permagent\n--prepared:/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/staged/Permagent World Review.app/Contents/MacOS/permagentd\n--validated:/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/staged/Permagent World Review.app/Contents/MacOS/permagentd\n--prepared:/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/staged/Permagent World Review.app/Contents/Frameworks/libsherpa-onnx-c-api.dylib\n--validated:/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/staged/Permagent World Review.app/Contents/Frameworks/libsherpa-onnx-c-api.dylib\n--prepared:/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/staged/Permagent World Review.app/Contents/Frameworks/libonnxruntime.dylib\n--validated:/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/staged/Permagent World Review.app/Contents/Frameworks/libonnxruntime.dylib\n/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/staged/Permagent World Review.app: valid on disk\n/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/staged/Permagent World Review.app: satisfies its Designated Requirement",
-  "signature_details": "Executable=/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/staged/Permagent World Review.app/Contents/MacOS/permagent-app\nIdentifier=ai.permagent.world-review-20261006\nFormat=app bundle with Mach-O thin (arm64)\nCodeDirectory v=20400 size=192603 flags=0x2(adhoc) hashes=6008+7 location=embedded\nVersionPlatform=1\nVersionMin=720896\nVersionSDK=1705216\nHash type=sha256 size=32\nCandidateCDHash sha256=0c2e43e59433b6d5dadd559603739b3bb99fa7b5\nCandidateCDHashFull sha256=0c2e43e59433b6d5dadd559603739b3bb99fa7b5d34b5ee9f36a58b71255e714\nHash choices=sha256\nCMSDigest=0c2e43e59433b6d5dadd559603739b3bb99fa7b5d34b5ee9f36a58b71255e714\nCMSDigestType=2\nExecutable Segment base=0\nExecutable Segment limit=73367552\nExecutable Segment flags=0x1\nPage size=16384\nCDHash=0c2e43e59433b6d5dadd559603739b3bb99fa7b5\nSignature=adhoc\nInfo.plist entries=19\nTeamIdentifier=not set\nSealed Resources version=2 rules=13 files=4621\nInternal requirements count=0 size=12",
+  "signature_details": "Executable=/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/staged/Permagent World Review.app/Contents/MacOS/permagent-app\nIdentifier=ai.permagent.world-review-20261006\nFormat=app bundle with Mach-O thin (arm64)\nCodeDirectory v=20400 size=208187 flags=0x2(adhoc) hashes=6495+7 location=embedded\nVersionPlatform=1\nVersionMin=720896\nVersionSDK=1705216\nHash type=sha256 size=32\nCandidateCDHash sha256=410bb9d88b656b895abe408b54ada5f35e9ea0b2\nCandidateCDHashFull sha256=410bb9d88b656b895abe408b54ada5f35e9ea0b277ecbf5c712974d5d030be13\nHash choices=sha256\nCMSDigest=410bb9d88b656b895abe408b54ada5f35e9ea0b277ecbf5c712974d5d030be13\nCMSDigestType=2\nExecutable Segment base=0\nExecutable Segment limit=81346560\nExecutable Segment flags=0x1\nPage size=16384\nCDHash=410bb9d88b656b895abe408b54ada5f35e9ea0b2\nSignature=adhoc\nInfo.plist entries=19\nTeamIdentifier=not set\nSealed Resources version=2 rules=13 files=4621\nInternal requirements count=0 size=12",
   "launched": true,
   "copy": "ordinary independent-inode copies; no hardlinks",
   "staged_files": 4624,
-  "staged_bytes": 996638250,
-  "revision": "r14",
+  "staged_bytes": 1004632842,
+  "review_revision": "r15",
   "visual_review": {
-    "method": "CUA native app, exact staged path; no voice active at restart",
-    "accepted": [
-      "11 Hunyuan planters with visible relief and planted soil",
-      "5 Hunyuan benches with wood/brass/stone construction",
-      "Hunyuan tabletop instrument grounded on commons table"
+    "surface": "native app via CUA",
+    "views": [
+      "commons arrival",
+      "settled commons conversation"
     ],
-    "screenshots": [
-      "native-r14-commons.png",
-      "native-r14-reader.png"
-    ],
-    "voice": "off; no conversation initiated",
-    "limits": "Not final landscape/lighting approval; no new voice exchange test"
+    "screenshot": "reports/world-production/native-r15-commons.png",
+    "result": "new archive models/foliage visible; shadow detail too dark, triggering r16; r16/r17 not staged",
+    "voice_active": false
   }
 }

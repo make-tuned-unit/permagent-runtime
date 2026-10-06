@@ -1,0 +1,105 @@
+{
+  "name": "bookcase",
+  "variant": "hunyuan",
+  "source": "raw/bookcase.glb",
+  "output": "processed/bookcase-v1.glb",
+  "sha256": "8671cc46e284063c10520e91b0f4fcb6ba3501c0d8dd6b07c3858bf8f02568f9",
+  "before": {
+    "bytes": 41647176,
+    "triangles": 39888,
+    "bounds": {
+      "min": [
+        -0.4152910113334656,
+        -1.1665439198669801e-08,
+        -0.15380690186627233
+      ],
+      "max": [
+        0.3788839876651764,
+        0.8914871123611859,
+        0.0951321317916579
+      ]
+    },
+    "textures": [
+      {
+        "size": [
+          4096,
+          4096
+        ],
+        "mimeType": "image/png"
+      },
+      {
+        "size": [
+          4096,
+          4096
+        ],
+        "mimeType": "image/png"
+      },
+      {
+        "size": [
+          4096,
+          4096
+        ],
+        "mimeType": "image/png"
+      }
+    ]
+  },
+  "repair": null,
+  "after": {
+    "bytes": 1804516,
+    "triangles": 18000,
+    "bounds": {
+      "min": [
+        -1.275,
+        0,
+        -0.25
+      ],
+      "max": [
+        1.275,
+        2.8,
+        0.25
+      ]
+    },
+    "primitives": 1,
+    "textures": [
+      {
+        "size": [
+          2048,
+          2048
+        ],
+        "mimeType": "image/webp"
+      },
+      {
+        "size": [
+          2048,
+          2048
+        ],
+        "mimeType": "image/webp"
+      },
+      {
+        "size": [
+          2048,
+          2048
+        ],
+        "mimeType": "image/webp"
+      }
+    ]
+  },
+  "normalization": {
+    "scale": [
+      3.2119630472487075,
+      3.1410765468738626,
+      2.0085239050419683
+    ],
+    "offset": [
+      0.018276497721672058,
+      -3.498979382704597e-05,
+      0.029337385037307213
+    ],
+    "dimensions": [
+      2.55,
+      2.8,
+      0.5
+    ]
+  },
+  "review": "accepted for native integration after actual front and reverse GLB inspection"
+}

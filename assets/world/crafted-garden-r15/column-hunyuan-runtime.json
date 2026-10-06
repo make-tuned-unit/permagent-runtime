@@ -1,0 +1,105 @@
+{
+  "name": "column",
+  "variant": "hunyuan",
+  "source": "raw/column.glb",
+  "output": "processed/column-v1.glb",
+  "sha256": "cc763e099a6de0a9c0423ed002d2c6273b9d51cf137544e858d3ae3385986cc2",
+  "before": {
+    "bytes": 28934536,
+    "triangles": 40004,
+    "bounds": {
+      "min": [
+        -0.08517000079154968,
+        -1.0225112301356492e-08,
+        -0.08647385841365662
+      ],
+      "max": [
+        0.08704400062561035,
+        1.1778061673386062,
+        0.08439416643310971
+      ]
+    },
+    "textures": [
+      {
+        "size": [
+          4096,
+          4096
+        ],
+        "mimeType": "image/png"
+      },
+      {
+        "size": [
+          4096,
+          4096
+        ],
+        "mimeType": "image/png"
+      },
+      {
+        "size": [
+          4096,
+          4096
+        ],
+        "mimeType": "image/png"
+      }
+    ]
+  },
+  "repair": null,
+  "after": {
+    "bytes": 634752,
+    "triangles": 12000,
+    "bounds": {
+      "min": [
+        -0.27,
+        -1.3552527156068805e-20,
+        -0.26999999999999996
+      ],
+      "max": [
+        0.27,
+        3.599999999999999,
+        0.2700000000000001
+      ]
+    },
+    "primitives": 1,
+    "textures": [
+      {
+        "size": [
+          1024,
+          1024
+        ],
+        "mimeType": "image/webp"
+      },
+      {
+        "size": [
+          1024,
+          1024
+        ],
+        "mimeType": "image/webp"
+      },
+      {
+        "size": [
+          1024,
+          1024
+        ],
+        "mimeType": "image/webp"
+      }
+    ]
+  },
+  "normalization": {
+    "scale": [
+      3.135633546380117,
+      3.056633857675559,
+      3.160333833578691
+    ],
+    "offset": [
+      -0.0009369999170303345,
+      -2.998977816060049e-05,
+      0.001039845990273458
+    ],
+    "dimensions": [
+      0.54,
+      3.6,
+      0.54
+    ]
+  },
+  "review": "accepted for native integration after actual front and reverse GLB inspection"
+}

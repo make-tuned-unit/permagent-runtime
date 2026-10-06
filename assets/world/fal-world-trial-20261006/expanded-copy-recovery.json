@@ -1,0 +1,142 @@
+{
+  "reason": "recover disk safety floor",
+  "restoration": "python3 assets/world/fal-world-trial-20261006/inspect_archive.py",
+  "original_zip_retained": true,
+  "verified_members": [
+    {
+      "path": "unpacked/mesh_layer2.ply",
+      "bytes": 97639951,
+      "sha256": "64c5b71778b5cae0686d7f263fb225b8757b7cda8ad565a6afc15af76e81f0d8",
+      "ply_header": [
+        "ply",
+        "format binary_little_endian 1.0",
+        "comment Created by Open3D",
+        "element vertex 1843200",
+        "property double x",
+        "property double y",
+        "property double z",
+        "property uchar red",
+        "property uchar green",
+        "property uchar blue",
+        "element face 3682560",
+        "property list uchar uint vertex_indices",
+        "end_header"
+      ],
+      "preserved_in": "world.zip",
+      "archive_member": "mesh_layer2.ply"
+    },
+    {
+      "path": "unpacked/image.png",
+      "bytes": 3292632,
+      "sha256": "6fe1191cbe14298a01a8a88d1f5fb09171d53f129e22ed90b913ad7d13c41df3",
+      "preserved_in": "world.zip",
+      "archive_member": "image.png"
+    },
+    {
+      "path": "unpacked/sky_image.png",
+      "bytes": 2033591,
+      "sha256": "e3bb2821cd453b30462a72e95655ee419cab1b1aee050c041de62adea8884add",
+      "preserved_in": "world.zip",
+      "archive_member": "sky_image.png"
+    },
+    {
+      "path": "unpacked/remove_fg2_image_sr.png",
+      "bytes": 11258865,
+      "sha256": "da19dcd608eac3bf8797f6c17c883a3ce40010625d8ed2499ee7b7a244757163",
+      "preserved_in": "world.zip",
+      "archive_member": "remove_fg2_image_sr.png"
+    },
+    {
+      "path": "unpacked/fg2_mask.png",
+      "bytes": 25771,
+      "sha256": "f76c672fecf6e2575e86a337ce335cb582548754cef365df003b051691dee9c4",
+      "preserved_in": "world.zip",
+      "archive_member": "fg2_mask.png"
+    },
+    {
+      "path": "unpacked/mesh_layer0.ply",
+      "bytes": 37271968,
+      "sha256": "86826d9cda68d4038c92c67396849b9bb02a666ffa5347129a96ed04a00bba05",
+      "ply_header": [
+        "ply",
+        "format binary_little_endian 1.0",
+        "comment Created by Open3D",
+        "element vertex 470206",
+        "property double x",
+        "property double y",
+        "property double z",
+        "property double nx",
+        "property double ny",
+        "property double nz",
+        "property uchar red",
+        "property uchar green",
+        "property uchar blue",
+        "element face 1022395",
+        "property list uchar uint vertex_indices",
+        "end_header"
+      ],
+      "preserved_in": "world.zip",
+      "archive_member": "mesh_layer0.ply"
+    },
+    {
+      "path": "unpacked/remove_fg2_image.png",
+      "bytes": 3062329,
+      "sha256": "9c43d5a1d7bccde62dd7d58321509b0616128d16246cfea037f38bf56570bd6a",
+      "preserved_in": "world.zip",
+      "archive_member": "remove_fg2_image.png"
+    },
+    {
+      "path": "unpacked/mesh_layer1.ply",
+      "bytes": 431623097,
+      "sha256": "981e27314820155af7cf1b2ff5086adc03a0c857bface036a14699f6b2646c68",
+      "ply_header": [
+        "ply",
+        "format binary_little_endian 1.0",
+        "comment Created by Open3D",
+        "element vertex 5596716",
+        "property double x",
+        "property double y",
+        "property double z",
+        "property double nx",
+        "property double ny",
+        "property double nz",
+        "property uchar red",
+        "property uchar green",
+        "property uchar blue",
+        "element face 11245404",
+        "property list uchar uint vertex_indices",
+        "end_header"
+      ],
+      "preserved_in": "world.zip",
+      "archive_member": "mesh_layer1.ply"
+    },
+    {
+      "path": "unpacked/full_image.png",
+      "bytes": 3292632,
+      "sha256": "6fe1191cbe14298a01a8a88d1f5fb09171d53f129e22ed90b913ad7d13c41df3",
+      "preserved_in": "world.zip",
+      "archive_member": "full_image.png"
+    },
+    {
+      "path": "unpacked/sky_image_sr.png",
+      "bytes": 7674474,
+      "sha256": "48b91798b19e5d46c1ced9d8f4dbc0028dc4298cdad4fe1c0bdbc6aac179ce36",
+      "preserved_in": "world.zip",
+      "archive_member": "sky_image_sr.png"
+    },
+    {
+      "path": "unpacked/full_image_sr.png",
+      "bytes": 11909883,
+      "sha256": "3707c4c476376309c5df07b23e63ef49b8b34e5cc7a683c0eb4c2aacfe4e554d",
+      "preserved_in": "world.zip",
+      "archive_member": "full_image_sr.png"
+    },
+    {
+      "path": "unpacked/sky_mask.png",
+      "bytes": 18906,
+      "sha256": "499f7a04002928ed2bc43c0bb9202db8f211123da5cb16947d2423811e5c334e",
+      "preserved_in": "world.zip",
+      "archive_member": "sky_mask.png"
+    }
+  ]
+}

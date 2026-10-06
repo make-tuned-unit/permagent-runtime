@@ -1,0 +1,35 @@
+{
+  "bookcase": {
+    "asset": "bookcase",
+    "request_id": "01a112b3-06b3-7e11-92b5-f3d3d117e8b6",
+    "url": "https://v3b.fal.media/files/b/0aad548a/VeToA615fmZTXvBYyKN29_model.glb",
+    "bytes": 41647176,
+    "sha256": "4061985c1571f73c2011d919d3d2cdcea0dd393858e1c9e6703d89fb6ba47c73",
+    "glb_version": 2,
+    "acquisition": "fresh HTTPS public DNS answer; request-local resolution; verified HTTPS",
+    "downloaded_at": "2026-10-06T19:36:42.807140+00:00",
+    "revalidated_at": "2026-10-06T19:58:25.469110+00:00"
+  },
+  "column": {
+    "asset": "column",
+    "request_id": "01a112b3-0f76-7213-b10c-fa0a4840bf2d",
+    "url": "https://v3b.fal.media/files/b/0aad5481/oQOMl4IgyGdgels2qHjRM_model.glb",
+    "bytes": 28934536,
+    "sha256": "0282b557dbd271ffb8d0e864beb9e7dc6f92ead7bb03215f57f8da3ef84b8f76",
+    "glb_version": 2,
+    "acquisition": "fresh HTTPS public DNS answer; request-local resolution; verified HTTPS",
+    "downloaded_at": "2026-10-06T19:36:44.231050+00:00",
+    "revalidated_at": "2026-10-06T19:58:25.485129+00:00"
+  },
+  "fern": {
+    "asset": "fern",
+    "request_id": "01a112b3-1276-70d1-9281-deb48a0aaf87",
+    "url": "https://v3b.fal.media/files/b/0aad5483/5ueuk_pjjm9eWFAV3qvVT_model.glb",
+    "bytes": 54085728,
+    "sha256": "c351b0ae5bf80265e2996dfe5d666db79b1bd1681149c02c5a43e5cb4b3ba178",
+    "glb_version": 2,
+    "acquisition": "fresh HTTPS public DNS answer; request-local resolution; verified HTTPS",
+    "downloaded_at": "2026-10-06T19:36:47.141831+00:00",
+    "revalidated_at": "2026-10-06T19:58:25.512229+00:00"
+  }
+}

@@ -1,0 +1,96 @@
+{
+  "status": "completed",
+  "endpoint_id": "fal-ai/hunyuan-3d/v3.1/pro/image-to-3d",
+  "request_id": "01a112b3-06b3-7e11-92b5-f3d3d117e8b6",
+  "response_url": "https://queue.fal.run/fal-ai/hunyuan-3d/requests/01a112b3-06b3-7e11-92b5-f3d3d117e8b6",
+  "result": {
+    "model_glb": {
+      "url": "https://v3b.fal.media/files/b/0aad548a/VeToA615fmZTXvBYyKN29_model.glb",
+      "content_type": "model/gltf-binary",
+      "file_name": "model.glb",
+      "file_size": 41647176
+    },
+    "thumbnail": {
+      "url": "https://v3b.fal.media/files/b/0aad548a/OPhU1UyThGrVzqvi4241f_preview.png",
+      "content_type": "image/png",
+      "file_name": "preview.png",
+      "file_size": 173043
+    },
+    "model_urls": {
+      "glb": {
+        "url": "https://v3b.fal.media/files/b/0aad548a/VeToA615fmZTXvBYyKN29_model.glb",
+        "content_type": "model/gltf-binary",
+        "file_name": "model.glb",
+        "file_size": 41647176
+      },
+      "fbx": null,
+      "obj": {
+        "url": "https://v3b.fal.media/files/b/0aad5489/C-HKbwucBtAWl5dU_AFbT_a599c7c0df0dba2d5b5d9b70daf115cc.obj",
+        "content_type": "model/obj",
+        "file_name": "a599c7c0df0dba2d5b5d9b70daf115cc.obj",
+        "file_size": 2676869
+      },
+      "mtl": {
+        "url": "https://v3b.fal.media/files/b/0aad5489/l671TF7RzWISnC9XwJYFO_material.mtl",
+        "content_type": "text/plain",
+        "file_name": "material.mtl",
+        "file_size": 245
+      },
+      "texture": {
+        "url": "https://v3b.fal.media/files/b/0aad5489/cfGcXbpA8DidUpg870fe8_texture_pbr_20250901_normal.png",
+        "content_type": "image/png",
+        "file_name": "texture_pbr_20250901_normal.png",
+        "file_size": 9796026
+      },
+      "usdz": null
+    },
+    "seed": null
+  },
+  "media": [
+    {
+      "url": "https://v3b.fal.media/files/b/0aad548a/VeToA615fmZTXvBYyKN29_model.glb",
+      "json_path": "result.model_glb.url",
+      "content_type": "model/gltf-binary",
+      "file_name": "model.glb"
+    },
+    {
+      "url": "https://v3b.fal.media/files/b/0aad548a/OPhU1UyThGrVzqvi4241f_preview.png",
+      "json_path": "result.thumbnail.url",
+      "content_type": "image/png",
+      "file_name": "preview.png"
+    },
+    {
+      "url": "https://v3b.fal.media/files/b/0aad5489/C-HKbwucBtAWl5dU_AFbT_a599c7c0df0dba2d5b5d9b70daf115cc.obj",
+      "json_path": "result.model_urls.obj.url",
+      "content_type": "model/obj",
+      "file_name": "a599c7c0df0dba2d5b5d9b70daf115cc.obj"
+    },
+    {
+      "url": "https://v3b.fal.media/files/b/0aad5489/l671TF7RzWISnC9XwJYFO_material.mtl",
+      "json_path": "result.model_urls.mtl.url",
+      "content_type": "text/plain",
+      "file_name": "material.mtl"
+    },
+    {
+      "url": "https://v3b.fal.media/files/b/0aad5489/cfGcXbpA8DidUpg870fe8_texture_pbr_20250901_normal.png",
+      "json_path": "result.model_urls.texture.url",
+      "content_type": "image/png",
+      "file_name": "texture_pbr_20250901_normal.png"
+    }
+  ],
+  "display_hint": "Present completed media to the user. Forward attached image content blocks to the host's image display helper (for example, image(block)); do not stringify image blocks as text. For Markdown previews use previews[].preview_url, and separately link original_url as the full-resolution file. If no preview is available, show a clearly labeled original-file link. Do not claim a preview rendered unless it is visible. Video, audio and 3D URLs are original result files, not queue URLs.",
+  "previews": [
+    {
+      "original_url": "https://v3b.fal.media/files/b/0aad548a/OPhU1UyThGrVzqvi4241f_preview.png",
+      "preview_url": "https://refinery.fal.media/url/https%3A%2F%2Fv3b.fal.media%2Ffiles%2Fb%2F0aad548a%2FOPhU1UyThGrVzqvi4241f_preview.png/tr:w-768,h-768,c-at_max,q-75/preview.webp",
+      "mime_type": "image/webp",
+      "max_dimension": 768
+    },
+    {
+      "original_url": "https://v3b.fal.media/files/b/0aad5489/cfGcXbpA8DidUpg870fe8_texture_pbr_20250901_normal.png",
+      "preview_url": "https://refinery.fal.media/url/https%3A%2F%2Fv3b.fal.media%2Ffiles%2Fb%2F0aad5489%2FcfGcXbpA8DidUpg870fe8_texture_pbr_20250901_normal.png/tr:w-768,h-768,c-at_max,q-75/preview.webp",
+      "mime_type": "image/webp",
+      "max_dimension": 768
+    }
+  ]
+}

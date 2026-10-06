@@ -1,56 +1,55 @@
 import { useEffect, useMemo } from 'react';
 import { useTexture } from '@react-three/drei';
 import { DoubleSide, LatheGeometry, RepeatWrapping, SphereGeometry, SRGBColorSpace, Vector2 } from 'three';
+import { terraceHullGeometry, terracePerimeter, terraceSurfaceGeometry } from './habitatTerrace';
+import { CraftedLibrary } from './CraftedLibrary';
 import { DetailBuilder, finishDetails, material } from './habitatGeometry';
-import { HABITAT_BEDS, HABITAT_STATIONS, habitatElevation, habitatHeight, onHabitat, type Point3 } from './habitatLayout';
+import { COMMONS_SURFACE_Y, HABITAT_BEDS, HABITAT_STATIONS, habitatElevation, habitatHeight, type Point3 } from './habitatLayout';
 
 export function HabitatArchitecture(){
-  const maps=useTexture(['diff','nor_dx','rough'].map(k=>`${import.meta.env.BASE_URL}world/garden-materials/white_sandstone_blocks_02_${k}_2k.jpg`));
+  const maps=useTexture([
+    ...['diff','nor_dx','rough'].map(k=>`white_sandstone_blocks_02_${k}_2k.jpg`),
+    ...['diffuse','nor_gl','rough'].map(k=>`monastery_stone_floor_${k}_2k.webp`),
+    ...['diffuse','nor_gl','rough'].map(k=>`wood_floor_${k}_2k.webp`),
+  ].map(file=>`${import.meta.env.BASE_URL}world/garden-materials/${file}`));
   const built=useMemo(()=>{
     const stone=material('#d4c29a',.91),paving=material('#c2b394',.87),edge=material('#bba987'),wood=material('#68462e',.73),bronze=material('#9f7950',.35,.72),dark=material('#243b3c',.52),soil=material('#3c4130'),cloth=material('#dbd0aa',.93),glass=material('#477e79',.3,.25),glow=material('#ffe5ac'),domeGlass=material('#8ebabc',.26,.18);
-    paving.onBeforeCompile=shader=>{
-      shader.vertexShader='varying vec3 vPavingPosition;\n'+shader.vertexShader;
-      shader.vertexShader=shader.vertexShader.replace('#include <worldpos_vertex>', '#include <worldpos_vertex>\nvPavingPosition=(modelMatrix*vec4(transformed,1.)).xyz;');
-      shader.fragmentShader=`varying vec3 vPavingPosition;
-        float pavingHash(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}
-        float pavingNoise(vec2 p){vec2 i=floor(p),f=fract(p);f=f*f*(3.-2.*f);return mix(mix(pavingHash(i),pavingHash(i+vec2(1,0)),f.x),mix(pavingHash(i+vec2(0,1)),pavingHash(i+vec2(1,1)),f.x),f.y);}
-      `+shader.fragmentShader;
-      shader.fragmentShader=shader.fragmentShader.replace('#include <color_fragment>', `
-        #include <color_fragment>
-        float slab=pavingHash(floor(vPavingPosition.xz));
-        float grain=pavingNoise(vPavingPosition.xz*8.)*.65+pavingNoise(vPavingPosition.xz*53.)*.35;
-        vec2 tile=fract(vPavingPosition.xz);
-        float joint=min(min(tile.x,1.-tile.x),min(tile.y,1.-tile.y));
-        diffuseColor.rgb *= (.90+slab*.13+grain*.08)*(.94+.06*smoothstep(0.,.012,joint));
-      `);
-    };
-    paving.customProgramCacheKey=()=> 'habitat-cut-sandstone-v1';
     domeGlass.transparent=true;domeGlass.opacity=.16;domeGlass.depthWrite=false;domeGlass.side=DoubleSide;
     glow.emissive.set('#ffc56d');glow.emissiveIntensity=1.3;cloth.side=DoubleSide;
-    const ownMaps=maps.map(t=>t.clone());ownMaps.forEach(t=>{t.wrapS=t.wrapT=RepeatWrapping;t.repeat.set(1,1);t.needsUpdate=true;});ownMaps[0].colorSpace=SRGBColorSpace;
-    stone.map=ownMaps[0];stone.normalMap=ownMaps[1];stone.normalScale=new Vector2(.35,-.35);stone.roughnessMap=ownMaps[2];
-    // Metre-based mapping keeps masonry the same size on paving, walls and
-    // planters instead of squeezing an entire brick image into every block.
-    stone.onBeforeCompile=shader=>{
-      shader.vertexShader=shader.vertexShader.replace('#include <uv_vertex>', `
-        #include <uv_vertex>
-        vec3 stonePosition=(modelMatrix*vec4(position,1.)).xyz;
-        vec3 stoneNormal=abs(normalize(mat3(modelMatrix)*normal));
-        vec2 stoneUv=stoneNormal.y>max(stoneNormal.x,stoneNormal.z)?stonePosition.xz:
-          stoneNormal.x>stoneNormal.z?vec2(stonePosition.z,stonePosition.y):stonePosition.xy;
-        vMapUv=stoneUv*.26;
-        vNormalMapUv=stoneUv*.26;
-        vRoughnessMapUv=stoneUv*.26;
+    const ownMaps=maps.map(t=>t.clone());
+    ownMaps.forEach((t,i)=>{t.wrapS=t.wrapT=RepeatWrapping;t.anisotropy=4;t.repeat.set(1,1);if(i%3===0)t.colorSpace=SRGBColorSpace;t.needsUpdate=true;});
+    for(const [surface,start,scale,strength,normalY] of [[stone,0,.26,.35,-1],[paving,3,1/1.8,.55,1],[wood,6,1/1.7,.32,1]] as const){
+      surface.map=ownMaps[start];surface.normalMap=ownMaps[start+1];surface.roughnessMap=ownMaps[start+2];surface.normalScale=new Vector2(strength,strength*normalY);
+      // Continuous world mapping preserves the photographed metre scale across
+      // merged walls, bridge planks and the connected sloping paving surface.
+      surface.onBeforeCompile=shader=>{
+        shader.vertexShader=shader.vertexShader.replace('#include <uv_vertex>', `
+          #include <uv_vertex>
+          vec3 surfacePosition=(modelMatrix*vec4(position,1.)).xyz;
+          vec3 surfaceNormal=abs(normalize(mat3(modelMatrix)*normal));
+          vec2 surfaceUv=surfaceNormal.y>max(surfaceNormal.x,surfaceNormal.z)?surfacePosition.xz:
+            surfaceNormal.x>surfaceNormal.z?vec2(surfacePosition.z,surfacePosition.y):surfacePosition.xy;
+          vMapUv=surfaceUv*${scale.toFixed(6)};
+          vNormalMapUv=vMapUv;
+          vRoughnessMapUv=vMapUv;
+        `);
+      };
+      surface.customProgramCacheKey=()=>`habitat-surface-v2-${start}-${scale}`;
+    }
+    const projectPaving=paving.onBeforeCompile;
+    paving.onBeforeCompile=(shader,renderer)=>{
+      projectPaving(shader,renderer);
+      shader.fragmentShader=shader.fragmentShader.replace('#include <color_fragment>', `
+        #include <color_fragment>
+        float stoneLuminance=dot(diffuseColor.rgb,vec3(.2126,.7152,.0722));
+        diffuseColor.rgb=mix(diffuseColor.rgb,stoneLuminance*vec3(1.08,1.035,.95),.66)*1.65;
       `);
     };
-    stone.customProgramCacheKey=()=> 'habitat-metre-stone-v1';
+    paving.customProgramCacheKey=()=> 'habitat-pale-paving-v3';
+    paving.color.set('#ffffff');wood.color.set('#c2a98d');
     const b=new DetailBuilder();
-    for(let z=-27.5;z<16;z++)for(let x=-15.5;x<16;x++){
-      if(!onHabitat(x,z,.4))continue;
-      if(x>2.1&&x<5.9&&z>-5&&z<1)continue;
-      const slope=z<-8&&z>-14?Math.atan(3.4/6):0;
-      b.box([x,habitatHeight(z)-.028,z],[1,.055,1/Math.cos(slope)],paving,[slope,0,0]);
-    }
+    b.add(terraceSurfaceGeometry(true),[0,-.001,0],[1,1,1],paving);
+    b.add(terraceHullGeometry(),[0,0,0],[1,1,1],stone);
     for(const bed of HABITAT_BEDS){
       const y=habitatHeight(bed.z);b.sphere([bed.x,y+.22,bed.z],[bed.rx,.24,bed.rz],soil);
       for(let i=0;i<44;i++){
@@ -60,10 +59,15 @@ export function HabitatArchitecture(){
         b.box([(x1+x2)/2,top-height/2,z],[Math.hypot(x2-x1,z2-z1)*1.025,height,.22],stone,[0,Math.atan2(-(z2-z1),x2-x1),0]);
       }
     }
-    // Rock and planting skirts make the terrace read as an inhabited garden.
-    for(let i=0;i<86;i++){
-      const a=i/86*Math.PI*2,x=Math.cos(a)*15.4,z=-6+Math.sin(a)*21.4,y=habitatHeight(z);
-      if(onHabitat(x,z))b.sphere([x,y-.9,z],[.8+(i%3)*.25,1.15,.75],edge);
+    // Continuous coping replaces the unconnected ellipsoid skirt. The narrow
+    // bronze reveal separates the garden floor from its tapered stone support.
+    const perimeter=terracePerimeter(.05);
+    for(let i=0;i<perimeter.length;i++){
+      const [x,z]=perimeter[i],[nx,nz]=perimeter[(i+1)%perimeter.length];
+      const y=habitatHeight(z),ny=habitatHeight(nz),length=Math.hypot(nx-x,nz-z);
+      b.tube([[x,y-.19,z],[nx,ny-.19,nz]],.022,bronze);
+      if(i%3===0)b.box([x,y-.43,z],[.10,.44,.10],bronze,[0,Math.atan2(nx-x,nz-z),0]);
+      if(length>.04)b.tube([[x,y-.045,z],[nx,ny-.045,nz]],.04,edge);
     }
     // Bronze edge rail, planted on the safe side of the connected floor.
     for(const x of [-15.7,15.7])for(let z=-24;z<13;z+=1.6){const y=habitatHeight(z);b.cylinder([x,y+.48,z],.035,.96,bronze);b.box([x,y+.96,z+.8],[.07,.07,1.6],bronze,[z<-8&&z>-14?Math.atan(3.4/6):0,0,0]);}
@@ -98,23 +102,11 @@ export function HabitatArchitecture(){
     }
     // Archive pavilion: open front, layered cornice, warm book-lined interior.
     b.box([-10,5,-23],[8,3.2,.35],stone);
-    for(const x of [-14,-6]){b.cylinder([x,5.2,-16],.17,3.6,stone);b.cylinder([x,3.55,-16],.30,.3,bronze);b.cylinder([x,6.92,-16],.32,.2,bronze);}
     b.box([-10,7.1,-19.4],[8.6,.25,7.9],stone);b.box([-10,7.28,-19.4],[8.8,.12,8.1],edge);
     b.box([-10,6.92,-15.65],[8.1,.055,.05],glow);
     const archiveArch=Array.from({length:21},(_,i)=>[-14+i*.4,5.78+Math.sin(i/20*Math.PI)*1.08,-16] as Point3);
     b.tube(archiveArch,.14,stone);b.tube(archiveArch.map(([x,y,z])=>[x,y-.16,z+.045] as Point3),.024,bronze);
     for(let i=0;i<27;i++)b.box([-13.9+i*.3,7.02,-15.41],[.085,.20,.12],bronze);
-    for(const x of [-14,-6]){
-      for(const y of [3.65,6.75])b.ring([x,y,-16],.22,.035,bronze);
-      for(let i=0;i<8;i++){const a=i*Math.PI/4;b.cylinder([x+Math.cos(a)*.174,5.18,-16+Math.sin(a)*.174],.012,2.85,edge);}
-    }
-    for(const x of [-13,-10,-7]){
-      b.box([x,4.85,-22.4],[2.55,2.8,.45],wood);
-      for(let row=0;row<4;row++){
-        b.box([x,3.55+row*.68,-22.1],[2.55,.055,.6],bronze);
-        for(let j=0;j<13;j++){const h=.32+((j*3+row)%5)*.05;b.box([x-1.15+j*.18,3.6+row*.68+h/2,-22.1],[.12,h,.31],[wood,edge,dark,glass,cloth][(j+row)%5],[0,0,(j%4-1)*.025]);}
-      }
-    }
     // Workshop: airy timber frame, solar canopy, shelves and suspended tools.
     for(const x of [7,14])for(const z of [-16,-22])b.cylinder([x,5.1,z],.10,3.4,bronze);
     b.box([10.5,6.85,-19],[7.7,.10,6.8],cloth,[.04,0,.07]);
@@ -198,10 +190,10 @@ export function HabitatArchitecture(){
       b.sphere([x,.63,z],[.55,.17,.25],cloth);b.box([x,.79,z+.13],[.65,.27,.11],cloth,[.18,a,0]);
       for(let i=0;i<7;i++)b.box([x-.26+i*.085,.944,z+.13],[.015,.005,.1],wood,[0,a,0]);
     }
-    // Detailed commons tabletop: notebooks, cups, lamp, brass rings.
-    b.ring([-3,1.027,3],.85,.012,bronze);
-    for(const [x,z] of [[-3.7,3.4],[-2.5,2.8]]){b.add(new LatheGeometry([[0,0],[.060,0],[.080,.02],[.086,.15],[.082,.17],[.071,.17],[.067,.035],[0,.035]].map(p=>new Vector2(...p as [number,number])),32),[x,1.035,z],[1,1,1],edge);b.cylinder([x,1.174,z],.068,.004,wood);b.ring([x+.105,1.14,z],.062,.014,bronze,[0,0,0]);}
-    b.box([-3.2,1.055,3.7],[.5,.045,.34],wood,[0,.2,0]);b.box([-3.2,1.085,3.7],[.46,.012,.30],cloth,[0,.2,0]);
+    // Everyday objects meet the measured tabletop rather than floating above it.
+    const tableY=COMMONS_SURFACE_Y;
+    for(const [x,z] of [[-3.7,3.4],[-2.5,2.8]]){b.add(new LatheGeometry([[0,0],[.060,0],[.080,.02],[.086,.15],[.082,.17],[.071,.17],[.067,.035],[0,.035]].map(p=>new Vector2(...p as [number,number])),32),[x,tableY,z],[1,1,1],edge);b.cylinder([x,tableY+.139,z],.068,.004,wood);b.ring([x+.105,tableY+.105,z],.062,.014,bronze,[0,0,0]);}
+    b.box([-3.2,tableY+.0225,3.7],[.5,.045,.34],wood,[0,.2,0]);b.box([-3.2,tableY+.051,3.7],[.46,.012,.30],cloth,[0,.2,0]);
     // Low path lights establish depth instead of a field of bright pin lights.
     for(const x of [-5.2,8.1])for(const z of [-13,-7,1,9]){const y=habitatHeight(z);b.cylinder([x,y+.23,z],.09,.46,bronze);b.cylinder([x,y+.47,z],.065,.05,glow);}
     const group=b.finish('Authored habitat architecture');
@@ -209,5 +201,5 @@ export function HabitatArchitecture(){
     return {group,materials:[stone,paving,edge,wood,bronze,dark,soil,cloth,glass,glow,domeGlass],maps:ownMaps};
   },[maps]);
   useEffect(()=>()=>{finishDetails(built.group);built.materials.forEach(m=>m.dispose());built.maps.forEach(t=>t.dispose());},[built]);
-  return <primitive object={built.group} dispose={null}/>;
+  return <><primitive object={built.group} dispose={null}/><CraftedLibrary/></>;
 }

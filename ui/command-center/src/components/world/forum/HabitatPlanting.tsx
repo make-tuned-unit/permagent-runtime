@@ -1,29 +1,43 @@
-import { useEffect, useMemo } from 'react';
-import { BufferGeometry, Color, DoubleSide, Float32BufferAttribute, Group, InstancedMesh, Mesh, MeshStandardMaterial, Object3D } from 'three';
+import { Suspense, useEffect, useMemo } from 'react';
+import { useTexture } from '@react-three/drei';
+import { BufferGeometry, Color, DoubleSide, Float32BufferAttribute, Group, InstancedMesh, Mesh, MeshStandardMaterial, Object3D, SRGBColorSpace, type Texture } from 'three';
 import { HABITAT_BEDS, habitatHeight } from './habitatLayout';
 import { DetailBuilder, finishDetails, material } from './habitatGeometry';
+import { GardenAssetBoundary } from './GardenAssetBoundary';
 
 /** Solid leaves fill out the atlas foliage at table distance. Static instances
  * share one folded leaf, so density does not add thousands of draw calls. */
 export function HabitatPlanting() {
+  const fallback=<GardenPlanting/>;
+  return <GardenAssetBoundary onFailure={()=>{}} fallback={fallback}><Suspense fallback={fallback}><TexturedPlanting/></Suspense></GardenAssetBoundary>;
+}
+function TexturedPlanting(){
+  const texture=useTexture(`${import.meta.env.BASE_URL}world/garden-materials/laurel-leaf-v1.webp`);
+  return <GardenPlanting texture={texture}/>;
+}
+function GardenPlanting({texture}:{texture?:Texture}) {
   const built = useMemo(() => {
     let seed = 84319;
     const random = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed / 4294967296; };
     const geometry = new BufferGeometry();
-    const vertices:number[]=[],indices:number[]=[];
+    const vertices:number[]=[],indices:number[]=[],uvs:number[]=[];
     for(let row=0;row<=6;row++){
-      const t=row/6,width=Math.pow(Math.sin(Math.PI*t),.8)*.21,curve=Math.sin(t*Math.PI)*.10;
+      const t=row/6,width=texture?.29:Math.pow(Math.sin(Math.PI*t),.8)*.21,curve=Math.sin(t*Math.PI)*.10;
       vertices.push(-width,t*.92,curve,0,t*.92,curve+.04*Math.sin(t*Math.PI),width,t*.92,curve);
+      uvs.push(0,t,.5,t,1,t);
       if(row<6){const k=row*3;indices.push(k,k+3,k+1,k+1,k+3,k+4,k+1,k+4,k+2,k+2,k+4,k+5);}
     }
     geometry.setAttribute('position', new Float32BufferAttribute(vertices,3));
+    geometry.setAttribute('uv',new Float32BufferAttribute(uvs,2));
     geometry.setIndex(indices); geometry.computeVertexNormals();
-    const leaf = new MeshStandardMaterial({ color: '#ffffff', side: DoubleSide, roughness: .65 });
+    const map=texture?.clone();if(map){map.colorSpace=SRGBColorSpace;map.anisotropy=4;map.needsUpdate=true;}
+    const leaf = new MeshStandardMaterial({ color: '#ffffff', map, alphaTest:map?.48:0, side: DoubleSide, roughness: .76 });
     const matrices: Object3D[] = [], colors: Color[] = [];
     const details = new DetailBuilder(), stem = material('#56643a'), petal = material('#e5b575'), pollen = material('#d1b249');
     const addLeaf = (x:number,y:number,z:number,length:number,heading:number,tilt:number) => {
       const o = new Object3D(); o.position.set(x,y,z); o.rotation.set(tilt,heading,(random()-.5)*.5); o.scale.set(length*(.7+random()*.65),length,length); o.updateMatrix(); matrices.push(o);
-      colors.push(new Color().setHSL(.22+random()*.10,.45+random()*.25,.12+random()*.14));
+      const hue=random(),saturation=random(),lightness=random();
+      colors.push(map?new Color().setHSL(.12+hue*.10,.08+saturation*.15,.67+lightness*.27):new Color().setHSL(.22+hue*.10,.45+saturation*.25,.12+lightness*.14));
     };
     const clump = (x:number,y:number,z:number,scale:number,flowers:boolean) => {
       for(let branch=0;branch<7;branch++) {
@@ -59,8 +73,8 @@ export function HabitatPlanting() {
     const mesh = new InstancedMesh(geometry,leaf,matrices.length);mesh.name='Layered living garden';mesh.castShadow=true;mesh.receiveShadow=true;
     matrices.forEach((o,i)=>{mesh.setMatrixAt(i,o.matrix);mesh.setColorAt(i,colors[i]);});mesh.computeBoundingSphere();
     const group = new Group();group.add(mesh,details.finish('Garden stems and blossoms'));group.traverse(o=>{if(o instanceof Mesh)o.castShadow=false;});
-    return {group,geometry,materials:[leaf,stem,petal,pollen]};
-  },[]);
-  useEffect(()=>()=>{finishDetails(built.group);built.materials.forEach(m=>m.dispose());},[built]);
+    return {group,geometry,map,materials:[leaf,stem,petal,pollen]};
+  },[texture]);
+  useEffect(()=>()=>{finishDetails(built.group);built.materials.forEach(m=>m.dispose());built.map?.dispose();},[built]);
   return <primitive object={built.group} dispose={null}/>;
 }

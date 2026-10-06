@@ -1,0 +1,12 @@
+{
+  "table": {
+    "asset": "table",
+    "request_id": "01a112ca-326a-77b3-a6cc-9f19586ad1f8",
+    "url": "https://v3b.fal.media/files/b/0aad551e/rThfqfILYJ6-qaFGdL9BZ_model.glb",
+    "bytes": 47752084,
+    "sha256": "9c1063d9c0cc85eda474c66cf01f6ab91b2f5ea0ad1ccdb218364170af7bc843",
+    "glb_version": 2,
+    "acquisition": "fresh HTTPS public DNS answer; request-local resolution; verified HTTPS",
+    "downloaded_at": "2026-10-06T20:06:00.746949+00:00"
+  }
+}

@@ -12,6 +12,7 @@ import { getForumMotion } from './ForumInhabitants';
 import { HABITAT_DECOR, HANK_TABLE_SEAT, stationFor } from './habitatLayout';
 import { instanceGardenDecor } from './staticGardenInstances';
 import { GardenAssetBoundary } from './GardenAssetBoundary';
+import { GardenFerns } from './GardenFerns';
 import type { GardenDecorPlacement } from './gardenLayout';
 import { getReduceMotion } from '../../../styles/tokens';
 import { createAgentWardrobe } from './agentWardrobe';
@@ -26,11 +27,13 @@ function cloneAsset(scene:Object3D,name:string){const original=scene.getObjectBy
 let flowerCount = 0;
 const decorPlacements = HABITAT_DECOR.filter(p => p.asset !== 'flowers' || flowerCount++ % 8 === 0);
 const craftedDecor = [
+  {asset:'table',file:'table-v1.glb',hash:'7b1136d250a1'},
   {asset:'planter',file:'planter-v2.glb',hash:'b7f512af50ce'},
   {asset:'instrument',file:'instrument-v1.glb',hash:'db902c9726a8'},
   {asset:'bench',file:'bench-v1.glb',hash:'9fc2dbcc56f5'},
 ].map(asset=>({...asset,url:`${import.meta.env.BASE_URL}world/garden-crafted/${asset.file}?v=${asset.hash}`,placements:decorPlacements.filter(p=>p.asset===asset.asset)}));
-const otherPlacements = decorPlacements.filter(p => !craftedDecor.some(asset=>asset.asset===p.asset));
+const fernPlacements=decorPlacements.filter(p=>p.asset==='fern');
+const otherPlacements = decorPlacements.filter(p => p.asset!=='fern'&&!craftedDecor.some(asset=>asset.asset===p.asset));
 const keepFallback = () => {};
 
 function GardenDecorInstances({scene,placements}:{scene:Object3D;placements:readonly GardenDecorPlacement[]}) {
@@ -50,6 +53,9 @@ export function HeroGardenDecor(){
   const {scene}=useGLTF(KIT_URL,false,false,extendForumLoader);
   return <>
     <GardenDecorInstances scene={scene} placements={otherPlacements}/>
+    <GardenAssetBoundary onFailure={keepFallback} fallback={<GardenDecorInstances scene={scene} placements={fernPlacements}/>}>
+      <Suspense fallback={<GardenDecorInstances scene={scene} placements={fernPlacements}/>}><GardenFerns placements={fernPlacements}/></Suspense>
+    </GardenAssetBoundary>
     {craftedDecor.map(asset=>{
       const fallback=<GardenDecorInstances scene={scene} placements={asset.placements}/>;
       return <GardenAssetBoundary key={asset.asset} onFailure={keepFallback} fallback={fallback}>

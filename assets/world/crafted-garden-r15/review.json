@@ -1,0 +1,29 @@
+{
+  "starting_build": "r14",
+  "target_build": "r16",
+  "user_authorized_credits_usd": 25,
+  "previous_estimated_fal_usd": 3.075,
+  "new_jobs_estimated_usd": 2.025,
+  "combined_estimated_usd": 5.1,
+  "billing_balance_verified": false,
+  "assets": {
+    "bookcase": "accepted",
+    "column": "accepted",
+    "fern_glb": "rejected: solid disk; retained only as failed comparison",
+    "fern_fronds": "authored curved instanced geometry using original generated alpha texture"
+  },
+  "native_review": "r15 actually launched and commons inspected; shelves/column/leaf silhouettes accepted, shadow detail rejected as too dark. r16 brightens fill and paving and adds continuous rounded foundation. r16 source build verified; native window control became unavailable across review app and Finder before staging.",
+  "checks": {
+    "asset_tests": "5 passed; decoded embedded maps and actual transformed collision bounds",
+    "navigation": "all 26 routes plus rejection/crowd checks passed after asset and terrain changes",
+    "terrain": "rounded footprint coverage, exact support height, finite hull beneath ground: 2 passed",
+    "native_builds": {
+      "r15": "passed 34.1s",
+      "r16": "passed 32.1s"
+    },
+    "embedded_assets": 638
+  },
+  "r15_raw_binary_sha256": "fe5224ca07bad86ab7707c2e2f0e20c94cdca10cabb4528abf8cf0547353963d",
+  "r15_staged_binary_sha256": "1b76d7cd36d4cea0bb9bf19967c419d6341c6b18862196151d44f5c9ca89e1b3",
+  "r16_raw_binary_sha256": "42f3b7259a13985e80c9da857f38d3f50556cac211ae07bf33eeab7fc1d7a611"
+}

@@ -1,0 +1,15 @@
+{
+  "laurel-leaf": {
+    "runtime": "ui/command-center/public/world/garden-materials/laurel-leaf-v1.webp",
+    "bytes": 139730,
+    "sha256": "f05f4de76dfe3be82f7ccd754354a4d3a2cf9b6f6c13aa373edb8362041b2f97",
+    "method": "builtin imagegen; exact original PNG and prompt retained; WebP resize only; real-time alpha testing"
+  },
+  "fern-frond": {
+    "runtime": "ui/command-center/public/world/garden-materials/fern-frond-v1.webp",
+    "bytes": 268786,
+    "sha256": "05c1429955cd3e4935bb24d0747830c7a03e0e7cd0e3756e5cb6d254d7b9cfab",
+    "method": "builtin imagegen; exact original PNG and prompt retained; WebP resize only; real-time alpha testing",
+    "source": "/Users/j/.codex/generated_images/01a11260-660d-7a83-95df-259ff40542a8/exec-295314c5-a55f-44a8-8f4c-b36cfc0515fb.png"
+  }
+}

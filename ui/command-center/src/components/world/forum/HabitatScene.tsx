@@ -25,11 +25,11 @@ export function HabitatScene({directing,onDirected}:{directing:string|null;onDir
 }
 export function HabitatLighting({appearance}:{appearance:'day'|'night'}){const day=appearance==='day';return <>
   <HabitatSky appearance={appearance}/><color attach="background" args={['#1b3944']}/>
-  <hemisphereLight args={[day?'#adc9d8':'#89a5c3','#6f6144',day?.85:.55]}/>
-  <directionalLight position={[-12,16,-16]} color={day?'#ffd197':'#d6deed'} intensity={day?3.6:1.3} castShadow shadow-mapSize={[2048,2048]} shadow-camera-left={-24} shadow-camera-right={24} shadow-camera-top={32} shadow-camera-bottom={-32} shadow-normalBias={.04}/>
-  <directionalLight position={[5,8,14]} color="#ccdeed" intensity={day?.75:.6}/>
-  <pointLight position={[-3,2.7,3]} color="#ffc16a" intensity={day?6:26} distance={10} decay={2}/>
-  <pointLight position={[-10,5.6,-19]} color="#ffca86" intensity={day?5:28} distance={11} decay={2}/>
+  <hemisphereLight args={[day?'#adc9d8':'#89a5c3','#62553e',day?.95:.95]}/>
+  <directionalLight position={[-12,16,-16]} color={day?'#ffd197':'#ffdbaa'} intensity={day?3.6:2.1} castShadow shadow-mapSize={[2048,2048]} shadow-camera-left={-24} shadow-camera-right={24} shadow-camera-top={32} shadow-camera-bottom={-32} shadow-normalBias={.025}/>
+  <directionalLight position={[5,8,14]} color="#b9d5e6" intensity={day?.65:.7}/>
+  <pointLight position={[-3,2.7,3]} color="#ffd199" intensity={day?6:15} distance={10} decay={2}/>
+  <pointLight position={[-10,5.6,-19]} color="#ffcf97" intensity={day?5:20} distance={11} decay={2}/>
   <pointLight position={[10,5.7,-19]} color="#ffd4a1" intensity={day?3:20} distance={10} decay={2}/>
 </>;}
 export function HabitatNavigation({district,focusAgent,overview,follow,conversation=false}:{district:ForumDistrict;focusAgent:{id:string;revision:number}|null;overview:boolean;follow:string|null;conversation?:boolean}){

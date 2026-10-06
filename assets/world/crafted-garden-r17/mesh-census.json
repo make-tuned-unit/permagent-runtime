@@ -1,0 +1,35 @@
+{
+  "kind": "geometry census only; not a native frame-time benchmark",
+  "fern": {
+    "placements": 124,
+    "previous_triangles_per_plant": 2816,
+    "previous_submitted_triangles": 349184,
+    "new_fronds_per_plant": 15,
+    "new_triangles_per_frond": 48,
+    "new_submitted_triangles": 89280,
+    "new_shared_batches": 1
+  },
+  "new_objects": [
+    {
+      "name": "table",
+      "triangles": 18000,
+      "placements": 1,
+      "submitted_triangles": 18000,
+      "shared_batches": 1
+    },
+    {
+      "name": "bookcase",
+      "triangles": 18000,
+      "placements": 3,
+      "submitted_triangles": 54000,
+      "shared_batches": 1
+    },
+    {
+      "name": "column",
+      "triangles": 12000,
+      "placements": 2,
+      "submitted_triangles": 24000,
+      "shared_batches": 1
+    }
+  ]
+}

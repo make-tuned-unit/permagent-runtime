@@ -1,10 +1,13 @@
 import { BoxGeometry, BufferGeometry, Float32BufferAttribute, Group, Mesh, MeshStandardMaterial } from 'three';
+import { terraceSurfaceGeometry } from './habitatTerrace';
 import { GARDEN_PLACES, PLANT_BASE_Y, type GardenDecorPlacement } from './gardenLayout';
 
 export type Point3 = [number, number, number];
 export const HABITAT_ARRIVAL = {position: [1.8, 2.15, 8.6] as Point3, target: [-3, 1.35, -2.5] as Point3, fov: 58};
 export const HANK_TABLE_SEAT: Point3 = [-3,0,1.1];
 export const TABLE_CONVERSATION_CAMERA = {position:[-3,1.50,4.80] as Point3,target:[-3,1.28,1.1] as Point3};
+// Both the crafted table and its original fallback meet this usable surface.
+export const COMMONS_SURFACE_Y=.989;
 export const HABITAT_START: Point3 = [1.8, 0, 8.6];
 /** All three levels belong to one continuous, gently sloping walking surface. */
 export function habitatHeight(z: number) { return z >= -8 ? 0 : z <= -14 ? 3.4 : (-8-z)*(3.4/6); }
@@ -44,17 +47,20 @@ export const HABITAT_PLACES = [
   {...GARDEN_PLACES[2],id:'conservatory',name:'Conservatory',subtitle:'Cultivate & measure',position:[10,0,-7] as Point3,agent:'growth_measurement'},
 ];
 export type HabitatSolid = {name:string;at:Point3;size:Point3;water?:boolean};
+export const ARCHIVE_DECOR:GardenDecorPlacement[]=[
+  ...[-13,-10,-7].map(x=>({asset:'bookcase',position:[x,3.4,-22.3] as Point3,scale:1,heading:0,solid:[2.6,2.8,.54] as Point3})),
+  ...[-14,-6].map(x=>({asset:'column',position:[x,3.4,-16] as Point3,scale:1,heading:0,solid:[.54,3.6,.54] as Point3})),
+];
 export const HABITAT_SOLIDS: HabitatSolid[] = [
-  {name:'commons table',at:[-3,.43,3],size:[2.7,.86,2.7]},
+  {name:'commons table',at:[-3,.495,3],size:[2.7,.99,2.7]},
   {name:'water garden',at:[4,.05,-2],size:[3.8,.1,6]},
   {name:'bridge north rail',at:[4,.95,-3.23],size:[4,.9,.07]},
   {name:'bridge south rail',at:[4,.95,-1.17],size:[4,.9,.07]},
   {name:'cascade basin',at:[4,.6,-8],size:[3.6,1.2,3.2]},
   {name:'cascade receiving rill',at:[4,.05,-5.7],size:[3.2,.1,1.4]},
   ...HABITAT_STATIONS.filter(s=>s.id!=='henry').map(s=>({name:`${s.id} desk`,at:[s.position[0],s.position[1]+.42,s.position[2]-.90] as Point3,size:[1.9,.84,.7] as Point3})),
-  ...[-13,-7].map(x=>({name:'archive shelves',at:[x,4.9,-22] as Point3,size:[2.6,3,.5] as Point3})),
+  ...ARCHIVE_DECOR.map(p=>({name:p.asset==='column'?'archive pillar':'archive shelves',at:[p.position[0],p.position[1]+p.solid![1]/2,p.position[2]] as Point3,size:p.solid!})),
   {name:'archive rear wall',at:[-10,5,-23],size:[8,3.2,.35]},
-  ...[-14,-6].map(x=>({name:'archive pillar',at:[x,5.2,-16] as Point3,size:[.3,3.6,.3] as Point3})),
   ...[7,14].map(x=>({name:'workshop pillar',at:[x,5,-16] as Point3,size:[.2,3.2,.2] as Point3})),
   ...[-.2,6.2].flatMap(x=>[-21.7,-26.3].map(z=>({name:'observatory pillar',at:[x,4.5,z] as Point3,size:[.16,2.2,.16] as Point3}))),
 ];
@@ -105,17 +111,7 @@ for(const s of HABITAT_STATIONS.filter(s=>s.id!=='henry')) {
   HABITAT_DECOR.push({asset:'planter',position:[x,y,z],scale:.7,heading:0,solid:[1.1,.67,1.1]});
   HABITAT_DECOR.push({asset:'fern',position:[x,y+.4025-PLANT_BASE_Y.fern*.7,z],scale:.7,heading:x});
 }
-export function terrainGeometry() {
-  const vertices:number[]=[],indices:number[]=[];
-  // Regular cells also make the slope continuous at the terrace seams.
-  for(let z=-28;z<16;z++)for(let x=-16;x<16;x++) {
-    if(!onHabitat(x+.5,z+.5,.1))continue;
-    const i=vertices.length/3;
-    vertices.push(x,habitatHeight(z),z,x,habitatHeight(z+1),z+1,x+1,habitatHeight(z+1),z+1,x+1,habitatHeight(z),z);
-    indices.push(i,i+1,i+2,i,i+2,i+3);
-  }
-  const geometry=new BufferGeometry();geometry.setAttribute('position',new Float32BufferAttribute(vertices,3));geometry.setIndex(indices);geometry.computeVertexNormals();return geometry;
-}
+export const terrainGeometry=()=>terraceSurfaceGeometry();
 /** Rectangular benches carry their rotated footprint; planting uses radial proxies. */
 function decorSolidSize(p:GardenDecorPlacement):Point3 {
   const [width,height,depth]=p.solid!;

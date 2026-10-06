@@ -1,0 +1,105 @@
+{
+  "name": "fern",
+  "variant": "hunyuan",
+  "source": "raw/fern.glb",
+  "output": "processed/fern-v1.glb",
+  "sha256": "b04d73f4b0b9096b264dfbb8926b5d0f0a9bcb98f8bf8c9ec02fe93d8d7993d3",
+  "before": {
+    "bytes": 54085728,
+    "triangles": 40000,
+    "bounds": {
+      "min": [
+        -0.3763920068740845,
+        -1.755828495359766e-08,
+        -0.3723230262739495
+      ],
+      "max": [
+        0.3756580054759979,
+        1.0278750741959122,
+        0.36362808051671636
+      ]
+    },
+    "textures": [
+      {
+        "size": [
+          4096,
+          4096
+        ],
+        "mimeType": "image/png"
+      },
+      {
+        "size": [
+          4096,
+          4096
+        ],
+        "mimeType": "image/png"
+      },
+      {
+        "size": [
+          4096,
+          4096
+        ],
+        "mimeType": "image/png"
+      }
+    ]
+  },
+  "repair": null,
+  "after": {
+    "bytes": 1023412,
+    "triangles": 18000,
+    "bounds": {
+      "min": [
+        -0.475,
+        8.470329472543003e-22,
+        -0.4749999999999999
+      ],
+      "max": [
+        0.475,
+        0.6499999999999999,
+        0.475
+      ]
+    },
+    "primitives": 1,
+    "textures": [
+      {
+        "size": [
+          1024,
+          1024
+        ],
+        "mimeType": "image/webp"
+      },
+      {
+        "size": [
+          1024,
+          1024
+        ],
+        "mimeType": "image/webp"
+      },
+      {
+        "size": [
+          1024,
+          1024
+        ],
+        "mimeType": "image/webp"
+      }
+    ]
+  },
+  "normalization": {
+    "scale": [
+      1.2633516381016554,
+      0.6323768575905422,
+      1.2909413486132237
+    ],
+    "offset": [
+      0.0003259927034378052,
+      -6.972765690935666e-06,
+      0.004374474226823327
+    ],
+    "dimensions": [
+      0.95,
+      0.65,
+      0.95
+    ]
+  },
+  "review": "rejected: provider collapsed thin leaflets into solid disk with floating fragment; never integrated"
+}
