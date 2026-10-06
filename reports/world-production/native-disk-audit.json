@@ -1,5 +1,44 @@
 {
   "allocated_footprint_bytes_du": {
+    "lane_target": 2568216576,
+    "native_debug": 1529483264,
+    "staged_app": 1006592000,
+    "baseline_binaries": 681881600,
+    "baseline_resources": 227233792,
+    "registry_archives": 94134272,
+    "registry_sources": 178237440
+  },
+  "available_bytes": 35969024000,
+  "redundant_generated_sidecars": [
+    {
+      "file": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/permagentd",
+      "bytes": 369375744,
+      "sha256": "fb9695d479c5786dfbb2dbe887577744b97910c0cdde7ac3aac883320a3a1810",
+      "duplicates": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/desktop/src-tauri/binaries/permagentd-aarch64-apple-darwin",
+      "safe_after_staging": "Staged package is self-contained. Keep source prerequisites and dependency cache; regenerate target-sidecar copies via tauri build before a future bundler/direct-debug run. Removal does not affect staged app or compilation libraries.",
+      "removed": true,
+      "removal": "Exact regular-file unlink after path/hash/inode/lsof/package checks"
+    },
+    {
+      "file": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/permagent",
+      "bytes": 280369088,
+      "sha256": "2f0c859330afa5c33b7f043533fd44b10abe29124d10ef6704aa496d03b007d3",
+      "duplicates": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/desktop/src-tauri/binaries/permagent-aarch64-apple-darwin",
+      "safe_after_staging": "Staged package is self-contained. Keep source prerequisites and dependency cache; regenerate target-sidecar copies via tauri build before a future bundler/direct-debug run. Removal does not affect staged app or compilation libraries.",
+      "removed": true,
+      "removal": "Exact regular-file unlink after path/hash/inode/lsof/package checks"
+    }
+  ],
+  "reclaimable_target_sidecar_bytes": 0,
+  "preserve": [
+    "564 checksum-verified locked crate archives",
+    "native dependency cache/fingerprints",
+    "source baseline prerequisites for cheap future builds",
+    "staged review app",
+    "all source/history/assets"
+  ],
+  "note": "Only two approved target-sidecar duplicates removed; staged signature remains valid and independent. Baseline prerequisites, compiled deps, locked archives, source/history and staged app preserved. No recompile.",
+  "allocated_footprint_bytes_before_cleanup": {
     "lane_target": 3217965056,
     "native_debug": 2179231744,
     "staged_app": 1006592000,
@@ -8,32 +47,6 @@
     "registry_archives": 94134272,
     "registry_sources": 178237440
   },
-  "available_bytes": 36000681984,
-  "redundant_generated_sidecars": [
-    {
-      "file": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/permagentd",
-      "bytes": 369375744,
-      "sha256": "fb9695d479c5786dfbb2dbe887577744b97910c0cdde7ac3aac883320a3a1810",
-      "duplicates": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/desktop/src-tauri/binaries/permagentd-aarch64-apple-darwin",
-      "safe_after_staging": "Staged package is self-contained. Keep source prerequisites and dependency cache; regenerate target-sidecar copies via tauri build before a future bundler/direct-debug run. Removal does not affect staged app or compilation libraries.",
-      "removed": false
-    },
-    {
-      "file": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/permagent",
-      "bytes": 280369088,
-      "sha256": "2f0c859330afa5c33b7f043533fd44b10abe29124d10ef6704aa496d03b007d3",
-      "duplicates": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/desktop/src-tauri/binaries/permagent-aarch64-apple-darwin",
-      "safe_after_staging": "Staged package is self-contained. Keep source prerequisites and dependency cache; regenerate target-sidecar copies via tauri build before a future bundler/direct-debug run. Removal does not affect staged app or compilation libraries.",
-      "removed": false
-    }
-  ],
-  "reclaimable_target_sidecar_bytes": 649744832,
-  "preserve": [
-    "564 checksum-verified locked crate archives",
-    "native dependency cache/fingerprints",
-    "source baseline prerequisites for cheap future builds",
-    "staged review app",
-    "all source/history/assets"
-  ],
-  "note": "No broad cleanup performed; target duplicate sidecars identified separately from useful compile cache. Installed app unchanged. No preview watcher retained."
+  "reclaimed_exact_file_bytes": 649744832,
+  "restoration_before_direct_debug_or_bundling": "Copy each checksum-verified source prerequisite back to debug/permagentd and debug/permagent, or force/re-run Tauri build script to materialize them; a cargo fresh no-op may not recreate a deleted target output."
 }
