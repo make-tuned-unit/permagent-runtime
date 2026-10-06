@@ -1,0 +1,7 @@
+{
+  "recovered_bytes": 214347033,
+  "restore": "Copy each source to its recorded path preserving mode. Verify SHA256. Required only for direct raw debug launch; staged bundle remains self-contained.",
+  "verified_file_count": 4615,
+  "manifest": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/staged/review-backups/debug-resources-full-manifest.json",
+  "manifest_sha256": "213a9d32797a1ca21ad420b1566d454d7ab898611c6ebf86bcb43aff8986a71d"
+}

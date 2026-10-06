@@ -38,8 +38,11 @@ export function HabitatNavigation({district,focusAgent,overview,follow,conversat
   const transition=useRef<{elapsed:number;from:Vector3;to:Vector3;lookFrom:Vector3;lookTo:Vector3;fovFrom:number;fovTo:number}|null>(null);
   useEffect(()=>{
     const p=focusAgent&&getForumMotion(focusAgent.id),at=p?[p.x,p.y,p.z]:district.position,arrival=district.id==='commons'&&!p;
-    const to=new Vector3(...(conversation?TABLE_CONVERSATION_CAMERA.position:overview?[29,28,31]:arrival?HABITAT_ARRIVAL.position:[at[0]+2.9,at[1]+2.05,at[2]+4.1]) as Point3);
-    const lookTo=new Vector3(...(conversation?TABLE_CONVERSATION_CAMERA.target:overview?[0,0,-7]:arrival?HABITAT_ARRIVAL.target:[at[0],at[1]+1.0,at[2]]) as Point3);
+    // Approach the archive through its central bay. The generic side view puts
+    // its near column directly between the camera and the furnished room.
+    const archive=district.id==='gallery'&&!p;
+    const to=new Vector3(...(conversation?TABLE_CONVERSATION_CAMERA.position:overview?[29,28,31]:arrival?HABITAT_ARRIVAL.position:archive?[-10,5.7,-12.5]:[at[0]+2.9,at[1]+2.05,at[2]+4.1]) as Point3);
+    const lookTo=new Vector3(...(conversation?TABLE_CONVERSATION_CAMERA.target:overview?[0,0,-7]:arrival?HABITAT_ARRIVAL.target:archive?[-10,4.65,-20.7]:[at[0],at[1]+1.0,at[2]]) as Point3);
     const fovTo=conversation?34:overview?48:58;
     if(initialized.current&&!getReduceMotion()){
       transition.current={elapsed:0,from:camera.position.clone(),to,lookFrom:controls.current?.target.clone()??lookTo.clone(),lookTo,fovFrom:camera instanceof PerspectiveCamera?camera.fov:fovTo,fovTo};

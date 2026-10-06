@@ -7,7 +7,7 @@
     "sha256": "ace6b99dd5d40cb30a54652023138761f6b6235f8fab84ad41f59cfa33bdd1a3",
     "glb_version": 2,
     "acquisition": "public HTTPS DNS answer; request-local curl --resolve; verified HTTPS",
-    "revalidated_at": "2026-10-06T19:08:36.627442+00:00"
+    "revalidated_at": "2026-10-06T21:00:53.885184+00:00"
   },
   "planter-hunyuan": {
     "asset": "planter-hunyuan",
@@ -17,7 +17,7 @@
     "sha256": "5731c086b144251a4b5e808eb9e3f0a68d3b139b62943eed048691c338643a95",
     "glb_version": 2,
     "acquisition": "public HTTPS DNS answer; request-local curl --resolve; verified HTTPS",
-    "revalidated_at": "2026-10-06T19:08:36.598393+00:00"
+    "revalidated_at": "2026-10-06T21:00:53.856293+00:00"
   },
   "bench-hunyuan": {
     "asset": "bench-hunyuan",
@@ -28,6 +28,6 @@
     "glb_version": 2,
     "acquisition": "fresh HTTPS public DNS answer; request-local resolution; verified HTTPS",
     "downloaded_at": "2026-10-06T18:45:35.600577+00:00",
-    "revalidated_at": "2026-10-06T19:08:36.699753+00:00"
+    "revalidated_at": "2026-10-06T21:00:53.950348+00:00"
   }
 }

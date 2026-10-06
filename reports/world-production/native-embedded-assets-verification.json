@@ -1,33 +1,33 @@
 {
-  "native_build_sha256": "42f3b7259a13985e80c9da857f38d3f50556cac211ae07bf33eeab7fc1d7a611",
+  "native_build_sha256": "aa14a79c3d685252491e9cd4dd5f31677ee927ecdbceaf111811a572a64dc47e",
   "embedded_review_identifier": true,
   "embedded_review_name": true,
   "native_asset_base": "/",
   "verified_exact_dist_assets": [
     {
-      "path": "assets/App-B_g4BXRM.js",
-      "sha256": "46ffc026777bb6848147281c8e205766dfa8d45d91f6a0c98c1e2340e0a4df59",
+      "path": "assets/App-D680nicq.js",
+      "sha256": "3cb41081058332457ef84ec1e9d74086e7749fa37bcf13e9a99d33f55aee5a6a",
       "bytes": 1264012
     },
     {
-      "path": "assets/Button-BxdfUfhn.js",
-      "sha256": "fd0f5e35ae345a3d12131935997c42faf3ae259b38ed0dd38aea978f27e38056",
+      "path": "assets/Button-kvfJLi4c.js",
+      "sha256": "4bebdbd8b0029d4e102f2e742873a007f0970d19709cf2bc1b1c2bd95486d149",
       "bytes": 77459
     },
     {
-      "path": "assets/ChatApp-BOPE-pHk.js",
-      "sha256": "c8c9526c6d7e0be4b77d86b34b1875db42590c5c380f09dc4099fd790d505072",
+      "path": "assets/ChatApp-D1EFWolC.js",
+      "sha256": "91d328a3860d9f35bcc079c9077f825f2f2f2be81b70316d779854f81dcbee1e",
       "bytes": 16493
     },
     {
-      "path": "assets/CyborgTest-D8jrewNQ.js",
-      "sha256": "1cac1e859d148486fc7d77dc07ae691ac5f822b9f3d4b77596315e8751e338ea",
+      "path": "assets/CyborgTest-DhRKNN2d.js",
+      "sha256": "f345f0c98c5a69a6061e022c6693754f96e0e855e19926b8ce2621c31cc3242c",
       "bytes": 13341
     },
     {
-      "path": "assets/ForumAppView-C57eSzM8.js",
-      "sha256": "893058acda6171dffeb8567767869e3c938aaea7e716d8279631be357692de10",
-      "bytes": 232860
+      "path": "assets/ForumAppView-B9yh5SEX.js",
+      "sha256": "9bcb0532d9adb107e1e81fdff23fc67a33ff77449468fe67f0af477cfac80496",
+      "bytes": 232979
     },
     {
       "path": "assets/ForumAppView-jxk8LwYi.css",
@@ -35,28 +35,28 @@
       "bytes": 20243
     },
     {
-      "path": "assets/OrbitControls-Coowhq8S.js",
-      "sha256": "9898f938736fc0383b7483459fb316517f5d2bc43aac09e49742d75993267472",
+      "path": "assets/OrbitControls-2Hva6Gad.js",
+      "sha256": "9e5025651cfc99d5f1284dbcb51dabdceda9ca445bcbf5d4ff7189cc8a6f108b",
       "bytes": 886919
     },
     {
-      "path": "assets/PaneWindowApp-BqNRdPvH.js",
-      "sha256": "99fd38b034ebd6880f18fd76751c7b85a8c46ae93f124d05ab487bdf686fbafc",
+      "path": "assets/PaneWindowApp-6PVtKIP7.js",
+      "sha256": "a953b22625a40185cdee59e38c68069a69df43d0fbcb84e59fd405021d54652b",
       "bytes": 2308
     },
     {
-      "path": "assets/ProviderModelPicker-DMoXeBaO.js",
-      "sha256": "d3d9a563446f25bbaeac4c4200eb5308b04dec96999a7b46032637323bf3420d",
+      "path": "assets/ProviderModelPicker-DierGxIo.js",
+      "sha256": "a12d7bce935e365b094332012cbbf4fc9515a25d5b2abf1aab56cb609c061aec",
       "bytes": 48838
     },
     {
-      "path": "assets/Stargate-CQAJhJ7j.js",
-      "sha256": "3fdf86ce88e74d3c27eca5505250c1e3a71889c1b0464855477e5f7e0684ca99",
+      "path": "assets/Stargate-DUxQGoTl.js",
+      "sha256": "ab20e07b3c0148d394afe98ee77118bfaa477652b952ee3fa0c23a2c4ec056c4",
       "bytes": 6290
     },
     {
-      "path": "assets/StargateTest-LtBTrquj.js",
-      "sha256": "7dba23bad416af0cac775e6ca83c8fedb85857522d094ee93fb68283393003f0",
+      "path": "assets/StargateTest-C_Rp92te.js",
+      "sha256": "4a26c7f78f5901475c5577aad8a76282179667356c57238286d33bc078e11dc7",
       "bytes": 1247
     },
     {
@@ -65,8 +65,8 @@
       "bytes": 5752
     },
     {
-      "path": "assets/TerminalManager-F66hA5eR.js",
-      "sha256": "5cb0a0823963a42d28b816654a33d34c8f85d6b6461deb191dc518accbeb4473",
+      "path": "assets/TerminalManager-BEJYPz5p.js",
+      "sha256": "bcb62f7a29dc81a2ebfa7fdaefe4a5cbaa0097621c1ead5380aebe961ff355f2",
       "bytes": 436129
     },
     {
@@ -75,13 +75,13 @@
       "bytes": 1035
     },
     {
-      "path": "assets/VoiceOrb-DT4C_hAJ.js",
-      "sha256": "7389bb52919e1fa00cc808acda0c1358e67d306011f9c167d99de4d1aa214c81",
+      "path": "assets/VoiceOrb-CZJgvxp4.js",
+      "sha256": "0bbeacb0759276b870a19b760549efec6074e945c28e7e205dfc4a6e0cee5a7d",
       "bytes": 260985
     },
     {
-      "path": "assets/WorldView-B9rWPxQ3.js",
-      "sha256": "ef613e7c36129c108ff604eae48f6c16c69bed0ef419073f0cdb359baeb0d010",
+      "path": "assets/WorldView-CqOoawAI.js",
+      "sha256": "55a34df46b8a8a6f4db55a5b20744aebd863b640ed786ef8c5233e3f5e627ddf",
       "bytes": 130451
     },
     {
@@ -270,8 +270,8 @@
       "bytes": 47255
     },
     {
-      "path": "assets/ccip-B63dPVY_.js",
-      "sha256": "53a2a47295355a82910e167ffd282fcf73f9aa5386ceb601926a3c3e8a2110b9",
+      "path": "assets/ccip-DMrIzs8e.js",
+      "sha256": "18699805d85d8fafa6ffc13b2eeb802f2d87f6e46bbe7d983f02d63c53df802c",
       "bytes": 3442
     },
     {
@@ -715,8 +715,8 @@
       "bytes": 2648
     },
     {
-      "path": "assets/identityStore-CtED2Ch0.js",
-      "sha256": "41c7a0ffff94ba88c0c1210f3ca510f669d57e136b3e64ffb49c3cfe71321f7b",
+      "path": "assets/identityStore-BM7qxjhY.js",
+      "sha256": "3335f53e27acefcd63f3a9b082d63e8766a17af95af8c79f6f2a8e1ea6fece5b",
       "bytes": 540684
     },
     {
@@ -725,19 +725,14 @@
       "bytes": 49930
     },
     {
-      "path": "assets/index-Bwqv-ILf.css",
-      "sha256": "cf0b7f574f28b9ec3cf17bccdbd69f5c62bf8fcd6977105ac14cbe86297f06cb",
-      "bytes": 34130
-    },
-    {
-      "path": "assets/index-DQCbAaXu.js",
-      "sha256": "6acc8b9b90418ae0d354e6af69018f6f21af373cd43b88ce14d47afbb405ea18",
+      "path": "assets/index-4zZyZcNR.js",
+      "sha256": "1e10bb3635c5c0b367e4396332bf7d045ed81d8b6180476869e7dbb4ba4f131e",
       "bytes": 195865
     },
     {
-      "path": "assets/index-DTxslQyd.js",
-      "sha256": "9b883bdfbceadeacf67f7c35757a2f3aac6164a40a189700068c9caba021f6f2",
-      "bytes": 144921
+      "path": "assets/index-Bwqv-ILf.css",
+      "sha256": "cf0b7f574f28b9ec3cf17bccdbd69f5c62bf8fcd6977105ac14cbe86297f06cb",
+      "bytes": 34130
     },
     {
       "path": "assets/index-F3_Uwzbp.js",
@@ -745,13 +740,18 @@
       "bytes": 2214
     },
     {
+      "path": "assets/index-dfI1NvFM.js",
+      "sha256": "d86c8a3a2d41cbda0cb4b34d6212800ff85fceebb20729a1eab9d7d88d29e73b",
+      "bytes": 144921
+    },
+    {
       "path": "assets/ini-BEwlwnbL.js",
       "sha256": "7830e62a2a96e22c418b5a1e52ba15545ece3c5684346dd50fc174a60b3c225f",
       "bytes": 1525
     },
     {
-      "path": "assets/instancing-CCUv8IRE.js",
-      "sha256": "826b759f6b2f49414223ca8bdc61b001149d51f77281ce7cdc544d363189df77",
+      "path": "assets/instancing-Cw8xUS4F.js",
+      "sha256": "4ea836d224e740f45ff8f3174eb1a505df9605ddb72ecbb5e42ba58bed7ad3e2",
       "bytes": 686
     },
     {
@@ -1100,8 +1100,8 @@
       "bytes": 630
     },
     {
-      "path": "assets/paneWindows-3E3oX4RJ.js",
-      "sha256": "3d4684e70f44ca51d96b6e65a6268b8b4c84c8f9f4381a4563cfc27c35279398",
+      "path": "assets/paneWindows-CPeingYd.js",
+      "sha256": "4623a1cb0dbd8ca6f55eff72a96b6b08b754439af77109737e8abc819304fbb4",
       "bytes": 1515
     },
     {
@@ -3088,6 +3088,11 @@
       "path": "world/garden-crafted/planter-v2.glb",
       "sha256": "b7f512af50cee55ed2a51a7a2c8a662f8809974dd07cc8b1edc96d8abe4d0760",
       "bytes": 792940
+    },
+    {
+      "path": "world/garden-crafted/table-v1.glb",
+      "sha256": "7b1136d250a182706d46039d306dc482f3045679da562f73aeca1e44575ecfce",
+      "bytes": 1523268
     },
     {
       "path": "world/garden-hero/hero-kit-v3b.glb",

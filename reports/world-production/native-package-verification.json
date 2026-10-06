@@ -1,8 +1,8 @@
 {
   "staged_app": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/staged/Permagent World Review.app",
   "native_build_binary": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/permagent-app",
-  "native_build_sha256": "fe5224ca07bad86ab7707c2e2f0e20c94cdca10cabb4528abf8cf0547353963d",
-  "staged_binary_sha256": "1b76d7cd36d4cea0bb9bf19967c419d6341c6b18862196151d44f5c9ca89e1b3",
+  "native_build_sha256": "6630542179cdebb8f04590810e94c1f3b350e9fcba0f74a3ff535ec777606dc9",
+  "staged_binary_sha256": "96e2fdc33e3b6fcf7fa926ce2fed2c52de6f493537c9ab8c11a40ca8657a491c",
   "architecture": "arm64",
   "identifier": "ai.permagent.world-review-20261006",
   "name": "Permagent World Review",
@@ -4634,20 +4634,11 @@
     "Contents/Resources/mcp-runtime/node_modules/pkce-challenge/dist/index.browser.d.ts": "8c377c4daf607632c7934d1450ae7b203a441a649823160eb4c9c3f6cc050629"
   },
   "signature_check": "--prepared:/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/staged/Permagent World Review.app/Contents/MacOS/permagent\n--validated:/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/staged/Permagent World Review.app/Contents/MacOS/permagent\n--prepared:/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/staged/Permagent World Review.app/Contents/MacOS/permagentd\n--validated:/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/staged/Permagent World Review.app/Contents/MacOS/permagentd\n--prepared:/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/staged/Permagent World Review.app/Contents/Frameworks/libsherpa-onnx-c-api.dylib\n--validated:/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/staged/Permagent World Review.app/Contents/Frameworks/libsherpa-onnx-c-api.dylib\n--prepared:/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/staged/Permagent World Review.app/Contents/Frameworks/libonnxruntime.dylib\n--validated:/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/staged/Permagent World Review.app/Contents/Frameworks/libonnxruntime.dylib\n/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/staged/Permagent World Review.app: valid on disk\n/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/staged/Permagent World Review.app: satisfies its Designated Requirement",
-  "signature_details": "Executable=/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/staged/Permagent World Review.app/Contents/MacOS/permagent-app\nIdentifier=ai.permagent.world-review-20261006\nFormat=app bundle with Mach-O thin (arm64)\nCodeDirectory v=20400 size=208187 flags=0x2(adhoc) hashes=6495+7 location=embedded\nVersionPlatform=1\nVersionMin=720896\nVersionSDK=1705216\nHash type=sha256 size=32\nCandidateCDHash sha256=410bb9d88b656b895abe408b54ada5f35e9ea0b2\nCandidateCDHashFull sha256=410bb9d88b656b895abe408b54ada5f35e9ea0b277ecbf5c712974d5d030be13\nHash choices=sha256\nCMSDigest=410bb9d88b656b895abe408b54ada5f35e9ea0b277ecbf5c712974d5d030be13\nCMSDigestType=2\nExecutable Segment base=0\nExecutable Segment limit=81346560\nExecutable Segment flags=0x1\nPage size=16384\nCDHash=410bb9d88b656b895abe408b54ada5f35e9ea0b2\nSignature=adhoc\nInfo.plist entries=19\nTeamIdentifier=not set\nSealed Resources version=2 rules=13 files=4621\nInternal requirements count=0 size=12",
+  "signature_details": "Executable=/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/staged/Permagent World Review.app/Contents/MacOS/permagent-app\nIdentifier=ai.permagent.world-review-20261006\nFormat=app bundle with Mach-O thin (arm64)\nCodeDirectory v=20400 size=210971 flags=0x2(adhoc) hashes=6582+7 location=embedded\nVersionPlatform=1\nVersionMin=720896\nVersionSDK=1705216\nHash type=sha256 size=32\nCandidateCDHash sha256=3292c363b86d0c33a987b83c0a00911f47adf86b\nCandidateCDHashFull sha256=3292c363b86d0c33a987b83c0a00911f47adf86b362679c1e7fce304860a0574\nHash choices=sha256\nCMSDigest=3292c363b86d0c33a987b83c0a00911f47adf86b362679c1e7fce304860a0574\nCMSDigestType=2\nExecutable Segment base=0\nExecutable Segment limit=82771968\nExecutable Segment flags=0x1\nPage size=16384\nCDHash=3292c363b86d0c33a987b83c0a00911f47adf86b\nSignature=adhoc\nInfo.plist entries=19\nTeamIdentifier=not set\nSealed Resources version=2 rules=13 files=4621\nInternal requirements count=0 size=12",
   "launched": true,
   "copy": "ordinary independent-inode copies; no hardlinks",
   "staged_files": 4624,
-  "staged_bytes": 1004632842,
-  "review_revision": "r15",
-  "visual_review": {
-    "surface": "native app via CUA",
-    "views": [
-      "commons arrival",
-      "settled commons conversation"
-    ],
-    "screenshot": "reports/world-production/native-r15-commons.png",
-    "result": "new archive models/foliage visible; shadow detail too dark, triggering r16; r16/r17 not staged",
-    "voice_active": false
-  }
+  "staged_bytes": 1006061034,
+  "review_revision": "r18",
+  "visual_review": "Native archive camera now clears the column and shows all three bookcases. Overview captured; water remains too bright, so visual water fix is not accepted yet. Warm daylight selected through UI, but capture failed when desktop control lost the window. Voice off."
 }

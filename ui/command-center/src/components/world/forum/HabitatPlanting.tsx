@@ -31,7 +31,7 @@ function GardenPlanting({texture}:{texture?:Texture}) {
     geometry.setAttribute('uv',new Float32BufferAttribute(uvs,2));
     geometry.setIndex(indices); geometry.computeVertexNormals();
     const map=texture?.clone();if(map){map.colorSpace=SRGBColorSpace;map.anisotropy=4;map.needsUpdate=true;}
-    const leaf = new MeshStandardMaterial({ color: '#ffffff', map, alphaTest:map?.48:0, side: DoubleSide, roughness: .76 });
+    const leaf = new MeshStandardMaterial({ color: '#ffffff', map:map??null, alphaTest:map?.48:0, side: DoubleSide, roughness: .76 });
     const matrices: Object3D[] = [], colors: Color[] = [];
     const details = new DetailBuilder(), stem = material('#56643a'), petal = material('#e5b575'), pollen = material('#d1b249');
     const addLeaf = (x:number,y:number,z:number,length:number,heading:number,tilt:number) => {

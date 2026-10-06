@@ -6,8 +6,10 @@ import { getReduceMotion } from '../../../styles/tokens';
 /** Small shared ripple shader: the existing sky environment supplies reflections. */
 function waterMaterial(time: { value: number }) {
   const material = new MeshPhysicalMaterial({
-    color: '#315c52', roughness: .19, metalness: .22,
-    clearcoat: 1, clearcoatRoughness: .12, envMapIntensity: 1.3,
+    color: '#2d7069', roughness: .4, metalness: 0, ior: 1.333,
+    // One rippled dielectric surface. Broaden the direct-light highlight so
+    // the elevated overview retains jade water between the moving glints.
+    clearcoat: 0, specularIntensity: .55, envMapIntensity: .8,
   });
   material.onBeforeCompile = shader => {
     shader.uniforms.uWaterTime = time;

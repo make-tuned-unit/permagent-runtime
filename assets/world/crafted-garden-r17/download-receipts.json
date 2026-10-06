@@ -7,6 +7,7 @@
     "sha256": "9c1063d9c0cc85eda474c66cf01f6ab91b2f5ea0ad1ccdb218364170af7bc843",
     "glb_version": 2,
     "acquisition": "fresh HTTPS public DNS answer; request-local resolution; verified HTTPS",
-    "downloaded_at": "2026-10-06T20:06:00.746949+00:00"
+    "downloaded_at": "2026-10-06T20:06:00.746949+00:00",
+    "revalidated_at": "2026-10-06T21:00:53.652390+00:00"
   }
 }
