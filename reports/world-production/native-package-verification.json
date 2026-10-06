@@ -1,8 +1,8 @@
 {
   "staged_app": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/staged/Permagent World Review.app",
   "native_build_binary": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/permagent-app",
-  "native_build_sha256": "b4ba1acb025094e131de7baba002a184745cf7438618d7e04a3377b16d5a2bba",
-  "staged_binary_sha256": "e2a0fb6a7e71e3b632d0cd2efdf8cc4bbddb80b9f0f75f1e80e368efd11ccdf1",
+  "native_build_sha256": "c4aaf7913e7656bb6ce092896b26c11cf62fec39c7425aac460e7fc91cbac117",
+  "staged_binary_sha256": "570cd54047681ae415fabf04ccdccd00228b6267bebd949d2913e997bd930a9c",
   "architecture": "arm64",
   "identifier": "ai.permagent.world-review-20261006",
   "name": "Permagent World Review",
@@ -4634,20 +4634,27 @@
     "Contents/Resources/mcp-runtime/node_modules/pkce-challenge/dist/index.browser.d.ts": "8c377c4daf607632c7934d1450ae7b203a441a649823160eb4c9c3f6cc050629"
   },
   "signature_check": "--prepared:/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/staged/Permagent World Review.app/Contents/MacOS/permagent\n--validated:/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/staged/Permagent World Review.app/Contents/MacOS/permagent\n--prepared:/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/staged/Permagent World Review.app/Contents/MacOS/permagentd\n--validated:/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/staged/Permagent World Review.app/Contents/MacOS/permagentd\n--prepared:/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/staged/Permagent World Review.app/Contents/Frameworks/libsherpa-onnx-c-api.dylib\n--validated:/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/staged/Permagent World Review.app/Contents/Frameworks/libsherpa-onnx-c-api.dylib\n--prepared:/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/staged/Permagent World Review.app/Contents/Frameworks/libonnxruntime.dylib\n--validated:/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/staged/Permagent World Review.app/Contents/Frameworks/libonnxruntime.dylib\n/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/staged/Permagent World Review.app: valid on disk\n/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/staged/Permagent World Review.app: satisfies its Designated Requirement",
-  "signature_details": "Executable=/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/staged/Permagent World Review.app/Contents/MacOS/permagent-app\nIdentifier=ai.permagent.world-review-20261006\nFormat=app bundle with Mach-O thin (arm64)\nCodeDirectory v=20400 size=186875 flags=0x2(adhoc) hashes=5829+7 location=embedded\nVersionPlatform=1\nVersionMin=720896\nVersionSDK=1705216\nHash type=sha256 size=32\nCandidateCDHash sha256=5d5dff9b82d1211ab5a1058a58991224bae22b7a\nCandidateCDHashFull sha256=5d5dff9b82d1211ab5a1058a58991224bae22b7aa797f619fa9ffc538f0d4f8f\nHash choices=sha256\nCMSDigest=5d5dff9b82d1211ab5a1058a58991224bae22b7aa797f619fa9ffc538f0d4f8f\nCMSDigestType=2\nExecutable Segment base=0\nExecutable Segment limit=70434816\nExecutable Segment flags=0x1\nPage size=16384\nCDHash=5d5dff9b82d1211ab5a1058a58991224bae22b7a\nSignature=adhoc\nInfo.plist entries=19\nTeamIdentifier=not set\nSealed Resources version=2 rules=13 files=4621\nInternal requirements count=0 size=12",
+  "signature_details": "Executable=/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/staged/Permagent World Review.app/Contents/MacOS/permagent-app\nIdentifier=ai.permagent.world-review-20261006\nFormat=app bundle with Mach-O thin (arm64)\nCodeDirectory v=20400 size=186875 flags=0x2(adhoc) hashes=5829+7 location=embedded\nVersionPlatform=1\nVersionMin=720896\nVersionSDK=1705216\nHash type=sha256 size=32\nCandidateCDHash sha256=64dd9290cc1ac5feeebd4008d946eaf71b09adaa\nCandidateCDHashFull sha256=64dd9290cc1ac5feeebd4008d946eaf71b09adaa62e0d571b48d6af763df4a1c\nHash choices=sha256\nCMSDigest=64dd9290cc1ac5feeebd4008d946eaf71b09adaa62e0d571b48d6af763df4a1c\nCMSDigestType=2\nExecutable Segment base=0\nExecutable Segment limit=70434816\nExecutable Segment flags=0x1\nPage size=16384\nCDHash=64dd9290cc1ac5feeebd4008d946eaf71b09adaa\nSignature=adhoc\nInfo.plist entries=19\nTeamIdentifier=not set\nSealed Resources version=2 rules=13 files=4621\nInternal requirements count=0 size=12",
   "launched": true,
   "copy": "ordinary independent-inode copies; no hardlinks",
   "staged_files": 4624,
   "staged_bytes": 993699786,
   "runtime_review": {
-    "revision": "r10",
+    "revision": "r12",
+    "date": "2026-10-06",
+    "surface": "CUA native WKWebView",
     "rendering_observed": true,
-    "surface": "Supported CUA, exact staged app path",
-    "findings": [
-      "Native arrival shows continuous cascade, metre-scaled stone, cut paving, archive arch and revised planet",
-      "Native table view shows Henry seated with current hands, real Start voice chat control and voice off"
+    "observations": [
+      "Arrival view renders the tabletop team globe, water and foliage",
+      "Clicking the globe switches the visible control to Arrival view and moves the camera to overview",
+      "Sit with Henry routes him to the commons seat and completes face-to-face framing",
+      "Globe is hidden during seated mode; voice remains off"
     ],
-    "r9_route_verification": "Observed Henry arrive at observatory and return to table through native controls",
-    "full_spoken_exchange_verified": false
+    "unverified": [
+      "Latest specialist working arm poses",
+      "Full real spoken exchange",
+      "Native frame-time distribution",
+      "Cinematic reference parity"
+    ]
   }
 }
