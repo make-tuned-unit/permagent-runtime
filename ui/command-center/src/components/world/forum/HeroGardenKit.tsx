@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { Suspense, useEffect, useMemo, useRef } from 'react';
 import { Html, useGLTF } from '@react-three/drei';
 import { useFrame } from '@react-three/fiber';
 import { BufferGeometry, CylinderGeometry, Group, Mesh, MeshBasicMaterial, MeshStandardMaterial, Object3D, SphereGeometry } from 'three';
@@ -11,6 +11,8 @@ import { STATE } from '../shared/palette';
 import { getForumMotion } from './ForumInhabitants';
 import { HABITAT_DECOR, HANK_TABLE_SEAT, stationFor } from './habitatLayout';
 import { instanceGardenDecor } from './staticGardenInstances';
+import { GardenAssetBoundary } from './GardenAssetBoundary';
+import type { GardenDecorPlacement } from './gardenLayout';
 import { getReduceMotion } from '../../../styles/tokens';
 import { createAgentWardrobe } from './agentWardrobe';
 import { heroNode, replaceFixedHeroMouth } from './heroRig';
@@ -20,18 +22,36 @@ import { advanceHabitatAgent, commandHabitatAgent, getHabitatTravel, initializeH
 
 const KIT_URL = `${import.meta.env.BASE_URL}world/garden-hero/hero-kit-v3b.glb?v=e114f28bedaa`;
 function cloneAsset(scene:Object3D,name:string){const original=scene.getObjectByName(name);if(!original)throw new Error(`Hero kit missing ${name}`);const copy=original.clone(true);copy.position.set(0,0,0);copy.traverse(o=>{if(o instanceof Mesh){o.castShadow=true;o.receiveShadow=true;}});return copy;}
-export function HeroGardenDecor(){
-  const {scene}=useGLTF(KIT_URL,false,false,extendForumLoader);
+const PLANTER_URL = `${import.meta.env.BASE_URL}world/garden-crafted/planter-v1.glb?v=ebbf6698d4c2`;
+// Retain the bounded foreground flower population and all authored foliage.
+let flowerCount = 0;
+const decorPlacements = HABITAT_DECOR.filter(p => p.asset !== 'flowers' || flowerCount++ % 8 === 0);
+const planterPlacements = decorPlacements.filter(p => p.asset === 'planter');
+const otherPlacements = decorPlacements.filter(p => p.asset !== 'planter');
+const keepFallback = () => {};
+
+function GardenDecorInstances({scene,placements}:{scene:Object3D;placements:readonly GardenDecorPlacement[]}) {
   const decor=useMemo(()=>{
-    // The hero flower is 39k triangles. A few foreground specimens retain its
-    // detail; instanced planting supplies the repeated garden blossoms.
-    let flowers=0;const placements=HABITAT_DECOR.filter(p=>p.asset!=='flowers'||flowers++%8===0);
     const result=instanceGardenDecor(scene,placements);
     result.group.children.forEach(mesh=>{if(['flowers','fern','vine'].includes(mesh.userData.asset))mesh.castShadow=false;});
     return result;
-  },[scene]);
+  },[scene,placements]);
   useEffect(()=>()=>decor.dispose(),[decor]);
   return <primitive object={decor.group} dispose={null}/>;
+}
+function CraftedGardenPlanters() {
+  const {scene}=useGLTF(PLANTER_URL,false,false,extendForumLoader);
+  return <GardenDecorInstances scene={scene} placements={planterPlacements}/>;
+}
+export function HeroGardenDecor(){
+  const {scene}=useGLTF(KIT_URL,false,false,extendForumLoader);
+  const fallback=<GardenDecorInstances scene={scene} placements={planterPlacements}/>;
+  return <>
+    <GardenDecorInstances scene={scene} placements={otherPlacements}/>
+    <GardenAssetBoundary onFailure={keepFallback} fallback={fallback}>
+      <Suspense fallback={fallback}><CraftedGardenPlanters/></Suspense>
+    </GardenAssetBoundary>
+  </>;
 }
 function HeroRobot({id,index,state,live,selected,hovered,name,conversation,onSelect,onHover}:{id:string;index:number;state:keyof typeof STATE;live:boolean;selected:boolean;hovered:boolean;name:string;conversation:boolean;onSelect:(id:string)=>void;onHover:(id:string|null)=>void}){
   const {scene}=useGLTF(KIT_URL,false,false,extendForumLoader),root=useRef<Group>(null),station=stationFor(id);

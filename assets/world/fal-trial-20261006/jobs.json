@@ -1,0 +1,67 @@
+{
+  "created_at": "2026-10-06",
+  "budget_usd": 10,
+  "model_selection": "The recommendation tool misclassified the task as virtual try-on; no applicable 3D recommendation was returned. Used catalog-confirmed TRELLIS.2 and official Hunyuan v3.1 endpoint schemas for a controlled same-image comparison.",
+  "pricing": {
+    "trellis": {
+      "endpoint_id": "fal-ai/trellis-2",
+      "usd_unit": 0.05,
+      "units": 6,
+      "estimated_usd": 0.3,
+      "source": "https://fal.ai/models/fal-ai/trellis-2"
+    },
+    "hunyuan": {
+      "endpoint_id": "fal-ai/hunyuan-3d/v3.1/pro/image-to-3d",
+      "usd_unit": 0.015,
+      "units": 45,
+      "estimated_usd": 0.675,
+      "options": "base .375 + PBR .15 + custom face count .15",
+      "source": "https://fal.ai/models/fal-ai/hunyuan-3d/v3.1/pro/image-to-3d"
+    }
+  },
+  "jobs": [
+    {
+      "status": "submitted",
+      "recipe": {
+        "endpoint_id": "fal-ai/trellis-2",
+        "input": {
+          "image_url": "https://v3b.fal.media/files/b/0aad5283/k-K6EZCjBM7yj4B25e2Mq_permagent-planter-v1.png",
+          "resolution": 1024,
+          "texture_size": 2048,
+          "decimation_target": 12000,
+          "seed": 1062026
+        },
+        "note": "These are the submitted inputs, not resolved server defaults. For a variation, copy them and change only requested fields; reuse returned_seed when supported by the schema. Source URLs may expire."
+      },
+      "request_id": "01a11267-47a8-72f0-bebc-5239bea1b883",
+      "endpoint_id": "fal-ai/trellis-2",
+      "status_url": "https://queue.fal.run/fal-ai/trellis-2/requests/01a11267-47a8-72f0-bebc-5239bea1b883/status",
+      "response_url": "https://queue.fal.run/fal-ai/trellis-2/requests/01a11267-47a8-72f0-bebc-5239bea1b883",
+      "cancel_url": "https://queue.fal.run/fal-ai/trellis-2/requests/01a11267-47a8-72f0-bebc-5239bea1b883/cancel",
+      "poll_after_seconds": 20,
+      "polling_hint": "Wait poll_after_seconds before calling check_job with the same request_id and status_url. This interval is not an ETA. Report meaningful status changes rather than repeating unchanged progress. Do not submit another job to check progress.",
+      "hint": "Job submitted. Use check_job with status_url to check status, then get_job_result with response_url when it completes."
+    },
+    {
+      "status": "submitted",
+      "recipe": {
+        "endpoint_id": "fal-ai/hunyuan-3d/v3.1/pro/image-to-3d",
+        "input": {
+          "input_image_url": "https://v3b.fal.media/files/b/0aad5283/k-K6EZCjBM7yj4B25e2Mq_permagent-planter-v1.png",
+          "generate_type": "Normal",
+          "enable_pbr": true,
+          "face_count": 40000
+        },
+        "note": "These are the submitted inputs, not resolved server defaults. For a variation, copy them and change only requested fields; reuse returned_seed when supported by the schema. Source URLs may expire."
+      },
+      "request_id": "01a11267-4b7c-7422-8f33-ecbcc41b168d",
+      "endpoint_id": "fal-ai/hunyuan-3d/v3.1/pro/image-to-3d",
+      "status_url": "https://queue.fal.run/fal-ai/hunyuan-3d/requests/01a11267-4b7c-7422-8f33-ecbcc41b168d/status",
+      "response_url": "https://queue.fal.run/fal-ai/hunyuan-3d/requests/01a11267-4b7c-7422-8f33-ecbcc41b168d",
+      "cancel_url": "https://queue.fal.run/fal-ai/hunyuan-3d/requests/01a11267-4b7c-7422-8f33-ecbcc41b168d/cancel",
+      "poll_after_seconds": 20,
+      "polling_hint": "Wait poll_after_seconds before calling check_job with the same request_id and status_url. This interval is not an ETA. Report meaningful status changes rather than repeating unchanged progress. Do not submit another job to check progress.",
+      "hint": "Job submitted. Use check_job with status_url to check status, then get_job_result with response_url when it completes."
+    }
+  ]
+}

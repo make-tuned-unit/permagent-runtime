@@ -1,0 +1,12 @@
+{
+  "baseline": {
+    "triangles": 2876,
+    "primitive_batches": 2
+  },
+  "replacement": {
+    "triangles": 6503,
+    "primitive_batches": 2
+  },
+  "placements": 11,
+  "native_fps_benchmark": "not performed; mesh census is not frame-rate evidence"
+}

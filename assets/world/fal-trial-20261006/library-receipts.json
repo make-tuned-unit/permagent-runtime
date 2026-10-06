@@ -1,0 +1,86 @@
+[
+  {
+    "input": {
+      "type": "3d",
+      "url": "https://v3b.fal.media/files/b/0aad5287/JtUniLV_dE7D1Km2R59pj_trellis2_92e6e6ad56d1444e84aacb3766ba2c96.glb",
+      "endpoint": "fal-ai/trellis-2",
+      "requestId": "01a11267-47a8-72f0-bebc-5239bea1b883",
+      "size": 2280644
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"assetRecordId\":\"db2jrasregje0349u8o0\",\"assetId\":null,\"vectorId\":\"db2jrasregje0349u8o0\",\"isFavorited\":false,\"collectionIds\":[]}"
+        },
+        {
+          "type": "text",
+          "text": "fal account: Jesse Sharratt (github|5m4womwn5oan4fjuo2qmp172)."
+        }
+      ]
+    }
+  },
+  {
+    "input": {
+      "type": "3d",
+      "url": "https://v3b.fal.media/files/b/0aad5291/t6xEHNH7TbzKVaxeRQXK8_trellis2_9e4cc9e06e304fbbba35883a749aa629.glb",
+      "endpoint": "fal-ai/trellis-2",
+      "requestId": "01a11268-9a42-7232-ba67-7313641e4f90",
+      "size": 1970220
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"assetRecordId\":\"db2jrbcregjdcsk9ua1g\",\"assetId\":null,\"vectorId\":\"db2jrbcregjdcsk9ua1g\",\"isFavorited\":false,\"collectionIds\":[]}"
+        },
+        {
+          "type": "text",
+          "text": "fal account: Jesse Sharratt (github|5m4womwn5oan4fjuo2qmp172)."
+        }
+      ]
+    }
+  },
+  {
+    "input": {
+      "type": "3d",
+      "url": "https://v3b.fal.media/files/b/0aad5298/QW_iTOtl5zO6uNtKojocd_model.glb",
+      "endpoint": "fal-ai/hunyuan-3d/v3.1/pro/image-to-3d",
+      "requestId": "01a11267-4b7c-7422-8f33-ecbcc41b168d",
+      "size": 51211064
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"assetRecordId\":\"db2jrc4regjd85s9ubp0\",\"assetId\":null,\"vectorId\":\"db2jrc4regjd85s9ubp0\",\"isFavorited\":false,\"collectionIds\":[]}"
+        },
+        {
+          "type": "text",
+          "text": "fal account: Jesse Sharratt (github|5m4womwn5oan4fjuo2qmp172)."
+        }
+      ]
+    }
+  },
+  {
+    "input": {
+      "type": "3d",
+      "url": "https://v3b.fal.media/files/b/0aad52a0/msRvSAqxKpTp57nSL67m3_model.glb",
+      "endpoint": "fal-ai/hunyuan-3d/v3.1/pro/image-to-3d",
+      "requestId": "01a11268-9d0d-7651-aeea-db66b8b1f792",
+      "size": 46609308
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"assetRecordId\":\"db2jrccregjebj49uclg\",\"assetId\":null,\"vectorId\":\"db2jrccregjebj49uclg\",\"isFavorited\":false,\"collectionIds\":[]}"
+        },
+        {
+          "type": "text",
+          "text": "fal account: Jesse Sharratt (github|5m4womwn5oan4fjuo2qmp172)."
+        }
+      ]
+    }
+  }
+]

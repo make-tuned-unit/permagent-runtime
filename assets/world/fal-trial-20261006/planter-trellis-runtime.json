@@ -1,0 +1,96 @@
+{
+  "name": "planter",
+  "variant": "trellis",
+  "source": "raw/planter-trellis.glb",
+  "output": "processed/planter-v1.glb",
+  "sha256": "ebbf6698d4c203c80b5bf967fe50164e7cb3149c878b40b42264c78573e4ab52",
+  "before": {
+    "bytes": 2280644,
+    "triangles": 11523,
+    "bounds": {
+      "min": [
+        -0.4979846179485321,
+        -0.34016144275665283,
+        -0.4987570345401764
+      ],
+      "max": [
+        0.49896830320358276,
+        0.3418308198451996,
+        0.4986271262168884
+      ]
+    },
+    "textures": [
+      {
+        "size": [
+          2048,
+          2048
+        ],
+        "mimeType": "image/webp"
+      },
+      {
+        "size": [
+          2048,
+          2048
+        ],
+        "mimeType": "image/webp"
+      }
+    ]
+  },
+  "repair": {
+    "removedTriangles": 5116,
+    "soilHeight": 0.595,
+    "soilRadius": 0.491,
+    "addedTriangles": 96
+  },
+  "after": {
+    "bytes": 821176,
+    "triangles": 6503,
+    "bounds": {
+      "min": [
+        -0.54,
+        0,
+        -0.54
+      ],
+      "max": [
+        0.5400000000000001,
+        0.665,
+        0.54
+      ]
+    },
+    "primitives": 2,
+    "textures": [
+      {
+        "size": [
+          1024,
+          1024
+        ],
+        "mimeType": "image/webp"
+      },
+      {
+        "size": [
+          1024,
+          1024
+        ],
+        "mimeType": "image/webp"
+      }
+    ]
+  },
+  "normalization": {
+    "scale": [
+      1.0833009032682437,
+      0.9750843762698632,
+      1.0828325157883254
+    ],
+    "offset": [
+      -0.0004918426275253296,
+      0.34016144275665283,
+      6.495416164398193e-05
+    ],
+    "dimensions": [
+      1.08,
+      0.665,
+      1.08
+    ]
+  },
+  "review": "Final front/reverse renders inspected. Export/PBR/texture/bounds/collision/instancing tests pass. r13 native screenshot confirms generated planter and existing fern correctly placed beside the Reader."
+}

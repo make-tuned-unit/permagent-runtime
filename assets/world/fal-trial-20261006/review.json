@@ -1,0 +1,38 @@
+{
+  "estimated_generation_cost_usd": 1.95,
+  "budget_usd": 10,
+  "jobs_completed": 4,
+  "local_files": [
+    "raw/planter-trellis.glb",
+    "raw/instrument-trellis.glb"
+  ],
+  "pending_local_acquisition": [
+    "planter-hunyuan.glb",
+    "instrument-hunyuan.glb"
+  ],
+  "review": {
+    "planter_trellis": "Raw held; repaired and optimized export selected after front/reverse inspection and actual collision/instancing tests. Replaced 5115 fragmented soil triangles with a level cap; final weld removes one degenerate triangle.",
+    "instrument_trellis": "Front/reverse inspected: useful silhouette but wavy brass edges, soft dial, rear panel holes. Hold from integration.",
+    "hunyuan": "Provider thumbnails retain sharper carving, solid soil and clear gauge. Need actual GLB and reverse inspection before selection."
+  },
+  "no_more_generations_until_review": true,
+  "runtime_asset": {
+    "name": "Repaired TRELLIS stone and brass planter",
+    "file": "ui/command-center/public/world/garden-crafted/planter-v1.glb",
+    "sha256": "ebbf6698d4c203c80b5bf967fe50164e7cb3149c878b40b42264c78573e4ab52",
+    "bytes": 821176,
+    "triangles": 6503,
+    "placements": 11,
+    "primitive_batches": 2,
+    "fallback": "Existing hero-kit planter during loading and on error"
+  },
+  "validation": {
+    "targeted_tests": 8,
+    "navigation_routes": 26,
+    "front_reverse_export_review": "passed; repaired level soil, slight irregular underside of rim retained",
+    "native_review": "r13 launched via supported CUA; selected Reader. Screenshot visibly confirms generated stone/brass bowl with level dark soil and authored fern beside reading desk, grounded on the archive floor. No new FPS benchmark.",
+    "native_build": "Full TypeScript/Vite and offline single-worker Rust build passed; 625 exact embedded assets, signature and ARM64 checks passed. Installed baseline unchanged."
+  },
+  "blocked_downloads": "CLI cannot resolve v3b.fal.media. Chrome security check could not verify admin policy. No bypass attempted. Hunyuan GLBs remain completed and saved in FAL library; do not regenerate.",
+  "native_signed_sha256": "ec846e03d077727c20a8d2a2eadc4d4df63e62c3c6f7f110d9feab6dcf7b6831"
+}

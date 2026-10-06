@@ -1,0 +1,23 @@
+{
+  "status": "completed",
+  "endpoint_id": "fal-ai/trellis-2",
+  "request_id": "01a11268-9a42-7232-ba67-7313641e4f90",
+  "response_url": "https://queue.fal.run/fal-ai/trellis-2/requests/01a11268-9a42-7232-ba67-7313641e4f90",
+  "result": {
+    "model_glb": {
+      "url": "https://v3b.fal.media/files/b/0aad5291/t6xEHNH7TbzKVaxeRQXK8_trellis2_9e4cc9e06e304fbbba35883a749aa629.glb",
+      "content_type": "application/octet-stream",
+      "file_name": "trellis2_9e4cc9e06e304fbbba35883a749aa629.glb",
+      "file_size": 1970220
+    }
+  },
+  "media": [
+    {
+      "url": "https://v3b.fal.media/files/b/0aad5291/t6xEHNH7TbzKVaxeRQXK8_trellis2_9e4cc9e06e304fbbba35883a749aa629.glb",
+      "json_path": "result.model_glb.url",
+      "content_type": "application/octet-stream",
+      "file_name": "trellis2_9e4cc9e06e304fbbba35883a749aa629.glb"
+    }
+  ],
+  "display_hint": "Present completed media to the user. Forward attached image content blocks to the host's image display helper (for example, image(block)); do not stringify image blocks as text. For Markdown previews use previews[].preview_url, and separately link original_url as the full-resolution file. If no preview is available, show a clearly labeled original-file link. Do not claim a preview rendered unless it is visible. Video, audio and 3D URLs are original result files, not queue URLs."
+}
