@@ -7,7 +7,24 @@ import { GARDEN_DECOR, PLANT_BASE_Y, type GardenDecorPlacement } from './gardenL
 
 const closeVector=(a:Vector3,b:Vector3)=>expect(a.distanceTo(b)).toBeLessThan(2e-5);
 function count(geometry: Mesh['geometry']) { return Math.min(geometry.drawRange.count,(geometry.index?.count??geometry.getAttribute('position').count)-geometry.drawRange.start)/3; }
+// Clip a triangle to the closed half-space below head height. Every surviving
+// polygon vertex (including edge/plane intersections) bounds its convex face.
+function clipBelowHeight(triangle: Vector3[], height:number):Vector3[]{
+  const polygon:Vector3[]=[];
+  triangle.forEach((point,i)=>{
+    const next=triangle[(i+1)%triangle.length];
+    const inside=point.y<=height,nextInside=next.y<=height;
+    if(inside)polygon.push(point.clone());
+    if(inside!==nextInside)polygon.push(point.clone().lerp(next,(height-point.y)/(next.y-point.y)));
+  });
+  return polygon;
+}
 describe('static garden instance parity',()=>{
+  it('includes intersections of triangle edges crossing the head plane',()=>{
+    const clipped=clipBelowHeight([new Vector3(0,0,0),new Vector3(2,2,0),new Vector3(0,2,2)],1);
+    expect(clipped.map(p=>p.toArray())).toEqual([[0,0,0],[1,1,0],[0,1,1]]);
+    expect(clipBelowHeight([new Vector3(0,2,0),new Vector3(2,2,0),new Vector3(0,2,2)],1)).toEqual([]);
+  });
   it('matches independently placed clones through nested nonuniform transforms, material ranges and MASK materials',()=>{
     const library=new Group();library.position.set(91,15,-32); // Library placement is not authored asset-local space.
     const asset=new Group();asset.name='fixture';asset.position.set(.3,.2,-.1);asset.scale.set(1.2,.8,1.4);asset.rotation.set(.2,-.3,.1);library.add(asset);
@@ -76,7 +93,24 @@ describe('static garden instance parity',()=>{
           for(let i=0;i<vertices.count;i++){
             const point=new Vector3().fromBufferAttribute(vertices,i).applyMatrix4(o.matrixWorld);
             minY=Math.min(minY,point.y);
-            if(wood&&point.y*placement.scale+placement.position[1]<=1.85){woodyCount++;expect(Math.hypot(point.x,point.z)).toBeLessThanOrEqual(placement.solid![0]/2*Math.cos(Math.PI/24));}
+          }
+          if(wood){
+            const geometry=o.geometry;
+            const end=Math.min(geometry.drawRange.start+geometry.drawRange.count,geometry.index?.count??vertices.count);
+            const cosine=Math.cos(placement.heading),sine=Math.sin(placement.heading);
+            const placeVertex=(index:number)=>{
+              const p=new Vector3().fromBufferAttribute(vertices,index).applyMatrix4(o.matrixWorld).multiplyScalar(placement.scale);
+              return new Vector3(p.x*cosine+p.z*sine+placement.position[0],p.y+placement.position[1],-p.x*sine+p.z*cosine+placement.position[2]);
+            };
+            const inradius=placement.solid![0]/2*placement.scale*Math.cos(Math.PI/24);
+            let maxRadius=0;
+            for(let index=geometry.drawRange.start;index+2<end;index+=3){
+              const triangle=[0,1,2].map(offset=>placeVertex(geometry.index?.getX(index+offset)??index+offset));
+              for(const point of clipBelowHeight(triangle,1.85)){
+                woodyCount++;maxRadius=Math.max(maxRadius,Math.hypot(point.x-placement.position[0],point.z-placement.position[2]));
+              }
+            }
+            expect(maxRadius,`${placement.asset} clipped woody face envelope at ${placement.position}`).toBeLessThanOrEqual(inradius);
           }
           if(material.map){expect(material.map.image.width).toBe(1254);expect(material.map.colorSpace).toBe(SRGBColorSpace);expect(material.alphaTest).toBe(.55);expect(material.side).toBe(DoubleSide);expect(material.transparent).toBe(false);expect(o.geometry.getAttribute('uv')).toBeDefined();}
         });
