@@ -1,0 +1,105 @@
+{
+  "name": "planter",
+  "variant": "hunyuan",
+  "source": "raw/planter-hunyuan.glb",
+  "output": "processed/planter-hunyuan-v1.glb",
+  "sha256": "b7f512af50cee55ed2a51a7a2c8a662f8809974dd07cc8b1edc96d8abe4d0760",
+  "before": {
+    "bytes": 51211064,
+    "triangles": 40000,
+    "bounds": {
+      "min": [
+        -0.5090180039405823,
+        -1.0710953621638311e-08,
+        -0.5118359782846175
+      ],
+      "max": [
+        0.5188930034637451,
+        0.6755131783132957,
+        0.5094251356769418
+      ]
+    },
+    "textures": [
+      {
+        "size": [
+          4096,
+          4096
+        ],
+        "mimeType": "image/png"
+      },
+      {
+        "size": [
+          4096,
+          4096
+        ],
+        "mimeType": "image/png"
+      },
+      {
+        "size": [
+          4096,
+          4096
+        ],
+        "mimeType": "image/png"
+      }
+    ]
+  },
+  "repair": null,
+  "after": {
+    "bytes": 792940,
+    "triangles": 12000,
+    "bounds": {
+      "min": [
+        -0.54,
+        0,
+        -0.5400000000000001
+      ],
+      "max": [
+        0.5399999999999999,
+        0.6649999999999999,
+        0.5400000000000001
+      ]
+    },
+    "primitives": 1,
+    "textures": [
+      {
+        "size": [
+          1024,
+          1024
+        ],
+        "mimeType": "image/webp"
+      },
+      {
+        "size": [
+          1024,
+          1024
+        ],
+        "mimeType": "image/webp"
+      },
+      {
+        "size": [
+          1024,
+          1024
+        ],
+        "mimeType": "image/webp"
+      }
+    ]
+  },
+  "normalization": {
+    "scale": [
+      1.051222794058095,
+      0.9845140431041154,
+      1.0580381367028895
+    ],
+    "offset": [
+      -0.005205512046813965,
+      -2.2989788565902524e-05,
+      0.0014573999823507267
+    ],
+    "dimensions": [
+      1.08,
+      0.665,
+      1.08
+    ]
+  },
+  "review": "Actual optimized GLB front/reverse renders and r14 native view inspected; targeted runtime tests and native build pass."
+}

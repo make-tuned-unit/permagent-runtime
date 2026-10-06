@@ -1,0 +1,33 @@
+{
+  "instrument-hunyuan": {
+    "asset": "instrument-hunyuan",
+    "request_id": "01a11268-9d0d-7651-aeea-db66b8b1f792",
+    "url": "https://v3b.fal.media/files/b/0aad52a0/msRvSAqxKpTp57nSL67m3_model.glb",
+    "bytes": 46609308,
+    "sha256": "ace6b99dd5d40cb30a54652023138761f6b6235f8fab84ad41f59cfa33bdd1a3",
+    "glb_version": 2,
+    "acquisition": "public HTTPS DNS answer; request-local curl --resolve; verified HTTPS",
+    "revalidated_at": "2026-10-06T19:08:36.627442+00:00"
+  },
+  "planter-hunyuan": {
+    "asset": "planter-hunyuan",
+    "request_id": "01a11267-4b7c-7422-8f33-ecbcc41b168d",
+    "url": "https://v3b.fal.media/files/b/0aad5298/QW_iTOtl5zO6uNtKojocd_model.glb",
+    "bytes": 51211064,
+    "sha256": "5731c086b144251a4b5e808eb9e3f0a68d3b139b62943eed048691c338643a95",
+    "glb_version": 2,
+    "acquisition": "public HTTPS DNS answer; request-local curl --resolve; verified HTTPS",
+    "revalidated_at": "2026-10-06T19:08:36.598393+00:00"
+  },
+  "bench-hunyuan": {
+    "asset": "bench-hunyuan",
+    "request_id": "01a11285-43b3-72d1-a8a5-213f3f11225e",
+    "url": "https://v3b.fal.media/files/b/0aad5358/gT9-_hn7M5LDFmLOCUzA6_model.glb",
+    "bytes": 43340244,
+    "sha256": "94b5b45d681c16cf66555052ca2906f578c861df10b0ac86ca85bcf5a0aad008",
+    "glb_version": 2,
+    "acquisition": "fresh HTTPS public DNS answer; request-local resolution; verified HTTPS",
+    "downloaded_at": "2026-10-06T18:45:35.600577+00:00",
+    "revalidated_at": "2026-10-06T19:08:36.699753+00:00"
+  }
+}

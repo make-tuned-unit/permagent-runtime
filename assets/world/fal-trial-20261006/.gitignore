@@ -1,0 +1,7 @@
+# Full 4K provider exports are retained locally (141 MB total), with checksums
+# and completed-job receipts in Git. Optimized GLB + packed Blender sources
+# are versioned and used by the app. Do not delete these local originals.
+/raw/*-hunyuan.glb
+/raw/*.partial
+__pycache__/
+*.blend1

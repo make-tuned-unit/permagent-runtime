@@ -73,7 +73,7 @@ export const HABITAT_BEDS: {x:number;z:number;rx:number;rz:number;groundcover?:b
 HABITAT_BEDS.forEach(b=>HABITAT_SOLIDS.push({name:'raised planting bed',at:[b.x,habitatHeight(b.z)+.25,b.z],size:[b.rx*2,.5,b.rz*2]}));
 export const HABITAT_DECOR: GardenDecorPlacement[] = [
   {asset:'table',position:[-3,0,3],scale:1.2,heading:0},
-  {asset:'instrument',position:[-3.82,1.02,2.95],scale:.55,heading:0},
+  {asset:'instrument',position:[-3.82,.99,2.95],scale:.55,heading:0},
   ...([[-4.5,0,5.3],[-5.3,0,1.5],[-12,3.4,-18],[0,3.4,-22],[7,0,10]] as Point3[]).map((position,i)=>({asset:'bench',position,scale:1.05,heading:i===1?Math.PI/2:Math.PI,solid:[1.62,1.015,.55] as Point3})),
 ];
 function plant(asset:keyof typeof PLANT_BASE_Y,x:number,z:number,scale:number,heading:number) {
@@ -116,13 +116,19 @@ export function terrainGeometry() {
   }
   const geometry=new BufferGeometry();geometry.setAttribute('position',new Float32BufferAttribute(vertices,3));geometry.setIndex(indices);geometry.computeVertexNormals();return geometry;
 }
+/** Rectangular benches carry their rotated footprint; planting uses radial proxies. */
+function decorSolidSize(p:GardenDecorPlacement):Point3 {
+  const [width,height,depth]=p.solid!;
+  const angle=p.asset==='bench'?p.heading:0,c=Math.abs(Math.cos(angle)),s=Math.abs(Math.sin(angle));
+  return [(width*c+depth*s)*p.scale,height*p.scale,(width*s+depth*c)*p.scale];
+}
 export function habitatCollisionSource() {
   const root=new Group(), material=new MeshStandardMaterial();
   const ground=new Mesh(terrainGeometry(),material);ground.name='connected garden terraces';root.add(ground);const bridge=new Mesh(gardenBridgeGeometry(),material);bridge.name='walkable garden bridge';root.add(bridge);
   const solids=[...HABITAT_SOLIDS];
   // Physical rails coincide with the visible boundary. Rounded corners remain planted.
   solids.push({name:'west rail',at:[-15.7,2.4,-6],size:[.25,6,38]}, {name:'east rail',at:[15.7,2.4,-6],size:[.25,6,38]}, {name:'north rail',at:[0,4.2,-27.6],size:[25,2,.25]}, {name:'south rail',at:[0,.5,15.6],size:[25,1,.25]});
-  HABITAT_DECOR.forEach(p=>{if(p.solid)solids.push({name:p.asset,at:[p.position[0],p.position[1]+p.solid[1]*p.scale/2,p.position[2]],size:p.solid.map(v=>v*p.scale) as Point3});});
+  HABITAT_DECOR.forEach(p=>{if(p.solid)solids.push({name:p.asset,at:[p.position[0],p.position[1]+p.solid[1]*p.scale/2,p.position[2]],size:decorSolidSize(p)});});
   for(const s of solids){const m=s.name==='water garden'?material.clone():material;if(s.name==='water garden')m.name='Water';const mesh=new Mesh(new BoxGeometry(...s.size),m);mesh.name=s.name;mesh.position.set(...s.at);root.add(mesh);}
   root.updateMatrixWorld(true);return root;
 }
@@ -130,5 +136,5 @@ export function habitatCollisionSource() {
 export function habitatWalkable(x:number,z:number,margin=.47) {
   if(!onHabitat(x,z,.8))return false;
   if(HABITAT_SOLIDS.some(s=>!(s.name==='water garden'&&onGardenBridge(x,z))&&Math.abs(x-s.at[0])<s.size[0]/2+margin&&Math.abs(z-s.at[2])<s.size[2]/2+margin))return false;
-  return !HABITAT_DECOR.some(p=>p.solid&&Math.abs(x-p.position[0])<p.solid[0]*p.scale/2+margin&&Math.abs(z-p.position[2])<p.solid[2]*p.scale/2+margin);
+  return !HABITAT_DECOR.some(p=>{if(!p.solid)return false;const size=decorSolidSize(p);return Math.abs(x-p.position[0])<size[0]/2+margin&&Math.abs(z-p.position[2])<size[2]/2+margin;});
 }

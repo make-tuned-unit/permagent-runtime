@@ -1,0 +1,105 @@
+{
+  "name": "bench",
+  "variant": "hunyuan",
+  "source": "raw/bench-hunyuan.glb",
+  "output": "processed/bench-hunyuan-v1.glb",
+  "sha256": "9fc2dbcc56f594b3e6ecd109e86345a276a4aea5751ac53d150f8aef9f3f4294",
+  "before": {
+    "bytes": 43340244,
+    "triangles": 40000,
+    "bounds": {
+      "min": [
+        -0.48854199051856995,
+        2.260345832643808e-08,
+        -0.19467394746512576
+      ],
+      "max": [
+        0.48194700479507446,
+        0.601533096773091,
+        0.24064807128626023
+      ]
+    },
+    "textures": [
+      {
+        "size": [
+          4096,
+          4096
+        ],
+        "mimeType": "image/png"
+      },
+      {
+        "size": [
+          4096,
+          4096
+        ],
+        "mimeType": "image/png"
+      },
+      {
+        "size": [
+          4096,
+          4096
+        ],
+        "mimeType": "image/png"
+      }
+    ]
+  },
+  "repair": null,
+  "after": {
+    "bytes": 821192,
+    "triangles": 18000,
+    "bounds": {
+      "min": [
+        -0.8,
+        -1.3552527156068805e-20,
+        -0.2675
+      ],
+      "max": [
+        0.7999999999999999,
+        1.0049999999999997,
+        0.2675
+      ]
+    },
+    "primitives": 1,
+    "textures": [
+      {
+        "size": [
+          1024,
+          1024
+        ],
+        "mimeType": "image/webp"
+      },
+      {
+        "size": [
+          1024,
+          1024
+        ],
+        "mimeType": "image/webp"
+      },
+      {
+        "size": [
+          1024,
+          1024
+        ],
+        "mimeType": "image/webp"
+      }
+    ]
+  },
+  "normalization": {
+    "scale": [
+      1.6486534187674216,
+      1.6712923244717213,
+      1.2289837356129794
+    ],
+    "offset": [
+      0.0032974928617477417,
+      -6.201613700378559e-05,
+      -0.02298855940787134
+    ],
+    "dimensions": [
+      1.6,
+      1.005,
+      0.535
+    ]
+  },
+  "review": "Actual optimized GLB front/reverse renders and r14 native view inspected; targeted runtime tests and native build pass."
+}

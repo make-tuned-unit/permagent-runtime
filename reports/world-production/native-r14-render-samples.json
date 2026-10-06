@@ -1,0 +1,44 @@
+{
+  "method": "Native WKWebView inspector console; 10 readings of window.__worldPerf at 1100 ms intervals after settling at Sit with Henry; collapsed sidebar, inspector docked below. Canvas CSS 1204x260, backing 1806x390, DPR 1.5.",
+  "before": {
+    "revision": "r13",
+    "fps": [
+      30,
+      30,
+      30,
+      30,
+      30,
+      30,
+      30,
+      30,
+      30,
+      30
+    ],
+    "calls": 442,
+    "triangles": 7754005,
+    "geometries": 177,
+    "textures": 26,
+    "programs": 32
+  },
+  "after": {
+    "revision": "r14",
+    "fps": [
+      30,
+      30,
+      30,
+      30,
+      30,
+      30,
+      30,
+      30,
+      30,
+      30
+    ],
+    "calls": 428,
+    "triangles": 8067031,
+    "geometries": 164,
+    "textures": 33,
+    "programs": 31
+  },
+  "interpretation": "Same observed 30 FPS in this matched small viewport; 14 fewer submitted calls, 313026 more submitted triangles. Not a full-viewport frame-time distribution or a speedup claim. Other app/system load uncontrolled."
+}

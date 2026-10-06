@@ -13,18 +13,20 @@ const sharp = require('sharp');
 
 const here=path.dirname(fileURLToPath(import.meta.url));
 const [name,variant='hunyuan']=process.argv.slice(2);
-if(!['planter','instrument'].includes(name)||!['hunyuan','trellis'].includes(variant)) throw Error('Expected planter|instrument hunyuan|trellis');
+if(!['planter','instrument','bench'].includes(name)||!['hunyuan','trellis'].includes(variant)) throw Error('Expected planter|instrument|bench hunyuan|trellis');
 const source=path.join(here,'raw',`${name}-${variant}.glb`);
 const destination=path.join(here,'processed');
 const io=new NodeIO().registerExtensions(ALL_EXTENSIONS);
 const document=await io.read(source),root=document.getRoot(),scene=root.getDefaultScene()??root.listScenes()[0];
 const triangles=()=>root.listMeshes().reduce((sum,m)=>sum+m.listPrimitives().reduce((n,p)=>n+(p.getIndices()?.getCount()??p.getAttribute('POSITION').getCount())/3,0),0);
+// Hunyuan exports specularColorFactor=2; use standard physical PBR response.
+if(variant==='hunyuan')for(const m of root.listMaterials()){m.setExtension('KHR_materials_specular',null);if(name==='instrument')m.setNormalScale(.45);}
 const before={bytes:(await fs.stat(source)).size,triangles:triangles(),bounds:getBounds(scene),textures:root.listTextures().map(t=>({size:t.getSize(),mimeType:t.getMimeType()}))};
 await MeshoptSimplifier.ready;
 await document.transform(weld(),simplify({simplifier:MeshoptSimplifier,ratio:Math.min(1,(name==='planter'?12000:18000)/before.triangles),error:.001,lockBorder:true}),textureCompress({encoder:sharp,targetFormat:'webp',resize:[1024,1024],quality:90,effort:6}),prune());
 // Preserve authored node transforms below a normalized metre-sized asset root.
 // The instancer owns the named root transform, so normalization is a CHILD node.
-const bounds=getBounds(scene),desired=name==='planter'?[1.08,.665,1.08]:[.80,.64,.68];
+const bounds=getBounds(scene),desired=name==='planter'?[1.08,.665,1.08]:name==='bench'?[1.60,1.005,.535]:[.80,.64,.68];
 const scale=desired.map((d,i)=>d/(bounds.max[i]-bounds.min[i]));
 const offset=[-(bounds.min[0]+bounds.max[0])/2,-bounds.min[1],-(bounds.min[2]+bounds.max[2])/2];
 const asset=document.createNode(name),normalized=document.createNode(`${name} metre normalization`).setScale(scale).setTranslation(offset.map((v,i)=>v*scale[i]));
@@ -59,7 +61,7 @@ if(name==='planter'&&variant==='trellis') {
   repair={removedTriangles:removed.length,soilHeight:height,soilRadius:radius,addedTriangles:segments};
 }
 await fs.mkdir(destination,{recursive:true});
-const output=path.join(destination,`${name}-v1.glb`);
+const output=path.join(destination,`${name}${variant==='hunyuan'?'-hunyuan':''}-v1.glb`);
 await io.write(output,document);
 const bytes=await fs.readFile(output);
 const report={name,variant,source:path.relative(here,source),output:path.relative(here,output),sha256:createHash('sha256').update(bytes).digest('hex'),before,repair,after:{bytes:bytes.length,triangles:triangles(),bounds:getBounds(scene),primitives:root.listMeshes().reduce((s,m)=>s+m.listPrimitives().length,0),textures:root.listTextures().map(t=>({size:t.getSize(),mimeType:t.getMimeType()}))},normalization:{scale,offset,dimensions:desired},review:'pending runtime and exported front/reverse inspection'};

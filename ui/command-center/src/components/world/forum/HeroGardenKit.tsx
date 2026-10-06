@@ -22,12 +22,15 @@ import { advanceHabitatAgent, commandHabitatAgent, getHabitatTravel, initializeH
 
 const KIT_URL = `${import.meta.env.BASE_URL}world/garden-hero/hero-kit-v3b.glb?v=e114f28bedaa`;
 function cloneAsset(scene:Object3D,name:string){const original=scene.getObjectByName(name);if(!original)throw new Error(`Hero kit missing ${name}`);const copy=original.clone(true);copy.position.set(0,0,0);copy.traverse(o=>{if(o instanceof Mesh){o.castShadow=true;o.receiveShadow=true;}});return copy;}
-const PLANTER_URL = `${import.meta.env.BASE_URL}world/garden-crafted/planter-v1.glb?v=ebbf6698d4c2`;
 // Retain the bounded foreground flower population and all authored foliage.
 let flowerCount = 0;
 const decorPlacements = HABITAT_DECOR.filter(p => p.asset !== 'flowers' || flowerCount++ % 8 === 0);
-const planterPlacements = decorPlacements.filter(p => p.asset === 'planter');
-const otherPlacements = decorPlacements.filter(p => p.asset !== 'planter');
+const craftedDecor = [
+  {asset:'planter',file:'planter-v2.glb',hash:'b7f512af50ce'},
+  {asset:'instrument',file:'instrument-v1.glb',hash:'db902c9726a8'},
+  {asset:'bench',file:'bench-v1.glb',hash:'9fc2dbcc56f5'},
+].map(asset=>({...asset,url:`${import.meta.env.BASE_URL}world/garden-crafted/${asset.file}?v=${asset.hash}`,placements:decorPlacements.filter(p=>p.asset===asset.asset)}));
+const otherPlacements = decorPlacements.filter(p => !craftedDecor.some(asset=>asset.asset===p.asset));
 const keepFallback = () => {};
 
 function GardenDecorInstances({scene,placements}:{scene:Object3D;placements:readonly GardenDecorPlacement[]}) {
@@ -39,18 +42,20 @@ function GardenDecorInstances({scene,placements}:{scene:Object3D;placements:read
   useEffect(()=>()=>decor.dispose(),[decor]);
   return <primitive object={decor.group} dispose={null}/>;
 }
-function CraftedGardenPlanters() {
-  const {scene}=useGLTF(PLANTER_URL,false,false,extendForumLoader);
-  return <GardenDecorInstances scene={scene} placements={planterPlacements}/>;
+function CraftedGardenAsset({url,placements}:{url:string;placements:readonly GardenDecorPlacement[]}) {
+  const {scene}=useGLTF(url,false,false,extendForumLoader);
+  return <GardenDecorInstances scene={scene} placements={placements}/>;
 }
 export function HeroGardenDecor(){
   const {scene}=useGLTF(KIT_URL,false,false,extendForumLoader);
-  const fallback=<GardenDecorInstances scene={scene} placements={planterPlacements}/>;
   return <>
     <GardenDecorInstances scene={scene} placements={otherPlacements}/>
-    <GardenAssetBoundary onFailure={keepFallback} fallback={fallback}>
-      <Suspense fallback={fallback}><CraftedGardenPlanters/></Suspense>
-    </GardenAssetBoundary>
+    {craftedDecor.map(asset=>{
+      const fallback=<GardenDecorInstances scene={scene} placements={asset.placements}/>;
+      return <GardenAssetBoundary key={asset.asset} onFailure={keepFallback} fallback={fallback}>
+        <Suspense fallback={fallback}><CraftedGardenAsset url={asset.url} placements={asset.placements}/></Suspense>
+      </GardenAssetBoundary>;
+    })}
   </>;
 }
 function HeroRobot({id,index,state,live,selected,hovered,name,conversation,onSelect,onHover}:{id:string;index:number;state:keyof typeof STATE;live:boolean;selected:boolean;hovered:boolean;name:string;conversation:boolean;onSelect:(id:string)=>void;onHover:(id:string|null)=>void}){

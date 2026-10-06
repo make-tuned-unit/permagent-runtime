@@ -1,0 +1,105 @@
+{
+  "name": "instrument",
+  "variant": "hunyuan",
+  "source": "raw/instrument-hunyuan.glb",
+  "output": "processed/instrument-hunyuan-v1.glb",
+  "sha256": "db902c9726a8dba8c754b1e7ee5af21ab0dce640b7d3e26d73de56b36a4e0708",
+  "before": {
+    "bytes": 46609308,
+    "triangles": 40000,
+    "bounds": {
+      "min": [
+        -0.4038569927215576,
+        -2.6943787341560346e-08,
+        -0.40163206137733737
+      ],
+      "max": [
+        0.35136500000953674,
+        0.6840640596896468,
+        0.3533400478329867
+      ]
+    },
+    "textures": [
+      {
+        "size": [
+          4096,
+          4096
+        ],
+        "mimeType": "image/png"
+      },
+      {
+        "size": [
+          4096,
+          4096
+        ],
+        "mimeType": "image/png"
+      },
+      {
+        "size": [
+          4096,
+          4096
+        ],
+        "mimeType": "image/png"
+      }
+    ]
+  },
+  "repair": null,
+  "after": {
+    "bytes": 886884,
+    "triangles": 17998,
+    "bounds": {
+      "min": [
+        -0.4,
+        -3.3881317890172014e-21,
+        -0.33999999999999997
+      ],
+      "max": [
+        0.39999999999999997,
+        0.64,
+        0.3399999999999999
+      ]
+    },
+    "primitives": 1,
+    "textures": [
+      {
+        "size": [
+          1024,
+          1024
+        ],
+        "mimeType": "image/webp"
+      },
+      {
+        "size": [
+          1024,
+          1024
+        ],
+        "mimeType": "image/webp"
+      },
+      {
+        "size": [
+          1024,
+          1024
+        ],
+        "mimeType": "image/webp"
+      }
+    ]
+  },
+  "normalization": {
+    "scale": [
+      1.0595942487421053,
+      0.9356272852823814,
+      0.9007217647275062
+    ],
+    "offset": [
+      0.02626599371433258,
+      -3.0994314857275135e-05,
+      0.024157003801861116
+    ],
+    "dimensions": [
+      0.8,
+      0.64,
+      0.68
+    ]
+  },
+  "review": "Actual optimized GLB front/reverse renders and r14 native view inspected; targeted runtime tests and native build pass."
+}

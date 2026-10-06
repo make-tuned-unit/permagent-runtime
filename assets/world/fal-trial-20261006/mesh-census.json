@@ -1,12 +1,46 @@
 {
-  "baseline": {
-    "triangles": 2876,
-    "primitive_batches": 2
-  },
-  "replacement": {
-    "triangles": 6503,
-    "primitive_batches": 2
-  },
-  "placements": 11,
-  "native_fps_benchmark": "not performed; mesh census is not frame-rate evidence"
+  "assets": [
+    {
+      "name": "planter",
+      "placements": 11,
+      "hero_kit": {
+        "triangles": 2876,
+        "batches": 2
+      },
+      "r13": {
+        "triangles": 6503,
+        "batches": 2
+      },
+      "r14": {
+        "triangles": 12000,
+        "batches": 1
+      }
+    },
+    {
+      "name": "bench",
+      "placements": 5,
+      "hero_kit": {
+        "triangles": 2156,
+        "batches": 4
+      },
+      "r14": {
+        "triangles": 18000,
+        "batches": 1
+      }
+    },
+    {
+      "name": "instrument",
+      "placements": 1,
+      "hero_kit": {
+        "triangles": 1172,
+        "batches": 4
+      },
+      "r14": {
+        "triangles": 17998,
+        "batches": 1
+      }
+    }
+  ],
+  "note": "Triangles per unique asset; batches shared across all matching placements per scene pass. Native renderer includes shadow passes and other scene content.",
+  "native_measurement": "reports/world-production/native-r14-render-samples.json"
 }

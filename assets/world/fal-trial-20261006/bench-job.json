@@ -1,0 +1,24 @@
+{
+  "status": "submitted",
+  "recipe": {
+    "endpoint_id": "fal-ai/hunyuan-3d/v3.1/pro/image-to-3d",
+    "input": {
+      "input_image_url": "https://v3b.fal.media/files/b/0aad5341/NxfvJisHHPT_cKFeZ_ZeV_permagent-bench-v1.png",
+      "generate_type": "Normal",
+      "enable_pbr": true,
+      "face_count": 40000
+    },
+    "note": "These are the submitted inputs, not resolved server defaults. For a variation, copy them and change only requested fields; reuse returned_seed when supported by the schema. Source URLs may expire."
+  },
+  "request_id": "01a11285-43b3-72d1-a8a5-213f3f11225e",
+  "endpoint_id": "fal-ai/hunyuan-3d/v3.1/pro/image-to-3d",
+  "status_url": "https://queue.fal.run/fal-ai/hunyuan-3d/requests/01a11285-43b3-72d1-a8a5-213f3f11225e/status",
+  "response_url": "https://queue.fal.run/fal-ai/hunyuan-3d/requests/01a11285-43b3-72d1-a8a5-213f3f11225e",
+  "cancel_url": "https://queue.fal.run/fal-ai/hunyuan-3d/requests/01a11285-43b3-72d1-a8a5-213f3f11225e/cancel",
+  "poll_after_seconds": 20,
+  "polling_hint": "Wait poll_after_seconds before calling check_job with the same request_id and status_url. This interval is not an ETA. Report meaningful status changes rather than repeating unchanged progress. Do not submit another job to check progress.",
+  "hint": "Job submitted. Use check_job with status_url to check status, then get_job_result with response_url when it completes.",
+  "estimated_usd": 0.675,
+  "reference_generation": "built-in image_gen",
+  "model_selection": "Selected after inspecting the completed planar carving and intact instrument topology in Hunyuan vs TRELLIS, with current catalog/schema/pricing checked."
+}
