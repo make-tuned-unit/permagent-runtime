@@ -53,3 +53,13 @@ Editable source/library/input and reproduction scripts copied under `assets/worl
 Current exact preview route remains http://127.0.0.1:5299/ui/forum.html (compact default), `?campus=1` previous campus, and http://127.0.0.1:5299/ui/ app shell. These URLs are source-preview addresses, not a claim of parent runtime access or native delivery. Installed app unchanged.
 
 Next required gates: native/browser access and actual rendering/camera/walk review; full typecheck/frontend build when resource guard permits; corrupted-asset/reduced-motion/hidden-view checks; measured calls/triangles/frame cadence/memory; denser botanical assets and hero material maps; a richer composition and connected vertical landscape. No final-quality or fast-runtime claim.
+
+## Static batching checkpoint
+
+Static decor now uses per-primitive InstancedMesh batches.55placed assets retain all269primitive instances/354,658triangles but become42draws instead of269per scene pass. Twelve robot identities/bodies remain unchanged. One-shadow uncullled submission ceiling decreases454draws/frame (~1,177→723night,1,247→793day); this is source arithmetic, not measured GPU timing/FPS. Formula and assumptions saved in `source-census-v2.json`.
+
+Owned primitive geometry bakes descendant transforms once, including rotated nonuniform scales, with correct baked normals. Cached GLB materials/textures are borrowed (MASK supported) and not disposed. Instance buffers and baked geometry are disposed on cleanup. Aggregate bounds are computed and support whole-batch frustum culling; individual instances are not CPU-culled. No speculative spatial partition/LOD/material-clone/startup changes in this commit.
+
+Parent caught a root placement-contract mismatch in the initial implementation/test: the old function replaces root position, scale and Y Euler while retaining X/Z. Corrected to those exact semantics. Committed kit roots inspected: all identity, so existing visible placements stay unchanged. Independent parity oracle now executes the exact old cloneAsset/place code with nonzero root position/nonuniform scale/nonzero X/Y/Z, nested rotated nonuniform scale, multi-material geometry and MASK material. Compares world vertices and normals/bounds, placement counts, shadow flags, and cache ownership; actualGLB census verifies55placements42batches269primitiveinstances354,658triangles.
+
+Final scoped one-worker6/6checks passed3.21s with768MB/120s/disk3GiBguard. Three changed modules syntax-transpiled successfully. No full typecheck/build/render/native work. Prior initial6/6pass3.15s lacked exact-old-root oracle and was strengthened before commit. Foliagev3b not integrated in this checkpoint.

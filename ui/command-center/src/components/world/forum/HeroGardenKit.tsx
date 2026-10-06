@@ -8,6 +8,7 @@ import { useAgentRuntimeStates } from '../shared/agentStatus';
 import { STATE } from '../shared/palette';
 import { ensureForumMotion, getForumMotion } from './ForumInhabitants';
 import { GARDEN_DECOR, GARDEN_AGENT_SEATS } from './gardenLayout';
+import { instanceGardenDecor } from './staticGardenInstances';
 import { getReduceMotion } from '../../../styles/tokens';
 
 const KIT_URL = `${import.meta.env.BASE_URL}world/garden-hero/hero-kit.glb?v=99a1ad1632e4`;
@@ -21,15 +22,9 @@ function cloneAsset(scene: Object3D, name: string) {
 }
 export function HeroGardenDecor() {
   const {scene}=useGLTF(KIT_URL,false,false,extendForumLoader);
-  const decor=useMemo(()=>{
-    const group=new Group();
-    const place=(name:string,p:readonly number[],scale=1,heading=0)=>{
-      const o=cloneAsset(scene,name);o.position.set(p[0],p[1],p[2]);o.scale.setScalar(scale);o.rotation.y=heading;group.add(o);
-    };
-    GARDEN_DECOR.forEach(item=>place(item.asset,item.position,item.scale,item.heading));
-    return group;
-  },[scene]);
-  return <primitive object={decor} dispose={null} />;
+  const decor=useMemo(()=>instanceGardenDecor(scene,GARDEN_DECOR),[scene]);
+  useEffect(()=>()=>decor.dispose(),[decor]);
+  return <primitive object={decor.group} dispose={null} />;
 }
 function HeroRobot({ id,index,state,onSelect,onHover }: {id:string;index:number;state:keyof typeof STATE;onSelect:(id:string)=>void;onHover:(id:string|null)=>void}) {
   const {scene}=useGLTF(KIT_URL,false,false,extendForumLoader);
