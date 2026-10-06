@@ -73,7 +73,7 @@ describe('static garden instance parity',()=>{
     const oldBitmap=globalThis.createImageBitmap;
     const oldSelf=globalThis.self;globalThis.self=globalThis as unknown as Window & typeof globalThis;
     const sharp=(await import('sharp')).default;
-    globalThis.createImageBitmap=async(blob:Blob)=>{const decoded=await sharp(Buffer.from(await blob.arrayBuffer())).ensureAlpha().raw().toBuffer({resolveWithObject:true});return {width:decoded.info.width,height:decoded.info.height,data:decoded.data,close(){}} as unknown as ImageBitmap;};
+    globalThis.createImageBitmap=async(source:ImageBitmapSource)=>{if(!(source instanceof Blob))throw new Error('CPU test decoder requires an embedded PNG Blob');const decoded=await sharp(Buffer.from(await source.arrayBuffer())).ensureAlpha().raw().toBuffer({resolveWithObject:true});return {width:decoded.info.width,height:decoded.info.height,data:decoded.data,close(){}} as unknown as ImageBitmap;};
     let gltf;
     try{gltf=await new GLTFLoader().parseAsync(bytes.buffer.slice(bytes.byteOffset,bytes.byteOffset+bytes.byteLength),'');}finally{globalThis.createImageBitmap=oldBitmap;globalThis.self=oldSelf;}
     const result=instanceGardenDecor(gltf.scene,GARDEN_DECOR);
@@ -112,7 +112,7 @@ describe('static garden instance parity',()=>{
             }
             expect(maxRadius,`${placement.asset} clipped woody face envelope at ${placement.position}`).toBeLessThanOrEqual(inradius);
           }
-          if(material.map){expect(material.map.image.width).toBe(1254);expect(material.map.colorSpace).toBe(SRGBColorSpace);expect(material.alphaTest).toBe(.55);expect(material.side).toBe(DoubleSide);expect(material.transparent).toBe(false);expect(o.geometry.getAttribute('uv')).toBeDefined();}
+          if(material.map){expect(material.map.image).toHaveProperty('width',1254);expect(material.map.colorSpace).toBe(SRGBColorSpace);expect(material.alphaTest).toBe(.55);expect(material.side).toBe(DoubleSide);expect(material.transparent).toBe(false);expect(o.geometry.getAttribute('uv')).toBeDefined();}
         });
         expect(minY).toBeCloseTo(PLANT_BASE_Y[placement.asset as keyof typeof PLANT_BASE_Y],6);
         expect(minY*placement.scale+placement.position[1]).toBeCloseTo(placement.supportY!,6);

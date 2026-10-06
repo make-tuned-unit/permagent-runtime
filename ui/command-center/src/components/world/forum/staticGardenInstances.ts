@@ -34,19 +34,20 @@ export function instanceGardenDecor(scene: Object3D, placements: readonly Garden
       root.traverseVisible(object => {
         if (!(object instanceof Mesh)) return;
         if ('isSkinnedMesh' in object || object.morphTargetInfluences?.length) throw new Error('Animated meshes cannot enter static garden batching');
+        const sourceGeometry: BufferGeometry = object.geometry;
         const materials = Array.isArray(object.material) ? object.material : [object.material];
         const ranges = Array.isArray(object.material)
-          ? object.geometry.groups.map(range => ({ ...range, materialIndex: range.materialIndex ?? 0 }))
-          : [{ start: object.geometry.drawRange.start, count: object.geometry.drawRange.count, materialIndex: 0 }];
+          ? sourceGeometry.groups.map(range => ({ ...range, materialIndex: range.materialIndex ?? 0 }))
+          : [{ start: sourceGeometry.drawRange.start, count: sourceGeometry.drawRange.count, materialIndex: 0 }];
         for (const range of ranges) {
           const material = materials[range.materialIndex];
           if (!material || material.visible === false) continue;
-          const geometry = object.geometry.clone();
+          const geometry = sourceGeometry.clone();
           owned.push(geometry);
           geometry.clearGroups();
           const available = geometry.index?.count ?? geometry.getAttribute('position').count;
-          const start = Math.max(range.start, object.geometry.drawRange.start);
-          const end = Math.min(available, range.start + range.count, object.geometry.drawRange.start + object.geometry.drawRange.count);
+          const start = Math.max(range.start, sourceGeometry.drawRange.start);
+          const end = Math.min(available, range.start + range.count, sourceGeometry.drawRange.start + sourceGeometry.drawRange.count);
           if (end <= start) continue;
           geometry.setDrawRange(start, end - start);
           geometry.applyMatrix4(object.matrixWorld);
