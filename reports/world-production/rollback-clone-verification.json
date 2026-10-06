@@ -1,0 +1,45 @@
+{
+  "method": "APFS independent-inode clone of current review executable, then exact original differing blocks restored; all original hashes preserved",
+  "reference_sha256": "95c1532bacf6258652c3d61d8981d98172b0b4789531c60fc9d4ba25827fd4ca",
+  "files": [
+    {
+      "backup": "1b76d7cd36d4",
+      "sha256": "1b76d7cd36d4cea0bb9bf19967c419d6341c6b18862196151d44f5c9ca89e1b3",
+      "bytes": 106628352,
+      "modified_bytes": 105448704,
+      "independent_inode": true
+    },
+    {
+      "backup": "4187eebe5fc5",
+      "sha256": "4187eebe5fc5ab84eed48bfddb6e2decba0b0445fc640ebb00bf98c8af57b608",
+      "bytes": 108056544,
+      "modified_bytes": 76337120,
+      "independent_inode": true
+    },
+    {
+      "backup": "641f2133221b",
+      "sha256": "641f2133221bb0493e708cb037ce8f2f2f19973e40b3efa00f0992d844b63c05",
+      "bytes": 108056544,
+      "modified_bytes": 76337120,
+      "independent_inode": true
+    },
+    {
+      "backup": "96e2fdc33e3b",
+      "sha256": "96e2fdc33e3b6fcf7fa926ce2fed2c52de6f493537c9ab8c11a40ca8657a491c",
+      "bytes": 108056544,
+      "modified_bytes": 76337120,
+      "independent_inode": true
+    },
+    {
+      "backup": "e1adf3f6f866",
+      "sha256": "e1adf3f6f866acdb39f0cfc614700a415e1f5ec74b1a9ff22aa338d4b77c1bb1",
+      "bytes": 98633760,
+      "modified_bytes": 97454112,
+      "independent_inode": true
+    }
+  ],
+  "free_before": 12544372736,
+  "free_after": 12642017280,
+  "observed_free_delta": 97644544,
+  "note": "Concurrent workloads can affect free-disk delta; no logical file contents changed."
+}

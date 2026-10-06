@@ -13,6 +13,23 @@ def digest(path):
     with path.open('rb') as handle:
         return hashlib.file_digest(handle, 'sha256').hexdigest()
 
+def independent_copy(source, destination):
+    """Use APFS copy-on-write when available; never hardlink a review file."""
+    source, destination = Path(source), Path(destination)
+    temporary = destination.with_name(destination.name + '.stage-copy')
+    if temporary.exists():
+        raise RuntimeError(f'Stale staging copy requires inspection: {temporary}')
+    try:
+        copied = subprocess.run(['cp', '-cp', str(source), str(temporary)], capture_output=True)
+        if copied.returncode:
+            shutil.copy2(source, temporary)
+        if temporary.stat().st_ino == source.stat().st_ino or digest(temporary) != digest(source):
+            raise RuntimeError(f'Independent copy verification failed: {source}')
+        temporary.replace(destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return str(destination)
+
 def snapshot(root):
     result = {}
     for path in root.rglob('*'):
@@ -52,15 +69,15 @@ if args.refresh:
     for relative in ['Contents/MacOS/permagent-app', 'Contents/Info.plist', 'Contents/_CodeSignature/CodeResources']:
         destination = backup / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(STAGE / relative, destination)
-    shutil.copy2(REPORT, backup / REPORT.name)
+        independent_copy(STAGE / relative, destination)
+    independent_copy(REPORT, backup / REPORT.name)
 else:
-    shutil.copytree(BASE, STAGE, symlinks=True, copy_function=shutil.copy2)
+    shutil.copytree(BASE, STAGE, symlinks=True, copy_function=independent_copy)
 for relative in before:
     source, destination = BASE / relative, STAGE / relative
     if not source.is_symlink() and source.stat().st_ino == destination.stat().st_ino:
         raise RuntimeError('Staging must not hardlink installed files')
-shutil.copy2(BINARY, STAGE / 'Contents/MacOS/permagent-app')
+independent_copy(BINARY, STAGE / 'Contents/MacOS/permagent-app')
 info = STAGE / 'Contents/Info.plist'
 plist = json.loads(subprocess.check_output(['plutil','-convert','json','-o','-',str(info)]))
 for key, value in dict(CFBundleIdentifier='ai.permagent.world-review-20261006',
@@ -85,7 +102,7 @@ report = dict(staged_app=str(STAGE), native_build_binary=str(BINARY),
               name=plist['CFBundleName'], installed_baseline_unchanged=True,
               installed_baseline_sha256=before, signature_check=verification.stderr.strip(),
               signature_details=signature.stderr.strip(), launched=False,
-              copy='ordinary independent-inode copies; no hardlinks',
+              copy='verified independent-inode copies; APFS copy-on-write when supported; no hardlinks',
               staged_files=sum(1 for path in STAGE.rglob('*') if path.is_file()),
               staged_bytes=sum(path.stat().st_size for path in STAGE.rglob('*') if path.is_file()))
 REPORT.write_text(json.dumps(report, indent=2) + '\n')

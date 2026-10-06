@@ -1,0 +1,105 @@
+{
+  "name": "desk",
+  "variant": "hunyuan",
+  "source": "raw/desk.glb",
+  "output": "processed/desk-v1.glb",
+  "sha256": "6c23b7e65f9833756274ee1db5ffbafc3e14a4367bf3e71eedc37272c0bde6fc",
+  "before": {
+    "bytes": 41765452,
+    "triangles": 40000,
+    "bounds": {
+      "min": [
+        -0.521651029586792,
+        -3.318892113444774e-8,
+        -0.2757099663899191
+      ],
+      "max": [
+        0.5083270072937012,
+        0.43532502534102335,
+        0.2629570991822998
+      ]
+    },
+    "textures": [
+      {
+        "size": [
+          4096,
+          4096
+        ],
+        "mimeType": "image/png"
+      },
+      {
+        "size": [
+          4096,
+          4096
+        ],
+        "mimeType": "image/png"
+      },
+      {
+        "size": [
+          4096,
+          4096
+        ],
+        "mimeType": "image/png"
+      }
+    ]
+  },
+  "repair": null,
+  "after": {
+    "bytes": 1313304,
+    "triangles": 12000,
+    "bounds": {
+      "min": [
+        -0.95,
+        0,
+        -0.3599999999999999
+      ],
+      "max": [
+        0.9500000000000001,
+        0.8900000000000001,
+        0.35999999999999993
+      ]
+    },
+    "primitives": 1,
+    "textures": [
+      {
+        "size": [
+          2048,
+          2048
+        ],
+        "mimeType": "image/webp"
+      },
+      {
+        "size": [
+          2048,
+          2048
+        ],
+        "mimeType": "image/webp"
+      },
+      {
+        "size": [
+          2048,
+          2048
+        ],
+        "mimeType": "image/webp"
+      }
+    ]
+  },
+  "normalization": {
+    "scale": [
+      1.8451510960188262,
+      2.0449798880855976,
+      1.336868395240987
+    ],
+    "offset": [
+      0.006603986024856567,
+      -0.00005896685894783455,
+      0.006369951467020019
+    ],
+    "dimensions": [
+      1.9,
+      0.89,
+      0.72
+    ]
+  },
+  "review": "pending runtime and exported front/reverse inspection"
+}

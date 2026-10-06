@@ -51,6 +51,9 @@ export const ARCHIVE_DECOR:GardenDecorPlacement[]=[
   ...[-13,-10,-7].map(x=>({asset:'bookcase',position:[x,3.4,-22.3] as Point3,scale:1,heading:0,solid:[2.6,2.8,.54] as Point3})),
   ...[-14,-6].map(x=>({asset:'column',position:[x,3.4,-16] as Point3,scale:1,heading:0,solid:[.54,3.6,.54] as Point3})),
 ];
+export const STATION_DESKS:GardenDecorPlacement[]=HABITAT_STATIONS.filter(s=>s.id!=='henry').map(s=>({
+  asset:'desk',position:[s.position[0],s.position[1],s.position[2]-.90],scale:1,heading:0,
+}));
 export const HABITAT_SOLIDS: HabitatSolid[] = [
   {name:'commons table',at:[-3,.495,3],size:[2.7,.99,2.7]},
   {name:'water garden',at:[4,.05,-2],size:[3.8,.1,6]},
@@ -58,7 +61,7 @@ export const HABITAT_SOLIDS: HabitatSolid[] = [
   {name:'bridge south rail',at:[4,.95,-1.17],size:[4,.9,.07]},
   {name:'cascade basin',at:[4,.6,-8],size:[3.6,1.2,3.2]},
   {name:'cascade receiving rill',at:[4,.05,-5.7],size:[3.2,.1,1.4]},
-  ...HABITAT_STATIONS.filter(s=>s.id!=='henry').map(s=>({name:`${s.id} desk`,at:[s.position[0],s.position[1]+.42,s.position[2]-.90] as Point3,size:[1.9,.84,.7] as Point3})),
+  ...HABITAT_STATIONS.filter(s=>s.id!=='henry').map(s=>({name:`${s.id} desk`,at:[s.position[0],s.position[1]+.445,s.position[2]-.90] as Point3,size:[1.9,.89,.72] as Point3})),
   ...ARCHIVE_DECOR.map(p=>({name:p.asset==='column'?'archive pillar':'archive shelves',at:[p.position[0],p.position[1]+p.solid![1]/2,p.position[2]] as Point3,size:p.solid!})),
   {name:'archive rear wall',at:[-10,5,-23],size:[8,3.2,.35]},
   ...[7,14].map(x=>({name:'workshop pillar',at:[x,5,-16] as Point3,size:[.2,3.2,.2] as Point3})),

@@ -6,7 +6,7 @@ The original walnut/brass table reference, exact prompt, FAL recipe, completed r
 
 Raycasts across the usable tabletop measured 0.98715–0.98885 m. Cups and notebook now sit at 0.989 m instead of floating about 4 cm above the old table. The tabletop instrument remains in contact. Collision includes the actual full table height and width. Fifteen targeted tests pass, including real GLB decoding/instancing, transformed mesh bounds, tabletop prop support, terrain coverage, all 26 navigation routes and crowd avoidance. TypeScript passes.
 
-**Native acceptance is pending.** r15 is the last launched review; r16 was built and verified before this table change. r17 cannot currently build while local free disk is below the established 10 GiB guard. Native window control also cannot see any app windows, including Finder. Do not represent the Blender object renders as app screenshots or claim this iteration is finally accepted.
+**Native asset acceptance passed in r17.** Actual arrival and seated commons screenshots show the new table and grounded props. Later r18–r20 builds retain it. See `reports/world-production/native-r17-commons.png` and the production checkpoint. The broader north-star beauty goal remains open.
 
 Cost estimate: $0.675 for this completed job; $5.775 combined completed FAL trials against the user's reported $25 purchase. This is not a billing-balance claim. No additional purchase. Account OAuth MCP supports the upload, generation and saved asset; no pasted key required.
 

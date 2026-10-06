@@ -1,0 +1,36 @@
+{
+  "request_id": "01a11329-2853-78c2-ba9d-09e3fac30248",
+  "estimated_job_usd": 0.675,
+  "estimated_completed_trials_usd": 6.45,
+  "original_download": "verified and revalidated; no regeneration",
+  "geometry_review": {
+    "front": "accepted",
+    "reverse": "accepted; generated shallow drawer repeated on rear, usable as double-sided desk",
+    "runtime_bytes": 1313304,
+    "runtime_triangles": 12000,
+    "placements": 11,
+    "batch_count": 1,
+    "dimensions_metres": [
+      1.9,
+      0.89,
+      0.72
+    ],
+    "tabletop_sample_range_metres": [
+      0.8896816843423828,
+      0.8898283525673637
+    ]
+  },
+  "source_validation": {
+    "targeted_tests": 13,
+    "files": 3,
+    "seconds": 32.84,
+    "navigation_routes": 26,
+    "native_build": "r21 passed in 34.1 seconds after a prior attempt stopped on disk guard",
+    "embedded_assets": 640,
+    "csp_transformed_html": 2,
+    "raw_native_sha256": "e14c934c4a0bb6b335c1574498046d6b8b119a2173a3f70dcd6e5d33bc45b493"
+  },
+  "native_review": "pending; CUA cgWindowNotFound prevents closing r20 and launching r21",
+  "last_launched_revision": "r20",
+  "final_north_star_goal": "open"
+}

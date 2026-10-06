@@ -1,0 +1,21 @@
+{
+  "reference": "desk-v1.png",
+  "prompt": "desk-v1-prompt.txt",
+  "tool": "built-in image_gen",
+  "mode": "generate",
+  "use_case": "product-mockup",
+  "file_url": "https://v3b.fal.media/files/b/0aad5775/7xx9nJDOxyKEcq4jBn7Ew_permagent-crafted-desk-v1.png",
+  "endpoint_id": "fal-ai/hunyuan-3d/v3.1/pro/image-to-3d",
+  "input": {
+    "input_image_url": "https://v3b.fal.media/files/b/0aad5775/7xx9nJDOxyKEcq4jBn7Ew_permagent-crafted-desk-v1.png",
+    "generate_type": "Normal",
+    "enable_pbr": true,
+    "face_count": 40000
+  },
+  "estimated_usd": 0.675,
+  "pricing_source": "https://fal.ai/models/fal-ai/hunyuan-3d/v3.1/pro/image-to-3d",
+  "pricing_checked": "2026-10-06",
+  "state": "completed and downloaded",
+  "reference_sha256": "d22d3cfb41c1dd9f01c5ec9185bd5e2e417b99867dec0cc7cb04bd83c979d9b0",
+  "reference_bytes": 1505018
+}

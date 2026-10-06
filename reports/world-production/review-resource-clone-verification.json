@@ -1,0 +1,49 @@
+{
+  "method": "Independent-inode APFS copy-on-write copies. Stage signature differences copied verbatim from existing signed files; every output SHA matches original. No logical file contents changed. Installed sources unchanged. Deep/strict code signature reverified.",
+  "free_bytes_before": 10285744128,
+  "free_bytes_after": 11312582656,
+  "files": [
+    {
+      "path": ".shared-target/world-production-20261006/staged/Permagent World Review.app/Contents/MacOS/permagent",
+      "source": "/Applications/Permagent.app/Contents/MacOS/permagent",
+      "sha256": "65f1baf8ae095a97819c78e6691cbe3d7acd8cdae1736413761088b6a3de7054",
+      "size": 280368960,
+      "private_chunk_bytes": 655360
+    },
+    {
+      "path": ".shared-target/world-production-20261006/staged/Permagent World Review.app/Contents/MacOS/permagentd",
+      "source": "/Applications/Permagent.app/Contents/MacOS/permagentd",
+      "sha256": "69485a8cddbd990079aeaf9b6e4666e30bd4261e9090e21e4ab3838f91c45cf5",
+      "size": 369375616,
+      "private_chunk_bytes": 851968
+    },
+    {
+      "path": ".shared-target/world-production-20261006/staged/Permagent World Review.app/Contents/Resources/mcp-runtime/node",
+      "source": "/Applications/Permagent.app/Contents/Resources/mcp-runtime/node",
+      "sha256": "245e0321af97d3c21dd4e7104457334dfe3c3ba7982d0db75363e354565f8cbb",
+      "size": 112972416,
+      "private_chunk_bytes": 0
+    },
+    {
+      "path": ".shared-target/world-production-20261006/staged/Permagent World Review.app/Contents/Resources/whisper/whisper-base-q8_0.gguf",
+      "source": "/Applications/Permagent.app/Contents/Resources/whisper/whisper-base-q8_0.gguf",
+      "sha256": "7073e51db7ab02b38cc4fceeac39adc2d7a19beb98badf66aa708f4f0ac71aa9",
+      "size": 78067328,
+      "private_chunk_bytes": 0
+    },
+    {
+      "path": "world-production-20261006/ui/desktop/src-tauri/resources/mcp-runtime/node",
+      "source": "/Applications/Permagent.app/Contents/Resources/mcp-runtime/node",
+      "sha256": "245e0321af97d3c21dd4e7104457334dfe3c3ba7982d0db75363e354565f8cbb",
+      "size": 112972416,
+      "private_chunk_bytes": 0
+    },
+    {
+      "path": "world-production-20261006/ui/desktop/src-tauri/resources/whisper/whisper-base-q8_0.gguf",
+      "source": "/Applications/Permagent.app/Contents/Resources/whisper/whisper-base-q8_0.gguf",
+      "sha256": "7073e51db7ab02b38cc4fceeac39adc2d7a19beb98badf66aa708f4f0ac71aa9",
+      "size": 78067328,
+      "private_chunk_bytes": 0
+    }
+  ]
+}

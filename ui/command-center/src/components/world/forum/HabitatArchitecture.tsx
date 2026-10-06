@@ -3,6 +3,7 @@ import { useTexture } from '@react-three/drei';
 import { DoubleSide, LatheGeometry, RepeatWrapping, SphereGeometry, SRGBColorSpace, Vector2 } from 'three';
 import { terraceHullGeometry, terracePerimeter, terraceSurfaceGeometry } from './habitatTerrace';
 import { CraftedLibrary } from './CraftedLibrary';
+import { CraftedDesks } from './CraftedDesks';
 import { DetailBuilder, finishDetails, material } from './habitatGeometry';
 import { COMMONS_SURFACE_Y, HABITAT_BEDS, HABITAT_STATIONS, habitatElevation, habitatHeight, type Point3 } from './habitatLayout';
 
@@ -147,20 +148,19 @@ export function HabitatArchitecture(){
     for(const s of HABITAT_STATIONS){
       if(s.id==='henry')continue;
       const [x,y,stationZ]=s.position,z=stationZ+.15;
-      b.box([x,y+.84,z-1.05],[1.9,.1,.72],wood);
-      for(const dx of [-.76,.76]){b.box([x+dx,y+.4,z-1.05],[.075,.8,.55],bronze);b.box([x+dx,y+.05,z-1.05],[.24,.09,.62],bronze);}
-      b.box([x,y+.92,z-1.04],[.72,.06,.40],s.id==='growth_measurement'?soil:dark);
+      b.box([x,y+.92,z-1.04],[s.id==='growth_measurement'?1.6:.72,.06,.40],s.id==='growth_measurement'?soil:dark);
       b.box([x+.66,y+1.15,z-1.05],[.035,.65,.035],bronze);b.sphere([x+.66,y+1.45,z-1.05],[.12,.07,.12],glow);
       if(['librarian','reader','financier','picker'].includes(s.id)){
-        for(let i=0;i<4;i++)b.box([x-.55,y+.95+i*.055,z-.94],[.34,.05,.42],[cloth,wood,edge][i%3],[0,i*.07,0]);
+        for(let i=0;i<4;i++)b.box([x-.55,y+.915+i*.05,z-.94],[.34,.05,.42],[cloth,wood,edge][i%3],[0,i*.07,0]);
         b.box([x,y+.97,z-.92],[.58,.035,.37],cloth,[.10,0,0]);b.box([x+.05,y+1.01,z-.92],[.014,.014,.34],bronze);
       }else if(s.id==='forecaster'){
         b.cylinder([x,y+1.25,z-1.03],.035,.6,bronze);b.ring([x,y+1.65,z-1.03],.47,.025,bronze,[Math.PI/3,0,0]);b.ring([x,y+1.65,z-1.03],.4,.017,bronze,[0,Math.PI/4,0]);b.sphere([x,y+1.65,z-1.03],[.18,.18,.18],glass);
       }else if(s.id==='growth_measurement'){
         for(let i=0;i<5;i++){b.cylinder([x-.6+i*.26,y+1.05,z-.96],.095,.2,edge,.12);b.tube([[x-.6+i*.26,y+1.12,z-.96],[x-.61+i*.26,y+1.4+i%2*.15,z-.94]],.012,soil);b.sphere([x-.57+i*.26,y+1.35,z-.94],[.07,.035,.13],soil);}
       }else{
+        b.cylinder([x,y+1.02,z-1.26],.032,.14,bronze);
         b.box([x,y+1.2,z-1.26],[.78,.46,.05],bronze,[-.15,0,0]);b.box([x,y+1.2,z-1.225],[.70,.38,.015],glass,[-.15,0,0]);
-        for(let i=0;i<5;i++)b.box([x-.25+i*.12,y+.94,z-.88],[.085,.02,.1],edge);
+        for(let i=0;i<5;i++)b.box([x-.25+i*.12,y+.96,z-.88],[.085,.02,.1],edge);
       }
     }
     // One continuous water court: a supported upper basin spills into a
@@ -201,5 +201,5 @@ export function HabitatArchitecture(){
     return {group,materials:[stone,paving,edge,wood,bronze,dark,soil,cloth,glass,glow,domeGlass],maps:ownMaps};
   },[maps]);
   useEffect(()=>()=>{finishDetails(built.group);built.materials.forEach(m=>m.dispose());built.maps.forEach(t=>t.dispose());},[built]);
-  return <><primitive object={built.group} dispose={null}/><CraftedLibrary/></>;
+  return <><primitive object={built.group} dispose={null}/><CraftedLibrary/><CraftedDesks/></>;
 }

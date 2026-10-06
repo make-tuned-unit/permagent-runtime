@@ -1,0 +1,13 @@
+{
+  "desk": {
+    "asset": "desk",
+    "request_id": "01a11329-2853-78c2-ba9d-09e3fac30248",
+    "url": "https://v3b.fal.media/files/b/0aad578a/Pmi79N9aiQcdkTxaO5-HI_model.glb",
+    "bytes": 41765452,
+    "sha256": "09dd7b0bf26729da07ef7c2158658ad21a372b26a99d897eacd662209717c3fd",
+    "glb_version": 2,
+    "acquisition": "fresh HTTPS public DNS answer; request-local resolution; verified HTTPS",
+    "downloaded_at": "2026-10-06T21:43:49.465278+00:00",
+    "revalidated_at": "2026-10-06T21:46:58.492177+00:00"
+  }
+}

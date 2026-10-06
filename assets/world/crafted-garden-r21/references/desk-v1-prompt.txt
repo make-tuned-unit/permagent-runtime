@@ -1,0 +1,7 @@
+Use case: product-mockup
+Asset type: single-object reference for a real-time 3D solarpunk garden work desk.
+Primary request: one beautifully crafted walnut writing desk with quiet brass details, entirely isolated on a transparent background.
+Subject: a low, wide rectangular desk, approximately 1.9 metres wide, 0.72 metres deep, 0.89 metres high. Rounded corners, thick solid walnut top with a fine inset brass perimeter line, subtle bevel, richly tactile natural grain. Four sturdy tapered carved walnut legs physically joined to the top through a shallow apron. Restrained brass collars and feet. One shallow centered drawer with a small brass pull. Open unobstructed knee space under the top. Refined botanical Art Nouveau influence in the gently curved leg profiles, believable joinery, elegant and functional.
+Composition: elevated three-quarter front view, show the entire object including all four feet, generous transparent margin. Empty tabletop, clean silhouette and clearly readable structure, no dramatic perspective.
+Lighting: soft neutral studio light evenly revealing the walnut and patinated brass; avoid deep black shadows and strong baked highlights.
+Constraints: the desk is one connected object, four legs standing on one plane. No chair, no objects on top, no lamp, no monitor, no plants, no ground plane, no floor, no wall, no text, no logo, no watermark. True transparent background.

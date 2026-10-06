@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { Box3, Mesh, MeshStandardMaterial, Raycaster, Vector3, SRGBColorSpace } from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { instanceGardenDecor } from './staticGardenInstances';
-import { ARCHIVE_DECOR, COMMONS_SURFACE_Y, HABITAT_DECOR, habitatCollisionSource, habitatWalkable } from './habitatLayout';
+import { ARCHIVE_DECOR, COMMONS_SURFACE_Y, HABITAT_DECOR, STATION_DESKS, habitatCollisionSource, habitatWalkable } from './habitatLayout';
 
 async function loadAsset(file:string) {
   const bytes=readFileSync(file),oldBitmap=globalThis.createImageBitmap,oldSelf=globalThis.self;
@@ -29,12 +29,13 @@ const candidates=[
   {name:'bench',file:'bench-v1.glb',budget:18000,placements:5,limits:[1.62,1.015,.55]},
   {name:'bookcase',file:'bookcase-v1.glb',budget:18000,placements:3,limits:[2.6,2.81,.54]},
   {name:'column',file:'column-v1.glb',budget:12000,placements:2,limits:[.541,3.61,.541]},
+  {name:'desk',file:'desk-v1.glb',budget:12000,placements:11,limits:[1.901,.891,.721]},
 ];
 describe('crafted garden exports',()=>{
   it.each(candidates)('$name loads embedded PBR, fits its footprint and batches its real geometry',async candidate=>{
     const {bytes,gltf}=await loadAsset(`public/world/garden-crafted/${candidate.file}`);
     try{
-      const highResolution=['bookcase','table'].includes(candidate.name);
+      const highResolution=['bookcase','table','desk'].includes(candidate.name);
       expect(bytes.length).toBeLessThan(highResolution?2_000_000:1_200_000);
       const root=gltf.scene.getObjectByName(candidate.name);expect(root).toBeDefined();
       gltf.scene.updateMatrixWorld(true);
@@ -56,14 +57,14 @@ describe('crafted garden exports',()=>{
         expect(o.geometry.getAttribute('uv')).toBeDefined();
       });
       expect(meshes).toBe(1);expect(triangles).toBeLessThanOrEqual(candidate.budget);
-      const placements=[...HABITAT_DECOR,...ARCHIVE_DECOR].filter(p=>p.asset===candidate.name);expect(placements).toHaveLength(candidate.placements);
-      if(['bench','bookcase','column','table'].includes(candidate.name)){
+      const placements=[...HABITAT_DECOR,...ARCHIVE_DECOR,...STATION_DESKS].filter(p=>p.asset===candidate.name);expect(placements).toHaveLength(candidate.placements);
+      if(['bench','bookcase','column','table','desk'].includes(candidate.name)){
         const colliders=habitatCollisionSource();
         try{for(const p of placements){
           const clone=root!.clone(true);clone.position.set(...p.position);clone.scale.setScalar(p.scale);clone.rotation.y=p.heading;clone.updateMatrixWorld(true);
           const actual=new Box3().setFromObject(clone);
           const name=candidate.name==='bookcase'?'archive shelves':candidate.name==='column'?'archive pillar':candidate.name==='table'?'commons table':'bench';
-          const collider=colliders.children.find(o=>o.name===name&&Math.abs(o.position.x-p.position[0])<.001&&Math.abs(o.position.z-p.position[2])<.001)!;
+          const collider=colliders.children.find(o=>(candidate.name==='desk'?o.name.endsWith(' desk'):o.name===name)&&Math.abs(o.position.x-p.position[0])<.001&&Math.abs(o.position.z-p.position[2])<.001)!;
           expect(new Box3().setFromObject(collider).expandByScalar(.00001).containsBox(actual),`${name} collider contains actual mesh at ${p.position}`).toBe(true);
         }
         // Near the end of the sideways commons bench: navigation must see it.
@@ -73,6 +74,14 @@ describe('crafted garden exports',()=>{
       const result=instanceGardenDecor(gltf.scene,placements);
       try{expect(result.census.primitiveBatches).toBe(1);expect(result.census.triangles).toBe(triangles*candidate.placements);}
       finally{result.dispose();}
+      if(candidate.name==='desk'){
+        const ray=new Raycaster();
+        for(const [x,z] of [[0,0],[-.55,.11],[0,.13],[.66,0],[-.6,.09],[.44,.09],[0,-.21]]){
+          ray.set(new Vector3(x,2,z),new Vector3(0,-1,0));const hit=ray.intersectObject(root!)[0];
+          expect(hit,`desk supports books, mat and tools at ${x},${z}`).toBeDefined();
+          expect(Math.abs(hit.point.y-.89)).toBeLessThan(.002);
+        }
+      }
       if(candidate.name==='table'){
         const table=root!.clone(true),p=placements[0];table.position.set(...p.position);table.scale.setScalar(p.scale);table.updateMatrixWorld(true);
         const ray=new Raycaster();
