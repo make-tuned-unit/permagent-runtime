@@ -685,3 +685,11 @@
   .forum-lane-left > .forum-brand { max-width: calc(100% - var(--forum-gutter) - 140px); }
   .forum-lane-right { right: 16px; bottom: 192px; }
 }
+
+.garden-view-options {display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:18px;}
+.garden-view-options label {font-size:12px;color:var(--forum-muted);}
+.garden-view-options select {margin-top:4px;}
+.garden-lesson button {display:block;width:100%;margin:10px 0;text-align:left;white-space:normal;}
+.garden-lesson details {padding:12px;border:1px solid var(--forum-border);border-radius:var(--forum-radius);}
+.garden-lesson summary {cursor:pointer;font-weight:600;}
+.garden-lesson a {color:var(--forum-accent);}

@@ -7,6 +7,7 @@ import { getReduceMotion } from '../../../styles/tokens';
 import { getAgentRuntimeStates } from '../shared/agentStatus';
 import type { AgentRuntimeState } from '../shared/agentStatus';
 import { attemptWalk, getForumColliders } from './walkCollision';
+import { GARDEN_ROUTE } from './gardenLayout';
 import routes from './patrolRoutes.json';
 import { patrolTarget } from './patrolMotion';
 
@@ -61,18 +62,18 @@ export function advanceForumInhabitants(
   }
 }
 
-export function ForumInhabitants({ attended }: { attended: string | null }) {
+export function ForumInhabitants({ attended, compact = false }: { attended: string | null; compact?: boolean }) {
   const people=useRef<ForumPerson[]>([]);
   useEffect(()=>{
     people.current=ROSTER.map((a,i)=>{
-      const route=routes.routes[routes.agents[a.id as keyof typeof routes.agents] as keyof typeof routes.routes];
+      const route=compact ? GARDEN_ROUTE : routes.routes[routes.agents[a.id as keyof typeof routes.agents] as keyof typeof routes.routes];
       const index=Math.floor((i*.381966%1)*route.length),[x,y,z]=route[index];
       const motion=ensureForumMotion(a.id,{x,y,z});
       Object.assign(motion,{x,y,z,walking:false,heading:0,strideDistance:0,engaged:'none'});
       return {id:a.id,route,motion,next:(index+1)%route.length,direction:1,pause:i*.45,blocked:0,feet:new Vector3(x,y,z),speed:.78+(i%4)*.075};
     });
     return ()=>{ people.current=[]; };
-  },[]);
+  },[compact]);
   useFrame((_,rawDt)=>{
     advanceForumInhabitants(people.current, rawDt, attended, getReduceMotion(), getAgentRuntimeStates(), getForumColliders().length>0);
   },-2);

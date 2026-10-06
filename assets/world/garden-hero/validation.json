@@ -1,0 +1,147 @@
+{
+  "export_total_bytes": 8436236,
+  "checks": "GLB headers/lengths, embedded buffers/images, buffer ranges, normals, root/pivot names, double-sided foliage, 40MiB ceiling",
+  "files": {
+    "bench.glb": {
+      "bytes": 74304,
+      "triangles": 2156,
+      "mesh_primitives": 4,
+      "mesh_nodes": 4,
+      "roots": [
+        "bench"
+      ],
+      "images": 0,
+      "materials": 4,
+      "sha256": "2f14f912d5867dcb136d8435bd5fe59150083f8201ccf21e668c3bbce767cde4"
+    },
+    "canopy.glb": {
+      "bytes": 736940,
+      "triangles": 8728,
+      "mesh_primitives": 6,
+      "mesh_nodes": 6,
+      "roots": [
+        "canopy"
+      ],
+      "images": 0,
+      "materials": 6,
+      "sha256": "bb6797b5c37b5062cbdce7610bfb1678d402027610451cdc799e2841148c4212"
+    },
+    "fern.glb": {
+      "bytes": 214148,
+      "triangles": 2816,
+      "mesh_primitives": 5,
+      "mesh_nodes": 5,
+      "roots": [
+        "fern"
+      ],
+      "images": 0,
+      "materials": 5,
+      "sha256": "717d4451bb9eef9faceb8858585939af6145f98c1e28a5896c548f794059d5f0"
+    },
+    "flowers.glb": {
+      "bytes": 1219772,
+      "triangles": 39114,
+      "mesh_primitives": 6,
+      "mesh_nodes": 6,
+      "roots": [
+        "flowers"
+      ],
+      "images": 0,
+      "materials": 6,
+      "sha256": "3d2b3f9057d988d2423527079779e70611e0fb87976a12485c527dc4ff01703f"
+    },
+    "hero-kit.glb": {
+      "bytes": 4214312,
+      "triangles": 124094,
+      "mesh_primitives": 64,
+      "mesh_nodes": 64,
+      "roots": [
+        "bench",
+        "canopy",
+        "fern",
+        "flowers",
+        "instrument",
+        "planter",
+        "robot",
+        "shrub",
+        "table",
+        "vine"
+      ],
+      "images": 0,
+      "materials": 17,
+      "sha256": "99a1ad1632e4a8adc8820767f6b684321a37b945692d3aa019e1c9d3a7f57139"
+    },
+    "instrument.glb": {
+      "bytes": 42732,
+      "triangles": 1172,
+      "mesh_primitives": 4,
+      "mesh_nodes": 4,
+      "roots": [
+        "instrument"
+      ],
+      "images": 0,
+      "materials": 4,
+      "sha256": "1c83217ea71af3b91509f83ecfcffe834fab08505aca8ae8e1c49669c01ffb53"
+    },
+    "planter.glb": {
+      "bytes": 93512,
+      "triangles": 2876,
+      "mesh_primitives": 2,
+      "mesh_nodes": 2,
+      "roots": [
+        "planter"
+      ],
+      "images": 0,
+      "materials": 2,
+      "sha256": "35e09bd6f00bc3bc6212d0327c665e182371050649fece6fcd9023a9597c5981"
+    },
+    "robot.glb": {
+      "bytes": 1320232,
+      "triangles": 57996,
+      "mesh_primitives": 22,
+      "mesh_nodes": 22,
+      "roots": [
+        "robot"
+      ],
+      "images": 0,
+      "materials": 5,
+      "sha256": "925701137a657b6796b8352f07df94d339159542b74f4e6323db5abc609f34f6"
+    },
+    "shrub.glb": {
+      "bytes": 232512,
+      "triangles": 2400,
+      "mesh_primitives": 6,
+      "mesh_nodes": 6,
+      "roots": [
+        "shrub"
+      ],
+      "images": 0,
+      "materials": 6,
+      "sha256": "d6ce7df4ce47c7678517510d5de331417f79cdfe6105302e293b39ff95bc7204"
+    },
+    "table.glb": {
+      "bytes": 167380,
+      "triangles": 5120,
+      "mesh_primitives": 3,
+      "mesh_nodes": 3,
+      "roots": [
+        "table"
+      ],
+      "images": 0,
+      "materials": 3,
+      "sha256": "993d1a86e874ac83adec03fc9ea90e61b05b886030f5395a455b5dde27e2dcb6"
+    },
+    "vine.glb": {
+      "bytes": 120392,
+      "triangles": 1716,
+      "mesh_primitives": 6,
+      "mesh_nodes": 6,
+      "roots": [
+        "vine"
+      ],
+      "images": 0,
+      "materials": 6,
+      "sha256": "d9acd5c8801b3e025dfde512c2f483d4d7793099fbd43cd09b0ac944e57775a6"
+    }
+  }
+}

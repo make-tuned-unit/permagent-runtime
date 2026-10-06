@@ -1,0 +1,310 @@
+{
+  "version": "hero-kit-v2-robot-panels",
+  "units": "metres",
+  "up": "glTF +Y",
+  "robot_forward": "glTF +Z",
+  "source": "Blender authored; north-star.png art direction; no purchased/generated third-party assets",
+  "license": "project-authored",
+  "textures": 0,
+  "clips": [],
+  "assets": {
+    "robot": {
+      "file": "robot.glb",
+      "root": "robot",
+      "blender_bounds": [
+        [
+          -0.44699999690055847,
+          -0.3139999806880951,
+          0.010499969124794006
+        ],
+        [
+          0.44699999690055847,
+          0.2699998617172241,
+          1.7649999856948853
+        ]
+      ],
+      "triangles": 57996,
+      "bytes": 1320232,
+      "sha256": "925701137a657b6796b8352f07df94d339159542b74f4e6323db5abc609f34f6",
+      "pivot": "floor centre",
+      "materials": [
+        "Brass \u2022 brushed hardware",
+        "Ceramic \u2022 warm ivory",
+        "Eyes \u2022 jade phosphor",
+        "Faceplate \u2022 deep teal glass",
+        "Graphite \u2022 joint rubber"
+      ]
+    },
+    "canopy": {
+      "file": "canopy.glb",
+      "root": "canopy",
+      "blender_bounds": [
+        [
+          -1.812699317932129,
+          -1.64226233959198,
+          -0.04485271871089935
+        ],
+        [
+          1.838983416557312,
+          1.5522997379302979,
+          4.1481451988220215
+        ]
+      ],
+      "triangles": 8728,
+      "bytes": 736940,
+      "sha256": "bb6797b5c37b5062cbdce7610bfb1678d402027610451cdc799e2841148c4212",
+      "pivot": "floor centre",
+      "materials": [
+        "Bark \u2022 cinnamon",
+        "Leaf \u2022 0",
+        "Leaf \u2022 1",
+        "Leaf \u2022 2",
+        "Leaf \u2022 3",
+        "Leaf \u2022 4"
+      ]
+    },
+    "shrub": {
+      "file": "shrub.glb",
+      "root": "shrub",
+      "blender_bounds": [
+        [
+          -0.5747812986373901,
+          -0.5627607703208923,
+          -0.005892239511013031
+        ],
+        [
+          0.6153396964073181,
+          0.7061321139335632,
+          0.7184034585952759
+        ]
+      ],
+      "triangles": 2400,
+      "bytes": 232512,
+      "sha256": "d6ce7df4ce47c7678517510d5de331417f79cdfe6105302e293b39ff95bc7204",
+      "pivot": "floor centre",
+      "materials": [
+        "Bark \u2022 cinnamon",
+        "Leaf \u2022 0",
+        "Leaf \u2022 1",
+        "Leaf \u2022 2",
+        "Leaf \u2022 3",
+        "Leaf \u2022 4"
+      ]
+    },
+    "fern": {
+      "file": "fern.glb",
+      "root": "fern",
+      "blender_bounds": [
+        [
+          -0.6178235411643982,
+          -0.6211022734642029,
+          0.032241810113191605
+        ],
+        [
+          0.6198315024375916,
+          0.6100193858146667,
+          0.4902634918689728
+        ]
+      ],
+      "triangles": 2816,
+      "bytes": 214148,
+      "sha256": "717d4451bb9eef9faceb8858585939af6145f98c1e28a5896c548f794059d5f0",
+      "pivot": "floor centre",
+      "materials": [
+        "Leaf \u2022 0",
+        "Leaf \u2022 1",
+        "Leaf \u2022 2",
+        "Leaf \u2022 3",
+        "Leaf \u2022 4"
+      ]
+    },
+    "vine": {
+      "file": "vine.glb",
+      "root": "vine",
+      "blender_bounds": [
+        [
+          -0.24145416915416718,
+          -0.2820586860179901,
+          0.01976039633154869
+        ],
+        [
+          0.5567219257354736,
+          0.14622358977794647,
+          1.6482141017913818
+        ]
+      ],
+      "triangles": 1716,
+      "bytes": 120392,
+      "sha256": "d9acd5c8801b3e025dfde512c2f483d4d7793099fbd43cd09b0ac944e57775a6",
+      "pivot": "floor centre",
+      "materials": [
+        "Bark \u2022 cinnamon",
+        "Leaf \u2022 0",
+        "Leaf \u2022 1",
+        "Leaf \u2022 2",
+        "Leaf \u2022 3",
+        "Leaf \u2022 4"
+      ]
+    },
+    "flowers": {
+      "file": "flowers.glb",
+      "root": "flowers",
+      "blender_bounds": [
+        [
+          -0.3822897970676422,
+          -0.3818213939666748,
+          0.0
+        ],
+        [
+          0.3785562813282013,
+          0.37995797395706177,
+          0.43451330065727234
+        ]
+      ],
+      "triangles": 39114,
+      "bytes": 1219772,
+      "sha256": "3d2b3f9057d988d2423527079779e70611e0fb87976a12485c527dc4ff01703f",
+      "pivot": "floor centre",
+      "materials": [
+        "Brass \u2022 brushed hardware",
+        "Flower \u2022 apricot",
+        "Leaf \u2022 0",
+        "Leaf \u2022 1",
+        "Leaf \u2022 2",
+        "Leaf \u2022 4"
+      ]
+    },
+    "table": {
+      "file": "table.glb",
+      "root": "table",
+      "blender_bounds": [
+        [
+          -1.1200001239776611,
+          -1.1200001239776611,
+          0.015830717980861664
+        ],
+        [
+          1.1200001239776611,
+          1.1200001239776611,
+          0.8244999647140503
+        ]
+      ],
+      "triangles": 5120,
+      "bytes": 167380,
+      "sha256": "993d1a86e874ac83adec03fc9ea90e61b05b886030f5395a455b5dde27e2dcb6",
+      "pivot": "floor centre",
+      "materials": [
+        "Brass \u2022 brushed hardware",
+        "Timber \u2022 lighter grain",
+        "Timber \u2022 oiled walnut"
+      ]
+    },
+    "bench": {
+      "file": "bench.glb",
+      "root": "bench",
+      "blender_bounds": [
+        [
+          -0.8100000023841858,
+          -0.26749998331069946,
+          0.0
+        ],
+        [
+          0.8100000023841858,
+          0.2729294002056122,
+          1.0149999856948853
+        ]
+      ],
+      "triangles": 2156,
+      "bytes": 74304,
+      "sha256": "2f14f912d5867dcb136d8435bd5fe59150083f8201ccf21e668c3bbce767cde4",
+      "pivot": "floor centre",
+      "materials": [
+        "Brass \u2022 brushed hardware",
+        "Fabric \u2022 moss weave",
+        "Stone \u2022 warm travertine",
+        "Timber \u2022 oiled walnut"
+      ]
+    },
+    "planter": {
+      "file": "planter.glb",
+      "root": "planter",
+      "blender_bounds": [
+        [
+          -0.550000011920929,
+          -0.550000011920929,
+          0.0
+        ],
+        [
+          0.550000011920929,
+          0.550000011920929,
+          0.6700000166893005
+        ]
+      ],
+      "triangles": 2876,
+      "bytes": 93512,
+      "sha256": "35e09bd6f00bc3bc6212d0327c665e182371050649fece6fcd9023a9597c5981",
+      "pivot": "floor centre",
+      "materials": [
+        "Soil \u2022 humus",
+        "Stone \u2022 warm travertine"
+      ]
+    },
+    "instrument": {
+      "file": "instrument.glb",
+      "root": "instrument",
+      "blender_bounds": [
+        [
+          -0.14499999582767487,
+          -0.10000000149011612,
+          0.0
+        ],
+        [
+          0.14499999582767487,
+          0.10000000149011612,
+          0.3770272433757782
+        ]
+      ],
+      "triangles": 1172,
+      "bytes": 42732,
+      "sha256": "1c83217ea71af3b91509f83ecfcffe834fab08505aca8ae8e1c49669c01ffb53",
+      "pivot": "floor centre",
+      "materials": [
+        "Brass \u2022 brushed hardware",
+        "Eyes \u2022 jade phosphor",
+        "Faceplate \u2022 deep teal glass",
+        "Timber \u2022 oiled walnut"
+      ]
+    }
+  },
+  "mono_kit_bytes": 4214312,
+  "editable_robot_source": "assets/world/garden-hero/source/robot-v2.blend",
+  "draft": true,
+  "visualAcceptance": "pending",
+  "validation": {
+    "bytes": 4214312,
+    "triangles": 124094,
+    "mesh_primitives": 64,
+    "mesh_nodes": 64,
+    "roots": [
+      "bench",
+      "canopy",
+      "fern",
+      "flowers",
+      "instrument",
+      "planter",
+      "robot",
+      "shrub",
+      "table",
+      "vine"
+    ],
+    "images": 0,
+    "materials": 17,
+    "sha256": "99a1ad1632e4a8adc8820767f6b684321a37b945692d3aa019e1c9d3a7f57139"
+  },
+  "sourceEditable": "source/hero-kit.blend and source/robot-v2.blend in asset production lane",
+  "limitations": [
+    "Hero PBR texture enrichment incomplete",
+    "Runtime visual acceptance pending",
+    "No rig clips; articulated pivots"
+  ]
+}

@@ -11,6 +11,7 @@ export function registerForumCollision(scene: Object3D) {
     const geometry = o.geometry.clone();
     geometry.boundsTree = new MeshBVH(geometry);
     const collider = new Mesh(geometry, o.material);
+    collider.name = o.name;
     collider.raycast = acceleratedRaycast;
     collider.applyMatrix4(o.matrixWorld);
     collider.updateMatrixWorld(true);

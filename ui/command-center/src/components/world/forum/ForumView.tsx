@@ -1,3 +1,8 @@
+import { CompactGarden, GardenLighting, GardenNavigation } from './CompactGarden';
+import { GARDEN_ARRIVAL, GARDEN_PLACES, GARDEN_START } from './gardenLayout';
+import { GardenAssetBoundary } from './GardenAssetBoundary';
+import { HeroGardenDecor, HeroGardenAgents } from './HeroGardenKit';
+import { EvidenceLesson } from './EvidenceLesson';
 import { applyForumSurfaceMaterials } from './ForumSurfaceMaterials';
 import { Suspense, useEffect, useMemo, useState, useCallback, useRef, type CSSProperties, type RefObject } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
@@ -20,6 +25,7 @@ const SCENE_BUTTON = { '--pa-btn-bg': 'var(--forum-bg)' } as CSSProperties;
 import { useTheme } from '../../../styles/useTheme';
 import { font, radius, type as typeRamp } from '../../../styles/tokens';
 import { ENV, STATE } from '../shared/palette';
+import { useAgentRuntimeStates } from '../shared/agentStatus';
 import { useOrchestratorName } from '../shared/useOrchestratorName';
 import type { ToolType } from '../../../lib/store';
 import { DISTRICTS } from './districts';
@@ -209,7 +215,16 @@ export function forumRightLaneBottom(
 
 export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgent }: { visible?: boolean; onNavigate?: (tool: ToolType) => void; onOpenGoal?: (projectId:string,id:string)=>void; onManageAgent?: (id:string)=>void }) {
   const { colors } = useTheme();
-  const appearance = useSystemAppearance();
+  const systemAppearance = useSystemAppearance();
+  const [lighting, setLighting] = useState<'system'|'day'|'night'>('system');
+  const appearance = lighting === 'system' ? systemAppearance : lighting;
+  const [compact, setCompact] = useState(() => new URLSearchParams(window.location.search).get('campus') !== '1');
+  const [overview, setOverview] = useState(false);
+  const [kitReady, setKitReady] = useState(false);
+  const [assetNotice,setAssetNotice]=useState('');
+  const kitFailure=useCallback(()=>{setKitReady(false);setAssetNotice('Detailed assets could not load. The walkable garden and agent controls remain available.');},[]);
+  useEffect(()=>{let cancelled=false;fetch(`${import.meta.env.BASE_URL}world/garden-hero/manifest.json`).then(r=>r.ok?r.json():null).then(value=>{if(!cancelled && (value?.version?.startsWith('hero-kit-v1.1') || value?.version?.startsWith('hero-kit-v2')))setKitReady(true);}).catch(()=>{});return()=>{cancelled=true;};},[]);
+  const places = compact ? GARDEN_PLACES : DISTRICTS;
   // The agent wears the name its user gave it, everywhere. `useOrchestratorName`
   // reads that from the daemon; the store's `agentName` is the same name kept
   // live by `refreshIdentity`, and it is the one that survives when the identity
@@ -243,9 +258,9 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
   useEffect(() => { if (!onPanel) setWalking(false); }, [onPanel]);
   const [focusAgent, setFocusAgent] = useState<{id:string;revision:number}|null>(null);
   const exitWalk = useCallback(()=>setWalking(false),[]);
-  const inspectAgent = useCallback((id:string)=>{setSelected(id);setTab('meet');},[]);
+  const inspectAgent = useCallback((id:string)=>{setSelected(id);setDeskOpen(true);setTab('meet');},[]);
   const [districtId, setDistrictId] = useState('commons');
-  const district = DISTRICTS.find(d => d.id === districtId)!;
+  const district = places.find(d => d.id === districtId) ?? places[0];
   // The Mesh Agora — the antechamber beyond the gate. It is a branch of this
   // one Canvas, not a tool or a tab, and everything it claims about the Mesh
   // comes from `shared/meshStatus.ts`.
@@ -254,7 +269,7 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
   // Set when the walker is put down somewhere the selected district does not
   // imply — today only on the way back out of the Agora.
   const [walkFrom, setWalkFrom] = useState<[number,number,number]|null>(null);
-  const districtStart = useMemo<[number,number,number]>(() => district.id==='commons' ? [0,0,14] : district.id==='gallery' ? [2,4.32,-20] : district.id==='mesh' ? gateApproachPoint() : [district.position[0]+2,district.position[1],district.position[2]+5], [district]);
+  const districtStart = useMemo<[number,number,number]>(() => compact ? district.id === 'commons' ? [...GARDEN_START] : [district.position[0],0,district.position[2]+1.8] : district.id==='commons' ? [0,0,14] : district.id==='gallery' ? [2,4.32,-20] : district.id==='mesh' ? gateApproachPoint() : [district.position[0]+2,district.position[1],district.position[2]+5], [district,compact]);
   const walkStart = walkFrom ?? districtStart;
   const enterMesh = useCallback(()=>{ setMeshPrompt(false); setAgoraOpen(true); },[]);
   const leaveMesh = useCallback(()=>{
@@ -284,7 +299,7 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
     // Selecting the gate a second time walks through it. This is the path for
     // anyone who never enters walk mode; the gate is not walk-only.
     if (id === 'mesh' && districtId === 'mesh' && !agoraOpen) { enterMesh(); return; }
-    setWalking(false); const next = DISTRICTS.find(d=>d.id===id)!; setDistrictId(id); setSelected(next.agent); setTab('meet'); setSaved(false);
+    setWalking(false); setFocusAgent(null); setOverview(false); const next = places.find(d=>d.id===id)!; setDistrictId(id); setSelected(next.agent); setTab(compact && id === 'gallery' ? 'evidence' : 'meet'); setSaved(false);
     setAgoraOpen(false); setWalkFrom(null);
   }
 
@@ -298,6 +313,8 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
   const [saved, setSaved] = useState(false);
   const [queryError, setQueryError] = useState('');
   const { goals, loaded } = useActiveGoals();
+  const runtimeStates = useAgentRuntimeStates();
+  const selectedState = runtimeStates.find(s=>s.id===selected);
   const profile = FORUM_AGENT_PROFILES[selected];
   const identity = ROSTER.find(a => a.id === selected)!;
   const agent = identity.isHenry && configuredName ? { ...identity, name: configuredName } : identity;
@@ -366,18 +383,18 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
           portal into this host with z-index up to 16777271 by default; with
           no context around them they out-ranked the HUD lanes and QA saw
           "Automate" drawn over the Places rail and "Build" over the job feed. */}
-      <Canvas className="forum-canvas" frameloop={onPanel && pageVisible ? 'always' : 'never'} shadows={{ type: PCFShadowMap }} dpr={[1, 1.5]} camera={{ position: [...FORUM_VISTA.position] as [number,number,number], fov: FORUM_VISTA.fov, near: FORUM_CAMERA_NEAR, far: FORUM_CAMERA_FAR }} gl={{ antialias: true, toneMapping: AgXToneMapping, toneMappingExposure: FORUM_EXPOSURE }}>
-        {agoraOpen ? <MeshAgora walking={walking} /> : <ForumLighting appearance={appearance} />}
+      <Canvas className="forum-canvas" frameloop={onPanel && pageVisible ? 'always' : 'never'} shadows={{ type: PCFShadowMap }} dpr={[1, 1.5]} camera={{ position: [...(compact ? GARDEN_ARRIVAL.position : FORUM_VISTA.position)] as [number,number,number], fov: compact ? GARDEN_ARRIVAL.fov : FORUM_VISTA.fov, near: FORUM_CAMERA_NEAR, far: FORUM_CAMERA_FAR }} gl={{ antialias: true, toneMapping: AgXToneMapping, toneMappingExposure: FORUM_EXPOSURE }}>
+        {agoraOpen ? <MeshAgora walking={walking} /> : compact ? <GardenLighting appearance={appearance} /> : <ForumLighting appearance={appearance} />}
         {/* The forum is hidden rather than unmounted while the Agora is open:
             an invisible group costs no draw calls, and keeping it mounted means
             the GLB is never fetched twice and its collision BVH — which the
             walker is still standing on out at the gate — is never rebuilt. */}
         <group visible={!agoraOpen}>
-          <VaultBoundary fallback={<Fallback />}><Suspense fallback={<Fallback />}><ForumAsset /></Suspense></VaultBoundary>
+          {compact ? <><CompactGarden kitReady={kitReady} onEvidence={()=>{setWalking(false);setDeskOpen(true);setTab('evidence');}} />{kitReady && <GardenAssetBoundary onFailure={kitFailure}><Suspense fallback={null}><HeroGardenDecor /></Suspense></GardenAssetBoundary>}</> : <VaultBoundary fallback={<Fallback />}><Suspense fallback={<Fallback />}><ForumAsset /></Suspense></VaultBoundary>}
           <ForumEnvironment appearance={appearance} />
-          <ForumWater />
-          <Suspense fallback={null}><ForumShips /></Suspense>
-          <Suspense fallback={null}><ForumAgents hoveredAgent={hovered} onHoverAgent={setHovered} onSelectAgent={id => { setSelected(id); setTab('meet'); setSaved(false); }} /></Suspense>
+          {!compact && <ForumWater />}
+          {!compact && <Suspense fallback={null}><ForumShips /></Suspense>}
+          <Suspense fallback={null}>{compact && kitReady ? <GardenAssetBoundary onFailure={kitFailure}><HeroGardenAgents onHover={setHovered} onSelect={id=>{setSelected(id);setDeskOpen(true);setTab('meet');}} /></GardenAssetBoundary> : <ForumAgents compact={compact} hoveredAgent={hovered} onHoverAgent={setHovered} onSelectAgent={id => { setSelected(id); setTab('meet'); setSaved(false); }} />}</Suspense>
         </group>
         {flying
           ? <Suspense fallback={null}><ForumFlight
@@ -391,9 +408,9 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
               }}
             /></Suspense>
           : walking
-          ? <ForumWalk start={walkStartOverride ?? walkStart} onExit={exitWalk} onInspect={inspectAgent} inMesh={agoraOpen} onEnterMesh={enterMesh} onExitMesh={leaveMesh} onMeshPrompt={setMeshPrompt} />
-          : !agoraOpen && <ForumNavigation district={district} focusAgent={focusAgent} />}
-        <ForumPostProcessing appearance={appearance} />
+          ? <ForumWalk start={walkStartOverride ?? walkStart} onExit={exitWalk} onInspect={inspectAgent} inMesh={agoraOpen} onEnterMesh={enterMesh} onExitMesh={leaveMesh} onMeshPrompt={setMeshPrompt} onEvidence={compact ? ()=>{setWalking(false);setDeskOpen(true);setTab('evidence');} : undefined} />
+          : !agoraOpen && (compact ? <GardenNavigation district={district} focusAgent={focusAgent} overview={overview} /> : <ForumNavigation district={district} focusAgent={focusAgent} />)}
+        <ForumPostProcessing appearance={appearance} gentle={compact} />
         <PerfSampler />
       </Canvas>
       {/* The left edge is ONE column, not five boxes each pinned to the corner
@@ -409,9 +426,10 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
       {/* First in the lane and never dismissible: an unpaired or refused tab
           otherwise reads as a quiet world (see ForumAuthNotice). */}
       <ForumAuthNotice />
-      {!cards.isDismissed('brand') && <header className="forum-brand"><DismissCard label="the world title" onDismiss={()=>cards.dismiss('brand')} /><div><div className="eyebrow">WORLD / SOLAR FORUM</div><h1 style={typeRamp.display}>The Solar Forum</h1><p>Living forum · <span data-testid="forum-appearance">{appearance === 'night' ? 'Night' : 'Day'} / follows system appearance</span></p></div></header>}
+      {assetNotice && <div className="forum-live" role="status">{assetNotice}</div>}
+      {!cards.isDismissed('brand') && <header className="forum-brand"><DismissCard label="the world title" onDismiss={()=>cards.dismiss('brand')} /><div><div className="eyebrow">WORLD / SOLAR FORUM</div><h1 style={typeRamp.display}>The Solar Forum</h1><p>Living forum · <span data-testid="forum-appearance">{appearance === 'night' ? 'Night' : 'Day'} / {lighting === 'system' ? 'follows system appearance' : 'World lighting override'}</span></p></div></header>}
       <ForumPlaceRail
-        places={DISTRICTS.map(d => ({ id: d.id, name: d.name, subtitle: d.subtitle }))}
+        places={places.map(d => ({ id: d.id, name: d.name, subtitle: d.subtitle }))}
         activeId={districtId}
         open={railOpen}
         colors={colors}
@@ -433,7 +451,7 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
           </Button>
         </div>
       )}
-      {!cards.isDismissed('hints') && <div className="forum-controls"><DismissCard label="the control hints" onDismiss={()=>cards.dismiss('hints')} />{agoraOpen ? (walking ? 'Arrow keys walk · Walk back through the ring or press Esc to return to the forum' : 'Drag to orbit · Esc or Return to the Forum') : flying ? 'Arrow keys fly · Space climb · C descend · Shift boost · land on a terrace, then E to step out · Esc overview' : walking ? 'Arrow keys walk · Shift faster · Mouse / drag to look · E meet nearby agent · Esc overview' : 'Drag to orbit · Scroll to explore · Select a place or walk from this place'}</div>}
+      {!cards.isDismissed('hints') && <div className="forum-controls"><DismissCard label="the control hints" onDismiss={()=>cards.dismiss('hints')} />{agoraOpen ? (walking ? 'Arrow keys walk · Walk back through the ring or press Esc to return to the forum' : 'Drag to orbit · Esc or Return to the Forum') : flying ? 'Arrow keys fly · Space climb · C descend · Shift boost · land on a terrace, then E to step out · Esc overview' : walking ? 'Arrow keys walk · Shift faster · Mouse / drag to look · E inspect nearby agent / archive · Esc overview' : 'Drag to orbit · Scroll to explore · Select a place or walk from this place'}</div>}
       </div>
       {meshPrompt && walking && !agoraOpen && <div className="forum-gate-prompt" role="status">E · Enter the MESH</div>}
       <div className="forum-desk-toggle">
@@ -457,13 +475,14 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
           the pill currently measures (null while it is hidden). */}
       <div className="forum-lane forum-lane-right" style={{ bottom: forumRightLaneBottom(chatLauncherSize) }}>
       {agoraOpen && <div className="forum-agora-return"><Button colors={colors} variant="primary" flashSuccess={false} onClick={leaveMesh}>Return to the Forum</Button></div>}
-      <div className="forum-fly"><Button colors={colors} variant={flying?'ghostOn':'ghost'} flashSuccess={false} style={SCENE_BUTTON} onClick={()=>{
+      {compact && <><Button colors={colors} flashSuccess={false} style={SCENE_BUTTON} onClick={()=>{setWalking(false);setOverview(v=>!v);}}>{overview ? 'Arrival view' : 'Garden overview'}</Button><Button colors={colors} flashSuccess={false} style={SCENE_BUTTON} onClick={()=>{setWalking(false);setDeskOpen(true);setTab('evidence');}}>Inspect evidence</Button></>}
+      {!compact && <div className="forum-fly"><Button colors={colors} variant={flying?'ghostOn':'ghost'} flashSuccess={false} style={SCENE_BUTTON} onClick={()=>{
         if (flying) { setFlying(false); return; }
         setWalking(false);
         setFlying(true);
         const canvas=worldRef.current?.querySelector('canvas');
         if(canvas){canvas.tabIndex=0;canvas.focus({preventScroll:true});}
-      }}>{flying?'Leave the skiff':'Fly the skiff'}</Button></div>
+      }}>{flying?'Leave the skiff':'Fly the skiff'}</Button></div>}
       <div className="forum-play"><Button colors={colors} variant={walking?'ghost':'primary'} flashSuccess={false} onClick={()=>{
         if(walking){setWalking(false);return;}
         setWalking(true);
@@ -476,6 +495,7 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
       </div>
     </section>
     <aside className="forum-panel" id="forum-agent-desk" aria-label="Agent learning and task desk" aria-hidden={!deskOpen}>
+      <div className="garden-view-options"><label>World light <select aria-label="World lighting" value={lighting} onChange={e=>setLighting(e.target.value as 'system'|'day'|'night')}><option value="system">System appearance</option><option value="day">Warm daylight</option><option value="night">Lantern night</option></select></label><Button colors={colors} variant="ghost" flashSuccess={false} onClick={()=>{setWalking(false);setFlying(false);setAgoraOpen(false);setWalkFrom(null);setWalkStartOverride(null);setDistrictId('commons');setFocusAgent(null);setCompact(v=>!v);}}>{compact ? 'Previous campus' : 'Compact garden'}</Button></div>
       <div className="eyebrow">AGENT DESK</div><h2 style={typeRamp.title}>Meet your collaborators.</h2>
       <p className="intro">{district.description}</p>
       {onNavigate && district.tool && district.id !== 'commons' && <Button colors={colors} variant="ghost" onClick={()=>onNavigate(district.tool!)} flashSuccess={false}>Open {district.name} ↗</Button>}
@@ -487,7 +507,8 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
       <label className="field-label" htmlFor="forum-agent">Choose an agent</label>
       <select id="forum-agent" value={selected} onChange={e => { setSelected(e.target.value); setSaved(false); }}>{ROSTER.map(a => <option key={a.id} value={a.id}>{a.isHenry ? `${configuredName || 'Your agent'} · Sovereign orchestrator` : a.name}</option>)}</select>
       <nav className="forum-tabs" aria-label="Agent desk">{['meet','learn','task','conversation'].map(t => <Button colors={colors} flashSuccess={false} key={t} aria-pressed={tab===t} onClick={() => setTab(t)}>{t==='meet' ? 'Meet' : t==='learn' ? 'Learn' : t==='task' ? 'Give a brief' : 'Conversation'}</Button>)}</nav>
-      {tab==='meet' && <section><div className="forum-agent-portrait" style={{borderColor:agent.trimColor}}><img key={agent.id} src={`${import.meta.env.BASE_URL}world/forum-characters/${agent.id}.png`} alt={profile.signature} onError={e=>{e.currentTarget.style.visibility='hidden';}} /><div><span className="eyebrow">{profile.archetype}</span><h3>{agent.name}</h3></div></div>{deskOpen && agent.isHenry && <div className="forum-passport-detail"><ForumPassport /></div>}<p>{profiles[selected] ?? `${agent.name} is part of the existing World roster. Its dedicated panel in the main World describes its capabilities and operating limits.`}</p><div className="forum-character"><b>Working style</b><p>{profile.manner}</p><p className="forum-voice">“{profile.voice}”</p><Button colors={colors} flashSuccess={false} onClick={()=>{setBrief(profile.question);setKind('Query');setTab('task');setSaved(false);}}>Try a question for this role ↗</Button></div><div className="note"><b>What does its presence mean?</b><p>{agent.wire==='daemon' ? 'This agent has a daemon event source. Its presence alone does not confirm a connection or a running job.' : agent.wire==='sim' ? 'Ambient presence. Idle movement is simulated; it is not evidence of a running job.' : 'Static presence. This character has no live activity emitter.'}</p></div><Button colors={colors} flashSuccess={false} variant="primary" className="forum-primary" onClick={() => setTab('learn')}>How agents work ↗</Button></section>}
+      {tab==='meet' && <section><div className="forum-agent-portrait" style={{borderColor:agent.trimColor}}><img key={agent.id} src={`${import.meta.env.BASE_URL}world/forum-characters/${agent.id}.png`} alt={profile.signature} onError={e=>{e.currentTarget.style.visibility='hidden';}} /><div><span className="eyebrow">{profile.archetype}</span><h3>{agent.name}</h3></div></div>{deskOpen && agent.isHenry && <div className="forum-passport-detail"><ForumPassport /></div>}<p role="status">Reported status: {selectedState ? selectedState.hudState : 'not yet available'}</p><p>{profiles[selected] ?? `${agent.name} is part of the existing World roster. Its dedicated panel in the main World describes its capabilities and operating limits.`}</p><div className="forum-character"><b>Working style</b><p>{profile.manner}</p><p className="forum-voice">“{profile.voice}”</p><Button colors={colors} flashSuccess={false} onClick={()=>{setBrief(profile.question);setKind('Query');setTab('task');setSaved(false);}}>Try a question for this role ↗</Button></div><div className="note"><b>What does its presence mean?</b><p>{agent.wire==='daemon' ? 'This agent has a daemon event source. Its presence alone does not confirm a connection or a running job.' : agent.wire==='sim' ? 'Ambient presence. Idle movement is simulated; it is not evidence of a running job.' : 'Static presence. This character has no live activity emitter.'}</p></div><Button colors={colors} flashSuccess={false} variant="primary" className="forum-primary" onClick={() => setTab('learn')}>How agents work ↗</Button></section>}
+      {tab==='evidence' && <EvidenceLesson />}
       {tab==='learn' && <section><div className="lesson-count">FIELD GUIDE / 0{lesson+1}</div><h3>{lessons[lesson][0]}</h3><p>{lessons[lesson][1]}</p><div className="lesson-steps">{lessons.map((l,i) => <Button colors={colors} flashSuccess={false} key={l[0]} aria-label={l[0]} aria-pressed={lesson===i} onClick={() => setLesson(i)}>{i+1}</Button>)}</div><div className="note"><b>Try asking {agent.name}</b><p>{lessons[lesson][2]}</p></div><Button colors={colors} flashSuccess={false} variant="primary" className="forum-primary" onClick={() => { setBrief(lessons[lesson][2]); setKind('Query'); setSaved(false); setTab('task'); }}>Use this question ↗</Button></section>}
       {tab==='task' && <section><h3>A clear brief is a good beginning.</h3><p>Prepare a query or job for {agent.name}. Send a question, job or capability request to your orchestrator through the shared conversation. Execution and approvals use the existing runtime; exporting alone does not dispatch work.</p><label className="field-label" htmlFor="forum-kind">Type</label><select id="forum-kind" value={kind} onChange={e => { setKind(e.target.value); setSaved(false); }}><option>Query</option><option>Job</option><option>Capability</option></select><label className="field-label" htmlFor="forum-brief">What would you like to achieve?</label><textarea id="forum-brief" value={brief} placeholder="Describe the outcome and context…" onChange={e => { setBrief(e.target.value); setSaved(false); }} /><label className="field-label" htmlFor="forum-criteria">What would count as done?</label><textarea id="forum-criteria" className="short" value={criteria} placeholder="An artifact, a cited answer, a passing check…" onChange={e => { setCriteria(e.target.value); setSaved(false); }} /><Button colors={colors} flashSuccess={false} variant="primary" className="forum-primary" disabled={!brief.trim()} onClick={async()=>{
         setQueryError('');

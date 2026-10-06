@@ -4,9 +4,11 @@ import { Euler, PerspectiveCamera, Vector3 } from 'three';
 import { attemptWalk } from './walkCollision';
 import { ROSTER, getAgentPosition } from '../agents';
 import { crossedGatePlane, inExedra } from './meshPortal';
+import { getForumMotion } from './ForumInhabitants';
 import { FORUM_WALK_FOV } from './vistaCamera';
 
-export function ForumWalk({ onInspect, onExit, start, onEnterMesh, onExitMesh, onMeshPrompt, inMesh = false }: {
+export function ForumWalk({ onInspect, onExit, start, onEnterMesh, onExitMesh, onMeshPrompt, inMesh = false, onEvidence }: {
+  onEvidence?: () => void;
   start:[number,number,number];
   onInspect:(id:string)=>void;
   onExit:()=>void;
@@ -68,12 +70,13 @@ export function ForumWalk({ onInspect, onExit, start, onEnterMesh, onExitMesh, o
       if (['KeyW','KeyA','KeyS','KeyD','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','ShiftLeft','ShiftRight'].includes(e.code)) { e.preventDefault();keys.current.add(e.code); }
       if (e.code==='Escape') { e.preventDefault(); if (inMesh) onExitMesh?.(); else onExit(); }
       if (e.code==='KeyE' && !e.repeat) {
+        if(onEvidence && Math.hypot(feet.current.x+7,feet.current.z+7)<2.5){releasing.current=true;document.exitPointerLock?.();onEvidence();return;}
         // Standing in the exedra (round the side of the ring rather than
         // through it): E is the way in, same key as meeting an agent.
         if (nearGate.current && !inMesh && onEnterMesh) { enterMesh(); return; }
         let nearest: string|null=null, distance=3;
         for (const agent of ROSTER) {
-          const p=getAgentPosition(agent.id); if(!p)continue;
+          const p=getForumMotion(agent.id) ?? getAgentPosition(agent.id); if(!p)continue;
           const d=Math.hypot(p.x-feet.current.x,p.y-feet.current.y,p.z-feet.current.z);
           if(d<distance){distance=d;nearest=agent.id;}
         }
@@ -111,7 +114,7 @@ export function ForumWalk({ onInspect, onExit, start, onEnterMesh, onExitMesh, o
       document.removeEventListener('pointerlockchange',locked);gl.domElement.removeEventListener('mousedown',startDrag);
       if(document.pointerLockElement===gl.domElement)document.exitPointerLock?.();
     };
-  },[camera,gl,onExit,onInspect,onEnterMesh,onExitMesh,inMesh]);
+  },[camera,gl,onExit,onInspect,onEnterMesh,onExitMesh,inMesh,onEvidence]);
   useFrame((_,rawDt)=>{
     const k=keys.current, dt=Math.min(rawDt,.05);
     if(k.has('ArrowLeft'))angles.current.y+=dt*1.6;

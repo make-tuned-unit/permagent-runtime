@@ -208,15 +208,15 @@ const SATURATION = { day: 0.16, night: 0.5 };
 const CONTRAST = 0.075;
 const BRIGHTNESS = -0.035;
 
-export function ForumPostProcessing({ appearance = 'day' }: { appearance?: 'day' | 'night' }) {
+export function ForumPostProcessing({ appearance = 'day', gentle = false }: { appearance?: 'day' | 'night'; gentle?: boolean }) {
   return (
     <EffectComposer multisampling={0}>
-      <Bloom mipmapBlur intensity={appearance === 'day' ? 0.3 : 0.55} radius={0.6} levels={5} luminanceThreshold={0.72} luminanceSmoothing={0.3} />
+      <Bloom mipmapBlur intensity={gentle ? .12 : appearance === 'day' ? 0.3 : 0.55} radius={0.6} levels={5} luminanceThreshold={0.72} luminanceSmoothing={0.3} />
       {/* AgX here, not on the Canvas: the Canvas's toneMapping is skipped while
           this composer is mounted, which is what clipped the gas giant white. */}
       <ToneMapping mode={ToneMappingMode.AGX} />
-      <HueSaturation saturation={SATURATION[appearance]} />
-      <BrightnessContrast brightness={BRIGHTNESS} contrast={CONTRAST} />
+      <HueSaturation saturation={gentle ? 0 : SATURATION[appearance]} />
+      <BrightnessContrast brightness={gentle ? 0 : BRIGHTNESS} contrast={gentle ? .015 : CONTRAST} />
     </EffectComposer>
   );
 }
