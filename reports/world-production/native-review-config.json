@@ -1,9 +1,6 @@
 {
   "productName": "Permagent World Review",
   "identifier": "ai.permagent.world-review-20261006",
-  "build": {
-    "beforeBuildCommand": ""
-  },
   "app": {
     "windows": [
       {

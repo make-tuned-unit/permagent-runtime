@@ -1,0 +1,151 @@
+import { useEffect, useMemo } from 'react';
+import { useTexture } from '@react-three/drei';
+import { DoubleSide, LatheGeometry, RepeatWrapping, SphereGeometry, SRGBColorSpace, Vector2 } from 'three';
+import { DetailBuilder, finishDetails, material } from './habitatGeometry';
+import { HABITAT_BEDS, HABITAT_STATIONS, habitatElevation, habitatHeight, onHabitat, type Point3 } from './habitatLayout';
+
+export function HabitatArchitecture(){
+  const maps=useTexture(['diff','nor_dx','rough'].map(k=>`${import.meta.env.BASE_URL}world/garden-materials/white_sandstone_blocks_02_${k}_2k.jpg`));
+  const built=useMemo(()=>{
+    const stone=material('#d4c29a',.91),edge=material('#bba987'),wood=material('#68462e',.73),bronze=material('#9f7950',.35,.72),dark=material('#243b3c',.52),soil=material('#3c4130'),cloth=material('#dbd0aa',.93),glass=material('#477e79',.3,.25),glow=material('#ffe5ac'),domeGlass=material('#8ebabc',.26,.18);
+    domeGlass.transparent=true;domeGlass.opacity=.16;domeGlass.depthWrite=false;domeGlass.side=DoubleSide;
+    glow.emissive.set('#ffc56d');glow.emissiveIntensity=1.3;cloth.side=DoubleSide;
+    const ownMaps=maps.map(t=>t.clone());ownMaps.forEach(t=>{t.wrapS=t.wrapT=RepeatWrapping;t.repeat.set(1,1);t.needsUpdate=true;});ownMaps[0].colorSpace=SRGBColorSpace;
+    stone.map=ownMaps[0];stone.normalMap=ownMaps[1];stone.normalScale=new Vector2(.35,-.35);stone.roughnessMap=ownMaps[2];
+    const b=new DetailBuilder();
+    for(let z=-27.5;z<16;z++)for(let x=-15.5;x<16;x++){
+      if(!onHabitat(x,z,.4))continue;
+      if(x>2.1&&x<5.9&&z>-5&&z<1)continue;
+      const slope=z<-8&&z>-14?Math.atan(3.4/6):0;
+      b.box([x,habitatHeight(z)-.028,z],[.99,.055,.99/Math.cos(slope)],stone,[slope,0,0]);
+    }
+    for(const bed of HABITAT_BEDS){
+      const y=habitatHeight(bed.z);b.sphere([bed.x,y+.22,bed.z],[bed.rx,.24,bed.rz],soil);
+      for(let i=0;i<44;i++){
+        const a=i/44*Math.PI*2,next=(i+1)/44*Math.PI*2;
+        const x1=bed.x+Math.cos(a)*bed.rx,z1=bed.z+Math.sin(a)*bed.rz,x2=bed.x+Math.cos(next)*bed.rx,z2=bed.z+Math.sin(next)*bed.rz;
+        const z=(z1+z2)/2,base=habitatHeight(z)-.06,top=y+.44,height=Math.max(.16,top-base);
+        b.box([(x1+x2)/2,top-height/2,z],[Math.hypot(x2-x1,z2-z1)*1.025,height,.22],stone,[0,Math.atan2(-(z2-z1),x2-x1),0]);
+      }
+    }
+    // Rock and planting skirts make the terrace read as an inhabited garden.
+    for(let i=0;i<86;i++){
+      const a=i/86*Math.PI*2,x=Math.cos(a)*15.4,z=-6+Math.sin(a)*21.4,y=habitatHeight(z);
+      if(onHabitat(x,z))b.sphere([x,y-.9,z],[.8+(i%3)*.25,1.15,.75],edge);
+    }
+    // Bronze edge rail, planted on the safe side of the connected floor.
+    for(const x of [-15.7,15.7])for(let z=-24;z<13;z+=1.6){const y=habitatHeight(z);b.cylinder([x,y+.48,z],.035,.96,bronze);b.box([x,y+.96,z+.8],[.07,.07,1.6],bronze,[z<-8&&z>-14?Math.atan(3.4/6):0,0,0]);}
+    for(const z of [-27.6,15.6])for(let x=-12;x<12;x+=1.5){const y=habitatHeight(z);b.cylinder([x,y+.48,z],.035,.96,bronze);b.box([x+.75,y+.96,z],[1.5,.07,.07],bronze);}
+    // Arrival arbor: curved side ribs, fine timber slats and hanging lanterns.
+    for(const z of [1,6.6]){
+      b.tube([[-7.5,0,z],[-7.5,2.8,z],[-6.7,3.6,z],[-3.5,3.9,z],[-.5,3.45,z]],.10,bronze);
+
+    }
+    for(let x=-7;x<-.7;x+=.6)b.box([x,3.6+(1-Math.abs(x+4)/4)*.25,3.8],[.10,.10,5.7],wood);
+    for(const x of [-6.8,-4.6,-2.4]){
+      b.cylinder([x,3.1,1.3],.009,.92,bronze);
+      for(const y of [2.38,2.70]){b.cylinder([x,y,1.3],.15,.038,bronze);b.ring([x,y,1.3],.137,.014,bronze);}
+      for(let i=0;i<6;i++){const a=i*Math.PI/3;b.cylinder([x+Math.cos(a)*.128,2.54,1.3+Math.sin(a)*.128],.008,.30,bronze);}
+      b.sphere([x,2.54,1.3],[.061,.116,.061],glow);b.cylinder([x,2.40,1.3],.082,.028,dark);
+    }
+    // One reachable garden arch frames the upper terraces.
+    for(const z of [-11.5,-12.5]){
+      const points=Array.from({length:25},(_,i)=>{const a=i/24*Math.PI;return [12.5*Math.cos(a),.8+11*Math.sin(a),z] as Point3;});
+      b.tube(points,.23,stone);
+      const inner=points.map(([x,y,z])=>[x*.98,y-.1,z+.18] as Point3);b.tube(inner,.025,bronze);
+    }
+    for(let i=0;i<13;i++){const a=i/12*Math.PI;b.box([12.5*Math.cos(a),.8+11*Math.sin(a),-12],[.13,.13,1.25],bronze,[0,0,a]);}
+    // Segmented shell and inset solar panels give the great arch a legible
+    // architectural depth, with all work areas on the connected terraces below.
+    for(let i=0;i<48;i++){
+      const a=(i+.5)/48*Math.PI,tangent=Math.atan2(11*Math.cos(a),-12.5*Math.sin(a));
+      const x=12.5*Math.cos(a),y=.8+11*Math.sin(a),length=Math.hypot(12.5*Math.sin(a),11*Math.cos(a))*Math.PI/48;
+      b.box([x,y,-12],[length*1.01,.17,1.65],stone,[0,0,tangent]);
+      b.box([x+Math.cos(a)*.11,y+Math.sin(a)*.11,-12],[length*.83,.04,1.22],dark,[0,0,tangent]);
+      b.box([x,y,-12],[.022,.20,1.72],bronze,[0,0,tangent]);
+    }
+    // Archive pavilion: open front, layered cornice, warm book-lined interior.
+    b.box([-10,5,-23],[8,3.2,.35],stone);
+    for(const x of [-14,-6]){b.cylinder([x,5.2,-16],.17,3.6,stone);b.cylinder([x,3.55,-16],.30,.3,bronze);b.cylinder([x,6.92,-16],.32,.2,bronze);}
+    b.box([-10,7.1,-19.4],[8.6,.25,7.9],stone);b.box([-10,7.28,-19.4],[8.8,.12,8.1],edge);
+    b.box([-10,6.92,-15.65],[8.1,.055,.05],glow);
+    for(const x of [-13,-10,-7]){
+      b.box([x,4.85,-22.4],[2.55,2.8,.45],wood);
+      for(let row=0;row<4;row++){
+        b.box([x,3.55+row*.68,-22.1],[2.55,.055,.6],bronze);
+        for(let j=0;j<13;j++){const h=.32+((j*3+row)%5)*.05;b.box([x-1.15+j*.18,3.6+row*.68+h/2,-22.1],[.12,h,.31],[wood,edge,dark,glass,cloth][(j+row)%5],[0,0,(j%4-1)*.025]);}
+      }
+    }
+    // Workshop: airy timber frame, solar canopy, shelves and suspended tools.
+    for(const x of [7,14])for(const z of [-16,-22])b.cylinder([x,5.1,z],.10,3.4,bronze);
+    b.box([10.5,6.85,-19],[7.7,.10,6.8],cloth,[.04,0,.07]);
+    for(let i=0;i<6;i++){b.box([7.5+i*1.15,7.04,-20.1],[1.04,.06,3.4],dark,[.04,0,.07]);for(let j=0;j<5;j++)b.box([7.5+i*1.15,7.08,-21.4+j*.64],[.96,.015,.014],bronze);}
+    b.box([11,4.7,-22.4],[6,2.4,.12],wood);
+    for(let i=0;i<11;i++){const x=8.4+i*.48;b.ring([x,4.9,-22.28],.085,.022,bronze,[0,0,0]);b.box([x,4.65,-22.25],[.035,.4,.035],bronze);}
+    // Open observatory: a ribbed glazed canopy above a reachable instrument
+    // court. Its lower edge clears standing agents; four posts carry the roof.
+    b.add(new SphereGeometry(3.8,48,24,0,Math.PI*2,0,Math.PI/2),[3,5.6,-24],[1,1,1],domeGlass);
+    for(const x of [-.2,6.2])for(const z of [-21.7,-26.3]){
+      b.cylinder([x,4.5,z],.07,2.2,bronze);b.cylinder([x,3.49,z],.17,.18,stone);b.ring([x,5.55,z],.16,.025,bronze);
+    }
+    for(let i=0;i<16;i++){
+      const a=i*Math.PI/8,points=Array.from({length:19},(_,j)=>{const t=j/18*Math.PI/2;return [3+Math.sin(t)*Math.cos(a)*3.8,5.6+Math.cos(t)*3.8,-24+Math.sin(t)*Math.sin(a)*3.8] as Point3;});
+      b.tube(points,.023,bronze);
+    }
+    for(const angle of [.35,.70,1.05,Math.PI/2])b.ring([3,5.6+Math.cos(angle)*3.8,-24],Math.sin(angle)*3.8,.026,bronze);
+    b.ring([3,3.415,-24],2.7,.012,bronze);b.ring([3,3.415,-24],2.85,.01,bronze);
+    b.cylinder([3,9.55,-24],.055,.55,bronze,.025);b.sphere([3,9.85,-24],[.055,.055,.055],glow);
+    for(const x of [-14,-6,7,14]){
+      const h=x===-14||x===14?3.6:2.6;
+      b.cylinder([x,7.15+h/2,-22],.045,h,bronze,.025);
+      for(const side of [-1,1]){b.box([x+side*.14,7.5+h*.28,-22],[.045,h*.7,.18],edge,[0,0,-side*.055]);b.box([x+side*.14,7.5+h*.28,-21.90],[.017,h*.64,.012],glow,[0,0,-side*.055]);}
+      b.ring([x,7.2,-22],.19,.025,bronze);b.sphere([x,7.18+h,-22],[.035,.06,.035],glow);
+    }
+    // A traversable timber bridge, with low ramps at both landings.
+    for(let x=1.125;x<7;x+=.25){const slope=x<2?Math.atan(.45):x>6?-Math.atan(.45):0;b.box([x,habitatElevation(x,-2.2)-.035,-2.2],[.238/Math.cos(slope),.065,2],wood,[0,0,slope]);}
+    for(const z of [-3.23,-1.17]){
+      const points:Point3[]=[];
+      for(let x=1.8;x<=6.2;x+=.55){const y=habitatElevation(x,-2.2);b.cylinder([x,y+.43,z],.025,.86,bronze);points.push([x,y+.86,z]);}
+      b.tube(points,.038,bronze);
+    }
+    // Task benches are individual, with physical tools suited to their roles.
+    for(const s of HABITAT_STATIONS){
+      if(s.id==='henry')continue;
+      const [x,y,z]=s.position;
+      b.box([x,y+.84,z-1.05],[1.9,.1,.72],wood);
+      for(const dx of [-.76,.76]){b.box([x+dx,y+.4,z-1.05],[.075,.8,.55],bronze);b.box([x+dx,y+.05,z-1.05],[.24,.09,.62],bronze);}
+      b.box([x,y+.92,z-1.04],[.72,.06,.40],s.id==='growth_measurement'?soil:dark);
+      b.box([x+.66,y+1.15,z-1.05],[.035,.65,.035],bronze);b.sphere([x+.66,y+1.45,z-1.05],[.12,.07,.12],glow);
+      if(['librarian','reader','financier','picker'].includes(s.id)){
+        for(let i=0;i<4;i++)b.box([x-.55,y+.95+i*.055,z-.94],[.34,.05,.42],[cloth,wood,edge][i%3],[0,i*.07,0]);
+        b.box([x,y+.97,z-.92],[.58,.035,.37],cloth,[.10,0,0]);b.box([x+.05,y+1.01,z-.92],[.014,.014,.34],bronze);
+      }else if(s.id==='forecaster'){
+        b.cylinder([x,y+1.25,z-1.03],.035,.6,bronze);b.ring([x,y+1.65,z-1.03],.47,.025,bronze,[Math.PI/3,0,0]);b.ring([x,y+1.65,z-1.03],.4,.017,bronze,[0,Math.PI/4,0]);b.sphere([x,y+1.65,z-1.03],[.18,.18,.18],glass);
+      }else if(s.id==='growth_measurement'){
+        for(let i=0;i<5;i++){b.cylinder([x-.6+i*.26,y+1.05,z-.96],.095,.2,edge,.12);b.tube([[x-.6+i*.26,y+1.12,z-.96],[x-.61+i*.26,y+1.4+i%2*.15,z-.94]],.012,soil);b.sphere([x-.57+i*.26,y+1.35,z-.94],[.07,.035,.13],soil);}
+      }else{
+        b.box([x,y+1.2,z-1.26],[.78,.46,.05],bronze,[-.15,0,0]);b.box([x,y+1.2,z-1.225],[.70,.38,.015],glass,[-.15,0,0]);
+        for(let i=0;i<5;i++)b.box([x-.25+i*.12,y+.94,z-.88],[.085,.02,.1],edge);
+      }
+    }
+    // Water court: hand-cut coping, a planted upper basin and a short cascade.
+    for(const x of [2,6])b.box([x,.15,-2],[.22,.3,6.25],stone);
+    for(const z of [-5,1])b.box([4,.15,z],[4.2,.3,.22],stone);
+    for(let i=0;i<18;i++){const a=i/18*Math.PI*2;b.sphere([4+Math.cos(a)*1.65,.45+(i%3)*.13,-8+Math.sin(a)*1.4],[.65,.65,.50],edge);}b.box([4,1.25,-8.4],[3.5,.12,2.4],stone);
+    for(const [x,z,a] of [[-4.5,5.3,0],[-5.3,1.5,Math.PI/2]]){
+      b.sphere([x,.63,z],[.55,.17,.25],cloth);b.box([x,.79,z+.13],[.65,.27,.11],cloth,[.18,a,0]);
+      for(let i=0;i<7;i++)b.box([x-.26+i*.085,.944,z+.13],[.015,.005,.1],wood,[0,a,0]);
+    }
+    // Detailed commons tabletop: notebooks, cups, lamp, brass rings.
+    b.ring([-3,1.027,3],.85,.012,bronze);
+    for(const [x,z] of [[-3.7,3.4],[-2.5,2.8]]){b.add(new LatheGeometry([[0,0],[.060,0],[.080,.02],[.086,.15],[.082,.17],[.071,.17],[.067,.035],[0,.035]].map(p=>new Vector2(...p as [number,number])),32),[x,1.035,z],[1,1,1],edge);b.cylinder([x,1.174,z],.068,.004,wood);b.ring([x+.105,1.14,z],.062,.014,bronze,[0,0,0]);}
+    b.box([-3.2,1.055,3.7],[.5,.045,.34],wood,[0,.2,0]);b.box([-3.2,1.085,3.7],[.46,.012,.30],cloth,[0,.2,0]);
+    // Low path lights establish depth instead of a field of bright pin lights.
+    for(const x of [-5.2,8.1])for(const z of [-13,-7,1,9]){const y=habitatHeight(z);b.cylinder([x,y+.23,z],.09,.46,bronze);b.cylinder([x,y+.47,z],.065,.05,glow);}
+    const group=b.finish('Authored habitat architecture');
+    group.children.forEach(mesh=>{if('material' in mesh&&mesh.material===domeGlass)mesh.castShadow=false;});
+    return {group,materials:[stone,edge,wood,bronze,dark,soil,cloth,glass,glow,domeGlass],maps:ownMaps};
+  },[maps]);
+  useEffect(()=>()=>{finishDetails(built.group);built.materials.forEach(m=>m.dispose());built.maps.forEach(t=>t.dispose());},[built]);
+  return <primitive object={built.group} dispose={null}/>;
+}

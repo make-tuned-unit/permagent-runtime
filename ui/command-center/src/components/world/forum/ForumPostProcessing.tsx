@@ -41,7 +41,7 @@
 // calls at 93 fps with this mounted against 203 at 91 without it, and no
 // visible change to the daylight scene beyond the intended emissive glow.
 
-import { Bloom, BrightnessContrast, EffectComposer, HueSaturation, ToneMapping } from '@react-three/postprocessing';
+import { Bloom, BrightnessContrast, EffectComposer, FXAA, HueSaturation, ToneMapping } from '@react-three/postprocessing';
 import { ToneMappingMode } from 'postprocessing';
 
 /**
@@ -215,8 +215,10 @@ export function ForumPostProcessing({ appearance = 'day', gentle = false }: { ap
       {/* AgX here, not on the Canvas: the Canvas's toneMapping is skipped while
           this composer is mounted, which is what clipped the gas giant white. */}
       <ToneMapping mode={ToneMappingMode.AGX} />
-      <HueSaturation saturation={gentle ? 0 : SATURATION[appearance]} />
-      <BrightnessContrast brightness={gentle ? 0 : BRIGHTNESS} contrast={gentle ? .015 : CONTRAST} />
+      <HueSaturation saturation={gentle ? .12 : SATURATION[appearance]} />
+      <BrightnessContrast brightness={gentle ? -.02 : BRIGHTNESS} contrast={gentle ? .055 : CONTRAST} />
+      {/* Edge smoothing without a multisampled target on Metal. */}
+      <FXAA />
     </EffectComposer>
   );
 }

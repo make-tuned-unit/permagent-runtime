@@ -15,8 +15,8 @@ import { PCFShadowMap, PCFSoftShadowMap } from 'three';
 import { ForumView } from './ForumView';
 let root: Root, host: HTMLDivElement;
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
-beforeEach(() => { host = document.createElement('div'); document.body.append(host); root = createRoot(host); act(() => root.render(<ForumView />)); });
-afterEach(() => { act(() => root.unmount()); host.remove(); vi.restoreAllMocks(); });
+beforeEach(() => { window.history.replaceState({}, '', '/?campus=1'); host = document.createElement('div'); document.body.append(host); root = createRoot(host); act(() => root.render(<ForumView />)); });
+afterEach(() => { window.history.replaceState({}, '', '/'); act(() => root.unmount()); host.remove(); vi.restoreAllMocks(); });
 function click(label: string) { const b = [...host.querySelectorAll('button')].find(b => b.textContent?.includes(label)); expect(b).toBeTruthy(); act(() => b!.click()); }
 it('turns a lesson into an editable draft without claiming dispatch', () => {
   expect(host.textContent).toContain('Job feed unavailable');

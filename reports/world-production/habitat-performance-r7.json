@@ -1,0 +1,28 @@
+{
+  "surface": "Safari",
+  "scene": "Seated conversation, inspector docked",
+  "native_duplicate_world": "paused on Home",
+  "dpr": 1.5,
+  "fps_samples": [
+    30,
+    30,
+    30,
+    30.1,
+    30,
+    30,
+    29.9,
+    30.2,
+    30,
+    30
+  ],
+  "last": {
+    "fps": 30,
+    "calls": 470,
+    "triangles": 7667423,
+    "geometries": 161,
+    "textures": 24,
+    "programs": 30,
+    "dpr": 1.5
+  },
+  "limits": "Ten one-second samples. Inspector changes canvas size; not a full-viewport benchmark or native measurement. Prior samples used other views. Rendered triangles include shadow passes."
+}

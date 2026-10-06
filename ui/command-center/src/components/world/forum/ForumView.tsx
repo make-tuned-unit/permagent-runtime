@@ -1,5 +1,8 @@
-import { CompactGarden, GardenLighting, GardenNavigation } from './CompactGarden';
-import { GARDEN_ARRIVAL, GARDEN_PLACES, GARDEN_START } from './gardenLayout';
+import { HabitatScene, HabitatLighting, HabitatNavigation } from './HabitatScene';
+import { HankConversation } from './HankConversation';
+import { commandHabitatAgent } from './habitatMotion';
+import { HabitatAgentDock } from './HabitatAgentDock';
+import { HABITAT_ARRIVAL, HABITAT_PLACES, HABITAT_START, HANK_TABLE_SEAT } from './habitatLayout';
 import { GardenAssetBoundary } from './GardenAssetBoundary';
 import { HeroGardenDecor, HeroGardenAgents } from './HeroGardenKit';
 import { EvidenceLesson } from './EvidenceLesson';
@@ -220,11 +223,14 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
   const appearance = lighting === 'system' ? systemAppearance : lighting;
   const [compact, setCompact] = useState(() => new URLSearchParams(window.location.search).get('campus') !== '1');
   const [overview, setOverview] = useState(false);
+  const [directing,setDirecting]=useState<string|null>(null);
+  const [follow,setFollow]=useState<string|null>(null);
+  const [conversation,setConversation]=useState(false);
   const [kitReady, setKitReady] = useState(false);
   const [assetNotice,setAssetNotice]=useState('');
   const kitFailure=useCallback(()=>{setKitReady(false);setAssetNotice('Detailed assets could not load. The walkable garden and agent controls remain available.');},[]);
   useEffect(()=>{let cancelled=false;fetch(`${import.meta.env.BASE_URL}world/garden-hero/manifest.json`).then(r=>r.ok?r.json():null).then(value=>{if(!cancelled && (value?.version?.startsWith('hero-kit-v1.1') || value?.version?.startsWith('hero-kit-v2') || value?.version === 'hero-kit-v3b'))setKitReady(true);}).catch(()=>{});return()=>{cancelled=true;};},[]);
-  const places = compact ? GARDEN_PLACES : DISTRICTS;
+  const places = compact ? HABITAT_PLACES : DISTRICTS;
   // The agent wears the name its user gave it, everywhere. `useOrchestratorName`
   // reads that from the daemon; the store's `agentName` is the same name kept
   // live by `refreshIdentity`, and it is the one that survives when the identity
@@ -252,10 +258,32 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
   // `visible` is the host's own claim; `onScreen` is what the layout actually
   // gives this instance. Both must hold before the world renders or takes keys.
   const onPanel = visible && onScreen;
+  useEffect(() => {
+    const store = useCommandCenter.getState();
+    store.setWorldConversationActive(conversation && onPanel);
+    return () => {
+      const latest = useCommandCenter.getState();
+      const handingOff = latest.worldConversationActive && latest.voiceEngine?.handsFree;
+      latest.setWorldConversationActive(false);
+      if (handingOff && !latest.chatWindowOpen) latest.openChatDock();
+    };
+  }, [conversation, onPanel]);
+  const sitWithHank = () => {
+    setSelected('henry'); setDeskOpen(false); setWalking(false); setFlying(false);
+    setDirecting(null); setFollow(null); setAgoraOpen(false); setConversation(true);
+    commandHabitatAgent('henry', [...HANK_TABLE_SEAT], 'Joining you at the table');
+    useCommandCenter.getState().closeChatDock();
+  };
+  const leaveTable = () => {
+    useCommandCenter.getState().setWorldConversationActive(false);
+    setConversation(false);
+    setFocusAgent(null); setOverview(false); setDistrictId('commons');
+  };
+
   // Leaving the panel ends walk mode, which unmounts ForumWalk — that removes
   // its window keydown/mousemove listeners and releases pointer lock, so a
   // hidden World cannot keep eating WASD from the workspace you switched to.
-  useEffect(() => { if (!onPanel) setWalking(false); }, [onPanel]);
+  useEffect(() => { if (!onPanel) { setWalking(false); setConversation(false); } }, [onPanel]);
   const [focusAgent, setFocusAgent] = useState<{id:string;revision:number}|null>(null);
   const exitWalk = useCallback(()=>setWalking(false),[]);
   const inspectAgent = useCallback((id:string)=>{setSelected(id);setDeskOpen(true);setTab('meet');},[]);
@@ -269,7 +297,7 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
   // Set when the walker is put down somewhere the selected district does not
   // imply — today only on the way back out of the Agora.
   const [walkFrom, setWalkFrom] = useState<[number,number,number]|null>(null);
-  const districtStart = useMemo<[number,number,number]>(() => compact ? district.id === 'commons' ? [...GARDEN_START] : [district.position[0],0,district.position[2]+1.8] : district.id==='commons' ? [0,0,14] : district.id==='gallery' ? [2,4.32,-20] : district.id==='mesh' ? gateApproachPoint() : [district.position[0]+2,district.position[1],district.position[2]+5], [district,compact]);
+  const districtStart = useMemo<[number,number,number]>(() => compact ? district.id === 'commons' ? [...HABITAT_START] : [district.position[0],district.position[1],district.position[2]+1.8] : district.id==='commons' ? [0,0,14] : district.id==='gallery' ? [2,4.32,-20] : district.id==='mesh' ? gateApproachPoint() : [district.position[0]+2,district.position[1],district.position[2]+5], [district,compact]);
   const walkStart = walkFrom ?? districtStart;
   const enterMesh = useCallback(()=>{ setMeshPrompt(false); setAgoraOpen(true); },[]);
   const leaveMesh = useCallback(()=>{
@@ -299,7 +327,7 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
     // Selecting the gate a second time walks through it. This is the path for
     // anyone who never enters walk mode; the gate is not walk-only.
     if (id === 'mesh' && districtId === 'mesh' && !agoraOpen) { enterMesh(); return; }
-    setWalking(false); setFocusAgent(null); setOverview(false); const next = places.find(d=>d.id===id)!; setDistrictId(id); setSelected(next.agent); setTab(compact && id === 'gallery' ? 'evidence' : 'meet'); setSaved(false);
+    setWalking(false); setFollow(null); setDirecting(null); setFocusAgent(null); setOverview(false); const next = places.find(d=>d.id===id)!; setDistrictId(id); setSelected(next.agent); setTab(compact && id === 'gallery' ? 'evidence' : 'meet'); setSaved(false);
     setAgoraOpen(false); setWalkFrom(null);
   }
 
@@ -335,15 +363,15 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
   // you continue on foot.
   const [flying, setFlying] = useState(false);
   const [railOpen, setRailOpen] = useState(() => {
-    try { return localStorage.getItem(FORUM_RAIL_KEY) !== 'closed'; } catch { return true; }
+    try { const saved=localStorage.getItem(FORUM_RAIL_KEY); return saved ? saved==='open' : !compact; } catch { return !compact; }
   });
   const cards = useDismissible();
   const [walkStartOverride, setWalkStartOverride] = useState<[number, number, number] | null>(null);
   const [deskOpen, setDeskOpen] = useState(() => {
     try {
-      return localStorage.getItem(FORUM_DESK_KEY) !== 'closed';
+      const saved=localStorage.getItem(FORUM_DESK_KEY); return saved ? saved!=='closed' : !compact;
     } catch {
-      return true;
+      return !compact;
     }
   });
   const toggleDesk = useCallback(() => {
@@ -360,7 +388,7 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
 
   // The HUD rests when you are not driving; flying counts as driving.
   const hud = useHudPresence({ walking: walking || flying, enabled: !agoraOpen });
-  return <main className="forum-shell" style={style} data-appearance={appearance} data-desk={deskOpen ? 'open' : 'closed'}>
+  return <main className="forum-shell" style={style} data-habitat={compact} data-conversation={conversation} data-appearance={appearance} data-desk={deskOpen ? 'open' : 'closed'}>
     <section
       ref={worldRef}
       className="forum-world"
@@ -383,18 +411,18 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
           portal into this host with z-index up to 16777271 by default; with
           no context around them they out-ranked the HUD lanes and QA saw
           "Automate" drawn over the Places rail and "Build" over the job feed. */}
-      <Canvas className="forum-canvas" frameloop={onPanel && pageVisible ? 'always' : 'never'} shadows={{ type: PCFShadowMap }} dpr={[1, 1.5]} camera={{ position: [...(compact ? GARDEN_ARRIVAL.position : FORUM_VISTA.position)] as [number,number,number], fov: compact ? GARDEN_ARRIVAL.fov : FORUM_VISTA.fov, near: FORUM_CAMERA_NEAR, far: FORUM_CAMERA_FAR }} gl={{ antialias: true, toneMapping: AgXToneMapping, toneMappingExposure: FORUM_EXPOSURE }}>
-        {agoraOpen ? <MeshAgora walking={walking} /> : compact ? <GardenLighting appearance={appearance} /> : <ForumLighting appearance={appearance} />}
+      <Canvas className="forum-canvas" frameloop={onPanel && pageVisible ? 'always' : 'never'} shadows={{ type: PCFShadowMap }} dpr={[1, 1.5]} camera={{ position: [...(compact ? HABITAT_ARRIVAL.position : FORUM_VISTA.position)] as [number,number,number], fov: compact ? HABITAT_ARRIVAL.fov : FORUM_VISTA.fov, near: FORUM_CAMERA_NEAR, far: FORUM_CAMERA_FAR }} gl={{ antialias: true, toneMapping: AgXToneMapping, toneMappingExposure: FORUM_EXPOSURE }}>
+        {agoraOpen ? <MeshAgora walking={walking} /> : compact ? <HabitatLighting appearance={appearance} /> : <ForumLighting appearance={appearance} />}
         {/* The forum is hidden rather than unmounted while the Agora is open:
             an invisible group costs no draw calls, and keeping it mounted means
             the GLB is never fetched twice and its collision BVH — which the
             walker is still standing on out at the gate — is never rebuilt. */}
         <group visible={!agoraOpen}>
-          {compact ? <><CompactGarden kitReady={kitReady} onEvidence={()=>{setWalking(false);setDeskOpen(true);setTab('evidence');}} />{kitReady && <GardenAssetBoundary onFailure={kitFailure}><Suspense fallback={null}><HeroGardenDecor /></Suspense></GardenAssetBoundary>}</> : <VaultBoundary fallback={<Fallback />}><Suspense fallback={<Fallback />}><ForumAsset /></Suspense></VaultBoundary>}
+          {compact ? <><HabitatScene directing={directing} onDirected={(_,ok)=>{if(ok)setDirecting(null);}} />{kitReady && <GardenAssetBoundary onFailure={kitFailure}><Suspense fallback={null}><HeroGardenDecor /></Suspense></GardenAssetBoundary>}</> : <VaultBoundary fallback={<Fallback />}><Suspense fallback={<Fallback />}><ForumAsset /></Suspense></VaultBoundary>}
           <ForumEnvironment appearance={appearance} />
           {!compact && <ForumWater />}
           {!compact && <Suspense fallback={null}><ForumShips /></Suspense>}
-          <Suspense fallback={null}>{compact && kitReady ? <GardenAssetBoundary onFailure={kitFailure}><HeroGardenAgents onHover={setHovered} onSelect={id=>{setSelected(id);setDeskOpen(true);setTab('meet');}} /></GardenAssetBoundary> : <ForumAgents compact={compact} hoveredAgent={hovered} onHoverAgent={setHovered} onSelectAgent={id => { setSelected(id); setTab('meet'); setSaved(false); }} />}</Suspense>
+          <Suspense fallback={null}>{compact && kitReady ? <GardenAssetBoundary onFailure={kitFailure}><HeroGardenAgents conversation={conversation} selected={selected} hovered={hovered} orchestratorName={configuredName||'Your orchestrator'} onHover={setHovered} onSelect={id=>{setSelected(id);setDirecting(null);setTab('meet');}} /></GardenAssetBoundary> : <ForumAgents compact={compact} hoveredAgent={hovered} onHoverAgent={setHovered} onSelectAgent={id => { setSelected(id); setTab('meet'); setSaved(false); }} />}</Suspense>
         </group>
         {flying
           ? <Suspense fallback={null}><ForumFlight
@@ -409,7 +437,7 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
             /></Suspense>
           : walking
           ? <ForumWalk start={walkStartOverride ?? walkStart} onExit={exitWalk} onInspect={inspectAgent} inMesh={agoraOpen} onEnterMesh={enterMesh} onExitMesh={leaveMesh} onMeshPrompt={setMeshPrompt} onEvidence={compact ? ()=>{setWalking(false);setDeskOpen(true);setTab('evidence');} : undefined} />
-          : !agoraOpen && (compact ? <GardenNavigation district={district} focusAgent={focusAgent} overview={overview} /> : <ForumNavigation district={district} focusAgent={focusAgent} />)}
+          : !agoraOpen && (compact ? <HabitatNavigation conversation={conversation} district={district} focusAgent={focusAgent} overview={overview} follow={follow} /> : <ForumNavigation district={district} focusAgent={focusAgent} />)}
         <ForumPostProcessing appearance={appearance} gentle={compact} />
         <PerfSampler />
       </Canvas>
@@ -425,8 +453,8 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
       <div className="forum-lane forum-lane-left">
       {/* First in the lane and never dismissible: an unpaired or refused tab
           otherwise reads as a quiet world (see ForumAuthNotice). */}
-      <ForumAuthNotice />
-      {assetNotice && <div className="forum-live" role="status">{assetNotice}</div>}
+      <ForumAuthNotice compact={compact} />
+      {assetNotice && <div className="habitat-asset-alert" role="status">{assetNotice}</div>}
       {!cards.isDismissed('brand') && <header className="forum-brand"><DismissCard label="the world title" onDismiss={()=>cards.dismiss('brand')} /><div><div className="eyebrow">WORLD / SOLAR FORUM</div><h1 style={typeRamp.display}>The Solar Forum</h1><p>Living forum · <span data-testid="forum-appearance">{appearance === 'night' ? 'Night' : 'Day'} / {lighting === 'system' ? 'follows system appearance' : 'World lighting override'}</span></p></div></header>}
       <ForumPlaceRail
         places={places.map(d => ({ id: d.id, name: d.name, subtitle: d.subtitle }))}
@@ -467,6 +495,12 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
           {deskOpen ? 'Hide the desk' : 'Show the desk'}
         </Button>
       </div>
+      {compact && !walking && !conversation && <HabitatAgentDock selected={selected} name={configuredName||'Your orchestrator'} directing={directing===selected} following={follow===selected}
+        onSelect={id=>{setSelected(id);setDirecting(null);setFollow(null);setOverview(false);setFocusAgent(prev=>({id,revision:(prev?.revision??0)+1}));}}
+        onDirect={()=>{setDirecting(v=>v===selected?null:selected);}}
+        onFollow={()=>{setFollow(v=>v===selected?null:selected);setOverview(false);setFocusAgent(prev=>({id:selected,revision:(prev?.revision??0)+1}));}}
+        onConversation={sitWithHank} onInspect={()=>{setDeskOpen(true);setTab('meet');}} onBrief={()=>{setDeskOpen(true);setKind('Job');setTab('task');}} />}
+      {conversation && <HankConversation name={configuredName || 'Hank'} onLeave={leaveTable} />}
       {walking && <div className="forum-crosshair" aria-hidden="true">+</div>}
       {/* The bottom-right corner keeps the Agora return, skiff, and walk
           controls in one column so they never cover one another. */}
@@ -475,7 +509,7 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
           the pill currently measures (null while it is hidden). */}
       <div className="forum-lane forum-lane-right" style={{ bottom: forumRightLaneBottom(chatLauncherSize) }}>
       {agoraOpen && <div className="forum-agora-return"><Button colors={colors} variant="primary" flashSuccess={false} onClick={leaveMesh}>Return to the Forum</Button></div>}
-      {compact && <><Button colors={colors} flashSuccess={false} style={SCENE_BUTTON} onClick={()=>{setWalking(false);setOverview(v=>!v);}}>{overview ? 'Arrival view' : 'Garden overview'}</Button><Button colors={colors} flashSuccess={false} style={SCENE_BUTTON} onClick={()=>{setWalking(false);setDeskOpen(true);setTab('evidence');}}>Inspect evidence</Button></>}
+      {compact && <><Button colors={colors} flashSuccess={false} style={SCENE_BUTTON} onClick={()=>{setWalking(false);setFollow(null);setDirecting(null);setFocusAgent(null);setOverview(v=>!v);}}>{overview ? 'Arrival view' : 'Garden overview'}</Button><Button colors={colors} flashSuccess={false} style={SCENE_BUTTON} onClick={()=>{setWalking(false);setDeskOpen(true);setTab('evidence');}}>Inspect evidence</Button></>}
       {!compact && <div className="forum-fly"><Button colors={colors} variant={flying?'ghostOn':'ghost'} flashSuccess={false} style={SCENE_BUTTON} onClick={()=>{
         if (flying) { setFlying(false); return; }
         setWalking(false);

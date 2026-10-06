@@ -23,6 +23,7 @@ vi.mock('@react-three/postprocessing', () => {
     ToneMapping: effect('ToneMapping'),
     HueSaturation: effect('HueSaturation'),
     BrightnessContrast: effect('BrightnessContrast'),
+    FXAA: effect('FXAA'),
   };
 });
 
@@ -48,7 +49,7 @@ describe('ForumPostProcessing', () => {
   it('applies AgX inside the composer, after Bloom and before the grade', () => {
     const effects = chain();
     const names = effects.map((e) => e.name);
-    expect(names).toEqual(['Bloom', 'ToneMapping', 'HueSaturation', 'BrightnessContrast']);
+    expect(names).toEqual(['Bloom', 'ToneMapping', 'HueSaturation', 'BrightnessContrast', 'FXAA']);
     expect(effects[1].props.mode).toBe(ToneMappingMode.AGX);
   });
 

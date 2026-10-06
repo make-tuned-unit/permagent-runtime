@@ -1,6 +1,6 @@
 """Stage and verify a locally built review app. Never launches or installs it."""
 from pathlib import Path
-import hashlib, json, shutil, subprocess
+import argparse, hashlib, json, shutil, subprocess
 
 LANE = Path(__file__).resolve().parents[2]
 TARGET = LANE.parent / '.shared-target/world-production-20261006'
@@ -22,16 +22,40 @@ def snapshot(root):
             result[str(path.relative_to(root))] = digest(path)
     return result
 
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--refresh', action='store_true', help='Refresh a closed, previously verified review bundle; preserve the old executable')
+args = parser.parse_args()
+
 if not BINARY.is_file():
     raise SystemExit('New native binary missing; staging refused')
-if STAGE.exists():
+if STAGE.exists() and not args.refresh:
     raise SystemExit('Stage already exists; inspect it before replacing')
+if args.refresh:
+    if not STAGE.is_dir() or not REPORT.is_file():
+        raise SystemExit('Refresh requires a previously verified review bundle')
+    previous = json.loads(REPORT.read_text())
+    staged_binary = STAGE / 'Contents/MacOS/permagent-app'
+    if previous['staged_app'] != str(STAGE) or previous['staged_binary_sha256'] != digest(staged_binary):
+        raise SystemExit('Existing review bundle does not match its verification ledger')
+    process_commands = subprocess.check_output(['ps', '-axo', 'command='], text=True).splitlines()
+    if any(command.startswith(str(staged_binary)) for command in process_commands):
+        raise SystemExit('Close the review app before refreshing its executable')
+    subprocess.run(['codesign', '--verify', '--deep', '--strict', str(STAGE)], check=True)
 embedded = json.loads((LANE / 'reports/world-production/native-embedded-assets-verification.json').read_text())
 if embedded['native_build_sha256'] != digest(BINARY) or not embedded['embedded_review_identifier']:
     raise SystemExit('Current shell embedding/identity evidence missing or stale')
 before = snapshot(BASE)
 STAGE.parent.mkdir(parents=True, exist_ok=True)
-shutil.copytree(BASE, STAGE, symlinks=True, copy_function=shutil.copy2)
+if args.refresh:
+    backup = STAGE.parent / ('review-backups/' + previous['staged_binary_sha256'][:12])
+    backup.mkdir(parents=True, exist_ok=False)
+    for relative in ['Contents/MacOS/permagent-app', 'Contents/Info.plist', 'Contents/_CodeSignature/CodeResources']:
+        destination = backup / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(STAGE / relative, destination)
+    shutil.copy2(REPORT, backup / REPORT.name)
+else:
+    shutil.copytree(BASE, STAGE, symlinks=True, copy_function=shutil.copy2)
 for relative in before:
     source, destination = BASE / relative, STAGE / relative
     if not source.is_symlink() and source.stat().st_ino == destination.stat().st_ino:

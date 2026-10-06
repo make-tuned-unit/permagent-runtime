@@ -693,3 +693,64 @@
 .garden-lesson details {padding:12px;border:1px solid var(--forum-border);border-radius:var(--forum-radius);}
 .garden-lesson summary {cursor:pointer;font-weight:600;}
 .garden-lesson a {color:var(--forum-accent);}
+
+/* The habitat keeps the place in view; detailed controls open on demand. */
+.forum-shell[data-habitat=true] .forum-brand{padding:12px 16px;background:#142526df;border-color:#d4c29d30;box-shadow:none;color:#ede4d3;backdrop-filter:blur(12px)}
+.forum-shell[data-habitat=true] .forum-brand h1{font-size:22px!important;line-height:1.2!important;color:#f1e8d8}
+.forum-shell[data-habitat=true] .forum-brand p{display:none}
+.forum-shell[data-habitat=true] .forum-location,.forum-shell[data-habitat=true] .forum-live,.forum-shell[data-habitat=true] .forum-controls{display:none}
+.forum-shell[data-habitat=true] .forum-lane-left{max-width:300px;bottom:auto;gap:10px}
+.forum-shell[data-habitat=true] .forum-auth-notice.habitat-auth{padding:10px 12px!important;font-size:11px;background:#172725e8!important;border-color:#d9b88060!important}
+.habitat-auth-toggle{margin-left:12px;background:none;border:0;color:#e3cfaa;cursor:pointer;text-decoration:underline}
+.habitat-agent-dock{position:absolute;bottom:22px;left:22px;width:430px;max-width:calc(100% - 220px);z-index:5;padding:14px 16px 10px;background:#142524ec;color:#eee8da;border:1px solid #d2c5aa3d;border-radius:14px;box-shadow:0 8px 35px #0003;backdrop-filter:blur(18px);font-size:12px;pointer-events:auto}
+.habitat-agent-heading{display:flex;align-items:center;gap:10px}
+.habitat-agent-emblem{width:38px;height:38px;display:grid;place-items:center;border-radius:50%;border:1px solid var(--identity);font-size:25px;color:var(--identity);background:#081816}
+.habitat-agent-heading>div{flex:1;min-width:0}
+.habitat-agent-heading label{font:8px var(--forum-mono);letter-spacing:.16em;color:#b4b6a8;display:block;margin-bottom:4px}
+.forum-shell .habitat-agent-heading select{padding:0;border:0;color:#eee8da;font-size:15px;font-weight:600;background:transparent;height:24px;cursor:pointer}
+.habitat-agent-dock button{font:11px var(--forum-body);color:#e6e0d1;background:#ffffff09;border:1px solid #d0c4aa30;border-radius:6px;padding:7px 9px;cursor:pointer}
+.habitat-agent-dock button:hover,.habitat-agent-dock button[aria-pressed=true]{background:#d4c6a326;border-color:var(--identity)}
+.habitat-agent-dock .habitat-primary{background:#d3c29e;color:#20312c;border-color:#d3c29e}
+.habitat-agent-dock .habitat-subtle{border:0;color:#b7b9a8;background:none;font-size:10px}
+.habitat-agent-status{display:flex;align-items:center;gap:6px;margin:10px 0;color:#c4c7b7;font-size:10px}
+.habitat-agent-status>span:first-child{width:5px;height:5px;border-radius:50%;background:#8aa092}
+.habitat-agent-status .is-working{background:#e7b557!important}
+.habitat-agent-status b{font-weight:400;text-transform:capitalize}
+.habitat-station{margin-left:auto;color:var(--identity)}
+.habitat-agent-actions{display:flex;gap:5px;flex-wrap:wrap}
+.habitat-travel{border-top:1px solid #ffffff10;margin-top:10px;padding-top:8px;display:flex;justify-content:space-between;align-items:center;font-size:10px;color:#aeb9a8}
+.habitat-travel button{padding:0;border:0;background:none;color:#d3c29e;font-size:10px}
+.habitat-personality,.habitat-work-feed,.habitat-destinations{border-top:1px solid #ffffff15;margin-top:10px;padding-top:10px;line-height:1.6}
+.habitat-personality p,.habitat-work-feed p{margin:5px 0 8px;color:#c4c8b9}
+.habitat-personality small,.habitat-work-feed small{display:block;color:#99ab9f;line-height:1.5}
+.habitat-personality>button{margin-top:10px}
+.habitat-destinations button{margin:3px}
+.habitat-destinations p{margin:0 0 5px}
+.habitat-nameplate{white-space:nowrap;pointer-events:none;text-align:center;padding:7px 11px;border-radius:8px;background:#132c27e6;border:1px solid #d7c7a055;color:#f3ebd8;font:12px var(--forum-body);box-shadow:0 4px 14px #0003}
+.habitat-nameplate span{display:block;font-size:9px;color:#adbcae;margin-top:3px}
+@media(max-width:900px){.habitat-agent-dock{width:370px;left:12px;bottom:12px;max-width:calc(100% - 180px)}.habitat-agent-actions button{font-size:10px;padding:6px}.forum-shell[data-habitat=true] .forum-brand h1{font-size:18px!important}}
+.habitat-asset-alert { padding: 14px; border: 1px solid #dca962; color: #fff3dc; background: #3c3025ed; border-radius: 10px; }
+.habitat-sit { flex-basis: 100%; text-align: left; }
+.habitat-sit span { float: right; }
+.forum-shell[data-conversation="true"] .forum-brand,
+.forum-shell[data-conversation="true"] .forum-rail,
+.forum-shell[data-conversation="true"] .forum-desk-toggle,
+.forum-shell[data-conversation="true"] .forum-lane-right { display: none; }
+.hank-conversation { position: absolute; z-index: 35; bottom: 26px; left: 50%; transform: translateX(-50%); width: min(460px,calc(100% - 36px)); padding: 19px 23px; border-radius: 18px; background: linear-gradient(130deg,#122c29f0,#10201eea); border: 1px solid #b6c5a745; box-shadow: 0 14px 42px #06191250; color: #f0eadb; backdrop-filter: blur(18px); }
+.hank-conversation-heading { display: flex; justify-content: space-between; align-items: center; gap: 14px; }
+.hank-conversation-heading > span { font: 10px var(--forum-mono); letter-spacing: .14em; color: #bdb69b; }
+.hank-conversation button { cursor: pointer; color: #eee9d9; font: 12px var(--forum-body); border: 1px solid #b4c1a73b; border-radius: 7px; background: #cad9c40d; padding: 9px 12px; }
+.hank-conversation button:disabled { opacity: .45; cursor: default; }
+.hank-conversation button:hover:not(:disabled) { background: #cad9c429; }
+.hank-conversation-heading button { border: 0; padding: 0; background: none; color: #c7cebc; }
+.hank-conversation h2 { margin: 13px 0 8px; font: 28px var(--forum-display); font-weight: 500; }
+.hank-conversation h2 span { display: inline-block; padding-left: 12px; font: 11px var(--forum-body); color: #a8b9aa; }
+.hank-voice-state { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #ced7c6; }
+.hank-voice-state i { height: 6px; width: 6px; border-radius: 50%; background: #b7bd99; }
+.hank-voice-state i[data-speaking="true"] { background: #9ee6be; box-shadow: 0 0 12px #9ee6be70; }
+.hank-conversation-actions { display: flex; gap: 8px; margin-top: 14px; }
+.hank-conversation .habitat-primary { background: #d5c69d; color: #21372e; border-color: #d5c69d; }
+.hank-conversation > small { display: block; color: #a8b7aa; margin-top: 11px; font-size: 11px; }
+.hank-transcript { max-height: 180px; overflow-y: auto; border-top: 1px solid #b4c1a726; margin-top: 15px; padding-top: 12px; font-size: 12px; }
+.hank-transcript b { color: #d5c69d; font-size: 10px; }
+.hank-transcript p { white-space: pre-wrap; line-height: 1.5; margin: 4px 0 12px; }

@@ -2,8 +2,10 @@ import { BoxGeometry, CylinderGeometry, Group, Mesh, MeshStandardMaterial } from
 import { DISTRICTS } from './districts';
 
 /** A finite, level garden: every listed destination shares the same walkable floor. */
-export const GARDEN_ARRIVAL = { position: [-.4, 1.7, 8.2], target: [-2.3, 1.3, 1], fov: 58 } as const;
-export const GARDEN_START: [number, number, number] = [-.4, 0, 8.2];
+// Stand east of the pergola: its front post must frame, rather than obscure,
+// the table and host at eye level. Walk mode starts at this same clear spot.
+export const GARDEN_ARRIVAL = { position: [1.2, 1.7, 7.8], target: [-2, 1.25, 1.5], fov: 58 } as const;
+export const GARDEN_START: [number, number, number] = [1.2, 0, 7.8];
 export const GARDEN_PLACES = [
   { ...DISTRICTS[0], name: 'Arrival table', subtitle: 'A place to begin', description: 'Meet your orchestrator beside the garden table. All paths in this compact garden are connected.', position: [-3, 0, 3] as [number,number,number] },
   { ...DISTRICTS.find(p => p.id === 'gallery')!, name: 'Evidence archive', subtitle: 'Inspect, choose, understand', description: 'A demonstration about completion evidence. Read the records, make a choice and inspect the explanation.', position: [-6, 0, -7] as [number,number,number] },
@@ -24,7 +26,7 @@ export const GARDEN_OBSTACLES = [
   { name: 'north border', center: [0,.5,-11.8], size: [18,1,.4] },
   { name: 'south border', center: [0,.5,11.8], size: [18,1,.4] },
 ] as const;
-export type GardenDecorPlacement = {asset:string;position:[number,number,number];scale:number;heading:number;solid?:[number,number,number];supportY?:number};
+export type GardenDecorPlacement = {asset:string;position:[number,number,number];scale:number;heading:number;pitch?:number;solid?:[number,number,number];supportY?:number};
 export const GARDEN_SOIL_Y = .004;
 // Actual v3b/baseline export minima, tested against the committed GLB.
 export const PLANT_BASE_Y = {canopy:-.011091665364801884,shrub:.017311472445726395,fern:.032241806387901306,flowers:0};

@@ -687,6 +687,9 @@ interface CommandCenterStore {
     teachWord: string | null;
   } | null;
   setVoiceConversation: (conv: CommandCenterStore['voiceConversation']) => void;
+  /** The World table supplies voice controls instead of the chat orb. */
+  worldConversationActive: boolean;
+  setWorldConversationActive: (active: boolean) => void;
 
   // --- Voice engine (per-window singleton) ---
   // Hosted by VoiceHost at the WINDOW root, not inside ChatView: closing the
@@ -2397,6 +2400,8 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   setChatWindowOpen: (open) => set({ chatWindowOpen: open }),
   voiceConversation: null,
   setVoiceConversation: (conv) => set({ voiceConversation: conv }),
+  worldConversationActive: false,
+  setWorldConversationActive: (active) => set({ worldConversationActive: active }),
   voiceEngine: null,
   setVoiceEngine: (engine) => set({ voiceEngine: engine }),
   setChatLauncherSize: (size) => set(s => {

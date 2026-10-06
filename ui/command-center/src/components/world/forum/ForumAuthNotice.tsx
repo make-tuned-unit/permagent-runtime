@@ -20,7 +20,8 @@ import { canPairThisBrowser, pairThisBrowser } from '../../../lib/api';
  * this tab's. Pasting it redeems the one-time code through this page's own
  * origin instead (`pairThisBrowser`).
  */
-export function ForumAuthNotice() {
+export function ForumAuthNotice({compact=false}:{compact?:boolean}) {
+  const [expanded,setExpanded]=useState(false);
   const authError = useCommandCenter(s => s.daemonAuthError);
   const { colors } = useTheme();
   const [link, setLink] = useState('');
@@ -49,7 +50,7 @@ export function ForumAuthNotice() {
 
   return (
     <div
-      className="forum-auth-notice"
+      className={`forum-auth-notice ${compact?'habitat-auth':''}`}
       role="alert"
       style={{
         pointerEvents: 'auto',
@@ -63,7 +64,8 @@ export function ForumAuthNotice() {
         boxShadow: '0 8px 24px #0002',
       }}
     >
-      <b style={{ color: colors.danger }}>Not connected to your agent</b>
+      <b style={{ color: colors.danger }}>Not connected to your agent</b>{compact&&<button className="habitat-auth-toggle" onClick={()=>setExpanded(v=>!v)} aria-expanded={expanded}>{expanded?'Hide details':'Connect…'}</button>}
+      {(!compact||expanded)&&<>
       <p style={{ margin: `${space.sm}px 0 0` }}>{authError}</p>
       {canPair && (
         <form onSubmit={submit} style={{ display: 'flex', flexDirection: 'column', gap: space.sm, marginTop: space.lg }}>
@@ -88,6 +90,7 @@ export function ForumAuthNotice() {
           {outcome && <p role="status" style={{ margin: 0 }}>{outcome}</p>}
         </form>
       )}
+      </>}
     </div>
   );
 }

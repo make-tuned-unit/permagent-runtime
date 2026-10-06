@@ -163,8 +163,8 @@ export function ChatDock() {
   // With the last surface gone there is nowhere honest to show the orb, and
   // leaving the mic hot behind a closed UI is worse than ending cleanly.
   const closeChat = () => {
-    const { voiceConversation, chatWindowOpen } = useCommandCenter.getState();
-    if (!chatWindowOpen) voiceConversation?.exit();
+    const { voiceConversation, chatWindowOpen, worldConversationActive } = useCommandCenter.getState();
+    if (!chatWindowOpen && !worldConversationActive) voiceConversation?.exit();
     closeChatDock();
   };
 

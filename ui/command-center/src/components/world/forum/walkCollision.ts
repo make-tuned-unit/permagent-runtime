@@ -2,6 +2,12 @@ import { MeshBVH, acceleratedRaycast } from 'three-mesh-bvh';
 import { Mesh, Object3D, Raycaster, Vector3, Matrix3 } from 'three';
 
 let colliders: Mesh[] = [];
+let actorColliders: Mesh[] = [];
+let combinedColliders: Mesh[] = [];
+const refreshColliders=()=>{combinedColliders=[...colliders,...actorColliders];};
+/** Dynamic avatar bodies are owned by their renderer and updated at its frame boundary. */
+export function registerForumActorCollisions(meshes:Mesh[]){actorColliders=meshes;refreshColliders();return()=>{if(actorColliders===meshes){actorColliders=[];refreshColliders();}};}
+export const getForumStaticColliders=()=>colliders;
 /** CPU-only meshes share authored geometry; they add no draw calls. */
 export function registerForumCollision(scene: Object3D) {
   scene.updateMatrixWorld(true);
@@ -17,10 +23,10 @@ export function registerForumCollision(scene: Object3D) {
     collider.updateMatrixWorld(true);
     owned.push(collider);
   });
-  colliders = owned;
-  return () => { if (colliders === owned) colliders = []; owned.forEach(m=>m.geometry.dispose()); };
+  colliders = owned; refreshColliders();
+  return () => { if (colliders === owned) { colliders = []; refreshColliders(); } owned.forEach(m=>m.geometry.dispose()); };
 }
-export const getForumColliders = () => colliders;
+export const getForumColliders = () => combinedColliders;
 const ray = new Raycaster();
 ray.firstHitOnly = true;
 const down = new Vector3(0,-1,0);
@@ -35,7 +41,7 @@ const maxStep = .4;
  * flight over gaps. Operates on the exported architecture, including stairs.
  * This is a lightweight walk controller, not a general rigid-body solver.
  */
-export function attemptWalk(feet: Vector3, dx: number, dz: number, surfaces: Mesh[] = colliders): boolean {
+export function attemptWalk(feet: Vector3, dx: number, dz: number, surfaces: Mesh[] = combinedColliders): boolean {
   const length = Math.hypot(dx,dz);
   if (!surfaces.length || length < 1e-8) return false;
   origin.set(feet.x+dx,feet.y+maxStep+.015,feet.z+dz);

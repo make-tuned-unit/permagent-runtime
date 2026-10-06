@@ -1,66 +1,98 @@
 import { useEffect, useMemo, useRef } from 'react';
-import { useGLTF } from '@react-three/drei';
+import { Html, useGLTF } from '@react-three/drei';
 import { useFrame } from '@react-three/fiber';
-import { Group, Mesh, MeshStandardMaterial, Object3D } from 'three';
+import { BufferGeometry, CylinderGeometry, Group, Mesh, MeshBasicMaterial, MeshStandardMaterial, Object3D, SphereGeometry } from 'three';
+import { useCommandCenter } from '../../../lib/store';
+import { registerForumActorCollisions } from './walkCollision';
 import { extendForumLoader } from './forumGltf';
 import { AgentStateSources, ROSTER } from '../agents';
 import { useAgentRuntimeStates } from '../shared/agentStatus';
 import { STATE } from '../shared/palette';
-import { ensureForumMotion, getForumMotion } from './ForumInhabitants';
-import { GARDEN_DECOR, GARDEN_AGENT_SEATS } from './gardenLayout';
+import { getForumMotion } from './ForumInhabitants';
+import { HABITAT_DECOR, HANK_TABLE_SEAT, stationFor } from './habitatLayout';
 import { instanceGardenDecor } from './staticGardenInstances';
 import { getReduceMotion } from '../../../styles/tokens';
+import { createAgentWardrobe } from './agentWardrobe';
+import { heroNode, replaceFixedHeroMouth } from './heroRig';
+import { speechOpening, smoothSpeech } from './agentSpeech';
+import { DetailBuilder, material, finishDetails } from './habitatGeometry';
+import { advanceHabitatAgent, commandHabitatAgent, getHabitatTravel, initializeHabitatAgent } from './habitatMotion';
 
 const KIT_URL = `${import.meta.env.BASE_URL}world/garden-hero/hero-kit-v3b.glb?v=e114f28bedaa`;
-function cloneAsset(scene: Object3D, name: string) {
-  const original=scene.getObjectByName(name);
-  if(!original)throw new Error(`Hero kit missing ${name}`);
-  const copy=original.clone(true);
-  copy.position.set(0,0,0);
-  copy.traverse(o=>{if(o instanceof Mesh){o.castShadow=true;o.receiveShadow=true;}});
-  return copy;
-}
-export function HeroGardenDecor() {
+function cloneAsset(scene:Object3D,name:string){const original=scene.getObjectByName(name);if(!original)throw new Error(`Hero kit missing ${name}`);const copy=original.clone(true);copy.position.set(0,0,0);copy.traverse(o=>{if(o instanceof Mesh){o.castShadow=true;o.receiveShadow=true;}});return copy;}
+export function HeroGardenDecor(){
   const {scene}=useGLTF(KIT_URL,false,false,extendForumLoader);
-  const decor=useMemo(()=>instanceGardenDecor(scene,GARDEN_DECOR),[scene]);
-  useEffect(()=>()=>decor.dispose(),[decor]);
-  return <primitive object={decor.group} dispose={null} />;
-}
-function HeroRobot({ id,index,state,onSelect,onHover }: {id:string;index:number;state:keyof typeof STATE;onSelect:(id:string)=>void;onHover:(id:string|null)=>void}) {
-  const {scene}=useGLTF(KIT_URL,false,false,extendForumLoader);
-  const root=useRef<Group>(null);
-  const owned=useMemo(()=>{
-    const object=cloneAsset(scene,'robot');const materials:MeshStandardMaterial[]=[];
-    object.traverse(o=>{if(o instanceof Mesh){
-      const copy=(m:MeshStandardMaterial)=>{const c=m.clone();materials.push(c);return c;};
-      o.material=Array.isArray(o.material)?o.material.map(m=>copy(m as MeshStandardMaterial)):copy(o.material as MeshStandardMaterial);
-    }});
-    return {object,materials};
+  const decor=useMemo(()=>{
+    // The hero flower is 39k triangles. A few foreground specimens retain its
+    // detail; instanced planting supplies the repeated garden blossoms.
+    let flowers=0;const placements=HABITAT_DECOR.filter(p=>p.asset!=='flowers'||flowers++%8===0);
+    const result=instanceGardenDecor(scene,placements);
+    result.group.children.forEach(mesh=>{if(['flowers','fern','vine'].includes(mesh.userData.asset))mesh.castShadow=false;});
+    return result;
   },[scene]);
-  const pose=useMemo(()=>{
-    const [x,y,z]=GARDEN_AGENT_SEATS[index];const m=ensureForumMotion(id,{x,y,z});
-    Object.assign(m,{x,y,z,heading:0,walking:false,strideDistance:0,engaged:'none'});return m;
-  },[id,index]);
-  useEffect(()=>()=>owned.materials.forEach(m=>m.dispose()),[owned]);
-  useEffect(()=>{
-    owned.materials.forEach(m=>{if(m.name.startsWith('Eyes')){m.color.set(STATE[state]);m.emissive.set(STATE[state]);m.emissiveIntensity=.6;}});
-  },[owned,state]);
-  useFrame(({clock,camera},dt)=>{
-    const host=root.current;if(!host)return;
-    host.position.set(pose.x,pose.y,pose.z);
-    const head=owned.object.getObjectByName('Head');
-    if(head && !getReduceMotion()){
-      const target=Math.atan2(camera.position.x-pose.x,camera.position.z-pose.z);
-      const angle=Math.max(-.6,Math.min(.6,target));
-      head.rotation.y+=(angle-head.rotation.y)*(1-Math.exp(-dt*3));
+  useEffect(()=>()=>decor.dispose(),[decor]);
+  return <primitive object={decor.group} dispose={null}/>;
+}
+function HeroRobot({id,index,state,live,selected,hovered,name,conversation,onSelect,onHover}:{id:string;index:number;state:keyof typeof STATE;live:boolean;selected:boolean;hovered:boolean;name:string;conversation:boolean;onSelect:(id:string)=>void;onHover:(id:string|null)=>void}){
+  const {scene}=useGLTF(KIT_URL,false,false,extendForumLoader),root=useRef<Group>(null),station=stationFor(id);
+  const owned=useMemo(()=>{
+    const object=cloneAsset(scene,'robot'),materials:MeshStandardMaterial[]=[],geometries:BufferGeometry[]=[],wardrobe=createAgentWardrobe(id);
+    object.traverse(o=>{if(o instanceof Mesh){const sourceMaterials=Array.isArray(o.material)?o.material:[o.material];o.castShadow=sourceMaterials.some(m=>m.name.startsWith('Ceramic'));const copy=(m:MeshStandardMaterial)=>{const c=m.clone();if(c.name.startsWith('Ceramic')){c.color.set(id==='strix'?'#a6b0ac':id==='forecaster'?'#d3dfe0':id==='picker'?'#e2d4b5':'#eee5d0');c.roughness=.35;}materials.push(c);return c;};o.material=Array.isArray(o.material)?o.material.map(m=>copy(m as MeshStandardMaterial)):copy(o.material as MeshStandardMaterial);}});
+    const head=heroNode(object,'Head');object.add(wardrobe.body);head?.add(wardrobe.headwear);
+    if(head){const mouthGeometry=replaceFixedHeroMouth(head);if(mouthGeometry)geometries.push(mouthGeometry);}
+    const mouth=new Mesh(new SphereGeometry(1,24,12),new MeshBasicMaterial({color:'#b3e4d5'}));mouth.name='Voice-synchronized mouth';mouth.position.set(0,-.085,.307);mouth.scale.set(.055,.004,.013);head?.add(mouth);
+    const seatBuilder=new DetailBuilder(),seatWood=material('#73543b'),seatCeramic=material('#e5decc',.4),seatJoint=material('#354345',.4,.3);
+    for(const x of [-.125,.125]){seatBuilder.tube([[x,.68,0],[x,.50,.31]],.075,seatCeramic);seatBuilder.sphere([x,.50,.31],[.08,.075,.08],seatJoint);seatBuilder.tube([[x,.50,.31],[x,.12,.37]],.068,seatCeramic);seatBuilder.box([x,.065,.43],[.18,.10,.28],seatCeramic);}
+    // Bent elbows and palms resting on the table make the close conversation
+    // pose distinct from the straight, shoulder-driven walking rig.
+    for(const side of [-1,1]){
+      seatBuilder.sphere([side*.29,1.065,0],[.10,.10,.10],seatJoint);
+      seatBuilder.tube([[side*.29,1.06,0],[side*.37,.85,.20]],.072,seatCeramic);
+      seatBuilder.sphere([side*.37,.85,.20],[.082,.078,.082],seatJoint);
+      seatBuilder.tube([[side*.37,.85,.20],[side*.30,1.04,.53]],.071,seatCeramic);
+      seatBuilder.sphere([side*.30,1.04,.53],[.072,.045,.055],seatJoint);
+      seatBuilder.sphere([side*.30,1.067,.60],[.103,.041,.10],seatCeramic);
+      for(let finger=0;finger<4;finger++)seatBuilder.sphere([side*.30+(finger-1.5)*.045,1.06,.687],[.019,.027,.064],seatCeramic);
+      seatBuilder.sphere([side*.411,1.048,.60],[.034,.03,.065],seatCeramic);
     }
-    if(!getReduceMotion() && state!=='working')host.position.y+=Math.sin(clock.elapsedTime*1.1+index*1.7)*.008;
+    seatBuilder.cylinder([0,.61,-.08],.34,.09,seatWood);seatBuilder.box([0,.92,-.30],[.61,.53,.065],seatWood);for(const x of [-.24,.24])for(const z of [-.24,.15])seatBuilder.cylinder([x,.29,z],.028,.58,seatJoint);
+    const seatedBody=seatBuilder.finish('Seated pose and chair');seatedBody.visible=false;object.add(seatedBody);
+    const limbs=['Arm.L','Arm.R','Leg.L','Leg.R'].map(n=>heroNode(object,n));
+    const eyes:Mesh[]=[];head?.traverse(o=>{if(o instanceof Mesh&&(o.material as MeshStandardMaterial).name?.startsWith('Eyes'))eyes.push(o);});
+    return {object,materials,geometries,wardrobe,head,limbs,eyes,mouth,seatedBody,seatMaterials:[seatWood,seatCeramic,seatJoint]};
+  },[scene,id]);
+  const pose=useMemo(()=>initializeHabitatAgent(id),[id]);
+  const speech=useRef({opening:0,bins:new Uint8Array(32)});
+  useEffect(()=>()=>{owned.materials.forEach(m=>m.dispose());owned.geometries.forEach(g=>g.dispose());owned.wardrobe.materials.forEach(m=>m.dispose());finishDetails(owned.wardrobe.body);finishDetails(owned.wardrobe.headwear);finishDetails(owned.seatedBody);owned.seatMaterials.forEach(m=>m.dispose());owned.mouth.geometry.dispose();(owned.mouth.material as MeshBasicMaterial).dispose();},[owned]);
+  useEffect(()=>{owned.materials.forEach(m=>{if(m.name.startsWith('Eyes')){const eyeColor=id==='henry'?'#a0dbb9':station.color;m.color.set(eyeColor);m.emissive.set(eyeColor);m.emissiveIntensity=live&&state==='working'?.8:.6;}});if(!(conversation&&id==='henry')&&state==='working'&&live)commandHabitatAgent(id,[...station.position],'Returning to workstation',true);},[owned,state,live,id,station,conversation]);
+  useFrame(({clock,camera},dt)=>{
+    advanceHabitatAgent(id,dt);const host=root.current;if(!host)return;host.position.set(pose.x,pose.y,pose.z);host.rotation.y=pose.heading;
+    const reduced=getReduceMotion(),working=state==='working'&&live&&!getHabitatTravel(id)?.moving&&Math.hypot(pose.x-station.position[0],pose.z-station.position[2])<.8;
+    const seated=conversation&&id==='henry'&&!getHabitatTravel(id)?.moving&&Math.hypot(pose.x-HANK_TABLE_SEAT[0],pose.z-HANK_TABLE_SEAT[2])<.25;
+    owned.seatedBody.visible=seated;if(seated){pose.heading=0;host.rotation.y=0;}
+    const engine=id==='henry'?useCommandCenter.getState().voiceEngine:null,analyser=engine?.state==='playing'?engine.getAnalyser():null;
+    if(analyser){if(speech.current.bins.length!==analyser.frequencyBinCount)speech.current.bins=new Uint8Array(analyser.frequencyBinCount);analyser.getByteFrequencyData(speech.current.bins);}
+    const opening=speechOpening(engine?.state??'idle',analyser?speech.current.bins:null);speech.current.opening=smoothSpeech(speech.current.opening,opening,dt);
+    owned.mouth.scale.set(.055+speech.current.opening*.005,.004+speech.current.opening*.045,.013);
+    const stride=(pose.strideDistance??0)*7.5,wave=Math.sin(stride),t=clock.elapsedTime;
+    owned.limbs.forEach((limb,i)=>{if(!limb)return;limb.visible=!seated;const target=pose.walking?wave*(i%2?-1:1)*(i<2?.31:.38):working&&i<2?-.55+(reduced?0:Math.sin(t*(station.gesture==='type'?6:1.6)+i)*.10):0;limb.rotation.x+=(target-limb.rotation.x)*(1-Math.exp(-dt*12));});
+    if(owned.head){let target=0;if((selected||hovered)&&!pose.walking)target=Math.max(-.6,Math.min(.6,Math.atan2(camera.position.x-pose.x,camera.position.z-pose.z)-pose.heading));else if(!reduced&&!working)target=Math.sin(t*.3+index)*.10;owned.head.rotation.y+=(target-owned.head.rotation.y)*(1-Math.exp(-dt*4));owned.head.rotation.x=working?.14:0;}
+    if(reduced)owned.eyes.forEach(eye=>eye.scale.y=1);
+    if(!reduced){if(pose.walking)host.position.y+=Math.abs(wave)*.022;else host.position.y+=Math.sin(t*1.0+index)*.006;const blink=Math.sin(t*.72+index*1.37)>.999?.12:1;owned.eyes.forEach(eye=>eye.scale.y=blink);}
   });
-  return <group ref={root} onClick={e=>{e.stopPropagation();onSelect(id);}} onPointerOver={e=>{e.stopPropagation();onHover(id);}} onPointerOut={()=>onHover(null)}><primitive object={owned.object} dispose={null} /></group>;
+  const proportions=id==='strix'?[1.1,1.04,1.05]:id==='reader'?[.94,1.02,.96]:id==='librarian'?[1,1.07,1]:id==='picker'?[1,.95,1]:[1,1,1];
+  return <group ref={root} onClick={e=>{e.stopPropagation();onSelect(id);}} onPointerOver={e=>{e.stopPropagation();onHover(id);}} onPointerOut={()=>onHover(null)}>
+    <group scale={proportions as [number,number,number]}><primitive object={owned.object} dispose={null}/></group>
+    {selected&&<mesh rotation-x={-Math.PI/2} position={[0,.028,0]}><ringGeometry args={[.46,.49,48]}/><meshBasicMaterial color={station.color} transparent opacity={.7} depthWrite={false}/></mesh>}
+    {!conversation&&(selected||hovered)&&<Html position={[0,2.05,0]} center distanceFactor={8} zIndexRange={[20,0]}><div className="habitat-nameplate"><b>{name}</b><span>{live?state:'Ambient presence'}</span></div></Html>}
+  </group>;
 }
-export function HeroGardenAgents({ onSelect,onHover }: {onSelect:(id:string)=>void;onHover:(id:string|null)=>void}) {
-  const states=useAgentRuntimeStates();
-  return <group><AgentStateSources />{ROSTER.map((a,i)=><HeroRobot key={a.id} id={a.id} index={i} state={states.find(s=>s.id===a.id)?.hudState??'idle'} onSelect={onSelect} onHover={onHover} />)}</group>;
+export function HeroGardenAgents({onSelect,onHover,selected='',hovered='',orchestratorName='Your orchestrator',conversation=false}:{onSelect:(id:string)=>void;onHover:(id:string|null)=>void;selected?:string;hovered?:string|null;orchestratorName?:string;conversation?:boolean}){
+  const states=useAgentRuntimeStates(),authError=useCommandCenter(s=>s.daemonAuthError);
+  const bodies=useMemo(()=>{const geometry=new CylinderGeometry(.33,.33,1.85,16),material=new MeshStandardMaterial();return {geometry,material,meshes:ROSTER.map(a=>{const body=new Mesh(geometry,material);body.name=`${a.id} moving body`;return body;})};},[]);
+  useEffect(()=>{const release=registerForumActorCollisions(bodies.meshes);return()=>{release();bodies.geometry.dispose();bodies.material.dispose();};},[bodies]);
+  useFrame(()=>{bodies.meshes.forEach((body,i)=>{const pose=getForumMotion(ROSTER[i].id);if(pose){body.position.set(pose.x,pose.y+.925,pose.z);body.updateMatrixWorld(true);}});},-1);
+
+  return <group><AgentStateSources/>{ROSTER.map((a,i)=>{const state=states.find(s=>s.id===a.id);return <HeroRobot key={a.id} id={a.id} index={i} conversation={conversation} name={a.isHenry?orchestratorName:a.name} selected={selected===a.id} hovered={hovered===a.id} state={state?.hudState??'idle'} live={!authError&&state?.source==='daemon'} onSelect={onSelect} onHover={onHover}/>;})}</group>;
 }
-// Shared forum motion positions remain available to Find and E-to-inspect.
-export const getHeroPosition = getForumMotion;
+export const getHeroPosition=getForumMotion;

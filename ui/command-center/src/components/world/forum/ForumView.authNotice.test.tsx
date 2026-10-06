@@ -51,6 +51,7 @@ it('shows nothing extra while the credential is healthy', () => {
 it('shows why the World cannot reach the agent, and clears when paired', () => {
   act(() => { useCommandCenter.setState({ daemonAuthError: 'This browser is not paired with the daemon' }); });
   act(() => root.render(<ForumView />));
+  act(() => { [...host.querySelectorAll('button')].find(b => b.textContent?.includes('Connect…'))?.click(); });
   expect(alertEl()?.textContent).toContain('Not connected to your agent');
   expect(alertEl()?.textContent).toContain('This browser is not paired with the daemon');
   act(() => { useCommandCenter.setState({ daemonAuthError: null }); });
@@ -61,6 +62,7 @@ it('pairs this tab from a pasted Settings → Devices link', async () => {
   pair.mockResolvedValue({ paired: true, message: null });
   act(() => { useCommandCenter.setState({ daemonAuthError: 'The pairing link could not be redeemed (HTTP 404 from POST /pair/claim)' }); });
   act(() => root.render(<ForumView />));
+  act(() => { [...host.querySelectorAll('button')].find(b => b.textContent?.includes('Connect…'))?.click(); });
   const input = host.querySelector('#forum-pair-link') as HTMLInputElement;
   expect(input).toBeTruthy();
   const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
@@ -78,6 +80,7 @@ it('says so when the pasted text is not a pairing link', async () => {
   pair.mockResolvedValue({ paired: false, message: 'That is not a pairing link.' });
   act(() => { useCommandCenter.setState({ daemonAuthError: 'not paired' }); });
   act(() => root.render(<ForumView />));
+  act(() => { [...host.querySelectorAll('button')].find(b => b.textContent?.includes('Connect…'))?.click(); });
   const input = host.querySelector('#forum-pair-link') as HTMLInputElement;
   const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
   act(() => {

@@ -63,7 +63,7 @@ export function instanceGardenDecor(scene: Object3D, placements: readonly Garden
         mesh.userData.asset = asset; mesh.userData.sourceName = primitive.sourceName; mesh.userData.materialSlot = primitive.materialSlot;
         mesh.castShadow = true; mesh.receiveShadow = true; mesh.frustumCulled = true;
         rows.forEach((placement, index) => {
-          const rotation = new Quaternion().setFromEuler(new Euler(rootRotation.x,placement.heading,rootRotation.z,rootRotation.order));
+          const rotation = new Quaternion().setFromEuler(new Euler(rootRotation.x+(placement.pitch??0),placement.heading,rootRotation.z,rootRotation.order));
           const matrix = new Matrix4().compose(new Vector3(...placement.position), rotation, new Vector3().setScalar(placement.scale));
           mesh.setMatrixAt(index, matrix);
         });

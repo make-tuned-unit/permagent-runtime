@@ -48,13 +48,14 @@ let root: Root;
 let host: HTMLDivElement;
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 beforeEach(() => {
+  window.history.replaceState({}, '', '/?campus=1');
   try { localStorage.clear(); } catch { /* no storage */ }
   host = document.createElement('div');
   document.body.append(host);
   root = createRoot(host);
   act(() => root.render(<ForumView />));
 });
-afterEach(() => { act(() => root.unmount()); host.remove(); });
+afterEach(() => { act(() => root.unmount()); host.remove(); window.history.replaceState({}, '', '/'); });
 
 function laneOf(selector: string): Element | null {
   return host.querySelector(selector)?.parentElement ?? null;

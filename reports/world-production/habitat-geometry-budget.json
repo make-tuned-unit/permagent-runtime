@@ -1,0 +1,85 @@
+{
+  "before": {
+    "byAsset": {
+      "table": {
+        "placements": 1,
+        "triangles": 5120
+      },
+      "instrument": {
+        "placements": 1,
+        "triangles": 1172
+      },
+      "bench": {
+        "placements": 5,
+        "triangles": 10780
+      },
+      "canopy": {
+        "placements": 11,
+        "triangles": 358996
+      },
+      "shrub": {
+        "placements": 102,
+        "triangles": 1747872
+      },
+      "fern": {
+        "placements": 124,
+        "triangles": 349184
+      },
+      "flowers": {
+        "placements": 102,
+        "triangles": 3989628
+      },
+      "vine": {
+        "placements": 8,
+        "triangles": 13728
+      },
+      "planter": {
+        "placements": 11,
+        "triangles": 31636
+      }
+    },
+    "totalTriangles": 6508116
+  },
+  "after": {
+    "byAsset": {
+      "table": {
+        "placements": 1,
+        "triangles": 5120
+      },
+      "instrument": {
+        "placements": 1,
+        "triangles": 1172
+      },
+      "bench": {
+        "placements": 5,
+        "triangles": 10780
+      },
+      "canopy": {
+        "placements": 11,
+        "triangles": 358996
+      },
+      "shrub": {
+        "placements": 102,
+        "triangles": 1747872
+      },
+      "fern": {
+        "placements": 124,
+        "triangles": 349184
+      },
+      "flowers": {
+        "placements": 13,
+        "triangles": 508482
+      },
+      "vine": {
+        "placements": 8,
+        "triangles": 13728
+      },
+      "planter": {
+        "placements": 11,
+        "triangles": 31636
+      }
+    },
+    "totalTriangles": 3026970
+  },
+  "scope": "Static hero kit triangles before culling and shadows; procedural architecture/planting and robots are additional. FPS needs live measurement."
+}
