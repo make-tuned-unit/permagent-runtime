@@ -49,11 +49,11 @@ function HeroRobot({id,index,state,live,selected,hovered,name,conversation,onSel
       seatBuilder.sphere([side*.29,1.065,0],[.10,.10,.10],seatJoint);
       seatBuilder.tube([[side*.29,1.06,0],[side*.37,.85,.20]],.072,seatCeramic);
       seatBuilder.sphere([side*.37,.85,.20],[.082,.078,.082],seatJoint);
-      seatBuilder.tube([[side*.37,.85,.20],[side*.30,1.04,.53]],.071,seatCeramic);
-      seatBuilder.sphere([side*.30,1.04,.53],[.072,.045,.055],seatJoint);
-      seatBuilder.sphere([side*.30,1.067,.60],[.103,.041,.10],seatCeramic);
-      for(let finger=0;finger<4;finger++)seatBuilder.sphere([side*.30+(finger-1.5)*.045,1.06,.687],[.019,.027,.064],seatCeramic);
-      seatBuilder.sphere([side*.411,1.048,.60],[.034,.03,.065],seatCeramic);
+      seatBuilder.tube([[side*.37,.85,.20],[side*.30,1.055,.71]],.071,seatCeramic);
+      seatBuilder.sphere([side*.30,1.055,.71],[.072,.045,.055],seatJoint);
+      seatBuilder.sphere([side*.30,1.067,.78],[.103,.041,.10],seatCeramic);
+      for(let finger=0;finger<4;finger++)seatBuilder.sphere([side*.30+(finger-1.5)*.045,1.06,.867],[.019,.027,.064],seatCeramic);
+      seatBuilder.sphere([side*.411,1.058,.78],[.034,.03,.065],seatCeramic);
     }
     seatBuilder.cylinder([0,.61,-.08],.34,.09,seatWood);seatBuilder.box([0,.92,-.30],[.61,.53,.065],seatWood);for(const x of [-.24,.24])for(const z of [-.24,.15])seatBuilder.cylinder([x,.29,z],.028,.58,seatJoint);
     const seatedBody=seatBuilder.finish('Seated pose and chair');seatedBody.visible=false;object.add(seatedBody);
@@ -75,7 +75,19 @@ function HeroRobot({id,index,state,live,selected,hovered,name,conversation,onSel
     const opening=speechOpening(engine?.state??'idle',analyser?speech.current.bins:null);speech.current.opening=smoothSpeech(speech.current.opening,opening,dt);
     owned.mouth.scale.set(.055+speech.current.opening*.005,.004+speech.current.opening*.045,.013);
     const stride=(pose.strideDistance??0)*7.5,wave=Math.sin(stride),t=clock.elapsedTime;
-    owned.limbs.forEach((limb,i)=>{if(!limb)return;limb.visible=!seated;const target=pose.walking?wave*(i%2?-1:1)*(i<2?.31:.38):working&&i<2?-.55+(reduced?0:Math.sin(t*(station.gesture==='type'?6:1.6)+i)*.10):0;limb.rotation.x+=(target-limb.rotation.x)*(1-Math.exp(-dt*12));});
+    owned.limbs.forEach((limb,i)=>{
+      if(!limb)return;limb.visible=!seated;
+      let target=pose.walking?wave*(i%2?-1:1)*(i<2?.31:.38):0,spread=0;
+      if(working&&i<2){
+        const rhythm=reduced?0:Math.sin(t*(station.gesture==='type'?6:station.gesture==='read'?.8:1.6)+i*Math.PI);
+        if(station.gesture==='type'){target=-1.11+rhythm*.045;spread=(i===0?-1:1)*.10;}
+        else if(station.gesture==='read'){target=-.93+rhythm*.025;spread=(i===0?-1:1)*.15;}
+        else if(station.gesture==='tend'){target=-1.04+rhythm*.10;spread=(i===0?-1:1)*.06;}
+        else if(station.gesture==='scan'){target=i===0?-.88+rhythm*.07:-.30;}
+        else {target=-.75+rhythm*.11;spread=(i===0?1:-1)*.15;}
+      }
+      const ease=1-Math.exp(-dt*12);limb.rotation.x+=(target-limb.rotation.x)*ease;limb.rotation.z+=(spread-limb.rotation.z)*ease;
+    });
     if(owned.head){let target=0;if((selected||hovered)&&!pose.walking)target=Math.max(-.6,Math.min(.6,Math.atan2(camera.position.x-pose.x,camera.position.z-pose.z)-pose.heading));else if(!reduced&&!working)target=Math.sin(t*.3+index)*.10;owned.head.rotation.y+=(target-owned.head.rotation.y)*(1-Math.exp(-dt*4));owned.head.rotation.x=working?.14:0;}
     if(reduced)owned.eyes.forEach(eye=>eye.scale.y=1);
     if(!reduced){if(pose.walking)host.position.y+=Math.abs(wave)*.022;else host.position.y+=Math.sin(t*1.0+index)*.006;const blink=Math.sin(t*.72+index*1.37)>.999?.12:1;owned.eyes.forEach(eye=>eye.scale.y=blink);}

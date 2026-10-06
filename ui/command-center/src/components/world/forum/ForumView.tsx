@@ -2,6 +2,7 @@ import { HabitatScene, HabitatLighting, HabitatNavigation } from './HabitatScene
 import { HankConversation } from './HankConversation';
 import { commandHabitatAgent } from './habitatMotion';
 import { HabitatAgentDock } from './HabitatAgentDock';
+import { HabitatOrrery } from './HabitatOrrery';
 import { HABITAT_ARRIVAL, HABITAT_PLACES, HABITAT_START, HANK_TABLE_SEAT } from './habitatLayout';
 import { GardenAssetBoundary } from './GardenAssetBoundary';
 import { HeroGardenDecor, HeroGardenAgents } from './HeroGardenKit';
@@ -420,6 +421,7 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
         <group visible={!agoraOpen}>
           {compact ? <><HabitatScene directing={directing} onDirected={(_,ok)=>{if(ok)setDirecting(null);}} />{kitReady && <GardenAssetBoundary onFailure={kitFailure}><Suspense fallback={null}><HeroGardenDecor /></Suspense></GardenAssetBoundary>}</> : <VaultBoundary fallback={<Fallback />}><Suspense fallback={<Fallback />}><ForumAsset /></Suspense></VaultBoundary>}
           <ForumEnvironment appearance={appearance} />
+          {compact && <HabitatOrrery conversation={conversation} onOverview={()=>{setOverview(true);setFollow(null);setDirecting(null);}} />}
           {!compact && <ForumWater />}
           {!compact && <Suspense fallback={null}><ForumShips /></Suspense>}
           <Suspense fallback={null}>{compact && kitReady ? <GardenAssetBoundary onFailure={kitFailure}><HeroGardenAgents conversation={conversation} selected={selected} hovered={hovered} orchestratorName={configuredName||'Your orchestrator'} onHover={setHovered} onSelect={id=>{setSelected(id);setDirecting(null);setTab('meet');}} /></GardenAssetBoundary> : <ForumAgents compact={compact} hoveredAgent={hovered} onHoverAgent={setHovered} onSelectAgent={id => { setSelected(id); setTab('meet'); setSaved(false); }} />}</Suspense>

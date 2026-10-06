@@ -81,3 +81,9 @@ The app CSP now permits `blob:` connections required by GLTFLoader's embedded te
 Latest build is r6; current running/staged package is r4. See the 6 October 11:58 checkpoint for exact hashes and the CUA window-access blocker. The guarded refresh correctly refused the still-running review app. Do not overwrite or mark r6 rendered without a supported quit, refresh and launch review.
 
 The last visually reviewed native delivery was r7. Current stage is **r9**, rebuilt and verified after adding the observatory architecture and crowd-aware route correction. Both build/package ledgers agree; signed shell `c07755e8cad360b47af9d6fcef5beaaf2590b1030be6046e8fc881964d944f5c`. The refresh succeeded after the old review app was quit through CUA. Current CUA selection of Safari and the staged native app returns `cgWindowNotFound`, so r9 rendering and the corrected live route remain unreviewed. The older r6/r7 access descriptions above are historical. No further rebuild is needed for r9 review; see CHECKPOINT for exact validation and the remaining fidelity gap.
+
+
+Current stage is **r10**, built, signed, launched and visually reviewed through CUA. Signed shell `e2a0fb6a7e71e3b632d0cd2efdf8cc4bbddb80b9f0f75f1e80e368efd11ccdf1`. Window access recovered; the previous r9 blocker is historical. See the r10 checkpoint for route, material, water and runtime evidence.
+
+
+Latest compiled binary is **r11**, raw SHA256 `553acf2a9895d10e1a05107121a49f746544aa0caf0b893851aa3c722eeb9968`, with matching embedding ledger. Current stage remains the running, visually reviewed **r10**. Refresh refused while it is running; CUA again reports `cgWindowNotFound`. Recover window access and quit through CUA before refreshing. R11 adds the team globe and specialist work-pose refinements and still needs screenshot/interaction review.

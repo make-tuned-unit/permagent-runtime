@@ -1,7 +1,7 @@
 import { Suspense, useEffect, useMemo, useRef } from 'react';
 import { OrbitControls } from '@react-three/drei';
 import { useFrame, useThree, type ThreeEvent } from '@react-three/fiber';
-import { Mesh, MeshStandardMaterial, PerspectiveCamera, ShaderMaterial, Vector3 } from 'three';
+import { Mesh, MeshStandardMaterial, PerspectiveCamera, Vector3 } from 'three';
 import { HabitatArchitecture } from './HabitatArchitecture';
 import { HabitatPlanting } from './HabitatPlanting';
 import { HABITAT_ARRIVAL, TABLE_CONVERSATION_CAMERA, habitatCollisionSource, habitatElevation, terrainGeometry, type Point3 } from './habitatLayout';
@@ -9,19 +9,10 @@ import { registerForumCollision } from './walkCollision';
 import { getForumMotion } from './ForumInhabitants';
 import { commandHabitatAgent } from './habitatMotion';
 import { HabitatSky } from './HabitatSky';
+import { HabitatWater } from './HabitatWater';
 import type { ForumDistrict } from './districts';
 import { getReduceMotion } from '../../../styles/tokens';
 
-function GardenWater(){
-  const waterfall=useRef<Mesh>(null);
-  useFrame(({clock})=>{if(waterfall.current&&!getReduceMotion())(waterfall.current.material as ShaderMaterial).uniforms.uTime.value=clock.elapsedTime;});
-  return <group>
-    <mesh position={[4,.07,-2]} rotation-x={-Math.PI/2}><planeGeometry args={[3.8,5.8,20,20]}/><meshPhysicalMaterial color="#3c7973" metalness={.2} roughness={.18} transparent opacity={.86}/></mesh>
-    <mesh position={[4,1.345,-8.4]} rotation-x={-Math.PI/2}><planeGeometry args={[3.35,2.15]}/><meshPhysicalMaterial color="#437f78" roughness={.18} metalness={.2}/></mesh>
-    <mesh ref={waterfall} position={[4,.71,-6.39]}><planeGeometry args={[2.7,1.22,24,12]}/><shaderMaterial transparent depthWrite={false} uniforms={{uTime:{value:0}}} vertexShader="varying vec2 vUv;void main(){vUv=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}" fragmentShader="varying vec2 vUv;uniform float uTime;void main(){float streak=sin(vUv.x*143.+sin(vUv.y*12.-uTime*3.)*.5)*.5+.5;float flow=sin(vUv.y*54.+uTime*8.+vUv.x*8.)*.5+.5;float edge=smoothstep(0.,.08,vUv.x)*smoothstep(0.,.08,1.-vUv.x);gl_FragColor=vec4(mix(vec3(.25,.55,.52),vec3(.78,.88,.79),streak*.7+flow*.2),edge*(.2+.45*streak));}"/></mesh>
-    <mesh position={[4,.10,-5.6]} rotation-x={-Math.PI/2}><circleGeometry args={[1.45,48]}/><meshStandardMaterial color="#508b80" roughness={.28} transparent opacity={.85}/></mesh>
-  </group>;
-}
 export function HabitatScene({directing,onDirected}:{directing:string|null;onDirected:(point:Point3,ok:boolean)=>void}){
   const ground=useMemo(()=>terrainGeometry(),[]);
   useEffect(()=>()=>ground.dispose(),[ground]);
@@ -29,7 +20,7 @@ export function HabitatScene({directing,onDirected}:{directing:string|null;onDir
   const direct=(e:ThreeEvent<MouseEvent>)=>{if(!directing)return;e.stopPropagation();const p:Point3=[e.point.x,habitatElevation(e.point.x,e.point.z),e.point.z];onDirected(p,commandHabitatAgent(directing,p));};
   return <group onClick={direct}>
     <mesh geometry={ground} position={[0,-.06,0]} receiveShadow><meshStandardMaterial color="#ac9f87" roughness={1}/></mesh>
-    <Suspense fallback={null}><HabitatArchitecture/></Suspense><HabitatPlanting/><GardenWater/>
+    <Suspense fallback={null}><HabitatArchitecture/></Suspense><HabitatPlanting/><HabitatWater/>
   </group>;
 }
 export function HabitatLighting({appearance}:{appearance:'day'|'night'}){const day=appearance==='day';return <>
