@@ -2196,10 +2196,20 @@ export function SettingsView() {
   const pane = paneForSection(section);
   const Panel = PANELS[pane];
   const { gradient, colors } = useThemeHook();
+  // Focus lands in the scroll container on open and on every pane switch, so
+  // Page Down / Space / arrows scroll the pane (QA 2026-10-07 Q4: in the native
+  // webview focus stayed on <body> and the keys did nothing). Only taken from
+  // <body> or the section rail, never from a field the user is typing in.
+  const scrollRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const active = document.activeElement;
+    if (active && active !== document.body && !active.closest('[data-settings-rail]')) return;
+    scrollRef.current?.focus({ preventScroll: true });
+  }, [section]);
 
   return (
     <div style={{ width: '100%', height: '100%', display: 'flex', background: gradient.shell, color: colors.text, fontFamily: font.body }}>
-      <div style={{ width: 240, borderRight: `1px solid ${colors.border}`, background: gradient.navRail, padding: `${space.huge}px 14px`, overflow: 'auto', flexShrink: 0 }}>
+      <div style={{ width: 240, borderRight: `1px solid ${colors.border}`, background: gradient.navRail, padding: `${space.huge}px 14px`, overflow: 'auto', flexShrink: 0 }} data-settings-rail>
         <div style={{ ...type.heading, fontFamily: font.display, padding: `0 ${space.lg}px ${space.xxxl}px` }}>Settings</div>
         {CATEGORIES.map(cat => (
           <div key={cat.group} style={{ marginBottom: space.xxl }}>
@@ -2247,7 +2257,7 @@ export function SettingsView() {
           gutters answer to it (`.pa-set-body` in atoms.tsx) rather than to a
           viewport media query. `minWidth: 0` lets it shrink below its
           content's width instead of widening the pane. */}
-      <div style={{ flex: 1, minWidth: 0, overflow: 'auto', containerType: 'inline-size' }}>
+      <div ref={scrollRef} tabIndex={-1} data-testid="settings-scroll" style={{ flex: 1, minWidth: 0, overflow: 'auto', containerType: 'inline-size', outline: 'none' }}>
         <div className="pa-set-body">
           {/* `section`, not `pane` — History needs the segment the caller asked
               for, and every other panel ignores it. */}
