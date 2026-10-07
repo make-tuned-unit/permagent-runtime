@@ -15,8 +15,10 @@ import { useCommandCenter } from '../../../lib/store';
 let canvasChildren: ReactNode = null;
 
 vi.mock('@react-three/fiber', () => ({
-  Canvas: ({ children }: { children?: ReactNode }) => {
-    canvasChildren = children;
+  // Only the World canvas is captured: the live agent portrait (desk, dock)
+  // mounts its own small Canvas, which must not replace the scene under test.
+  Canvas: ({ children, className }: { children?: ReactNode; className?: string }) => {
+    if (className === 'forum-canvas') canvasChildren = children;
     return null;
   },
   useFrame: vi.fn(),
