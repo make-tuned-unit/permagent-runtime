@@ -116,6 +116,12 @@ export function SectionNav({ items, scrollRoot }: { items: SectionNavItem[]; scr
         padding: `${space.sm}px ${space.md}px`, marginBottom: space.xxl,
         borderRadius: radius.md, border: `1px solid ${colors.border}`,
         ...material,
+        // Opaque, after the glass spread: the bar floats over list rows as they
+        // scroll, and a translucent fill let their text collide with the tabs
+        // (QA 2026-10-07 Q21). Chrome over scrolling content must be solid.
+        background: colors.surface,
+        WebkitBackdropFilter: 'none',
+        backdropFilter: 'none',
       }}
     >
       {items.map(item => {

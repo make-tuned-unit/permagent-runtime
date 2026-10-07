@@ -1747,7 +1747,11 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   loadSkills: async () => {
     set({ skillsLoading: true, skillsError: null });
     try {
-      const skills = await api.getSkills();
+      // A read that never answers must not pin the Learned list on "Loading…".
+      const skills = await Promise.race([
+        api.getSkills(),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('the daemon did not answer in time')), 20_000)),
+      ]);
       set({ skills: skills as SkillState[], skillsLoading: false, skillsError: null });
     } catch (e) {
       // The old line was `set({ skills: [] })` — a failed fetch rendered as the

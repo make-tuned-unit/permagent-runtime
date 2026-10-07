@@ -1062,7 +1062,10 @@ export function AutomateView() {
 
         {/* ── LEARNED ── */}
         <Section id="learned" title="Learned" count={filteredSkills.length + filteredProposals.length}>
-          {skillsLoading ? (
+          {skillsLoading && filteredSkills.length === 0 && filteredProposals.length === 0 ? (
+            // Only the FIRST load shows a placeholder: a revisit keeps the
+            // skills already in the store on screen while it refreshes (QA
+            // 2026-10-07 Q23: "Loading…" forever on the second visit).
             <div style={{ fontSize: textSize.caption, color: colors.textDim }}>Loading...</div>
           ) : filteredSkills.length === 0 && filteredProposals.length === 0 ? (
             <div style={{
