@@ -29,7 +29,7 @@ vi.mock('@react-three/drei', () => {
   );
   return { useGLTF, OrbitControls: () => null, Html: () => null, useTexture: () => [] };
 });
-vi.mock('../shared/useOrchestratorName', () => ({ useOrchestratorName: () => 'Hank' }));
+vi.mock('../shared/useOrchestratorName', () => ({ useOrchestratorName: () => 'Ada' }));
 vi.mock('./ForumConversation', () => ({ ForumConversation: () => null }));
 vi.mock('./forumQuery', () => ({ askFromForum: vi.fn() }));
 vi.mock('./ForumCapabilities', () => ({ ForumCapabilities: () => null }));
@@ -196,7 +196,7 @@ describe('HabitatAgentDock DOM select', () => {
     act(() => root.render(
       <HabitatAgentDock
         selected="henry"
-        name="Hank"
+        name="Ada"
         directing={false}
         following={false}
         onSelect={onSelect}

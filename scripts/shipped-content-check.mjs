@@ -13,8 +13,8 @@ const IDENTITY_DIAGNOSTIC =
   'Rulings are cited by date ("ruling 2026-07-03"); fixtures use neutral names; prompts say "the user".';
 
 const POLICY_TOP_KEYS = new Set(['version', 'scope', 'rules', 'exceptions']);
-const SCOPE_KEYS = new Set(['roots', 'extensions', 'skipDirectories']);
-const RULE_KEYS = new Set(['id', 'kind', 'include', 'match', 'message']);
+const SCOPE_KEYS = new Set(['roots', 'extensions', 'skipDirectories', 'skipFiles']);
+const RULE_KEYS = new Set(['id', 'kind', 'include', 'exclude', 'match', 'message']);
 const EXCEPTION_KEYS = new Set([
   'id',
   'ruleId',
@@ -177,6 +177,9 @@ export function validatePolicy(policy, opts = {}) {
   validateStringArray(policy.scope.roots, 'policy.scope.roots');
   validateStringArray(policy.scope.extensions, 'policy.scope.extensions');
   validateStringArray(policy.scope.skipDirectories, 'policy.scope.skipDirectories');
+  if (policy.scope.skipFiles !== undefined) {
+    validateStringArray(policy.scope.skipFiles, 'policy.scope.skipFiles');
+  }
 
   if (!Array.isArray(policy.rules) || policy.rules.length === 0) {
     throw new PolicyError('policy.rules must be a non-empty array');
@@ -195,6 +198,9 @@ export function validatePolicy(policy, opts = {}) {
       throw new PolicyError(`rule "${rule.id}": invalid kind`);
     }
     validateStringArray(rule.include, `rule "${rule.id}".include`);
+    if (rule.exclude !== undefined) {
+      validateStringArray(rule.exclude, `rule "${rule.id}".exclude`);
+    }
     if (typeof rule.message !== 'string' || rule.message.length === 0) {
       throw new PolicyError(`rule "${rule.id}": message must be non-empty`);
     }
@@ -339,8 +345,9 @@ function verifyExceptionAnchors(exceptions, repoRoot) {
   }
 }
 
-function pathMatchesInclude(relPath, includeGlobs) {
+function pathMatchesInclude(relPath, includeGlobs, excludeGlobs = []) {
   // Globs are repo-relative; relPath is repo-relative with forward slashes.
+  if (excludeGlobs.some((glob) => matchesGlob(relPath, glob))) return false;
   return includeGlobs.some((glob) => matchesGlob(relPath, glob));
 }
 
@@ -431,6 +438,7 @@ function collectScopedFiles(policy, repoRoot) {
   const roots = resolveScopeRoots(policy.scope.roots, repoRoot);
   const extOk = (name) => policy.scope.extensions.some((ext) => name.endsWith(ext));
   const skipDir = new Set(policy.scope.skipDirectories);
+  const skipFiles = policy.scope.skipFiles ?? [];
   const files = [];
 
   function walk(dir) {
@@ -446,6 +454,8 @@ function collectScopedFiles(policy, repoRoot) {
         if (skipDir.has(ent.name)) continue;
         walk(abs);
       } else if (ent.isFile() && extOk(ent.name)) {
+        const rel = relative(repoRoot, abs).split('\\').join('/');
+        if (skipFiles.some((glob) => matchesGlob(rel, glob))) continue;
         files.push(abs);
       }
     }
@@ -544,7 +554,7 @@ export function runShippedContentCheck(options) {
       throw new PolicyError(`scan: cannot read ${rel}: ${e.message}`);
     }
     for (const rule of policy.rules) {
-      if (!pathMatchesInclude(rel, rule.include)) continue;
+      if (!pathMatchesInclude(rel, rule.include, rule.exclude)) continue;
       if (rule.kind === 'operationalLiteral') {
         findings.push(...scanOperationalLiteral(rule, rel, text));
       } else if (rule.kind === 'unsupportedClaim') {

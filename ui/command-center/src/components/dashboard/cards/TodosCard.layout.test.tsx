@@ -37,7 +37,7 @@ afterEach(() => {
 
 const todo: DueTodo = {
   id: 't1', title: 'Set up the Atlantic shipping calendar for October',
-  projectId: 'p1', projectName: 'Atlas Atlantic', columnId: 'c1', columnName: 'Doing',
+  projectId: 'p1', projectName: 'Northwind', columnId: 'c1', columnName: 'Doing',
   dueDate: '2026-09-08', assignedTo: null, updatedAt: '2026-09-01T00:00:00Z',
 };
 const todos: UseDueTodos = {
@@ -57,7 +57,7 @@ it('puts the overdue label on the second line, giving the title the row', () => 
   // The due label is on the meta line, with the provenance, inside the text column.
   expect(meta.contains(due)).toBe(true);
   expect(text.contains(meta)).toBe(true);
-  expect(meta.textContent).toContain('Atlas Atlantic · Doing');
+  expect(meta.textContent).toContain('Northwind · Doing');
   // The row itself is just [text column][dismiss]: nothing else competes with the title.
   const row = text.parentElement as HTMLElement;
   expect(row.children).toHaveLength(2);

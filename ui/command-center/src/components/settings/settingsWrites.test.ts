@@ -56,6 +56,11 @@ const KEYS_BEFORE = [
   // lane (2026-09-25, second coordinator review) — not a lost/renamed one.
   // Backend: `crates/goose/src/brain_feed.rs::DISABLED_SOURCES_KEY`.
   'BRAIN_FEED_DISABLED_SOURCES',
+  // Persona → "On-chain identity (optional)" (OnChainIdentitySection.tsx): the
+  // opt-in chitin.id slug and contract set, empty by default. A new control,
+  // not a lost/renamed one.
+  'identity_chain',
+  'identity_chitin_slug',
   // NOT HERE ANY MORE, and deliberately: `chat_provider` / `chat_model` /
   // `harness_provider` / `harness_model` (model_roles.rs) and `voice_provider`
   // / `voice_model` (voice_model.rs) were six config keys this surface wrote

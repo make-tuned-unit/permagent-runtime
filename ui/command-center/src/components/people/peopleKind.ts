@@ -2,7 +2,7 @@
  * What a directory row is: a person, an organisation, or the user themself.
  *
  * QA 2026-09-24: People → List mixed in "Harbourview Residents' Association",
- * "Halifax Water Customer Service", project names ("Personal", "Permagent
+ * "Springfield Water Customer Service", project names ("Personal", "Permagent
  * Runtime") and the user's own record twice (their first name and their full
  * name, flagged as a possible duplicate of each other). The backend is adding `kind` to the
  * directory response; until a daemon sends it every row reads as a person,

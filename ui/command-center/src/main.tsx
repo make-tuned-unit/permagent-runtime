@@ -6,8 +6,9 @@ const viewParam = new URLSearchParams(window.location.search).get('view');
 const Root = lazy(() => {
   if (viewParam === 'chat') return import('./ChatApp');
   if (viewParam === 'pane') return import('./PaneWindowApp');
-  if (viewParam === 'cyborg-test') return import('./CyborgTest');
-  if (viewParam === 'stargate-test') return import('./StargateTest');
+  // Developer-only harness views: never reachable in a shipped build.
+  if (import.meta.env.DEV && viewParam === 'cyborg-test') return import('./CyborgTest');
+  if (import.meta.env.DEV && viewParam === 'stargate-test') return import('./StargateTest');
   return import('./App');
 });
 

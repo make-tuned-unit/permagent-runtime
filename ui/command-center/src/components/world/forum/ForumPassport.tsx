@@ -1,10 +1,11 @@
 import { useEffect } from 'react';
-import type { IdentityState } from '../../../services/identity';
+import { chitinIdFromDid, type IdentityState } from '../../../services/identity';
 import { Button } from '../../common/Button';
 import { Tooltip } from '../../common/Tooltip';
 import { useTheme } from '../../../styles/useTheme';
 import { useIdentityStore } from '../../../stores/identityStore';
 import { useOrchestratorName } from '../shared/useOrchestratorName';
+import { IdentityUnlinked } from '../IdentityUnlinked';
 
 /**
  * The sovereign's digital passport, in the orchestrator's Meet detail.
@@ -31,6 +32,7 @@ export function ForumPassport({ onOpen }: { onOpen?: () => void }) {
   // object rather than optional-chaining each field at the point of use.
   const stored = useIdentityStore((s) => s.data);
   const data: Partial<IdentityState> = stored ?? {};
+  const linked = useIdentityStore((s) => s.linked);
   const loading = useIdentityStore((s) => s.loading);
   const connectivity = useIdentityStore((s) => s.connectivity);
   const lastSuccessfulFetch = useIdentityStore((s) => s.lastSuccessfulFetch);
@@ -48,9 +50,9 @@ export function ForumPassport({ onOpen }: { onOpen?: () => void }) {
   }, [startPolling, stopPolling]);
 
   const did = data.did?.trim() ?? '';
-  // `did:chitin:henry-malcolm` → `henry-malcolm`, which is the Chitin ID
-  // itself; the full DID stays in the title attribute for copy/paste.
-  const chitinId = did.startsWith('did:chitin:') ? did.slice('did:chitin:'.length) : did;
+  // A chitin DID ends in the slug, which is the Chitin ID itself, and
+  // the full DID stays in the tooltip for copy/paste.
+  const chitinId = chitinIdFromDid(did);
   const verified = data.soulValid === true;
   const everFetched = lastSuccessfulFetch !== null;
 
@@ -66,6 +68,16 @@ export function ForumPassport({ onOpen }: { onOpen?: () => void }) {
         ? { label: 'SOVEREIGN · VERIFIED', tone: 'ok' as const }
         : { label: 'NOT VERIFIED', tone: 'warn' as const };
   const recordStatus = data.status?.trim();
+
+  if (linked === false) {
+    return (
+      <div className="forum-passport" data-testid="forum-passport" data-tone="pending" role="group" aria-label="Optional on-chain identity">
+        <div className="forum-passport-head"><span className="eyebrow">ON-CHAIN IDENTITY</span></div>
+        <div className="forum-passport-name">{configuredName?.trim() || 'Your agent'}</div>
+        <IdentityUnlinked compact />
+      </div>
+    );
+  }
 
   return (
     <div

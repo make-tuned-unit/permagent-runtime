@@ -47,7 +47,7 @@ export function HabitatAgentDock({ selected, name, directing, following, onSelec
     </div>
     <div className="habitat-agent-status"><span className={working ? 'is-working' : ''} /><b>{working ? 'Working' : live ? state.hudState : 'No live work reported'}</b><span className="habitat-station">{station.name}</span></div>
     <div className="habitat-agent-actions">
-      {selected === 'henry' && <Button {...button} variant="ghost" className="habitat-sit" style={sitStyle} onClick={onConversation}>Sit with {name === 'Your orchestrator' ? 'Hank' : name} <span aria-hidden="true">↗</span></Button>}
+      {selected === 'henry' && <Button {...button} variant="ghost" className="habitat-sit" style={sitStyle} onClick={onConversation}>Sit with {name} <span aria-hidden="true">↗</span></Button>}
       <Button {...button} variant="ghost" onClick={onBrief}>Give a brief</Button>
     </div>
     <div className="habitat-agent-utilities">

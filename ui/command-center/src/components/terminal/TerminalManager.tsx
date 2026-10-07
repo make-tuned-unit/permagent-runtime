@@ -477,7 +477,7 @@ export const TerminalManager = forwardRef<TerminalManagerHandle, TerminalManager
   }, []);
 
   const handleCwdChange = useCallback((tabId: string, cwdPath: string) => {
-    // cwdPath is like "/Users/jesse/dev/Canon" — extract last segment
+    // cwdPath is like "/Users/you/dev/Canon" — extract last segment
     const segments = cwdPath.split('/').filter(Boolean);
     const folder = segments[segments.length - 1] || 'Terminal';
     setTabs(prev =>

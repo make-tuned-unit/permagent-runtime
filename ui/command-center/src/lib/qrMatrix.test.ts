@@ -15,7 +15,7 @@ import { makeQrMatrix } from './qrMatrix';
  * CoreImage; see `qrDecode.verify.md` for that run and its output.
  */
 
-const PAIRING_URL = 'https://jesses-mac-mini-2.tail4429f1.ts.net:8443/pair?claim=8f3c1d2e9a7b4c60';
+const PAIRING_URL = 'https://host.example.ts.net:8443/pair?claim=8f3c1d2e9a7b4c60';
 
 function moduleAt(m: boolean[][], x: number, y: number) {
   return m[y][x];

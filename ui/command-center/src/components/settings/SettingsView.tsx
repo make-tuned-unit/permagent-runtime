@@ -49,6 +49,7 @@ import { MessagingGatewaysSection } from './MessagingGatewaysSection';
 import { GmailConnectSection } from './GmailConnectSection';
 import { ProviderModelPicker } from './ProviderModelPicker';
 import { MemoryFeedPanel } from './MemoryFeedPanel';
+import { OnChainIdentitySection } from './OnChainIdentitySection';
 
 // The PreviewBadge/PreviewNotice machinery (2026-07-10 audit) is gone: every
 // preview-only control has been either wired to real state or removed
@@ -276,6 +277,7 @@ function PersonaPanel() {
           </div>
         </Row>
       </Section>
+      <OnChainIdentitySection />
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: space.xl }}>
         {error && <span style={{ fontSize: textSize.caption, color: colors.danger }}>{error}</span>}
         {/* Failed initial load: offer a retry instead of leaving a form that
@@ -1276,7 +1278,7 @@ export function ModelsPanel({ goto }: PanelProps) {
               <span style={{ fontSize: textSize.caption, color: colors.cyan }}>Connected</span>
             </Row>
             {ollama.installed.length === 0 ? (
-              <Row label="Models" hint="No models installed. Run 'ollama pull qwen2.5:3b' to get started.">
+              <Row label="Models" hint="No models installed. Run 'ollama pull <model>' to get started.">
                 <span style={{ fontSize: textSize.caption, color: colors.textDim }}>None</span>
               </Row>
             ) : (

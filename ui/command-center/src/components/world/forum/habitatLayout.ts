@@ -14,7 +14,7 @@ import { GARDEN_PLACES, PLANT_BASE_Y, type GardenDecorPlacement } from './garden
 
 export type Point3 = [number, number, number];
 export const HABITAT_ARRIVAL = {position: [1.8, 2.15, 8.6] as Point3, target: [-3, 1.35, -2.5] as Point3, fov: 58};
-export const HANK_TABLE_SEAT: Point3 = [-3,0,1.1];
+export const ORCHESTRATOR_TABLE_SEAT: Point3 = [-3,0,1.1];
 export const TABLE_CONVERSATION_CAMERA = {position:[-3,1.50,4.80] as Point3,target:[-3,1.28,1.1] as Point3};
 // Both the crafted table and its original fallback meet this usable surface.
 export const COMMONS_SURFACE_Y=.989;

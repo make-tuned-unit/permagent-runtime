@@ -506,7 +506,7 @@ describe('what worked elsewhere', () => {
           segmentLabel: 'content site, under 100 views/wk, mostly search',
           segmentProjects: 2, segmentHelped: 1, segmentHindered: 0, segmentNoEffect: 1,
           examples: [{
-            projectName: 'Evntally', title: 'Add FAQPage schema to the venue guides',
+            projectName: 'Acme', title: 'Add FAQPage schema to the venue guides',
             verdict: 'helped', deltaPct: 0.22,
           }],
         },
@@ -524,7 +524,7 @@ describe('what worked elsewhere', () => {
     // elsewhere and will not say where is not auditable.
     const summary = container.querySelector('summary')!;
     await act(async () => { summary.click(); });
-    expect(container.textContent).toContain('Evntally');
+    expect(container.textContent).toContain('Acme');
     expect(container.textContent).toContain('Add FAQPage schema to the venue guides');
     expect(container.textContent).toContain('+22%');
   });
@@ -705,7 +705,7 @@ describe('the tracking view', () => {
 
 // ── The background review ────────────────────────────────────────────────────
 //
-// The user, 2026-08-19: "on GetLadle I pressed Review my analytics and then
+// The user, 2026-08-19: "on Beacon I pressed Review my analytics and then
 // clicked another tab, when I went back it looks like it stopped running. It
 // should run in the background and there should be a loading animation on the
 // button to show that the agent is crunching the numbers."

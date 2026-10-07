@@ -31,7 +31,7 @@ import type { Project } from './types';
 function project(insights: unknown): Project {
   return {
     id: 'p1',
-    name: 'GetLadle',
+    name: 'Beacon',
     metadataJson: { watcher_insights: insights },
   } as unknown as Project;
 }
