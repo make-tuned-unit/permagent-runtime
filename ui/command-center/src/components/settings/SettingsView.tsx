@@ -49,6 +49,7 @@ import { MessagingGatewaysSection } from './MessagingGatewaysSection';
 import { GmailConnectSection } from './GmailConnectSection';
 import { ProviderModelPicker } from './ProviderModelPicker';
 import { MemoryFeedPanel } from './MemoryFeedPanel';
+import { OnChainIdentitySection } from './OnChainIdentitySection';
 
 // The PreviewBadge/PreviewNotice machinery (2026-07-10 audit) is gone: every
 // preview-only control has been either wired to real state or removed
@@ -276,6 +277,7 @@ function PersonaPanel() {
           </div>
         </Row>
       </Section>
+      <OnChainIdentitySection />
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: space.xl }}>
         {error && <span style={{ fontSize: textSize.caption, color: colors.danger }}>{error}</span>}
         {/* Failed initial load: offer a retry instead of leaving a form that

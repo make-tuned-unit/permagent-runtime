@@ -9,12 +9,12 @@ import { shellQuotePath, formatDroppedPathsForInput, resolvePtyInjection } from 
 
 describe('shellQuotePath', () => {
   it('leaves a plain path unquoted', () => {
-    expect(shellQuotePath('/Users/jesse/dev/app/main.rs')).toBe('/Users/jesse/dev/app/main.rs');
+    expect(shellQuotePath('/Users/you/dev/app/main.rs')).toBe('/Users/you/dev/app/main.rs');
   });
 
   it('single-quotes a path containing spaces', () => {
-    expect(shellQuotePath('/Users/jesse/My Documents/notes.md'))
-      .toBe(`'/Users/jesse/My Documents/notes.md'`);
+    expect(shellQuotePath('/Users/you/My Documents/notes.md'))
+      .toBe(`'/Users/you/My Documents/notes.md'`);
   });
 
   it('escapes embedded single quotes the POSIX way', () => {

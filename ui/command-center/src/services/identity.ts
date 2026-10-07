@@ -1,14 +1,42 @@
 import { createPublicClient, http, type Address } from 'viem';
 import { base } from 'viem/chains';
+import { api } from '../lib/api';
 import {
   BASE_RPC_URL,
   RPC_ORIGIN_ALLOWED,
-  SBT_CONTRACT,
-  PASSPORT_CONTRACT,
-  AGENT_OWNER,
-  SBT_TOKEN_ID,
-  PASSPORT_TOKEN_ID,
+  IDENTITY_CHITIN_SLUG_KEY,
+  IDENTITY_CHAIN_KEY,
+  parseIdentityChain,
+  type IdentityChainConfig,
 } from '../config/chain';
+
+// ── Opt-in config ────────────────────────────────────────────────────
+// On-chain identity is OPT-IN: both keys are empty by default and with neither
+// set hydrate() makes no network request at all.
+
+export interface IdentityConfig {
+  /** chitin.id slug (the path segment after chitin.id/), or '' when unset. */
+  slug: string;
+  chain: IdentityChainConfig | null;
+}
+
+const SLUG_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
+export async function loadIdentityConfig(): Promise<IdentityConfig> {
+  const [rawSlug, rawChain] = await Promise.all([
+    api.readConfig(IDENTITY_CHITIN_SLUG_KEY).catch(() => null),
+    api.readConfig(IDENTITY_CHAIN_KEY).catch(() => null),
+  ]);
+  const slug = typeof rawSlug === 'string' ? rawSlug.trim() : '';
+  return {
+    slug: SLUG_RE.test(slug) ? slug : '',
+    chain: parseIdentityChain(rawChain),
+  };
+}
+
+export function isIdentityLinked(cfg: IdentityConfig): boolean {
+  return cfg.slug !== '' || cfg.chain !== null;
+}
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -24,6 +52,8 @@ export interface IdentityState {
   bindingsCount: number;
   sbtId: number;
   passportId: number;
+  /** The user's own SBT contract (from config), for explorer links. */
+  sbtContract: string;
   owner: string;
   arweaveTxId: string;
   bornAt: string;
@@ -37,10 +67,14 @@ export interface IdentityResult {
 
 // ── Viem client ──────────────────────────────────────────────────────
 
-const client = createPublicClient({
-  chain: base,
-  transport: http(BASE_RPC_URL),
-});
+// Built lazily: nothing is constructed (or contacted) until a user opts in.
+function makeClient() {
+  return createPublicClient({ chain: base, transport: http(BASE_RPC_URL) });
+}
+let _client: ReturnType<typeof makeClient> | undefined;
+function getClient() {
+  return (_client ??= makeClient());
+}
 
 // ── Minimal ABIs for ownerOf / tokenURI ──────────────────────────────
 
@@ -107,11 +141,12 @@ function setCache(data: IdentityState): void {
 
 // ── fetchFromChitin ──────────────────────────────────────────────────
 
-export async function fetchFromChitin(): Promise<IdentityResult> {
+export async function fetchFromChitin(slug: string): Promise<IdentityResult> {
+  const enc = encodeURIComponent(slug);
   try {
     // Try JSON endpoint first
     const jsonRes = await withRetry(() =>
-      fetch('https://chitin.id/henry-malcolm.json', {
+      fetch(`https://chitin.id/${enc}.json`, {
         signal: AbortSignal.timeout(10000),
       }),
     );
@@ -122,7 +157,7 @@ export async function fetchFromChitin(): Promise<IdentityResult> {
 
     // Fallback to HTML scrape
     const htmlRes = await withRetry(() =>
-      fetch('https://chitin.id/henry-malcolm', {
+      fetch(`https://chitin.id/${enc}`, {
         signal: AbortSignal.timeout(10000),
       }),
     );
@@ -201,7 +236,8 @@ function parseChitinHtml(html: string): Partial<IdentityState> {
 
 // ── fetchFromChain ───────────────────────────────────────────────────
 
-export async function fetchFromChain(): Promise<IdentityResult> {
+export async function fetchFromChain(cfg: IdentityChainConfig): Promise<IdentityResult> {
+  const { sbtContract, passportContract, owner: agentOwner, sbtTokenId, passportTokenId } = cfg;
   if (!RPC_ORIGIN_ALLOWED) {
     return {
       data: {},
@@ -213,36 +249,36 @@ export async function fetchFromChain(): Promise<IdentityResult> {
   try {
     const [sbtOwner, passportOwner, sbtUri] = await withRetry(() =>
       Promise.all([
-        client.readContract({
-          address: SBT_CONTRACT as Address,
+        getClient().readContract({
+          address: sbtContract as Address,
           abi: ERC721_ABI,
           functionName: 'ownerOf',
-          args: [SBT_TOKEN_ID],
+          args: [sbtTokenId],
         }),
-        client.readContract({
-          address: PASSPORT_CONTRACT as Address,
+        getClient().readContract({
+          address: passportContract as Address,
           abi: ERC721_ABI,
           functionName: 'ownerOf',
-          args: [PASSPORT_TOKEN_ID],
+          args: [passportTokenId],
         }),
-        client.readContract({
-          address: SBT_CONTRACT as Address,
+        getClient().readContract({
+          address: sbtContract as Address,
           abi: ERC721_ABI,
           functionName: 'tokenURI',
-          args: [SBT_TOKEN_ID],
+          args: [sbtTokenId],
         }),
       ]),
     );
 
     const ownerMatch =
-      (sbtOwner as string).toLowerCase() === AGENT_OWNER.toLowerCase() &&
-      (passportOwner as string).toLowerCase() === AGENT_OWNER.toLowerCase();
+      (sbtOwner as string).toLowerCase() === agentOwner.toLowerCase() &&
+      (passportOwner as string).toLowerCase() === agentOwner.toLowerCase();
 
     const partial: Partial<IdentityState> = {
       owner: sbtOwner as string,
       soulValid: ownerMatch,
-      sbtId: Number(SBT_TOKEN_ID),
-      passportId: Number(PASSPORT_TOKEN_ID),
+      sbtId: Number(sbtTokenId),
+      passportId: Number(passportTokenId),
     };
 
     // Try to extract arweave tx from tokenURI
@@ -271,37 +307,48 @@ export async function fetchFromChain(): Promise<IdentityResult> {
 // defaulted to sealed/true, so an offline machine displayed a fully "verified"
 // soul built entirely from constants (2026-07 wiring audit — misleading state).
 const DEFAULTS: IdentityState = {
-  did: 'did:chitin:henry-malcolm',
-  name: 'Hank',
-  avatarUrl: 'https://arweave.net/Y-PzbKKdNBzsaNO5lD-U2lHUDEuW0psyXabWQLLHk7M',
+  did: '',
+  name: '',
+  avatarUrl: '',
   status: 'unverified',
   soulValid: false,
   lastVerifiedAt: null,
   alignmentScore: null,
   chronicleCount: 0,
   bindingsCount: 0,
-  sbtId: 54,
-  passportId: 38105,
-  owner: '0x95Ab1B24f8c0C70E59687f742C79F97a9277996f',
-  arweaveTxId: '0OzCHA2MiK2aEhIq7GJ16xUc4QXKdOZFreGByaXiAxI',
-  bornAt: '2026-03-30T17:12:00Z',
+  sbtId: 0,
+  passportId: 0,
+  sbtContract: '',
+  owner: '',
+  arweaveTxId: '',
+  bornAt: '',
 };
 
 export interface HydrateResult {
   data: IdentityState;
+  /** False when the user has not linked an on-chain identity: nothing was
+   *  fetched and `data` is the neutral scaffold, not an identity. */
+  linked: boolean;
   errors: string[];
   chainReachable: boolean;
 }
 
 export async function hydrate(force = false): Promise<HydrateResult> {
-  if (!force) {
-    const cached = getCached();
-    if (cached) return { data: cached, errors: [], chainReachable: true };
+  const cfg = await loadIdentityConfig();
+  if (!isIdentityLinked(cfg)) {
+    _cache = null;
+    return { data: { ...DEFAULTS }, linked: false, errors: [], chainReachable: true };
   }
 
+  if (!force) {
+    const cached = getCached();
+    if (cached) return { data: cached, linked: true, errors: [], chainReachable: true };
+  }
+
+  const none = (source: IdentityResult['source']): IdentityResult => ({ data: {}, error: null, source });
   const [chitinResult, chainResult] = await Promise.all([
-    fetchFromChitin(),
-    fetchFromChain(),
+    cfg.slug ? fetchFromChitin(cfg.slug) : Promise.resolve(none('chitin')),
+    cfg.chain ? fetchFromChain(cfg.chain) : Promise.resolve(none('chain')),
   ]);
 
   const errors: string[] = [];
@@ -324,6 +371,7 @@ export async function hydrate(force = false): Promise<HydrateResult> {
     }
   }
 
+  merged.sbtContract = cfg.chain?.sbtContract ?? '';
   setCache(merged);
-  return { data: merged, errors, chainReachable: !chainResult.error };
+  return { data: merged, linked: true, errors, chainReachable: !chainResult.error };
 }

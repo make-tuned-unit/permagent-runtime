@@ -545,7 +545,7 @@ select:focus-visible {
 .pa-btn--primary:hover:not(:disabled) {
   filter: brightness(1.08);
 }
-/* Pressed (R8, Jesse 2026-09-25: "feedback on buttons when I click them"). A
+/* Pressed (R8, Sam 2026-09-25: "feedback on buttons when I click them"). A
    springy dip, not the old imperceptible 3% nudge: 0.96 goes in almost
    instantly (the `transition-duration` override below) and releases on the
    base rule's own snappy spring, so the press reads as immediate and the

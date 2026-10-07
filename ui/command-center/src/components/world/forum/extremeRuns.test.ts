@@ -303,7 +303,7 @@ describe('worldFromOcr', () => {
     // A Dashboard-shaped read: no World label at all.
     expect(worldFromOcr(['Dashboard', 'In flight', 'Calendar', 'Manifest']).world).toBe(false);
     // One label is not enough: a chat can quote "The Solar Forum".
-    expect(worldFromOcr(['Hank', 'Tell me about The Solar Forum', 'Send']).world).toBe(false);
+    expect(worldFromOcr(['Ada', 'Tell me about The Solar Forum', 'Send']).world).toBe(false);
     expect(worldFromOcr([]).world).toBe(false);
   });
 });

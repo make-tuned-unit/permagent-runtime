@@ -1,4 +1,4 @@
-import { HABITAT_DECOR, HABITAT_PLACES, HABITAT_STATIONS, HANK_TABLE_SEAT, habitatElevation, habitatWalkable, onGardenBridge, stationFor, type Point3 } from './habitatLayout';
+import { HABITAT_DECOR, HABITAT_PLACES, HABITAT_STATIONS, ORCHESTRATOR_TABLE_SEAT, habitatElevation, habitatWalkable, onGardenBridge, stationFor, type Point3 } from './habitatLayout';
 import { GARDEN_AGENT_SEATS } from './gardenLayout';
 import { getForumMotion } from './ForumInhabitants';
 import {
@@ -91,7 +91,7 @@ export function isAmbientSafePoint(x: number, z: number): boolean {
   if (onGardenBridge(x, z)) return false;
   if (!habitatWalkable(x, z, 0.5)) return false;
   if (Math.abs(x - 4) < 2.35 && z > -9.6 && z < -0.35) return false;
-  if (Math.hypot(x - HANK_TABLE_SEAT[0], z - HANK_TABLE_SEAT[2]) < 1.15) return false;
+  if (Math.hypot(x - ORCHESTRATOR_TABLE_SEAT[0], z - ORCHESTRATOR_TABLE_SEAT[2]) < 1.15) return false;
   return true;
 }
 

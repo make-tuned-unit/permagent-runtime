@@ -3,7 +3,7 @@ import { act } from 'react-dom/test-utils';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { useCommandCenter } from '../../../lib/store';
-import { HankConversation } from './HankConversation';
+import { OrchestratorConversation } from './OrchestratorConversation';
 vi.mock('./habitatMotion', () => ({ useHabitatTravel: () => null }));
 let host: HTMLDivElement, root: Root;
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
@@ -17,7 +17,7 @@ afterEach(() => { act(() => root.unmount()); host.remove(); useCommandCenter.set
 const button = (label: string) => [...host.querySelectorAll('button')].find(b => b.textContent?.includes(label))!;
 it('waits for an explicit voice start and releases voice when leaving the table', async () => {
   const leave = vi.fn();
-  act(() => root.render(<HankConversation name="Hank" onLeave={leave} />));
+  act(() => root.render(<OrchestratorConversation name="Ada" onLeave={leave} />));
   expect(controls.setHandsFree).not.toHaveBeenCalled();
   await act(async () => button('Start voice chat').click());
   expect(controls.setHandsFree).toHaveBeenCalledWith(true);
@@ -28,7 +28,7 @@ it('waits for an explicit voice start and releases voice when leaving the table'
 });
 it('interrupts existing playback and shows actual errors without creating a second engine', () => {
   act(() => useCommandCenter.setState(s => ({ voiceEngine: { ...s.voiceEngine!, state: 'playing', handsFree: true } })));
-  act(() => root.render(<HankConversation name="Hank" onLeave={() => {}} />));
+  act(() => root.render(<OrchestratorConversation name="Ada" onLeave={() => {}} />));
   expect(host.textContent).toContain('Speaking');
   act(() => button('Let me speak').click()); expect(controls.interrupt).toHaveBeenCalledOnce();
   act(() => useCommandCenter.setState(s => ({ voiceEngine: { ...s.voiceEngine!, state: 'error', error: 'Voice disconnected' } })));
@@ -36,7 +36,7 @@ it('interrupts existing playback and shows actual errors without creating a seco
 });
 it('keeps the browser preview honest when the app voice host is unavailable', () => {
   useCommandCenter.setState({ voiceEngine: null });
-  act(() => root.render(<HankConversation name="Hank" onLeave={() => {}} />));
+  act(() => root.render(<OrchestratorConversation name="Ada" onLeave={() => {}} />));
   expect(button('Start voice chat').disabled).toBe(true);
   expect(host.textContent).toContain('Voice is available in the Permagent app.');
 });

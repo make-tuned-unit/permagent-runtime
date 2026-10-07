@@ -33,6 +33,9 @@ type Connectivity = 'ok' | 'degraded' | 'offline';
 
 interface IdentityStore {
   data: IdentityState | null;
+  /** null until the first hydrate; false when the user has not linked an
+   *  on-chain identity (nothing is fetched, nothing is shown). */
+  linked: boolean | null;
   loading: boolean;
   error: string | null;
   lastSuccessfulFetch: Date | null;
@@ -62,6 +65,7 @@ const persisted = loadPersistedState();
 
 export const useIdentityStore = create<IdentityStore>((set, get) => ({
   data: persisted.data,
+  linked: null,
   loading: false,
   error: null,
   lastSuccessfulFetch: persisted.lastSuccessfulFetch,
@@ -80,8 +84,21 @@ export const useIdentityStore = create<IdentityStore>((set, get) => ({
       const failures = result.chainReachable ? 0 : state.consecutiveFailures + 1;
       const connectivity: Connectivity = failures >= 3 ? 'offline' : failures > 0 ? 'degraded' : 'ok';
 
+      if (!result.linked) {
+        // Opt-in identity is not configured (or was just unlinked): drop any
+        // identity cached from a previous link so nothing stale is shown.
+        try { localStorage.removeItem(LS_KEY); } catch { /* */ }
+        set({
+          data: null, linked: false, loading: false, error: null,
+          lastAttemptedFetch: new Date(), lastSuccessfulFetch: null,
+          connectivity: 'ok', consecutiveFailures: 0,
+        });
+        return;
+      }
+
       set({
         data: result.data,
+        linked: true,
         loading: false,
         error: result.errors.length > 0 ? result.errors.join('; ') : null,
         lastAttemptedFetch: now,
@@ -112,8 +129,21 @@ export const useIdentityStore = create<IdentityStore>((set, get) => ({
       const failures = result.chainReachable ? 0 : get().consecutiveFailures + 1;
       const connectivity: Connectivity = failures >= 3 ? 'offline' : failures > 0 ? 'degraded' : 'ok';
 
+      if (!result.linked) {
+        // Opt-in identity is not configured (or was just unlinked): drop any
+        // identity cached from a previous link so nothing stale is shown.
+        try { localStorage.removeItem(LS_KEY); } catch { /* */ }
+        set({
+          data: null, linked: false, loading: false, error: null,
+          lastAttemptedFetch: new Date(), lastSuccessfulFetch: null,
+          connectivity: 'ok', consecutiveFailures: 0,
+        });
+        return;
+      }
+
       set({
         data: result.data,
+        linked: true,
         loading: false,
         error: result.errors.length > 0 ? result.errors.join('; ') : null,
         lastAttemptedFetch: now,
@@ -145,6 +175,7 @@ export const useIdentityStore = create<IdentityStore>((set, get) => ({
       lastAttemptedFetch: null,
       connectivity: 'ok',
       consecutiveFailures: 0,
+      linked: null,
     });
   },
 

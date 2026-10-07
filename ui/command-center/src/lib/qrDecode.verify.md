@@ -18,7 +18,7 @@ grayscale PNG (10px per module, 4-module quiet zone) and fed to CoreImage:
 
 ```
 $ swift decode.swift pairing-qr.png
-DECODED: https://jesses-mac-mini-2.tail4429f1.ts.net:8443/pair?claim=8f3c1d2e9a7b4c60
+DECODED: https://host.example.ts.net:8443/pair?claim=8f3c1d2e9a7b4c60
 ```
 
 Input payload and decoded payload are byte-identical, so the encoder produces a

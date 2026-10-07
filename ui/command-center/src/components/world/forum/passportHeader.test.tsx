@@ -19,7 +19,7 @@ const store = {
 vi.mock('../../../stores/identityStore', () => ({
   useIdentityStore: (pick: (s: typeof store) => unknown) => pick(store),
 }));
-vi.mock('../shared/useOrchestratorName', () => ({ useOrchestratorName: () => 'Hank' }));
+vi.mock('../shared/useOrchestratorName', () => ({ useOrchestratorName: () => 'Ada' }));
 import { ForumPassport } from './ForumPassport';
 
 /**
@@ -103,5 +103,23 @@ describe('the passport header never runs its two phrases together', () => {
     // wrapped, still right-aligns it on its own line; space-between would
     // throw a lone wrapped item to the left edge under the eyebrow.
     expect(ruleBody('.forum-passport-status')).toMatch(/margin-left:\s*auto/);
+  });
+});
+
+describe('ForumPassport — no identity linked', () => {
+  it('renders the neutral unlinked state and no identifiers', () => {
+    (store as { linked?: boolean | null }).linked = false;
+    store.data = { did: 'did:chitin:someone', passportId: 5 };
+    const host = document.createElement('div');
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    act(() => root.render(<ForumPassport />));
+    expect(host.textContent).toContain('No on-chain identity linked');
+    expect(host.textContent).not.toContain('did:chitin');
+    expect(host.querySelector('[data-testid="forum-passport-chitin"]')).toBeNull();
+    act(() => root.unmount());
+    host.remove();
+    (store as { linked?: boolean | null }).linked = null;
+    store.data = null;
   });
 });

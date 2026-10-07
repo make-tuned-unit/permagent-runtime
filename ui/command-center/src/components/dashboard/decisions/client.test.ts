@@ -327,9 +327,9 @@ describe('payload helpers', () => {
   it('resolutionText maps the answer enum without inventing content', () => {
     expect(resolutionText({ ...wireDecision, answer: 'approve', acted_by: 'henry-policy' } as Decision))
       .toBe('Approved by your agent');
-    expect(resolutionText({ ...wireDecision, answer: 'reject', acted_by: 'jesse', answer_note: 'not yet' } as Decision))
+    expect(resolutionText({ ...wireDecision, answer: 'reject', acted_by: 'owner', answer_note: 'not yet' } as Decision))
       .toBe('Rejected — note: not yet');
-    expect(resolutionText({ ...wireDecision, answer: 'edit', acted_by: 'jesse' } as Decision))
+    expect(resolutionText({ ...wireDecision, answer: 'edit', acted_by: 'owner' } as Decision))
       .toBe('Accepted with edits');
   });
 
@@ -338,10 +338,10 @@ describe('payload helpers', () => {
       ...wireDecision,
       status: 'answered',
       answer: 'approve',
-      acted_by: 'jesse',
+      acted_by: 'owner',
       seq: 1,
       outcome,
-      audit_acted_by: 'jesse',
+      audit_acted_by: 'owner',
       audit_created_at: '2026-06-12T00:05:00Z',
     } as HistoryItem);
 
