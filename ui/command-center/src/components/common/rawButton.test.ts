@@ -190,10 +190,6 @@ const STANDING_EXCEPTIONS: Record<string, { count: number; why: string }> = {
     count: 1,
     why: 'the whole skill card is the control, four nested rows of its own layout',
   },
-  'components/wizard/MomentCalibration.tsx': {
-    count: 1,
-    why: 'the persona preset is a two-line card in a two-column grid',
-  },
 };
 
 function sourceFiles(dir: string, out: string[] = []): string[] {

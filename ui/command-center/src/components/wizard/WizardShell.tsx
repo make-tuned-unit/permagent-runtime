@@ -1,180 +1,200 @@
-import { useState, type CSSProperties } from 'react';
-import { duration, ease, font, radius, space, textSize } from '../../styles/tokens';
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { font, radius, space, textSize } from '../../styles/tokens';
+import { useTheme } from '../../styles/useTheme';
+import { TITLEBAR_HEIGHT } from '../../lib/windowChrome';
 import { Button } from '../common/Button';
-import { ProgressDots, BackChevron } from './atoms';
-import { MomentWelcome } from './MomentWelcome';
-import { MomentHardware } from './MomentHardware';
-import { MomentCalibration } from './MomentCalibration';
-import { MomentIntent } from './MomentIntent';
-import { MomentCode } from './MomentCode';
-import { MomentMeet } from './MomentMeet';
-import { MomentWebSearch } from './MomentWebSearch';
-import { MomentChat } from './MomentChat';
+import { Tooltip } from '../common/Tooltip';
 import { api, apiFetch } from '../../lib/api';
 import { stashWizardIntent } from '../../lib/wizardIntent';
+import { BackChevron, StepProgress } from './atoms';
+import { StepWelcome } from './StepWelcome';
+import { StepModel } from './StepModel';
+import { StepAgent } from './StepAgent';
+import { StepFolders } from './StepFolders';
+import { StepExtras } from './StepExtras';
+import { StepReview } from './StepReview';
+import { DEFAULT_TONE_ID, FALLBACK_AGENT_NAME, effectiveName, greetingFor, toneById } from './persona';
+import { clearDraft, loadDraft, saveDraft, type ModelChoice } from './wizardDraft';
 import { safeWizardError } from './wizardErrors';
-import { useTheme } from '../../styles/useTheme';
 
-import { Tooltip } from '../common/Tooltip';
-interface Persona {
-  name: string;
-  traits: string[];
-  tone: string;
-  greeting: string;
-  voiceId: string | null;
-}
+export const STEP_LABELS = ['Welcome', 'Model', 'Agent', 'Code folders', 'Extras', 'Review'] as const;
+const STEP = { welcome: 0, model: 1, agent: 2, folders: 3, extras: 4, review: 5 } as const;
 
 interface Props {
   onComplete: () => void;
 }
 
+interface IdentityKeep {
+  first_name?: string;
+  last_name: string | null;
+  nickname: string | null;
+  voice_id: string | null;
+}
+
+/**
+ * First-run setup.
+ *
+ * Six steps, one mounted at a time. Choices that only the wizard holds (where
+ * the person is, persona, first message) are kept in a local draft so quitting
+ * resumes at the same step; everything else is written by its own step and
+ * re-read by the review. Escape is Back; "Change" on the review returns to the
+ * review once that step is done. Nothing advances on its own.
+ */
 export function WizardShell({ onComplete }: Props) {
-  const { colors, reduceMotion } = useTheme();
-  const [step, setStep] = useState(0);
-  const [intent, setIntent] = useState('');
-  const [persona, setPersona] = useState<Persona>({
-    name: '', traits: [], tone: '', greeting: '', voiceId: null,
-  });
-
-  const back = () => setStep(s => Math.max(0, s - 1));
-
-  const handleProviderDone = (_provider: string, _key: string) => {
-    setStep(1);
-  };
-
-  // #381: hardware scan → local-model recommendation for the Librarian sits
-  // between provider setup and personality calibration.
-  const handleHardwareDone = () => {
-    setStep(2);
-  };
-
-  const handleCalibrationDone = (traits: string[], tone: string) => {
-    setPersona(p => ({
-      ...p, traits, tone,
-      greeting: `Hello! I'm ready to help. ${tone.split('.')[0]}.`,
-    }));
-    setStep(3);
-  };
-
-  const handleIntentDone = () => {
-    if (!persona.name) {
-      setPersona(p => ({ ...p, name: 'Aria' }));
-    }
-    setStep(4);
-  };
-
-  // Where the user keeps their code. Asked rather than guessed: four features
-  // independently assumed `~/dev` and all four failed by finding NOTHING, which
-  // is indistinguishable from a clean machine. See config::dev_roots.
-  const handleCodeDone = () => {
-    setStep(5);
-  };
-
-  const handleMeetDone = () => {
-    setStep(6);
-  };
-
-  const handleWebSearchDone = () => {
-    setStep(7);
-  };
-
+  const { colors } = useTheme();
+  const [initial] = useState(() => loadDraft(STEP_LABELS.length));
+  const [step, setStep] = useState(initial.step);
+  const [name, setName] = useState(initial.name);
+  const [toneId, setToneId] = useState(initial.toneId || DEFAULT_TONE_ID);
+  const [firstMessage, setFirstMessage] = useState(initial.firstMessage);
+  const [modelChoice, setModelChoice] = useState<ModelChoice | null>(initial.modelChoice);
+  const [returnToReview, setReturnToReview] = useState(false);
+  const [identity, setIdentity] = useState<IdentityKeep | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
+  useEffect(() => {
+    saveDraft({ step, name, toneId, firstMessage, modelChoice });
+  }, [step, name, toneId, firstMessage, modelChoice]);
+
+  // The backend's current persona: its name is the default when the field is
+  // left blank, and the fields this flow does not ask about (voice, surname,
+  // nickname) are carried through instead of being wiped by the PUT.
+  useEffect(() => {
+    let alive = true;
+    apiFetch<IdentityKeep>('/api/agent/identity')
+      .then(r => { if (alive && r) setIdentity(r); })
+      .catch(() => { /* fall back to the documented default name */ });
+    return () => { alive = false; };
+  }, []);
+  const defaultName = identity?.first_name?.trim() || FALLBACK_AGENT_NAME;
+  const agentName = effectiveName(name, defaultName);
+
+  const go = useCallback((next: number) => {
+    setSaveError(null);
+    setStep(Math.min(Math.max(next, 0), STEP_LABELS.length - 1));
+  }, []);
+  const next = () => {
+    if (returnToReview) { setReturnToReview(false); go(STEP.review); return; }
+    go(step + 1);
+  };
+  const back = () => { setReturnToReview(false); go(step - 1); };
+  const edit = (target: number) => { setReturnToReview(true); go(target); };
+
+  const savingRef = useRef(false);
   const handleComplete = async () => {
+    if (savingRef.current) return false;
+    savingRef.current = true;
     setSaving(true);
     setSaveError(null);
+    const tone = toneById(toneId);
     try {
-      // Save persona to backend
-      const body = {
-        first_name: persona.name,
-        last_name: null,
-        nickname: null,
-        traits: persona.traits,
-        tone: persona.tone,
-        opening_greeting: persona.greeting,
-        voice_id: persona.voiceId,
-      };
       await apiFetch<unknown>('/api/agent/identity', {
         method: 'PUT',
-        body: JSON.stringify(body),
+        body: JSON.stringify({
+          first_name: agentName,
+          last_name: identity?.last_name ?? null,
+          nickname: identity?.nickname ?? null,
+          traits: tone.traits,
+          tone: tone.tone,
+          opening_greeting: greetingFor(agentName, tone.id),
+          voice_id: identity?.voice_id ?? null,
+        }),
       });
-      // Mark wizard complete
       await api.upsertConfig('wizard_complete', true);
     } catch (e) {
-      // Surfaced (2026-07 wiring audit): the old catch logged to the console
-      // and completed anyway — persona silently lost AND wizard_complete never
-      // written, so the whole wizard reappeared on next launch unexplained.
-      console.error('Failed to save persona:', safeWizardError(e, 'persona save failed'));
+      // Never a silent loss: the banner below offers Retry or Continue anyway.
+      console.error('Failed to finish setup:', safeWizardError(e, 'setup save failed'));
       setSaveError(e instanceof Error ? e.message : String(e));
       setSaving(false);
-      // `false` is the Button primitive's "it failed": the retry must not tick
-      // success over the error banner it is standing in.
+      savingRef.current = false;
       return false;
     }
-    // Hand the stated intent to the first chat composer (one-shot).
-    stashWizardIntent(intent);
+    stashWizardIntent(firstMessage);
+    clearDraft();
     setSaving(false);
+    savingRef.current = false;
     onComplete();
     return true;
   };
 
-  const moments = [
-    <MomentWelcome key="welcome" active={step === 0} onAdvance={handleProviderDone} />,
-    <MomentHardware key="hardware" active={step === 1} onAdvance={handleHardwareDone} onBack={back} />,
-    <MomentCalibration key="calibration" active={step === 2} onAdvance={handleCalibrationDone} onBack={back} />,
-    <MomentIntent key="intent" active={step === 3} intent={intent} setIntent={setIntent} onAdvance={handleIntentDone} onBack={back} />,
-    <MomentCode key="code" active={step === 4} personaName={persona.name} onAdvance={handleCodeDone} onBack={back} />,
-    <MomentMeet key="meet" active={step === 5} persona={persona} setPersona={setPersona} onAdvance={handleMeetDone} onBack={back} />,
-    <MomentWebSearch key="websearch" active={step === 6} personaName={persona.name} onAdvance={handleWebSearchDone} onBack={back} />,
-    <MomentChat key="chat" active={step === 7} persona={persona} onComplete={handleComplete} />,
-  ];
+  const onKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (e.key !== 'Escape' || e.defaultPrevented || step === 0 || saving) return;
+    e.preventDefault();
+    back();
+  };
+
+  let body;
+  switch (step) {
+    case STEP.welcome:
+      body = <StepWelcome onNext={next} />;
+      break;
+    case STEP.model:
+      body = <StepModel initialChoice={modelChoice} onDone={choice => { setModelChoice(choice); next(); }} />;
+      break;
+    case STEP.agent:
+      body = (
+        <StepAgent name={name} toneId={toneId} defaultName={defaultName}
+          onChange={v => { setName(v.name); setToneId(v.toneId); }} onNext={next} />
+      );
+      break;
+    case STEP.folders:
+      body = <StepFolders agentName={agentName} onNext={next} />;
+      break;
+    case STEP.extras:
+      body = <StepExtras agentName={agentName} onNext={next} />;
+      break;
+    default:
+      body = (
+        <StepReview
+          agentName={agentName}
+          toneLabel={toneById(toneId).label}
+          firstMessage={firstMessage}
+          onFirstMessage={setFirstMessage}
+          onEdit={edit}
+          steps={{ model: STEP.model, agent: STEP.agent, folders: STEP.folders, extras: STEP.extras }}
+          onStart={handleComplete}
+          saving={saving}
+        />
+      );
+  }
 
   return (
-    <div style={{
-      position: 'fixed', inset: 0, paddingTop: 28,
-      background: `radial-gradient(ellipse 80% 60% at 50% 40%, rgba(0,213,255,0.06) 0%, ${colors.bg} 70%)`,
-      display: 'flex', flexDirection: 'column',
-      overflow: 'hidden',
-    }}>
-      {/* Top bar: back + dots */}
-      {step > 0 && step < 7 && (
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: `${space.xxl}px ${space.xxxl}px` }}>
-          <BackChevron onClick={back} />
-          {/* Dots track the interior config steps (1–6); step 0 (welcome) and
-              the final chat step show no bar. Keep `count` equal to the number
-              of interior steps: an earlier version left a dot that `current`
-              (max step-1) could never light. */}
-          <ProgressDots count={6} current={step - 1} />
-          <div style={{ width: 60 }} />
+    <div
+      onKeyDown={onKeyDown}
+      data-testid="wizard-shell"
+      style={{
+        position: 'fixed', inset: 0,
+        background: `radial-gradient(ellipse 80% 60% at 50% 30%, ${colors.cyanWash} 0%, ${colors.bg} 70%)`,
+        display: 'flex', flexDirection: 'column',
+        color: colors.text,
+      }}
+    >
+      <div data-tauri-drag-region style={{ height: TITLEBAR_HEIGHT, flexShrink: 0 }} />
+      <header style={{
+        flexShrink: 0, display: 'grid', gridTemplateColumns: '1fr auto 1fr', alignItems: 'center',
+        padding: `0 ${space.huge}px ${space.md}px`,
+      }}>
+        <div style={{ visibility: step > 0 ? 'visible' : 'hidden' }}>
+          <BackChevron onClick={back} disabled={saving} />
         </div>
-      )}
+        <StepProgress labels={STEP_LABELS} current={step} />
+        <div />
+      </header>
 
-      {/* Step content with crossfade */}
-      <div style={{ flex: 1, position: 'relative', minHeight: 0 }}>
-        {moments.map((moment, i) => (
-          <div key={i} style={{
-            position: 'absolute', inset: 0,
-            opacity: i === step ? 1 : 0,
-            visibility: i === step ? 'visible' : 'hidden',
-            pointerEvents: i === step ? 'auto' : 'none',
-            transition: reduceMotion ? 'none' : `opacity ${duration.slow}ms ${ease.out}`,
-          }} aria-hidden={i !== step} {...(i === step ? {} : { inert: '' })}>
-            {moment}
-          </div>
-        ))}
-      </div>
+      <main key={step} className="pa-enter" style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+        {body}
+      </main>
 
-      {/* Save failure: honest, recoverable — never a silent loss. */}
       {saveError && (
-        <div style={{
-          position: 'absolute', left: '50%', bottom: 28, transform: 'translateX(-50%)',
-          display: 'flex', alignItems: 'center', gap: space.xl, maxWidth: 560,
-          padding: `${space.lg}px ${space.xxl}px`, borderRadius: 10, zIndex: 10,
-          background: colors.bgDeeper, border: `1px solid ${colors.danger}66`,
-          fontFamily: font.body, fontSize: textSize.caption, color: colors.text,
+        <div role="alert" style={{
+          position: 'absolute', left: '50%', bottom: space.huge * 3, transform: 'translateX(-50%)',
+          display: 'flex', alignItems: 'center', gap: space.xl, width: `min(600px, calc(100% - ${space.huge * 2}px))`,
+          padding: `${space.lg}px ${space.xxl}px`, borderRadius: radius.lg, zIndex: 10,
+          background: colors.bgDeeper, border: `1px solid ${colors.danger}`, boxShadow: colors.elevationFloating,
+          fontFamily: font.body, fontSize: textSize.small, color: colors.text,
         }}>
-          <span style={{ color: colors.danger }}>
+          <span style={{ color: colors.danger, flex: 1, minWidth: 0 }}>
             Couldn't save your setup ({saveError}).
           </span>
           <Button
@@ -183,24 +203,20 @@ export function WizardShell({ onComplete }: Props) {
             type="button"
             onClick={handleComplete}
             disabled={saving}
+            onErrorFeedback={false}
             style={{
-              '--pa-btn-bg': 'transparent',
-              '--pa-btn-fg': colors.cyan,
-              '--pa-btn-border': colors.borderHi,
-              '--pa-btn-bg-hover': colors.cyanSoft,
-              '--pa-btn-border-hover': colors.cyan,
-              '--pa-btn-pad': '4px 12px',
+              '--pa-btn-pad': `${space.xs}px ${space.xl}px`,
               '--pa-btn-radius': `${radius.md}px`,
               '--pa-btn-weight': 600,
-              fontFamily: font.body, fontSize: textSize.caption, lineHeight: 1.5, flexShrink: 0,
+              fontFamily: font.body, fontSize: textSize.small, flexShrink: 0,
             } as CSSProperties}
           >{saving ? 'Retrying…' : 'Retry'}</Button>
-          <Tooltip content="Enter the app anyway — your persona choices may not be saved and setup may reappear next launch">
+          <Tooltip content="Open the app now. Your agent's name and tone may not be saved, and setup will show again next launch.">
             <Button
               colors={colors}
               variant="bare"
               type="button"
-              onClick={() => { stashWizardIntent(intent); onComplete(); }}
+              onClick={() => { stashWizardIntent(firstMessage); onComplete(); }}
               style={{
                 '--pa-btn-fg': colors.textMuted,
                 '--pa-btn-fg-hover': colors.text,
@@ -209,7 +225,7 @@ export function WizardShell({ onComplete }: Props) {
                 '--pa-btn-pad': '0',
                 '--pa-btn-radius': '0',
                 '--pa-btn-weight': 400,
-                fontFamily: font.body, fontSize: textSize.caption, lineHeight: 1.5,
+                fontFamily: font.body, fontSize: textSize.small,
                 textDecoration: 'underline', flexShrink: 0,
               } as CSSProperties}
             >Continue anyway</Button>

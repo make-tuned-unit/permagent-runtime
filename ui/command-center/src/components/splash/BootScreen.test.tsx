@@ -60,22 +60,22 @@ describe('BootScreen', () => {
   it('calls onReady as soon as the daemon answers', async () => {
     getConfigMock.mockResolvedValue({ config: { wizard_complete: true } });
     const onReady = vi.fn();
-    act(() => { root.render(<BootScreen onReady={onReady} />); });
+    act(() => { root.render(<BootScreen onReady={onReady} onMalformed={vi.fn()} />); });
     await flush();
-    expect(onReady).toHaveBeenCalledWith(true);
+    expect(onReady).toHaveBeenCalledWith('app');
   });
 
-  it('passes wizard_complete through untouched when false', async () => {
+  it('routes a first-run config to the wizard', async () => {
     getConfigMock.mockResolvedValue({ config: { wizard_complete: false } });
     const onReady = vi.fn();
-    act(() => { root.render(<BootScreen onReady={onReady} />); });
+    act(() => { root.render(<BootScreen onReady={onReady} onMalformed={vi.fn()} />); });
     await flush();
-    expect(onReady).toHaveBeenCalledWith(false);
+    expect(onReady).toHaveBeenCalledWith('wizard');
   });
 
   it('shows honest connecting copy before the daemon answers, and no fake progress indicator', async () => {
     getConfigMock.mockReturnValue(new Promise(() => { /* never resolves */ }));
-    act(() => { root.render(<BootScreen onReady={vi.fn()} />); });
+    act(() => { root.render(<BootScreen onReady={vi.fn()} onMalformed={vi.fn()} />); });
     await flush();
     expect(container.textContent).toContain('Connecting to Permagent');
     expect(container.querySelector('progress')).toBeNull();
@@ -84,7 +84,7 @@ describe('BootScreen', () => {
 
   it('shows a real attempt count while retrying, not a fake progress bar', async () => {
     getConfigMock.mockRejectedValue(new Error('ECONNREFUSED'));
-    act(() => { root.render(<BootScreen onReady={vi.fn()} />); });
+    act(() => { root.render(<BootScreen onReady={vi.fn()} onMalformed={vi.fn()} />); });
     await flush();
     await advance(1000); // second attempt starts -> 'retrying'
     expect(container.textContent).toContain('Still connecting');
@@ -94,10 +94,11 @@ describe('BootScreen', () => {
   it('after exhausting retries, shows an honest failure state with a Retry button (Button primitive)', async () => {
     getConfigMock.mockRejectedValue(new Error('ECONNREFUSED'));
     const onReady = vi.fn();
-    act(() => { root.render(<BootScreen onReady={onReady} />); });
+    act(() => { root.render(<BootScreen onReady={onReady} onMalformed={vi.fn()} />); });
     await runLoop();
 
-    expect(container.textContent).toContain('Could not reach the daemon');
+    expect(container.textContent).toContain("Couldn't reach Permagent's background service");
+    expect(container.textContent).not.toMatch(/daemon/i);
     const retryBtn = container.querySelector('button.pa-btn');
     expect(retryBtn).not.toBeNull();
     expect(retryBtn?.textContent).toContain('Retry');
@@ -107,15 +108,37 @@ describe('BootScreen', () => {
   it('Retry re-attempts the connection and can succeed', async () => {
     getConfigMock.mockRejectedValue(new Error('down'));
     const onReady = vi.fn();
-    act(() => { root.render(<BootScreen onReady={onReady} />); });
+    act(() => { root.render(<BootScreen onReady={onReady} onMalformed={vi.fn()} />); });
     await runLoop();
-    expect(container.textContent).toContain('Could not reach the daemon');
+    expect(container.textContent).toContain("Couldn't reach Permagent's background service");
+    expect(container.textContent).not.toMatch(/daemon/i);
 
     getConfigMock.mockResolvedValue({ config: { wizard_complete: false } });
     const retryBtn = container.querySelector('button.pa-btn') as HTMLButtonElement;
     act(() => { retryBtn.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
     await flush();
 
-    expect(onReady).toHaveBeenCalledWith(false);
+    expect(onReady).toHaveBeenCalledWith('wizard');
+  });
+
+  it('routes a malformed config away from onboarding, through the shared classifier', async () => {
+    getConfigMock.mockResolvedValue({ config: { wizard_complete: 'false' } });
+    const onReady = vi.fn();
+    const onMalformed = vi.fn();
+    act(() => { root.render(<BootScreen onReady={onReady} onMalformed={onMalformed} />); });
+    await flush();
+    expect(onMalformed).toHaveBeenCalledTimes(1);
+    expect(onReady).not.toHaveBeenCalled();
+  });
+
+  it('does not restart its connect loop when the parent re-renders with the same callbacks', async () => {
+    getConfigMock.mockReturnValue(new Promise(() => { /* never resolves */ }));
+    const onReady = vi.fn();
+    const onMalformed = vi.fn();
+    act(() => { root.render(<BootScreen onReady={onReady} onMalformed={onMalformed} />); });
+    await flush();
+    act(() => { root.render(<BootScreen onReady={onReady} onMalformed={onMalformed} />); });
+    await flush();
+    expect(getConfigMock).toHaveBeenCalledTimes(1);
   });
 });

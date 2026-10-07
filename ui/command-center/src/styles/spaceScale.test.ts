@@ -45,7 +45,6 @@ const OFF_SCALE_BUDGET: Record<string, number> = {
   'components/settings': 12,
   'components/sidebar': 3,
   'components/splash': 1,
-  'components/wizard': 21,
   'components/workspaces': 1,
   'components/world': 17,
 };

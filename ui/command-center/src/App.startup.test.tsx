@@ -114,7 +114,7 @@ describe('startup config contract', () => {
     mocks.getConfig.mockRejectedValue(new Error('daemon unavailable'));
     await enterLoading();
     await act(async () => { await vi.advanceTimersByTimeAsync(9000); });
-    expect(container.querySelector('[data-testid="state-block"]')?.textContent).toContain('not a first-run state');
+    expect(container.textContent).toContain("Couldn't reach Permagent's background service");
     expect(container.querySelector('[data-testid="wizard"]')).toBeNull();
   });
 
@@ -123,11 +123,19 @@ describe('startup config contract', () => {
     setDaemonTokenError('This browser is not paired with the daemon. Pair this device from Settings → Devices.');
     mocks.getConfig.mockRejectedValue(Object.assign(new Error('unpaired'), { status: 401 }));
     await enterLoading();
-    const text = container.querySelector('[data-testid="state-block"]')?.textContent ?? '';
+    // The boot screen itself says so now (one connect loop, QA Q1/Q24 copy).
+    const text = container.textContent ?? '';
     expect(text).toContain("This browser isn't paired");
     expect(text).toContain('Settings → Devices');
     expect(text).not.toContain('not a first-run state');
     resetDaemonTokenError();
+  });
+
+  it('owns one connect loop: a slow first answer is asked for once', async () => {
+    mocks.getConfig.mockReturnValue(new Promise(() => { /* never resolves */ }));
+    await enterLoading();
+    await act(async () => { await Promise.resolve(); });
+    expect(mocks.getConfig).toHaveBeenCalledTimes(1);
   });
 
   it('keeps malformed config distinct from first-run config', async () => {

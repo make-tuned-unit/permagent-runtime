@@ -255,6 +255,65 @@ pub struct CheckProviderRequest {
     pub api_key: Option<String>,
 }
 
+/// What `/config/check_provider` proved.
+///
+/// Constructing a provider only proves a key is *present*: a mistyped hosted
+/// key builds a provider just fine and fails on the first message. So the check
+/// also makes one authenticated, inference-free call — listing the models the
+/// key can see. `live` is true only when that call answered with models.
+#[derive(Debug, Serialize, ToSchema, PartialEq)]
+pub struct ProviderCheckResult {
+    /// The provider answered an authenticated call with this key.
+    pub live: bool,
+    /// The model the provider will use by default.
+    pub model: String,
+    /// How many models the live call returned (0 when it was not live).
+    pub models_available: usize,
+    /// Why the key could not be confirmed live, when `live` is false.
+    pub note: Option<String>,
+}
+
+/// Turn the live model-listing outcome into the check verdict.
+///
+/// A rejected or out-of-credit key is a failure the person must fix, so it is
+/// an `Err`. Anything else that stops the live call (a provider that offers no
+/// model listing, a network blip, an endpoint without `/models`) is reported as
+/// "not confirmed" with the reason — the key may still be fine, and the caller
+/// decides whether to let the person continue.
+fn classify_live_check(
+    model: String,
+    listing: Result<Vec<String>, permagent::providers::errors::ProviderError>,
+) -> Result<ProviderCheckResult, String> {
+    use permagent::providers::errors::ProviderError;
+    match listing {
+        Ok(models) if !models.is_empty() => Ok(ProviderCheckResult {
+            live: true,
+            model,
+            models_available: models.len(),
+            note: None,
+        }),
+        Ok(_) => Ok(ProviderCheckResult {
+            live: false,
+            model,
+            models_available: 0,
+            note: Some(
+                "The provider returned no models for this key, so it could not be confirmed without sending a message."
+                    .to_string(),
+            ),
+        }),
+        Err(ProviderError::Authentication(msg)) => {
+            Err(format!("the provider rejected this key ({msg})"))
+        }
+        Err(err @ ProviderError::CreditsExhausted { .. }) => Err(err.to_string()),
+        Err(err) => Ok(ProviderCheckResult {
+            live: false,
+            model,
+            models_available: 0,
+            note: Some(err.to_string()),
+        }),
+    }
+}
+
 #[derive(Deserialize, ToSchema)]
 pub struct SetProviderRequest {
     pub provider: String,
@@ -1426,10 +1485,14 @@ pub async fn update_custom_provider(
     post,
     path = "/config/check_provider",
     request_body = CheckProviderRequest,
+    responses(
+        (status = 200, description = "Provider built; `live` says whether the key answered a live call", body = ProviderCheckResult),
+        (status = 400, description = "Provider could not be built, or rejected the key"),
+    )
 )]
 pub async fn check_provider(
     Json(CheckProviderRequest { provider, api_key }): Json<CheckProviderRequest>,
-) -> Result<(), ErrorResponse> {
+) -> Result<Json<ProviderCheckResult>, ErrorResponse> {
     let overlay = match api_key.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         Some(typed) => {
             let entry = get_from_registry(&provider).await.map_err(|err| {
@@ -1463,15 +1526,21 @@ pub async fn check_provider(
     // request timer remains schedulable. Dropping a timed-out JoinHandle cannot
     // cancel the OS call, but it does guarantee this HTTP request returns.
     let check = tokio::task::spawn_blocking(move || {
-        runtime
-            .block_on(create_with_default_model(&checked_provider, Vec::new()))
-            .map(|_| ())
-            .map_err(|err| err.to_string())
+        runtime.block_on(async {
+            let built = create_with_default_model(&checked_provider, Vec::new())
+                .await
+                .map_err(|err| err.to_string())?;
+            let model = built.get_model_config().model_name;
+            // One authenticated, inference-free call: list the models this key
+            // can see. Costs nothing and is what tells a working key from a
+            // well-formed wrong one.
+            classify_live_check(model, built.fetch_supported_models().await)
+        })
     });
 
     let result = await_provider_check(&provider, PROVIDER_CHECK_TIMEOUT, check).await;
     drop(overlay);
-    result
+    result.map(Json)
 }
 
 /// Temporary env overlay for validate-without-save. Restored on drop so a
@@ -1490,13 +1559,13 @@ impl Drop for EnvOverlay {
     }
 }
 
-async fn await_provider_check(
+async fn await_provider_check<T>(
     provider: &str,
     timeout: Duration,
-    check: JoinHandle<Result<(), String>>,
-) -> Result<(), ErrorResponse> {
+    check: JoinHandle<Result<T, String>>,
+) -> Result<T, ErrorResponse> {
     match tokio::time::timeout(timeout, check).await {
-        Ok(Ok(Ok(()))) => Ok(()),
+        Ok(Ok(Ok(value))) => Ok(value),
         Ok(Ok(Err(err))) => Err(ErrorResponse::bad_request(format!(
             "Provider '{}' check failed: {}",
             provider, err
@@ -1985,9 +2054,43 @@ mod tests {
         assert_eq!(fresh.notice, None);
     }
 
+    #[test]
+    fn live_check_confirms_only_when_the_key_lists_models() {
+        let ok = classify_live_check("m-1".into(), Ok(vec!["m-1".into(), "m-2".into()]))
+            .expect("models listed is a pass");
+        assert!(ok.live);
+        assert_eq!(ok.models_available, 2);
+        assert_eq!(ok.model, "m-1");
+        assert_eq!(ok.note, None);
+
+        let empty = classify_live_check("m-1".into(), Ok(vec![])).expect("not a rejection");
+        assert!(!empty.live, "an empty listing proves nothing about the key");
+        assert!(empty.note.is_some());
+    }
+
+    #[test]
+    fn live_check_rejects_a_refused_or_exhausted_key() {
+        use permagent::providers::errors::ProviderError;
+        let err = classify_live_check(
+            "m".into(),
+            Err(ProviderError::Authentication("invalid x-api-key".into())),
+        )
+        .expect_err("a refused key must block");
+        assert!(err.contains("rejected"), "{err}");
+        assert!(err.contains("invalid x-api-key"), "{err}");
+
+        let inconclusive = classify_live_check(
+            "m".into(),
+            Err(ProviderError::NetworkError("connection reset".into())),
+        )
+        .expect("a network blip is not a verdict on the key");
+        assert!(!inconclusive.live);
+        assert!(inconclusive.note.unwrap().contains("connection reset"));
+    }
+
     #[tokio::test]
     async fn provider_check_times_out_even_when_blocking_work_hangs() {
-        let check = tokio::task::spawn_blocking(|| {
+        let check = tokio::task::spawn_blocking(|| -> Result<(), String> {
             std::thread::sleep(std::time::Duration::from_millis(250));
             Ok(())
         });
