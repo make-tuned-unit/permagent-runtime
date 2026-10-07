@@ -429,13 +429,16 @@ describe('settleSpan (the no-loop guard)', () => {
     // ignored: the card stops chasing a moving target.
     const afterFreeze = settleSpan(state, 1);
     expect(afterFreeze).toBe(state);
+    // ...except that a frozen card still grows to fit its content, so a stale
+    // short span can never leave it painted over its neighbour.
+    expect(settleSpan(state, 9)).toEqual({ span: 9, attempts: 6, frozen: true });
   });
 
   it('honors a smaller maxAttempts', () => {
     let state = settleSpan(undefined, 5);
     state = settleSpan(state, 6, 2); // attempts=2, hits the custom ceiling
     expect(state).toEqual({ span: 6, attempts: 2, frozen: true });
-    const ignored = settleSpan(state, 100, 2);
+    const ignored = settleSpan(state, 3, 2);
     expect(ignored).toBe(state);
   });
 

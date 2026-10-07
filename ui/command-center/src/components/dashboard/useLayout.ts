@@ -381,7 +381,11 @@ export function settleSpan(
   maxAttempts: number = 6,
 ): SpanSettleState {
   if (!prev) return { span: nextSpan, attempts: 1, frozen: false };
-  if (prev.frozen) return prev;
+  // Frozen stops chasing a flap, but never lets a card stay SHORTER than its
+  // content: a stale small span makes the card paint over the one below it
+  // (QA 2026-10-07 Q10/Q11). Growth only, so it cannot oscillate, and it is
+  // bounded by `spanForContent`'s cap.
+  if (prev.frozen) return nextSpan > prev.span ? { ...prev, span: nextSpan } : prev;
   if (nextSpan === prev.span) return { span: prev.span, attempts: 0, frozen: false };
   const attempts = prev.attempts + 1;
   return { span: nextSpan, attempts, frozen: attempts >= maxAttempts };
@@ -618,7 +622,15 @@ export function useLayout() {
           ? { layout: stripped.layout, changed: false }
           : compactLayoutPass(stripped.layout);
         let normalized = compacted.layout;
-        let changed = stripped.changed || compacted.changed;
+        // Only STRUCTURAL changes (a retired card dropped, a missing card
+        // added) are written back on load. The compact/tall size ceilings are
+        // cosmetic: they are applied to what this browser shows, but a read
+        // must not rewrite a layout another device also edits (QA 2026-10-07
+        // Q8: a fresh browser PUT /api/dashboard/layout with no user change).
+        // Their "done" flags are set only once the user saves a layout.
+        const cosmetic = compacted.changed;
+        let cosmetic_taller = false;
+        let changed = stripped.changed;
         if (!hasRunGrowthCardPass()) {
           const inserted = ensureGrowthResultsCard(normalized);
           normalized = inserted.layout;
@@ -627,7 +639,7 @@ export function useLayout() {
         if (!hasRunGrowthCardTallPass()) {
           const taller = ensureGrowthCardTallEnough(normalized);
           normalized = taller.layout;
-          changed = changed || taller.changed;
+          if (taller.changed) cosmetic_taller = true;
         }
         if (!hasRunCalendarPass()) {
           const calendar = ensureCalendarCard(normalized);
@@ -640,9 +652,9 @@ export function useLayout() {
           changed = changed || council.changed;
         }
         setLayout(normalized);
-        markCompactPassDone();
+        if (!cosmetic) markCompactPassDone();
         markGrowthCardPassDone();
-        markGrowthCardTallPassDone();
+        if (!cosmetic_taller) markGrowthCardTallPassDone();
         markCalendarPassDone();
         markCouncilCardPassDone();
         if (changed) {
@@ -659,6 +671,10 @@ export function useLayout() {
 
   const persistLayout = useCallback(async (newLayout: DashboardLayoutData) => {
     setLayout(newLayout);
+    // The user's own layout is authoritative from here on: the cosmetic size
+    // ceilings must not run over it again.
+    markCompactPassDone();
+    markGrowthCardTallPassDone();
     await apiFetch<DashboardLayoutData>('/api/dashboard/layout', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },

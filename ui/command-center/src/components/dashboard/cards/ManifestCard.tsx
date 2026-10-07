@@ -431,7 +431,7 @@ export function ManifestCard({ manifest }: Props) {
             fontFamily: font.body, fontSize: 10.5, lineHeight: 1.45, minWidth: 0,
           }}>
             {inline.map((c, i) => (
-              <Tooltip content={`${c.label}: ${c.value}`}>
+              <Tooltip key={i} content={`${c.label}: ${c.value}`}>
                 <span tabIndex={0} style={{ outline: 'none' }}>
                   <span
                     key={i}
@@ -459,7 +459,7 @@ export function ManifestCard({ manifest }: Props) {
             }}
           >
             {forecast.map((c, i) => (
-              <Tooltip content={c.sub ? `${c.label}: ${c.value} · ${c.sub}` : `${c.label}: ${c.value}`}>
+              <Tooltip key={i} content={c.sub ? `${c.label}: ${c.value} · ${c.sub}` : `${c.label}: ${c.value}`}>
                 <span tabIndex={0} style={{ outline: 'none' }}>
                   <div
                     key={i}
