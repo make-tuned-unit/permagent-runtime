@@ -6,7 +6,9 @@
  * merge rule below is where a re-run of the wizard could undo the user's answer
  * and quietly restore the guess, so it is pinned here.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+vi.mock('../../lib/api', () => ({ api: {} }));
 import { mergeRoots } from './StepFolders';
 
 describe('mergeRoots', () => {
