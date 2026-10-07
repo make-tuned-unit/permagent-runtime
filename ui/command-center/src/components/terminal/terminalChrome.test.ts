@@ -105,7 +105,13 @@ describe('PTY attach / reattach behaviour is frozen (gate 6)', () => {
     // window's size, a harness's absolute-row frames from every earlier pane
     // size scattered through the screen and scrollback. Pinned in
     // replayGeometry.test.ts and Terminal.reattach.test.tsx.
-    expect(hash).toBe('dfc125620dc57ad3fca9a91892d0fa7affeb499e400cc717608a92d48e97bbe7');
+    // RE-FROZEN 2026-10-07 for a behaviour fix made on 2026-09-27 (5c4a8ee1,
+    // "Fail closed on unlinked Grow harness completion") that never moved this
+    // pin: the Grow-completion callback in this effect now writes a visible
+    // "completion not verified" notice to the terminal when the daemon reports
+    // `implemented: false` or the call fails, instead of swallowing it. The
+    // hash was stale on the base commit, not changed by this lane.
+    expect(hash).toBe('b11d5a4d68691ee54a38761a5b33e82031dd7eb369caf826a9d59d13f7b7a0ea');
   });
 
   it('still measures the opaque pty-terminal container (no padding on it)', () => {

@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { ForumView } from './ForumView';
 import { useCommandCenter } from '../../../lib/store';
+import { space } from '../../../styles/tokens';
 import '../../../index.css';
 
 function VoiceReview() {
@@ -25,6 +26,6 @@ function VoiceReview() {
     setStatus('TEST AUDIO · mouth opens for 1.8s, rests for 1.2s · repeats six times');
     await audio.resume();
   }
-  return <><ForumView/><div style={{position:'fixed',top:12,right:12,zIndex:9999,background:'#342340',color:'white',padding:12,borderRadius:8,fontSize:12}}><b>DEVELOPMENT CHECK</b><p>{status}</p><button onClick={()=>void play()}>Play silent audio fixture</button><button onClick={()=>{void context?.close();useCommandCenter.getState().setVoiceEngine(null);setStatus('Stopped · mouth should rest');}}>Stop fixture</button></div></>;
+  return <><ForumView/><div style={{position:'fixed',top:space.xl,right:space.xl,zIndex:9999,background:'#342340',color:'white',padding:space.xl,borderRadius:8,fontSize:12}}><b>DEVELOPMENT CHECK</b><p>{status}</p><button onClick={()=>void play()}>Play silent audio fixture</button><button onClick={()=>{void context?.close();useCommandCenter.getState().setVoiceEngine(null);setStatus('Stopped · mouth should rest');}}>Stop fixture</button></div></>;
 }
 if(import.meta.env.DEV)createRoot(document.getElementById('root')!).render(<VoiceReview/>);

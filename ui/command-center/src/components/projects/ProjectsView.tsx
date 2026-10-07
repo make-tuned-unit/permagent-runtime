@@ -1033,7 +1033,7 @@ export function ProjectKanban({ project }: { project: Project }) {
             variant="bare"
             flashSuccess={false}
             aria-label="Show more columns"
-            onClick={() => boardScrollRef.current?.scrollBy({ left: 320, behavior: reduceMotion ? 'auto' : 'smooth' })}
+            onClick={() => boardScrollRef.current?.scrollBy({ left: Math.round((boardScrollRef.current?.clientWidth ?? 0) / 2), behavior: reduceMotion ? 'auto' : 'smooth' })}
             style={{
               position: 'absolute', right: space.md, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'auto',
               '--pa-btn-fg': colors.textMuted, '--pa-btn-fg-hover': colors.text,

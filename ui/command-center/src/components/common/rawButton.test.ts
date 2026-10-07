@@ -93,6 +93,22 @@ const STANDING_EXCEPTIONS: Record<string, { count: number; why: string }> = {
     why: "the selection panel's stat blocks are two-line and half of them are "
       + 'permanently disabled by design, which the primitive would grey out',
   },
+  // World forum HUD — added by the World lane (r23-r28) after this gate was
+  // widened to components/world. These are HUD/dev-check buttons styled by the
+  // forum's own stylesheet classes (habitat-*, forum-*), not primitive-styled.
+  // They are owned by the World lane; migrate them there and delete the entry.
+  'components/world/forum/ForumAuthNotice.tsx': {
+    count: 1,
+    why: 'the habitat auth notice\'s "details" toggle is styled by .habitat-auth-toggle in the forum stylesheet',
+  },
+  'components/world/forum/HankConversation.tsx': {
+    count: 5,
+    why: 'the in-world conversation dock\'s controls are positioned and styled by the forum stylesheet',
+  },
+  'components/world/forum/voiceReview.tsx': {
+    count: 2,
+    why: 'a Vite-only manual audio check page (never in the production build) with two bare fixture buttons',
+  },
   'components/chat/ChatLauncher.tsx': {
     count: 1,
     why: 'the launcher pill lifts 2px on hover and settles on press — a transform '

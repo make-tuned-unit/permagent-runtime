@@ -1917,14 +1917,15 @@ export function RunDetail({ run, displayName, lastStatus, starterId }: {
       )}
       {!loading && isStorageCleanup && ledgerState === 'missing' && findings.length === 0 && rejected.length === 0 && (
         <div style={{ marginBottom: space.lg }}>
-          <button
+          <Button
+            colors={colors}
             type="button"
             disabled={recovering}
             onClick={() => { void recoverSavedScan(); }}
             style={{ fontFamily: font.body, fontSize: textSize.caption, fontWeight: 600 }}
           >
             {recovering ? 'Recovering saved scan results…' : 'Recover saved scan results'}
-          </button>
+          </Button>
         </div>
       )}
       {!loading && recoverError && (
