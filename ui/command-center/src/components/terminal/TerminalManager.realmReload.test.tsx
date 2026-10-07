@@ -63,7 +63,7 @@ import { TERMINAL_STATE_KEY } from './terminalReattach';
 
 const CLAUDE_SESSION = {
   session_id: 'pty-claude-51min',
-  cwd: '/Users/x/Documents/dev/GetLadle',
+  cwd: '/Users/x/Documents/dev/Beacon',
   started_at: '2026-08-19T09:00:00Z',
   alive: true,
   produced: 48120,
@@ -129,9 +129,9 @@ describe('a realm reload with a live PTY', () => {
         tabs: [
           {
             id: 't1',
-            label: 'GetLadle',
+            label: 'Beacon',
             sessionId: 'pty-claude-51min',
-            cwd: '/Users/x/Documents/dev/GetLadle',
+            cwd: '/Users/x/Documents/dev/Beacon',
           },
         ],
         activeTabId: 't1',
@@ -179,7 +179,7 @@ describe('a realm reload with a live PTY', () => {
     localStorage.setItem(
       TERMINAL_STATE_KEY,
       JSON.stringify({
-        tabs: [{ id: 't1', label: 'GetLadle', sessionId: 'pty-claude-51min' }],
+        tabs: [{ id: 't1', label: 'Beacon', sessionId: 'pty-claude-51min' }],
         activeTabId: 't1',
         detachedSessionIds: [],
       }),

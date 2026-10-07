@@ -35,7 +35,7 @@ function person(id: string, name: string, projects: [string, string][]): Directo
 }
 
 const HRA: [string, string] = ['hra', "Harbourview Residents' Association"];
-const LNS: [string, string] = ['lns', 'Love Nova Scotia'];
+const LNS: [string, string] = ['lns', 'Love Ontario'];
 const SOL: [string, string] = ['sol', 'Solar Forum'];
 const PER: [string, string] = ['per', 'Permagent'];
 

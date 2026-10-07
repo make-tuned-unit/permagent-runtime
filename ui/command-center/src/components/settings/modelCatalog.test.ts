@@ -117,7 +117,7 @@ describe('naming models from every vendor, not just Anthropic', () => {
   });
 
   it('reads a size suffix as a unit', () => {
-    expect(describeModel('qwen3.8-27b').label).toBe('Qwen3.8 27B');
+    expect(describeModel('examplemodel3-27b').label).toBe('Examplemodel3 27B');
   });
 
   it('still leaves an id with no version completely alone', () => {

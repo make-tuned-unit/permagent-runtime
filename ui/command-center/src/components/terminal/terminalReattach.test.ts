@@ -32,7 +32,7 @@ import type { TerminalTab } from './TerminalManager';
 
 const LIVE_CLAUDE: PtySessionInfo = {
   session_id: 'pty-claude-1',
-  cwd: '/Users/x/Documents/dev/GetLadle',
+  cwd: '/Users/x/Documents/dev/Beacon',
   started_at: '2026-08-19T09:00:00Z',
   alive: true,
   produced: 48120,
@@ -74,8 +74,8 @@ describe('adopting a live session the UI forgot', () => {
 
     expect(tabs).toHaveLength(1);
     expect(tabs[0].sessionId).toBe('pty-claude-1');
-    expect(tabs[0].cwd).toBe('/Users/x/Documents/dev/GetLadle');
-    expect(tabs[0].label).toBe('GetLadle');
+    expect(tabs[0].cwd).toBe('/Users/x/Documents/dev/Beacon');
+    expect(tabs[0].label).toBe('Beacon');
   });
 
   /**
@@ -230,7 +230,7 @@ describe('the durable record', () => {
   it('round-trips tabs, the active id and the detached set', () => {
     const storage = memoryStorage();
     const state = {
-      tabs: [{ id: 't1', label: 'GetLadle', sessionId: 'pty-claude-1', cwd: '/x/GetLadle' }],
+      tabs: [{ id: 't1', label: 'Beacon', sessionId: 'pty-claude-1', cwd: '/x/Beacon' }],
       activeTabId: 't1',
       detachedSessionIds: ['pty-other'],
     };
@@ -241,7 +241,7 @@ describe('the durable record', () => {
   it('survives a module-level reset — that is the entire point', () => {
     const storage = memoryStorage();
     writeStoredState(storage, {
-      tabs: [{ id: 't1', label: 'GetLadle', sessionId: 'pty-claude-1' }],
+      tabs: [{ id: 't1', label: 'Beacon', sessionId: 'pty-claude-1' }],
       activeTabId: 't1',
       detachedSessionIds: [],
     });
@@ -280,8 +280,8 @@ describe('the durable record', () => {
 
 describe('small things that have to be right', () => {
   it('labels an adopted tab by its working directory', () => {
-    expect(labelForCwd('/Users/x/Documents/dev/GetLadle')).toBe('GetLadle');
-    expect(labelForCwd('/Users/x/Documents/dev/GetLadle/')).toBe('GetLadle');
+    expect(labelForCwd('/Users/x/Documents/dev/Beacon')).toBe('Beacon');
+    expect(labelForCwd('/Users/x/Documents/dev/Beacon/')).toBe('Beacon');
     expect(labelForCwd('/')).toBe('Terminal');
     expect(labelForCwd('')).toBe('Terminal');
   });

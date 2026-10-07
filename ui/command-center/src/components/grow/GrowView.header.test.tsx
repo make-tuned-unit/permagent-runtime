@@ -3,7 +3,7 @@
  *
  * The Grow header's "N goals · N people" line (QA 2026-09-24).
  *
- * Evntally's board held eight goal cards and the Actions tab reported goals in
+ * Acme's board held eight goal cards and the Actions tab reported goals in
  * flight, yet the header read "0 goals". GrowView fetched every card and
  * filtered on `c.card_type`, but CardResponse serialises camelCase
  * (`cardType`), so the filter matched nothing. It now asks the daemon for goal
@@ -35,7 +35,7 @@ import { apiFetch } from '../../lib/api';
 const apiFetchMock = vi.mocked(apiFetch);
 
 const project = {
-  id: 'evn', slug: 'evntally', name: 'Evntally', description: '', status: 'active',
+  id: 'evn', slug: 'evntally', name: 'Acme', description: '', status: 'active',
   rootPath: null, siteUrl: null, repoUrl: null, tags: [], metadataJson: {},
   createdAt: '', updatedAt: '', lastOpenedAt: '',
 };

@@ -105,7 +105,7 @@ export function HeaderAgentStatus({ data, error }: {
   // ONE resolver for the agent's name, shared with the World.
   //
   // QA found the header reading "Home · Agent online" while the World called
-  // the same agent Hank: the header read the store's `agentName`, whose
+  // the same agent Ada: the header read the store's `agentName`, whose
   // default is the literal word "Agent". The dashboard payload's
   // `agent.name` is no better — it is the default persona ("Henry"), which is
   // why the rail's tests deliberately ignored it. `useOrchestratorName` is the

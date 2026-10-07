@@ -101,9 +101,9 @@ describe('handlePtyData — verbatim stream contract', () => {
 
   it('surfaces OSC 7 CWD reports while still writing the chunk verbatim', () => {
     const { writes, cwds, sink } = collectingSink();
-    const data = `${ESC}]7;file://mac.local/Users/jesse/dev%20box\x07prompt$ `;
+    const data = `${ESC}]7;file://mac.local/Users/you/dev%20box\x07prompt$ `;
     handlePtyData({ session_id: SID, data }, SID, sink);
-    expect(cwds).toEqual(['/Users/jesse/dev box']);
+    expect(cwds).toEqual(['/Users/you/dev box']);
     expect(writes).toEqual([data]);
   });
 

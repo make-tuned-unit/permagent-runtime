@@ -142,7 +142,7 @@ const PENDING: Decision[] = [
       session_id: '20260925_14',
       request_id: 'req-8812',
       tool_name: 'developer__shell',
-      arguments: { command: 'git log --oneline -5', cwd: '/Users/jesse/dev/permagent-runtime' },
+      arguments: { command: 'git log --oneline -5', cwd: '/Users/you/dev/permagent-runtime' },
     },
     created_at: minutesAgo(9),
   }),
@@ -224,7 +224,7 @@ export const MOCK_PENDING_DECISIONS: readonly Decision[] = PENDING;
 
 const DISPATCH_EVIDENCE: Record<string, DispatchEvidenceData> = {
   'goal-event-analytics': {
-    worktree_path: '/Users/jesse/dev/.permagent-goal-worktrees/cli-01a0d5ea',
+    worktree_path: '/Users/you/dev/.permagent-goal-worktrees/cli-01a0d5ea',
     baseline_commit: '9c21e0b',
     head_commit: null,
     commits: [],
@@ -236,7 +236,7 @@ const DISPATCH_EVIDENCE: Record<string, DispatchEvidenceData> = {
     worker_summary: '',
   },
   'goal-queue-saving': {
-    worktree_path: '/Users/jesse/dev/.permagent-goal-worktrees/cli-f69980d2',
+    worktree_path: '/Users/you/dev/.permagent-goal-worktrees/cli-f69980d2',
     baseline_commit: 'a1190cd',
     head_commit: '7d4f9ea',
     commits: ['7d4f9ea Create thread: Canada renewable energy and emissions targets'],
@@ -311,7 +311,7 @@ const DIGESTS: Record<string, EvidenceDigestData> = {
     verifier: {
       status: 'pass',
       rationale: 'Plan matches approved scope. No public API changes outside /api/decisions.',
-      model: 'qwen2.5:7b',
+      model: 'localmodel:7b',
       degraded_reason: null,
     },
     started_at: minutesAgo(200),
@@ -409,11 +409,11 @@ export const mockDecisionsClient: DecisionsClient = {
         ...gone,
         status: 'answered',
         answer: 'approve',
-        acted_by: 'jesse',
+        acted_by: 'owner',
         resolved_at: new Date().toISOString(),
         seq: seq--,
         outcome: 'approve',
-        audit_acted_by: 'jesse',
+        audit_acted_by: 'owner',
         audit_created_at: new Date().toISOString(),
       });
       throw new DecisionConflictError();
@@ -426,11 +426,11 @@ export const mockDecisionsClient: DecisionsClient = {
       answer_note: body.note ?? null,
       answer_choice_id: body.choice_id ?? null,
       answer_input: body.input_text ?? null,
-      acted_by: 'jesse',
+      acted_by: 'owner',
       resolved_at: new Date().toISOString(),
       seq: seq--,
       outcome: body.answer,
-      audit_acted_by: 'jesse',
+      audit_acted_by: 'owner',
       audit_created_at: new Date().toISOString(),
     };
     resolved.unshift(done);

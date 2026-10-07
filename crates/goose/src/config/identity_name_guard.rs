@@ -45,10 +45,10 @@
 
 use std::path::{Path, PathBuf};
 
-/// The out-of-box persona name this repo shipped under before it became
+/// The out-of-box persona names this repo shipped under before it became
 /// per-user config. Not the current default ("Aria" — see
-/// `PrimaryPersona::default()`); the historical one that leaked into copy.
-const LEGACY_AGENT_NAME: &str = "Henry";
+/// `PrimaryPersona::default()`); the historical ones that leaked into copy.
+const LEGACY_AGENT_NAMES: &[&str] = &["Henry", "Hank"];
 
 /// The developer's first name. Never a universal fact about the product.
 const DEVELOPER_NAME: &str = "Jesse";
@@ -231,8 +231,10 @@ fn scan_source(rel: &str, src: &str) -> Vec<(&'static str, usize)> {
         Lang::Rust => &src[..rust_test_cutoff(src)],
     };
     for (a, z) in code_regions(scanned, lang) {
-        for off in word_hits(&scanned[a..z], LEGACY_AGENT_NAME) {
-            hits.push(("agent name", line_of(src, a + off)));
+        for name in LEGACY_AGENT_NAMES {
+            for off in word_hits(&scanned[a..z], name) {
+                hits.push(("agent name", line_of(src, a + off)));
+            }
         }
     }
     hits.sort();
@@ -333,7 +335,7 @@ fn shipped_source_never_hardcodes_agent_or_developer_name() {
 /// no-op — or tightens into flagging ids — this fails.
 #[test]
 fn identity_name_scanner_flags_leaks_and_spares_ids_comments_and_tests() {
-    let agent = LEGACY_AGENT_NAME;
+    let agent = LEGACY_AGENT_NAMES[0];
     let dev = DEVELOPER_NAME;
 
     // Rust: string literal (incl. a `\`-continued line), a doc comment, an id
@@ -383,10 +385,51 @@ fn identity_name_scanner_flags_leaks_and_spares_ids_comments_and_tests() {
         vec![("developer name", 1)]
     );
 
+    // Every legacy name is flagged in code, not only the first.
+    for name in LEGACY_AGENT_NAMES {
+        let src = format!("const S: &str = \"Ask {name}\";\n");
+        assert_eq!(
+            scan_source("crates/x/src/b.rs", &src),
+            vec![("agent name", 1)],
+            "{name} must be flagged"
+        );
+    }
+
     // Lowercase id keys and the audit actor constant are never hits.
     assert!(scan_source(
         "crates/x/src/ids.rs",
         "const A: &str = \"henry\"; const B: &str = \"jesse\"; const ACTOR_JESSE: &str = \"jesse\";\n"
     )
     .is_empty());
+}
+
+/// **Repo-wide operational-literal guard.** Runs the Node scanner
+/// (`scripts/shipped-content-check.mjs`, policy in
+/// `scripts/policies/shipped-content.json`) so `cargo test` fails locally on the
+/// same hits CI would: legacy agent aliases, wallet/DID literals, a developer's
+/// places and hosts, telemetry keys, regional merchant rules, hardcoded local
+/// models. Skipped (loudly) only when `node` is not installed.
+#[test]
+fn shipped_content_policy_holds() {
+    let root = repo_root();
+    let out = match std::process::Command::new("node")
+        .arg("scripts/shipped-content-check.mjs")
+        .current_dir(&root)
+        .output()
+    {
+        Ok(out) => out,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!("shipped_content_policy_holds: `node` not found, guard skipped");
+            return;
+        }
+        Err(e) => panic!("could not run the shipped-content guard: {e}"),
+    };
+    assert!(
+        out.status.success(),
+        "shipped-content guard failed (exit {:?}). Fix the hits, or add a written \
+         exception to scripts/policies/shipped-content.json.\n{}\n{}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
 }

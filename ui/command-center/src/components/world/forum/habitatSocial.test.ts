@@ -33,7 +33,7 @@ import {
   proveAmbientRoute,
   resetHabitatSocial,
 } from './habitatSocial';
-import { HABITAT_STATIONS, HANK_TABLE_SEAT, habitatCollisionSource, habitatElevation, stationFor, type Point3 } from './habitatLayout';
+import { HABITAT_STATIONS, ORCHESTRATOR_TABLE_SEAT, habitatCollisionSource, habitatElevation, stationFor, type Point3 } from './habitatLayout';
 import { registerForumCollision } from './walkCollision';
 import { getForumMotion } from './ForumInhabitants';
 
@@ -95,7 +95,7 @@ describe('habitat ambient social controller', () => {
     expect(getHabitatSocialPlanningMs()).toBeGreaterThanOrEqual(0);
     expect(getHabitatSocialPlanningMs()).toBeLessThan(5_000);
     for (const point of candidates) expect(isAmbientSafePoint(point[0], point[2])).toBe(true);
-    expect(isAmbientSafePoint(HANK_TABLE_SEAT[0], HANK_TABLE_SEAT[2])).toBe(false);
+    expect(isAmbientSafePoint(ORCHESTRATOR_TABLE_SEAT[0], ORCHESTRATOR_TABLE_SEAT[2])).toBe(false);
     const stands = meetingStands(candidates[0]);
     expect(stands).not.toBeNull();
     expect(Math.hypot(stands![0][0] - stands![1][0], stands![0][2] - stands![1][2])).toBeGreaterThanOrEqual(0.84);

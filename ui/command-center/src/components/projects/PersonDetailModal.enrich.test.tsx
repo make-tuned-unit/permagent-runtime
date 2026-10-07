@@ -35,7 +35,7 @@ const person: Person = {
   instagram: null,
   personal_site: null,
   photo_url: null,
-  find_online_hints: 'Halifax coworking, director of sales',
+  find_online_hints: 'Springfield coworking, director of sales',
   created_at: '2026-01-01T00:00:00Z',
   updated_at: '2026-01-01T00:00:00Z',
 };
@@ -66,7 +66,7 @@ describe('buildEnrichmentMessage', () => {
   it('asks the agent to run by entity_uuid, including find-online hints', () => {
     const msg = buildEnrichmentMessage(person);
     expect(msg).toContain('uuid-ex');
-    expect(msg).toContain('Halifax coworking, director of sales');
+    expect(msg).toContain('Springfield coworking, director of sales');
     expect(msg).toContain('run it now');
     expect(msg.toLowerCase()).not.toContain('paste');
     expect(msg.toLowerCase()).not.toContain('clipboard');

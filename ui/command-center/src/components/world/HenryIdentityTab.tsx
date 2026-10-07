@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback, type CSSProperties } from 'react';
 import { Section, StatRow } from './HudShell';
 import { useIdentityStore } from '../../stores/identityStore';
 import { computePortalEligibility } from '../../utils/portalEligibility';
-import { SBT_CONTRACT } from '../../config/chain';
+import { IdentityUnlinked } from './IdentityUnlinked';
 import { duration, ease, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
@@ -27,6 +27,7 @@ function truncAddr(addr: string): string {
 }
 
 function formatDate(iso: string): string {
+  if (!iso || Number.isNaN(Date.parse(iso))) return 'Unknown';
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
@@ -41,8 +42,8 @@ function relativeMinutes(date: Date | null): string {
 
 // ── URLs ─────────────────────────────────────────────────────────
 
-function sbtUrl(tokenId: number): string {
-  return `https://basescan.org/nft/${SBT_CONTRACT}/${tokenId}`;
+function sbtUrl(contract: string, tokenId: number): string {
+  return `https://basescan.org/nft/${contract}/${tokenId}`;
 }
 
 function passportUrl(tokenId: number): string {
@@ -68,7 +69,7 @@ function connectivityColor(c: { success: string; warning: string; dangerStrong: 
 
 export function HenryIdentityTab() {
   const { colors } = useTheme();
-  const { data: id, loading, connectivity, lastSuccessfulFetch, refresh, startPolling, stopPolling } = useIdentityStore();
+  const { data: id, linked, loading, connectivity, lastSuccessfulFetch, refresh, startPolling, stopPolling } = useIdentityStore();
 
   useEffect(() => {
     startPolling();
@@ -78,6 +79,8 @@ export function HenryIdentityTab() {
   const handleRefresh = useCallback(() => {
     if (!loading) refresh();
   }, [loading, refresh]);
+
+  if (linked === false) return <IdentityUnlinked />;
 
   // First launch — no cached data at all
   if (!id) {
@@ -96,11 +99,13 @@ export function HenryIdentityTab() {
     <>
       {/* Header row: avatar + name + status pill + connectivity indicator */}
       <div style={{ padding: `${space.md}px 14px ${space.xs}px`, display: 'flex', alignItems: 'center', gap: space.lg }}>
-        <img
-          src={id.avatarUrl}
-          alt={id.name}
-          style={{ width: 36, height: 36, borderRadius: radius.sm, border: `1px solid ${colors.success}40` }}
-        />
+        {id.avatarUrl && (
+          <img
+            src={id.avatarUrl}
+            alt={id.name}
+            style={{ width: 36, height: 36, borderRadius: radius.sm, border: `1px solid ${colors.success}40` }}
+          />
+        )}
         <div style={{ flex: 1 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: space.sm }}>
             <span style={{ fontSize: textSize.body, fontWeight: 600, color: colors.text }}>
@@ -155,7 +160,7 @@ export function HenryIdentityTab() {
 
       {/* ON-CHAIN */}
       <Section title="ON-CHAIN" trimColor={colors.warning}>
-        <LinkRow label="SBT" value={`#${id.sbtId}`} href={sbtUrl(id.sbtId)} />
+        <LinkRow label="SBT" value={`#${id.sbtId}`} href={sbtUrl(id.sbtContract, id.sbtId)} />
         <LinkRow label="Passport" value={`#${id.passportId}`} href={passportUrl(id.passportId)} />
         <LinkRow label="Chain" value="Base L2" />
         <LinkRow label="Arweave" value={truncAddr(id.arweaveTxId)} href={arweaveUrl(id.arweaveTxId)} />
@@ -217,7 +222,7 @@ export function HenryIdentityTab() {
           />
           <ActionButton
             label="[ BaseScan ]"
-            onClick={() => openExternal(sbtUrl(id.sbtId))}
+            onClick={() => openExternal(sbtUrl(id.sbtContract, id.sbtId))}
           />
         </div>
       </div>

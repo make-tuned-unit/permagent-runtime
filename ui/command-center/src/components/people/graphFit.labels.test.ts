@@ -24,14 +24,14 @@ function person(id: string, name: string, projects: [string, string][]): Directo
   } as DirectoryPerson;
 }
 
-const LNS: [string, string] = ['lns', 'Love Nova Scotia'];
-const PLK: [string, string] = ['plk', 'Plekk'];
+const LNS: [string, string] = ['lns', 'Love Ontario'];
+const PLK: [string, string] = ['plk', 'Lumio'];
 const HRA: [string, string] = ['hra', "Harbourview Residents' Association"];
 
 /** The live shape: 36 people, most of them in no project. */
 const PEOPLE: DirectoryPerson[] = [
   ...Array.from({ length: 5 }, (_, i) => person(`l${i}`, `Lns Person ${i}`, [LNS])),
-  ...Array.from({ length: 3 }, (_, i) => person(`k${i}`, `Plekk Person ${i}`, [PLK])),
+  ...Array.from({ length: 3 }, (_, i) => person(`k${i}`, `Lumio Person ${i}`, [PLK])),
   ...Array.from({ length: 4 }, (_, i) => person(`h${i}`, `Harbour Person ${i}`, [HRA])),
   person('bridge', 'Bridge Person', [LNS, HRA]),
   ...Array.from({ length: 23 }, (_, i) => person(`u${i}`, `Unassigned Person ${i}`, [])),

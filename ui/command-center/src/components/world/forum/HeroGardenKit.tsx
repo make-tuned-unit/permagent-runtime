@@ -9,7 +9,7 @@ import { AgentStateSources, ROSTER } from '../agents';
 import { useAgentRuntimeStates } from '../shared/agentStatus';
 import { STATE } from '../shared/palette';
 import { getForumMotion } from './ForumInhabitants';
-import { HABITAT_DECOR, HANK_TABLE_SEAT, stationFor } from './habitatLayout';
+import { HABITAT_DECOR, ORCHESTRATOR_TABLE_SEAT, stationFor } from './habitatLayout';
 import { instanceGardenDecor } from './staticGardenInstances';
 import { GardenAssetBoundary } from './GardenAssetBoundary';
 import { GardenFerns } from './GardenFerns';
@@ -115,7 +115,7 @@ function HeroRobot({id,index,state,live,selected,hovered,name,conversation,follo
       }
     }
     const reduced=getReduceMotion(),working=state==='working'&&live&&!getHabitatTravel(id)?.moving&&Math.hypot(pose.x-station.position[0],pose.z-station.position[2])<.8;
-    const seated=conversation&&id==='henry'&&!getHabitatTravel(id)?.moving&&Math.hypot(pose.x-HANK_TABLE_SEAT[0],pose.z-HANK_TABLE_SEAT[2])<.25;
+    const seated=conversation&&id==='henry'&&!getHabitatTravel(id)?.moving&&Math.hypot(pose.x-ORCHESTRATOR_TABLE_SEAT[0],pose.z-ORCHESTRATOR_TABLE_SEAT[2])<.25;
     owned.seatedBody.visible=seated;if(seated){pose.heading=0;host.rotation.y=0;}
     const engine=id==='henry'?useCommandCenter.getState().voiceEngine:null,analyser=engine?.state==='playing'?engine.getAnalyser():null;
     if(analyser){if(speech.current.bins.length!==analyser.frequencyBinCount)speech.current.bins=new Uint8Array(analyser.frequencyBinCount);analyser.getByteFrequencyData(speech.current.bins);}

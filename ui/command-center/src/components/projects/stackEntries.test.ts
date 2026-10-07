@@ -67,13 +67,13 @@ describe('listStackEntries', () => {
 
 describe('createStackEntry', () => {
   it('POSTs camelCase keys and returns the saved row', async () => {
-    const saved = entry({ identity: 'jesse+kinrows@gmail.com' });
+    const saved = entry({ identity: 'user+example@gmail.com' });
     apiFetchMock.mockResolvedValueOnce(saved);
 
     const result = await createStackEntry('p-1', {
       serviceName: 'Railway',
       category: 'hosting',
-      identity: 'jesse+kinrows@gmail.com',
+      identity: 'user+example@gmail.com',
       notes: 'free tier',
       dashboardUrl: 'https://railway.app/dashboard',
     });
@@ -85,7 +85,7 @@ describe('createStackEntry', () => {
     expect(JSON.parse(options?.body as string)).toEqual({
       serviceName: 'Railway',
       category: 'hosting',
-      identity: 'jesse+kinrows@gmail.com',
+      identity: 'user+example@gmail.com',
       notes: 'free tier',
       dashboardUrl: 'https://railway.app/dashboard',
     });

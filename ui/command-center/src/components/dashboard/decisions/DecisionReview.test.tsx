@@ -390,10 +390,10 @@ describe('kind-specific content', () => {
     key('3');
     const hint = document.body.querySelector('textarea[id^="field-"]') as HTMLTextAreaElement;
     expect(hint.placeholder).toMatch(/find this person online/i);
-    act(() => Simulate.change(hint, { target: { value: 'Halifax coworking' } } as never));
+    act(() => Simulate.change(hint, { target: { value: 'Springfield coworking' } } as never));
     act(() => Simulate.keyDown(hint, { key: 'Enter' }));
     await elapse(UNDO_MS);
-    expect(mocks.answer).toHaveBeenCalledWith('e', { answer: 'reject', note: 'Halifax coworking' });
+    expect(mocks.answer).toHaveBeenCalledWith('e', { answer: 'reject', note: 'Springfield coworking' });
   });
 
   it('a voice-staged verdict says nothing happened yet, commits in one press with its words, and can be discarded', async () => {

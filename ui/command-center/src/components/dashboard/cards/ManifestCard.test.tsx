@@ -119,7 +119,7 @@ describe('ManifestCard — compact tile grouping', () => {
     // humidity reading and useless for four days of weather.
     apiFetch.mockResolvedValueOnce({
       cells: [
-        { label: 'Halifax', value: '26° Clear', accent: true, icon: 'sun' },
+        { label: 'Springfield', value: '26° Clear', accent: true, icon: 'sun' },
         { label: 'Humidity', value: '77%', icon: 'droplet' },
         { label: 'Sat', value: '24° / 17°', sub: '80% rain', icon: 'rain', group: 'forecast' },
         { label: 'Sun', value: '21° / 15°', icon: 'cloud', group: 'forecast' },

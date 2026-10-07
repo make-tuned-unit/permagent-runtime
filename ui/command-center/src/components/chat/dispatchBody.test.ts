@@ -3,8 +3,8 @@ import { dispatchBody } from './dispatchBody';
 
 describe('dispatchBody', () => {
   it('unwraps a reply that IS a fenced block — the shape a drafted dispatch arrives in', () => {
-    expect(dispatchBody('```\nSend this to the vendor.\nThanks,\nJesse\n```'))
-      .toBe('Send this to the vendor.\nThanks,\nJesse');
+    expect(dispatchBody('```\nSend this to the vendor.\nThanks,\nSam\n```'))
+      .toBe('Send this to the vendor.\nThanks,\nSam');
   });
 
   it('drops the info string too, so a language/kind tag never reaches the clipboard', () => {

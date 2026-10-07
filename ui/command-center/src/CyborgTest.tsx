@@ -8,8 +8,8 @@ import { Button } from './components/common/Button';
 import { radius, space, textSize } from './styles/tokens';
 import { useTheme } from './styles/useTheme';
 
-// Trim colors come from the world palette SOT (Henry's old neon-cyan preset
-// was stale — his trim is warm white-gold since issue #87 resolved).
+// Developer-only harness (main.tsx mounts it in dev builds only). Trim colors
+// come from the world palette source of truth.
 const PRESETS = [
   { label: 'Librarian', trimColor: AGENT_TRIM.librarian, weathering: 0.4, crown: false },
   { label: 'Orchestrator', trimColor: AGENT_TRIM.henry, weathering: 0, crown: true },

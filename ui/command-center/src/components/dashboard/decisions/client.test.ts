@@ -244,7 +244,7 @@ describe('realDecisionsClient.evidence', () => {
       checks: [],
       diff: { files_changed: 14, insertions: 482, deletions: 97, per_file: [] },
       out_of_path_files: [],
-      verifier: { status: 'pass', rationale: 'Looks right.', model: 'qwen2.5:7b', degraded_reason: null },
+      verifier: { status: 'pass', rationale: 'Looks right.', model: 'localmodel:7b', degraded_reason: null },
       started_at: 't0',
       finished_at: 't1',
     };
@@ -327,9 +327,9 @@ describe('payload helpers', () => {
   it('resolutionText maps the answer enum without inventing content', () => {
     expect(resolutionText({ ...wireDecision, answer: 'approve', acted_by: 'henry-policy' } as Decision))
       .toBe('Approved by your agent');
-    expect(resolutionText({ ...wireDecision, answer: 'reject', acted_by: 'jesse', answer_note: 'not yet' } as Decision))
+    expect(resolutionText({ ...wireDecision, answer: 'reject', acted_by: 'owner', answer_note: 'not yet' } as Decision))
       .toBe('Rejected — note: not yet');
-    expect(resolutionText({ ...wireDecision, answer: 'edit', acted_by: 'jesse' } as Decision))
+    expect(resolutionText({ ...wireDecision, answer: 'edit', acted_by: 'owner' } as Decision))
       .toBe('Accepted with edits');
   });
 
@@ -338,10 +338,10 @@ describe('payload helpers', () => {
       ...wireDecision,
       status: 'answered',
       answer: 'approve',
-      acted_by: 'jesse',
+      acted_by: 'owner',
       seq: 1,
       outcome,
-      audit_acted_by: 'jesse',
+      audit_acted_by: 'owner',
       audit_created_at: '2026-06-12T00:05:00Z',
     } as HistoryItem);
 

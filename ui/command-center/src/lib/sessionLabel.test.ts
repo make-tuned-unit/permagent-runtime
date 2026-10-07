@@ -11,7 +11,7 @@ import {
 
 /** The Grow → coding agent directive, shaped as codingAgentDirective.ts writes it. */
 const EVNTALLY_DIRECTIVE = [
-  'You are a coding agent working in the repository for "Evntally".',
+  'You are a coding agent working in the repository for "Acme".',
   'Working directory: /Users/j/Documents/dev/evntally',
   'Implement the growth action below in this repo. Do not stop at drafting copy in chat — write the change into the right files.',
   '',
@@ -144,7 +144,7 @@ describe('classifySession', () => {
   });
 
   it('files coding-harness and goal workers under Agent runs', () => {
-    expect(classifySession({ name: 'You are a coding agent working in the repository for "Evntally". Working directory: /Users/j/Docs…' }))
+    expect(classifySession({ name: 'You are a coding agent working in the repository for "Acme". Working directory: /Users/j/Docs…' }))
       .toBe('agent_run');
     expect(classifySession({ name: "{name: 'scroll_depth', depth: 25|50|75|100, event_id: '{event-id}'}", firstUserText: EVNTALLY_DIRECTIVE }))
       .toBe('agent_run');
@@ -187,8 +187,8 @@ describe('classifySession', () => {
 describe('sessionProjectName / sessionSearchText', () => {
   it('reads the project from the daemon, else from the coding directive', () => {
     expect(sessionProjectName({ projectName: 'Atlas' })).toBe('Atlas');
-    expect(sessionProjectName({ firstUserText: EVNTALLY_DIRECTIVE })).toBe('Evntally');
-    expect(sessionProjectName({ name: 'You are a coding agent working in the repository for "Evntally". Work…' })).toBe('Evntally');
+    expect(sessionProjectName({ firstUserText: EVNTALLY_DIRECTIVE })).toBe('Acme');
+    expect(sessionProjectName({ name: 'You are a coding agent working in the repository for "Acme". Work…' })).toBe('Acme');
     expect(sessionProjectName({ name: 'Plan the launch' })).toBeNull();
   });
 

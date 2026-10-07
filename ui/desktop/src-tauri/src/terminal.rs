@@ -367,7 +367,7 @@ pub async fn spawn_pty_session(
 
     // Resolve the working directory: use provided cwd, or fall back to HOME.
     // A project-supplied cwd that is missing must fail closed — falling back to
-    // HOME here is how a wrong Atlas Atlantic root silently opened the wrong tree.
+    // HOME here is how a wrong a project root silently opened the wrong tree.
     if let Some(dir) = cwd.as_ref() {
         let path = std::path::Path::new(dir);
         if !path.is_dir() {
