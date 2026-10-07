@@ -15,7 +15,7 @@ import { GARDEN_PLACES, PLANT_BASE_Y, type GardenDecorPlacement } from './garden
 export type Point3 = [number, number, number];
 /** Human-scale arrival: clear of every station/body and solid, with the host,
  * table, and water route sharing the eye-level frame. */
-export const HABITAT_ARRIVAL = {position: [-0.5, 1.60, 5.5] as Point3, target: [-1.1, 1.30, -1.5] as Point3, fov: 72};
+export const HABITAT_ARRIVAL = {position: [0, 1.60, 6.0] as Point3, target: [-1.1, 1.30, -1.5] as Point3, fov: 72};
 /** The overview keeps the full compact footprint in frame at both supported
  * 16:10 review sizes. Its lower target gives the connected terraces room to
  * read without returning to the rejected elevated surveillance stare. */

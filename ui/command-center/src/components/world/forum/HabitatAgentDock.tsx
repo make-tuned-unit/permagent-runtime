@@ -7,6 +7,7 @@ import { commandHabitatAgent, stopHabitatAgent, useHabitatTravel } from './habit
 import { useCommandCenter } from '../../../lib/store';
 import { Button } from '../../common/Button';
 import { useTheme } from '../../../styles/useTheme';
+import { HeroAgentPortrait } from './HeroAgentPortrait';
 
 type Props = {
   selected: string; name: string; directing: boolean; following: boolean;
@@ -41,7 +42,7 @@ export function HabitatAgentDock({ selected, name, directing, following, onSelec
   } as CSSProperties;
   return <section className="habitat-agent-dock" aria-label="Agent movement and work" style={{ '--identity': station.color } as CSSProperties}>
     <div className="habitat-agent-heading">
-      <span className="habitat-agent-emblem" aria-hidden="true">◉</span>
+      <span className="habitat-agent-emblem" aria-hidden="true"><HeroAgentPortrait id={selected} size="dock" /></span>
       <div><label htmlFor="habitat-agent">Collaborators</label><select id="habitat-agent" value={selected} onChange={e => { setMovement(false); onSelect(e.target.value); }}>{ROSTER.map(a => <option key={a.id} value={a.id}>{a.isHenry ? name : a.name}</option>)}</select></div>
       <Button {...button} variant="bare" className="habitat-subtle" style={{ ...DOCK_PAD, '--pa-btn-pad': '4px', '--pa-btn-fg': colors.textMuted } as CSSProperties} onClick={onInspect}>Details <span aria-hidden="true">↗</span></Button>
     </div>

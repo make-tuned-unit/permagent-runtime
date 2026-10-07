@@ -1,4 +1,4 @@
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { expect, it } from 'vitest';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { Mesh, Texture } from 'three';
@@ -12,8 +12,7 @@ it('gives every real roster identity a unique character brief and silhouette',()
   expect(new Set(Object.values(FORUM_AGENT_PROFILES).map(p=>p.voice)).size).toBe(ROSTER.length);
 });
 it.each(ROSTER.map(a=>a.id))('binds %s forum armor to the existing rig within budget',async(id)=>{
-  const path=`public/world/forum-characters/${id}`;
-  expect(existsSync(`${path}.png`)).toBe(true);
+  const path=`public/world/characters/${id}`;
   const f=readFileSync(`${path}.glb`);
   const gltf=await new GLTFLoader().parseAsync(f.buffer.slice(f.byteOffset,f.byteOffset+f.byteLength),'');
   const armor=decodeBlenderArmor(gltf.scene);

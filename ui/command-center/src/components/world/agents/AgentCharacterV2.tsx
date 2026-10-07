@@ -141,12 +141,12 @@ export function AgentCharacterV2({
   useEffect(() => {
     let mounted = true;
     setArmor(null);
-    loadBlenderArmor(identity.id, armorVariant).then(
+    loadBlenderArmor(identity.id).then(
       value => { if (mounted) setArmor(value); },
       () => { console.warn('[world] Authored character unavailable; retaining live procedural rig'); },
     );
     return () => { mounted = false; };
-  }, [identity.id, armorVariant]);
+  }, [identity.id]);
 
   const rig = useMemo(
     () =>

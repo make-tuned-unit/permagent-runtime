@@ -302,7 +302,8 @@
   min-width:0}
 
 .forum-agent-portrait { display:flex; align-items:center; border-left:2px solid; background:var(--forum-bg); border-radius:var(--forum-radius); margin-bottom:18px; padding:8px 12px; gap:10px; }
-.forum-agent-portrait img { width:100px; height:155px; object-fit:contain; flex-shrink:0; }
+.forum-agent-portrait .hero-agent-portrait { width:220px; height:260px; flex-shrink:0; }
+.hero-agent-portrait canvas { display:block; }
 .forum-agent-portrait .eyebrow { line-height:1.6; font-size:9px; }
 .forum-agent-portrait h3 { font-size:18px; margin:6px 0; }
 .forum-character b { font-size:12px; font-weight:500; }
@@ -723,7 +724,8 @@
 /* Compact collaborators card (~310×135 idle): earlier denser hierarchy, ThemeColors. */
 .habitat-agent-dock { position:absolute; bottom:22px; left:22px; width:310px; max-width:calc(100% - 48px); max-height:calc(100% - 180px); overflow-y:auto; z-index:5; padding:10px 12px 8px; font-size:11px; pointer-events:auto; }
 .habitat-agent-heading { display:flex; align-items:center; gap:8px; }
-.habitat-agent-emblem { width:28px; height:28px; flex-shrink:0; display:grid; place-items:center; border-radius:50%; border:1px solid var(--identity, var(--forum-border-hi)); font-size:15px; color:var(--identity, var(--forum-accent)); background:var(--forum-accent-soft); }
+.habitat-agent-emblem { width:28px; height:28px; flex-shrink:0; display:grid; place-items:center; overflow:hidden; border-radius:50%; border:1px solid var(--identity, var(--forum-border-hi)); color:var(--identity, var(--forum-accent)); background:var(--forum-accent-soft); }
+.habitat-agent-emblem .hero-agent-portrait { width:28px; height:28px; }
 .habitat-agent-heading > div { flex:1; min-width:0; }
 .habitat-agent-heading label { font:600 10px/12px var(--forum-body); letter-spacing:.08em; text-transform:uppercase; color:var(--forum-muted); display:block; margin-bottom:2px; }
 .forum-shell .habitat-agent-heading select { padding:0; border:0; color:var(--forum-text); font:600 14px/18px var(--forum-display); background:transparent; height:20px; cursor:pointer; color-scheme:var(--forum-color-scheme); }

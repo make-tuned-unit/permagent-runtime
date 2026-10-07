@@ -90,6 +90,44 @@ Commit: `8aa3ca13` (`fix(world): correct habitat arrival framing`) succeeded on 
 
 Only frontend source/tests and allowed frontend checks are being used. No cargo, Blender, Unreal, native build, paid generation, push, or live-config change was performed. Free disk was 26 GiB at start. Final build result is recorded below.
 
+## Correction 2 — live hero portraits and arrival spacing
+
+Status: complete in source and frontend checks.
+
+Files changed:
+
+- `ui/command-center/src/components/world/forum/heroRobot.ts`
+- `ui/command-center/src/components/world/forum/HeroAgentPortrait.tsx`
+- `ui/command-center/src/components/world/forum/HeroGardenKit.tsx`
+- `ui/command-center/src/components/world/forum/ForumView.tsx`
+- `ui/command-center/src/components/world/forum/HabitatAgentDock.tsx`
+- `ui/command-center/src/components/world/forum/HabitatAgentDock.test.tsx`
+- `ui/command-center/src/components/world/forum/ForumView.test.tsx`
+- `ui/command-center/src/components/world/forum/forum.css`
+- `ui/command-center/src/components/world/forum/habitatLayout.ts`
+- `ui/command-center/src/components/world/forum/forumAssets.test.ts`
+- `ui/command-center/src/components/world/agents/AgentCharacterV2.tsx`
+- `ui/command-center/src/components/world/agents/blenderArmor.ts`
+- removed `ui/command-center/public/world/forum-characters/` legacy GLB/PNG assets
+
+Portrait behavior: `HeroAgentPortrait` uses the shared `buildHeroRobot` builder and `createAgentWardrobe`, so the Meet tab and collaborator dock use the current hero-kit geometry, material treatment, identity trim, proportions, and accessory variants. The Meet canvas is `220×260` CSS px; the dock renderer is `28×28` CSS px. Both use transparent demand-driven R3F canvases. The portrait has a soft key/fill light and a slow idle head turn; `getReduceMotion()` disables the idle turn. A document visibility listener removes the canvas while the document is hidden. The shared robot teardown disposes cloned materials, custom geometries, wardrobe details, seat details, and the mouth resources on unmount. No continuous `frameloop="always"` was added.
+
+Legacy references: no `forum-characters` string remains under `ui/command-center/src`; the Meet `<img>` and its `onError` fallback were removed. The old forum-character GLB and PNG directory was removed after the loader/test references were moved to `world/characters` or the hero kit.
+
+Arrival camera values: position `[0, 1.60, 6.0]`, target `[-1.1, 1.30, -1.5]`, FOV `72`. This is a `0.707 m` horizontal back/aside move from correction 1's `[-0.5, 1.60, 5.5]`. Reverse arrival remains position `[-1.5, 1.60, 4.5]`, target `[-1.5, 2.0, 10.0]`, FOV `80`; overview remains position `[40, 43, 37]`, target `[0, -3, -12]`, FOV `48`.
+
+Clearance positions retained in `habitatArrival.test.ts`: orchestrator station `[-1.1, 0, 3.1]`; librarian `[-10, 3.4, -19]`; reader `[-6, 3.4, -17]`; watcher `[11, 3.4, -23]`; steward `[10, 3.4, -17]`; strix `[12, 0, -3]`; financier `[-11, 0, -3]`; forecaster `[3, 3.4, -24]`; council `[-1, 3.4, -19]`; polybot `[11, 0, 7]`; picker `[-10, 0, 8]`; growth measurement `[10, 0, -8]`; and the orchestrator table / “Sit with” seat `[-3, 0, 1.1]`. The eye-height range remains `1.55–1.65 m`; the test continues to require at least `2.0 m` horizontal distance from every runtime body and `0.6 m` from every listed solid collider, plus host/table/water frame inclusion and overview/reverse assertions. The updated arrival suite passed.
+
+Checks:
+
+- `npx vitest run src/components/world/forum/ForumView.test.tsx src/components/world/forum/HabitatAgentDock.test.tsx src/components/world/forum/habitatArrival.test.ts --reporter=dot` — passed, 14 tests.
+- `npx vitest run src/components/world/forum/habitatMotion.test.ts --reporter=dot` — passed, 4 tests, 149.24 s.
+- `npx vitest run src/components/world/forum/forumAssets.test.ts src/components/world/agents/blenderArmor.test.ts --reporter=dot` — passed, 28 tests.
+- `npx tsc --noEmit` — exit code 0.
+- `npx vite build` — exit code 0; 3,129 modules transformed; built in 41.47 s. Existing dynamic-import and large-chunk warnings were emitted.
+
+No live browser/native visual review was available in this lane.
+
 ## Final checks
 
 Completed: correction focused tests passed (16 tests); `npx tsc --noEmit` passed (exit code 0); `npx vite build` passed (`3127 modules transformed`, `34.17 s`); `git diff --check` passed; final free disk was 29 GiB. Build emitted the existing dynamic-import and large-chunk warnings. No cargo/Blender/Unreal/native/paid-generation process was run.
