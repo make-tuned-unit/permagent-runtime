@@ -10,7 +10,10 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-pub(crate) const OLLAMA_BASE: &str = "http://localhost:11434";
+/// Where Ollama is: the shared `OLLAMA_HOST`-aware resolver.
+pub(crate) fn ollama_base() -> String {
+    permagent::config::ollama_base_url()
+}
 
 // ── Response types ──────────────────────────────────────────────────
 
@@ -81,8 +84,8 @@ async fn ollama_status() -> Json<OllamaStatus> {
         .build()
         .unwrap_or_default();
 
-    let tags = client.get(format!("{}/api/tags", OLLAMA_BASE)).send().await;
-    let ps = client.get(format!("{}/api/ps", OLLAMA_BASE)).send().await;
+    let tags = client.get(format!("{}/api/tags", ollama_base())).send().await;
+    let ps = client.get(format!("{}/api/ps", ollama_base())).send().await;
 
     let installed = match tags {
         Ok(resp) => resp
@@ -105,7 +108,7 @@ async fn ollama_status() -> Json<OllamaStatus> {
     let reachable = !installed.is_empty() || {
         // If tags returned empty but didn't error, Ollama is reachable
         client
-            .get(format!("{}/api/tags", OLLAMA_BASE))
+            .get(format!("{}/api/tags", ollama_base()))
             .send()
             .await
             .is_ok()
@@ -136,7 +139,7 @@ async fn ollama_warm(
     });
 
     let resp = client
-        .post(format!("{}/api/generate", OLLAMA_BASE))
+        .post(format!("{}/api/generate", ollama_base()))
         .json(&body)
         .send()
         .await
@@ -223,7 +226,7 @@ async fn ollama_pull(
         .map_err(|e| ErrorResponse::internal(format!("HTTP client error: {}", e)))?;
 
     let resp = client
-        .post(format!("{}/api/pull", OLLAMA_BASE))
+        .post(format!("{}/api/pull", ollama_base()))
         .json(&serde_json::json!({ "name": req.model, "stream": true }))
         .send()
         .await

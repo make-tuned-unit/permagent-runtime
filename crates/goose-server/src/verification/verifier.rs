@@ -12,8 +12,11 @@ use std::sync::LazyLock;
 
 use super::checks::{CheckResult, CheckStatus};
 
-/// Default Ollama base URL (loopback only — zero cloud tokens by construction).
-pub const OLLAMA_BASE_URL: &str = "http://localhost:11434";
+/// Ollama base URL, from the shared `OLLAMA_HOST`-aware resolver (loopback by
+/// default; the verification checks refuse non-loopback hosts).
+pub fn ollama_base_url() -> String {
+    permagent::config::ollama_base_url()
+}
 /// Default verifier model when no config override exists.
 pub fn default_verifier_model() -> String {
     permagent::config::local_default_model()

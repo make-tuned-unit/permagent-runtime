@@ -266,7 +266,8 @@ fn probe_model_loaded(model: &str) -> (bool, Option<String>) {
 fn probe_model_loaded_on_this_thread(model: &str) -> (bool, Option<String>) {
     // Synchronous HTTP check against Ollama's local API.
     // Uses a short timeout since Ollama should be local.
-    let url = "http://localhost:11434/api/tags";
+    let base = crate::config::ollama_base_url();
+    let url = format!("{base}/api/tags");
     let client = match reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(2))
         .build()
@@ -280,12 +281,12 @@ fn probe_model_loaded_on_this_thread(model: &str) -> (bool, Option<String>) {
         }
     };
 
-    let resp = match client.get(url).send() {
+    let resp = match client.get(&url).send() {
         Ok(r) => r,
         Err(_) => {
             return (
                 false,
-                Some("Ollama not reachable at localhost:11434".to_string()),
+                Some(format!("Ollama not reachable at {base}")),
             )
         }
     };

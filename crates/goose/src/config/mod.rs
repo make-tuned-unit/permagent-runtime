@@ -92,6 +92,18 @@ pub fn ollama_host() -> String {
     )
 }
 
+/// The ONE resolver for the local Ollama base URL (`http://host:port`, no
+/// trailing slash). Honours `OLLAMA_HOST` (environment first, then
+/// `config.yaml`, the same lookup the `ollama` provider uses); a bare host gets
+/// `http://`, and `localhost` gets the default port. With nothing set it is
+/// `http://localhost:11434`. Every caller that needs "where is Ollama" should
+/// use this rather than spelling the address.
+pub fn ollama_base_url() -> String {
+    crate::cost_router::recommend::ollama_base_url(
+        Config::global().get_param::<String>("OLLAMA_HOST").ok(),
+    )
+}
+
 /// Optional Librarian-only inference endpoint (`PERMAGENT_LIBRARIAN_ENDPOINT`).
 ///
 /// When set, the Librarian's describe passes go here instead of the mesh

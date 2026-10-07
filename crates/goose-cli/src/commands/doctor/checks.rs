@@ -5,9 +5,6 @@ use permagent::session::spectral_schema::SPECTRAL_SCHEMA_VERSION;
 use std::path::PathBuf;
 use std::time::Duration;
 
-const OLLAMA_BASE_URL: &str = "http://localhost:11434";
-const DEFAULT_LIBRARIAN_MODEL: &str = "qwen2.5:7b";
-
 pub async fn run_all() -> Vec<CheckResult> {
     let mut results = Vec::new();
 
@@ -687,7 +684,7 @@ fn check_memory_db() -> CheckResult {
 
 async fn check_ollama() -> CheckResult {
     let model = resolve_librarian_model();
-    check_ollama_at(OLLAMA_BASE_URL, &model).await
+    check_ollama_at(&permagent::config::ollama_base_url(), &model).await
 }
 
 /// Testable core: check Ollama reachability and model presence at a given base URL.
@@ -1195,7 +1192,7 @@ fn resolve_librarian_model() -> String {
             }
         }
     }
-    DEFAULT_LIBRARIAN_MODEL.to_string()
+    permagent::config::local_default_model()
 }
 
 async fn http_get(url: &str, bearer: Option<&str>) -> Result<u16, String> {
