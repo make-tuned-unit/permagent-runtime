@@ -1737,7 +1737,17 @@ export const api = {
 
   /** Compact History header — GET /api/sessions/insights: total session count
    *  and total tokens across all of them. */
-  getSessionInsights: () => apiFetch<{ total_sessions: number; total_tokens: number }>('/api/sessions/insights'),
+  getSessionInsights: async (): Promise<{ total_sessions: number; total_tokens: number }> => {
+    // The daemon serialises SessionInsights as camelCase (totalSessions /
+    // totalTokens); older builds and tests use snake_case. Accept both and
+    // never hand the UI an undefined number.
+    const r = await apiFetch<Record<string, unknown>>('/api/sessions/insights');
+    const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+    return {
+      total_sessions: num(r?.totalSessions ?? r?.total_sessions),
+      total_tokens: num(r?.totalTokens ?? r?.total_tokens),
+    };
+  },
 
   /** Fork a session — POST /api/sessions/{id}/fork. `copy: true` duplicates the
    *  whole conversation into a new session id rather than truncating this one,

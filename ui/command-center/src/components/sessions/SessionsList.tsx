@@ -399,8 +399,8 @@ export function SessionsList({ onClose }: { onClose?: () => void } = {}) {
               data-testid="sessions-insights"
               style={{ fontSize: textSize.micro, color: colors.textMuted, fontFamily: font.body }}
             >
-              <span style={tabularNums}>{insights.total_sessions.toLocaleString()}</span> total ·{' '}
-              <span style={tabularNums}>{formatCompact(insights.total_tokens)}</span> tokens
+              <span style={tabularNums}>{(insights.total_sessions ?? 0).toLocaleString()}</span> total ·{' '}
+              <span style={tabularNums}>{formatCompact(insights.total_tokens ?? 0)}</span> tokens
             </span>
           )}
         </span>
