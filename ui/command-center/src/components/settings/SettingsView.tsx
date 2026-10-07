@@ -5,7 +5,7 @@ import {
 } from 'react-icons/fi';
 import { useCommandCenter, navigateToTool } from '../../lib/store';
 import { emitActivity } from '../../lib/emitActivity';
-import { api, apiFetch, type SovereigntyStatus, type EgressLogEntry, type DeviceInfo, type CrashExportResponse, type ResolvedModelRoute } from '../../lib/api';
+import { api, apiFetch, getApiBaseUrl, type SovereigntyStatus, type EgressLogEntry, type DeviceInfo, type CrashExportResponse, type ResolvedModelRoute } from '../../lib/api';
 import { concentric, font, radius, setDensity as setDensityFn, setIdleAnim, setMobiusGlow, setReduceMotion as setReduceMotionFn, setTheme as setThemeFn, space, type IdleAnim, type ThemePref, type UIDensity, textSize, type } from '../../styles/tokens';
 import { useTheme as useThemeHook } from '../../styles/useTheme';
 import { Mobius } from '../mobius/Mobius';
@@ -1804,7 +1804,7 @@ function PairingQrCode({ value, size = 112 }: { value: string; size?: number }) 
 function DevicesPanel() {
   const { colors } = useThemeHook();
   const agentName = useCommandCenter(s => s.agentName);
-  const [host, setHost] = useState('your-mac.tailnet-name.ts.net');
+  const [host, setHost] = useState('');
   const [copied, setCopied] = useState(false);
   const [tailnet, setTailnet] = useState<{ installed: boolean; running: boolean; magic_dns_name: string | null } | null>(null);
   // Reachability is TWO facts: what the user asked for (`enabled`, persisted)
@@ -1851,7 +1851,20 @@ function DevicesPanel() {
   }, []);
   // The pairing URL carries a one-time claim code — never a bearer token
   // (#628). It is minted on demand below and goes inert after one use.
-  const remoteBase = access?.serve_url ?? (host ? `http://${host}:3001` : null);
+  // Never a placeholder host: with no tailnet name the link falls back to the
+  // address this hub is actually reachable at (the page's own origin in a
+  // browser, loopback in the app), and says it only works from there.
+  const typedHost = host.trim();
+  const hubFallbackBase = (() => {
+    const api = getApiBaseUrl();
+    if (api) return api;
+    if (typeof window !== 'undefined' && !('__TAURI_INTERNALS__' in window) && window.location.origin.startsWith('http')) {
+      return window.location.origin;
+    }
+    return 'http://127.0.0.1:3001';
+  })();
+  const usingFallbackBase = !access?.serve_url && !typedHost;
+  const remoteBase = access?.serve_url ?? (typedHost ? `http://${typedHost}:3001` : hubFallbackBase);
   const pairingUrl = claim && remoteBase ? `${remoteBase}/ui/#claim=${claim.code}` : null;
   const isHub = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
   const [detail, setDetail] = useState(0); // progressive disclosure depth
@@ -2058,7 +2071,9 @@ function DevicesPanel() {
           label="Hub address"
           hint={access?.serve_url
             ? 'Using the detected tailnet address — the pairing URL is built from it, so there is nothing to type here.'
-            : "Your machine's Tailscale MagicDNS name (auto-filled when the tailnet is detected)."}
+            : usingFallbackBase
+              ? `No tailnet detected — links use ${hubFallbackBase}, which only works on this machine or network. Enter a MagicDNS name for other devices.`
+              : "Your machine's Tailscale MagicDNS name (auto-filled when the tailnet is detected)."}
         >
           {/* With tailnet access on, remoteBase prefers access.serve_url and
               this input is inert — disable it and say why, instead of letting
@@ -2183,10 +2198,20 @@ export function SettingsView() {
   const pane = paneForSection(section);
   const Panel = PANELS[pane];
   const { gradient, colors } = useThemeHook();
+  // Focus lands in the scroll container on open and on every pane switch, so
+  // Page Down / Space / arrows scroll the pane (QA 2026-10-07 Q4: in the native
+  // webview focus stayed on <body> and the keys did nothing). Only taken from
+  // <body> or the section rail, never from a field the user is typing in.
+  const scrollRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const active = document.activeElement;
+    if (active && active !== document.body && !active.closest('[data-settings-rail]')) return;
+    scrollRef.current?.focus({ preventScroll: true });
+  }, [section]);
 
   return (
     <div style={{ width: '100%', height: '100%', display: 'flex', background: gradient.shell, color: colors.text, fontFamily: font.body }}>
-      <div style={{ width: 240, borderRight: `1px solid ${colors.border}`, background: gradient.navRail, padding: `${space.huge}px 14px`, overflow: 'auto', flexShrink: 0 }}>
+      <div style={{ width: 240, borderRight: `1px solid ${colors.border}`, background: gradient.navRail, padding: `${space.huge}px 14px`, overflow: 'auto', flexShrink: 0 }} data-settings-rail>
         <div style={{ ...type.heading, fontFamily: font.display, padding: `0 ${space.lg}px ${space.xxxl}px` }}>Settings</div>
         {CATEGORIES.map(cat => (
           <div key={cat.group} style={{ marginBottom: space.xxl }}>
@@ -2234,7 +2259,7 @@ export function SettingsView() {
           gutters answer to it (`.pa-set-body` in atoms.tsx) rather than to a
           viewport media query. `minWidth: 0` lets it shrink below its
           content's width instead of widening the pane. */}
-      <div style={{ flex: 1, minWidth: 0, overflow: 'auto', containerType: 'inline-size' }}>
+      <div ref={scrollRef} tabIndex={-1} data-testid="settings-scroll" style={{ flex: 1, minWidth: 0, overflow: 'auto', containerType: 'inline-size', outline: 'none' }}>
         <div className="pa-set-body">
           {/* `section`, not `pane` — History needs the segment the caller asked
               for, and every other panel ignores it. */}

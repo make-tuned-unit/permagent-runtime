@@ -47,6 +47,19 @@ export function rememberedAgent(projectId: string): string {
   return CODING_AGENTS[0].id;
 }
 
+/** The daemon stores `evidence` / `recommendation` cut at a fixed character
+ *  count (routes/growth_actions.rs: 400 / 600), which lands mid-word ("522
+ *  entry se"). A string that reached the cap and does not end a sentence is
+ *  shown trimmed back to the last whole word with an ellipsis. QA 2026-10-07
+ *  Q14; the cut itself is a daemon-side change. */
+const EVIDENCE_CAP = 400;
+const RECOMMENDATION_CAP = 600;
+export function tidyClipped(text: string, cap: number): string {
+  if (text.length < cap || /[.!?)"'\u2019\u201d]$/.test(text.trimEnd())) return text;
+  const cut = text.slice(0, text.lastIndexOf(' '));
+  return cut.length > cap / 2 ? `${cut.replace(/[\s,;:–—-]+$/, '')}…` : text;
+}
+
 export function ActionCard({
   project, action, colors, lane, onChanged, showCategory = true,
 }: {
@@ -311,10 +324,10 @@ export function ActionCard({
         <div style={{
           fontSize: textSize.micro, color: colors.textDim, fontFamily: font.mono,
           borderLeft: `2px solid ${colors.border}`, paddingLeft: space.md, marginBottom: space.sm,
-        }}>{action.evidence}</div>
+        }}>{tidyClipped(action.evidence, EVIDENCE_CAP)}</div>
       )}
       <div style={{ fontSize: textSize.small, color: colors.textMuted, lineHeight: 1.5 }}>
-        {action.recommendation}
+        {tidyClipped(action.recommendation, RECOMMENDATION_CAP)}
       </div>
 
       {/* Ordered steps: an action nobody knows how to start is an observation

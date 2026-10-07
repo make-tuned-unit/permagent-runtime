@@ -571,6 +571,25 @@ export function ProjectKanban({ project }: { project: Project }) {
     });
   }, []);
 
+  // Horizontal overflow of the board itself: at narrow widths the last columns
+  // (Review / Done) sit past the right edge with nothing saying so (QA
+  // 2026-10-07 Q20). A hard edge plus a "more columns" control appears while
+  // there is more to the right.
+  const boardScrollRef = useRef<HTMLDivElement>(null);
+  const [moreRight, setMoreRight] = useState(false);
+  const noteBoardOverflow = useCallback((el: HTMLDivElement) => {
+    setMoreRight(el.scrollWidth - el.clientWidth - el.scrollLeft > 4);
+  }, []);
+  useEffect(() => {
+    const el = boardScrollRef.current;
+    if (!el) return;
+    noteBoardOverflow(el);
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => noteBoardOverflow(el));
+    ro.observe(el);
+    return () => ro.disconnect();
+  });
+
   // Pointer-based card drag (bypasses HTML5 DnD which Tauri's native layer consumes)
   const [draggingCard, setDraggingCard] = useState<string | null>(null);
   const [ghostPos, setGhostPos] = useState<{ x: number; y: number } | null>(null);
@@ -783,8 +802,20 @@ export function ProjectKanban({ project }: { project: Project }) {
 
   if (loading) {
     return (
-      <div style={{ width: '100%', height: '100%', display: 'grid', placeItems: 'center', background: gradient.workspace, color: colors.textMuted, fontFamily: font.body, fontSize: textSize.small }}>
-        Loading board...
+      <div
+        role="status"
+        aria-label="Loading board"
+        style={{ width: '100%', flex: 1, minHeight: 0, display: 'flex', gap: space.lg, padding: space.xxl, background: gradient.workspace, boxSizing: 'border-box' }}
+      >
+        {/* Skeleton in the board's own final shape: columns with card blocks. */}
+        {[3, 2, 2, 1].map((n, c) => (
+          <div key={c} style={{ flex: 1, minWidth: 200, background: colors.bgDeeper, borderRadius: COLUMN_RADIUS, padding: COLUMN_INSET, display: 'flex', flexDirection: 'column', gap: space.sm }}>
+            <div style={{ width: 90, height: 12, borderRadius: radius.xs, background: colors.border, margin: space.md }} />
+            {Array.from({ length: n }, (_, i) => (
+              <div key={i} style={{ height: 64, borderRadius: radius.md, background: colors.surface, border: `1px solid ${colors.border}` }} />
+            ))}
+          </div>
+        ))}
       </div>
     );
   }
@@ -819,7 +850,12 @@ export function ProjectKanban({ project }: { project: Project }) {
   return (
     <div style={{ width: '100%', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', background: gradient.workspace, color: colors.text, fontFamily: font.body }}>
       {/* Kanban columns */}
-      <div style={{ flex: 1, display: 'flex', gap: space.lg, padding: space.xxl, overflow: 'auto' }}>
+      <div style={{ flex: 1, minHeight: 0, position: 'relative', display: 'flex' }}>
+      <div
+        ref={boardScrollRef}
+        onScroll={e => noteBoardOverflow(e.currentTarget)}
+        style={{ flex: 1, display: 'flex', gap: space.lg, padding: space.xxl, overflow: 'auto' }}
+      >
         {columns.map(col => {
           const colCards = cards.filter(c => c.columnId === col.id).sort((a, b) => a.position - b.position);
           const isOver = dragOverCol === col.id;
@@ -989,6 +1025,27 @@ export function ProjectKanban({ project }: { project: Project }) {
             </div>
           );
         })}
+      </div>
+      {moreRight && (
+        <div style={{ position: 'absolute', top: 0, right: 0, bottom: 0, width: 1, background: colors.borderHi, pointerEvents: 'none' }}>
+          <Button
+            colors={colors}
+            variant="bare"
+            flashSuccess={false}
+            aria-label="Show more columns"
+            onClick={() => boardScrollRef.current?.scrollBy({ left: Math.round((boardScrollRef.current?.clientWidth ?? 0) / 2), behavior: reduceMotion ? 'auto' : 'smooth' })}
+            style={{
+              position: 'absolute', right: space.md, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'auto',
+              '--pa-btn-fg': colors.textMuted, '--pa-btn-fg-hover': colors.text,
+              '--pa-btn-pad': `${space.sm}px ${space.md}px`, '--pa-btn-radius': `${radius.pill}px`,
+              background: colors.surface, border: `1px solid ${colors.border}`,
+              fontSize: textSize.micro, fontFamily: font.body,
+            } as CSSProperties}
+          >
+            More columns ›
+          </Button>
+        </div>
+      )}
       </div>
 
       {/* Card detail (#503 sibling) — opened by a click that did not drag. */}

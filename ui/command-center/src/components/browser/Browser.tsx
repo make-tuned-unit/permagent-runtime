@@ -52,6 +52,10 @@ let apiPromise: Promise<TauriApi | null> | null = null;
 
 function getTauriApi(): Promise<TauriApi | null> {
   if (cachedApi) return Promise.resolve(cachedApi);
+  // No IPC bridge (a plain browser tab, e.g. the dev server): the Tauri module
+  // imports fine but every `listen` throws `transformCallback` of undefined.
+  // Behave as "not under Tauri" instead (QA 2026-10-07 Q6).
+  if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) return Promise.resolve(null);
   if (!apiPromise) {
     apiPromise = (async () => {
       try {
@@ -547,6 +551,7 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
     const windowUnlisteners: Array<() => void> = [];
     (async () => {
       try {
+        if (!('__TAURI_INTERNALS__' in window)) return;
         const { getCurrentWindow } = await import('@tauri-apps/api/window');
         const win = getCurrentWindow();
         const onWindowSignal = async () => {

@@ -1062,7 +1062,10 @@ export function AutomateView() {
 
         {/* ── LEARNED ── */}
         <Section id="learned" title="Learned" count={filteredSkills.length + filteredProposals.length}>
-          {skillsLoading ? (
+          {skillsLoading && filteredSkills.length === 0 && filteredProposals.length === 0 ? (
+            // Only the FIRST load shows a placeholder: a revisit keeps the
+            // skills already in the store on screen while it refreshes (QA
+            // 2026-10-07 Q23: "Loading…" forever on the second visit).
             <div style={{ fontSize: textSize.caption, color: colors.textDim }}>Loading...</div>
           ) : filteredSkills.length === 0 && filteredProposals.length === 0 ? (
             <div style={{
@@ -1917,14 +1920,15 @@ export function RunDetail({ run, displayName, lastStatus, starterId }: {
       )}
       {!loading && isStorageCleanup && ledgerState === 'missing' && findings.length === 0 && rejected.length === 0 && (
         <div style={{ marginBottom: space.lg }}>
-          <button
+          <Button
+            colors={colors}
             type="button"
             disabled={recovering}
             onClick={() => { void recoverSavedScan(); }}
             style={{ fontFamily: font.body, fontSize: textSize.caption, fontWeight: 600 }}
           >
             {recovering ? 'Recovering saved scan results…' : 'Recover saved scan results'}
-          </button>
+          </Button>
         </div>
       )}
       {!loading && recoverError && (

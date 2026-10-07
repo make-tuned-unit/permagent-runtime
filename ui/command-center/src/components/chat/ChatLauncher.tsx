@@ -5,12 +5,19 @@ import { api } from '../../lib/api';
 import { useTheme } from '../../styles/useTheme';
 import { useCommandCenter } from '../../lib/store';
 import { useGlass } from '../common/Glass';
+import { Tooltip } from '../common/Tooltip';
 
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
 // Distance from the viewport's bottom/right edges. The Browser derives the
 // launcher's reserved corner from this anchor + the published size (#553).
 export const CHAT_LAUNCHER_MARGIN = 20;
+
+/** Below this window width the pill is icon-only. The labelled capsule is ~190px
+ *  wide and, at 1244px, sat over Settings buttons, Finance rows and project
+ *  tags (QA 2026-10-07 Q3/Q17); a 44px circle covers a quarter of that. The
+ *  published size follows, so the World/Browser corner reservations stay right. */
+export const CHAT_LAUNCHER_COMPACT_BELOW = 1360;
 
 // ── B2: never cover a footer ────────────────────────────────────────────────
 // The scroll-clearance mechanism below only ever finds SCROLLING regions
@@ -138,6 +145,14 @@ export function ChatLauncher() {
   const buttonRef = useRef<HTMLButtonElement>(null);
   const [pillHeight, setPillHeight] = useState<number | null>(null);
   const visible = !(chatWindowOpen || chatDockOpen);
+  const [compact, setCompact] = useState(
+    () => typeof window !== 'undefined' && window.innerWidth < CHAT_LAUNCHER_COMPACT_BELOW,
+  );
+  useEffect(() => {
+    const onResize = () => setCompact(window.innerWidth < CHAT_LAUNCHER_COMPACT_BELOW);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
 
   // Publish the pill's measured size so the Browser can subtract its corner
   // from the native webview bounds (#553). ResizeObserver fires only on real
@@ -424,8 +439,10 @@ export function ChatLauncher() {
   return (
     <>
     <style data-testid="chat-launcher-clearance">{clearanceRule}</style>
+    <Tooltip content={`Chat with ${agentName}`} disabled={!compact} placement="left">
     <button
       ref={buttonRef}
+      aria-label={`Chat with ${agentName}`}
       onClick={openChatWindow}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => { setHovered(false); setPressed(false); }}
@@ -434,7 +451,7 @@ export function ChatLauncher() {
       style={{
       position: 'fixed', bottom: CHAT_LAUNCHER_MARGIN + footerInset, right: CHAT_LAUNCHER_MARGIN, zIndex: 9999,
       display: 'flex', alignItems: 'center', gap: space.lg,
-      padding: `${space.xl}px ${space.xxxl}px`,
+      padding: compact ? `${space.xl}px` : `${space.xl}px ${space.xxxl}px`,
       // Capsule, and it is the one control in the app that has earned one:
       // Tahoe rounds LARGE and extra-large prominent controls into capsules and
       // keeps dense ones as rounded rectangles (D5). This is the single
@@ -470,8 +487,9 @@ export function ChatLauncher() {
         : `transform ${duration.snappy}ms ${ease.snappy}, border-color ${duration.fast}ms ${ease.smooth}`,
     }}>
       <FiMessageSquare size={16} />
-      Chat with {agentName}
+      {!compact && <>Chat with {agentName}</>}
     </button>
+    </Tooltip>
     </>
   );
 }

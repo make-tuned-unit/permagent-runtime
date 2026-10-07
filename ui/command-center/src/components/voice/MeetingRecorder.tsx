@@ -342,7 +342,23 @@ export function MeetingRecorder({ open }: { open: boolean }) {
       {/* Confirm-first project picker. */}
       {pickerOpen && createPortal(
         <div
-          onMouseDown={e => { if (e.target === e.currentTarget) { setPickerOpen(false); setFilter(''); } }}
+          onMouseDown={e => {
+            if (e.target !== e.currentTarget) return;
+            // The scrim covers the rail too, so a click on a nav row used to
+            // only dismiss the modal and leave the nav highlighting a view the
+            // content never switched to (QA 2026-10-07 Q16). Close, then hand
+            // the click to whatever is under the pointer.
+            const { clientX, clientY } = e;
+            const scrim = e.currentTarget;
+            setPickerOpen(false);
+            setFilter('');
+            const under = document.elementsFromPoint(clientX, clientY).find(el => el !== scrim && !scrim.contains(el));
+            const target = under?.closest('button, a, [role="button"]') as HTMLElement | null;
+            if (target && target.closest('[data-pa-rail]')) {
+              // After the portal unmounts, so the nav sees a clean page.
+              setTimeout(() => target.click(), 0);
+            }
+          }}
           style={{
             position: 'fixed', inset: 0, zIndex: 1000,
             // The theme's own scrim. `rgba(0,0,0,0.45)` is a blackout on the

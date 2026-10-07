@@ -36,6 +36,22 @@ function readMode(): PeopleMode {
   }
 }
 
+/** One calendar import per mount. A dev double-invoked effect (StrictMode) or a
+ *  quick remount shares the in-flight/just-finished request instead of POSTing
+ *  again; an explicit retry (`force`) always sends a new one. */
+let calendarImportRun: { at: number; promise: Promise<{ imported: number }> } | null = null;
+const CALENDAR_IMPORT_REUSE_MS = 2000;
+function importCalendarOnce(force: boolean): Promise<{ imported: number }> {
+  const now = Date.now();
+  if (!force && calendarImportRun && now - calendarImportRun.at < CALENDAR_IMPORT_REUSE_MS) {
+    return calendarImportRun.promise;
+  }
+  const promise = apiFetch<{ imported: number }>('/api/people/calendar/import', { method: 'POST' });
+  calendarImportRun = { at: now, promise };
+  promise.catch(() => { if (calendarImportRun?.promise === promise) calendarImportRun = null; });
+  return promise;
+}
+
 export function PeopleView() {
   const { gradient } = useTheme();
   const [mode, setMode] = useState<PeopleMode>(readMode);
@@ -60,7 +76,7 @@ export function PeopleView() {
     setCalendar({ phase: 'importing' });
     (async () => {
       try {
-        const res = await apiFetch<{ imported: number }>('/api/people/calendar/import', { method: 'POST' });
+        const res = await importCalendarOnce(calendarRun > 0);
         if (cancelled) return;
         const imported = Number(res?.imported) || 0;
         setCalendar({ phase: 'done', imported, at: Date.now() });

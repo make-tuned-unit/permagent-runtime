@@ -65,6 +65,27 @@ function formatCost(usd: number | null): string {
   return usd == null ? '—' : `$${usd.toFixed(2)}`;
 }
 
+/** A run's readable title. The daemon titles runs by the first words of the
+ *  prompt, so many read as a bare label ("REAL ISSUE:", "DIFF:"). Use the title
+ *  only when it is a real phrase; otherwise the first sentence of the prompt
+ *  digest; otherwise "project · when it started" (QA 2026-10-07 Q13). */
+export function runTitle(run: Pick<HarnessRunView, 'promptTitle' | 'promptDigest' | 'project' | 'startedAt'>): string {
+  const real = (t: string | null | undefined) => {
+    const v = (t ?? '').trim();
+    return v.split(/\s+/).filter(Boolean).length >= 3 && !/[:：]$/.test(v) ? v : null;
+  };
+  const fromTitle = real(run.promptTitle);
+  if (fromTitle) return fromTitle;
+  const sentence = (run.promptDigest ?? '').replace(/\s+/g, ' ').trim().split(/(?<=[.!?])\s/)[0];
+  const fromDigest = real(sentence);
+  if (fromDigest) return fromDigest.length > 120 ? `${fromDigest.slice(0, 117).replace(/\s+\S*$/, '')}…` : fromDigest;
+  const when = new Date(run.startedAt);
+  const stamp = Number.isNaN(when.getTime())
+    ? ''
+    : ` · ${when.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}`;
+  return `${run.project || 'Run'}${stamp}`;
+}
+
 export function RecentRunsPanel() {
   const { colors } = useTheme();
   const switchToSession = useCommandCenter(s => s.switchToSession);
@@ -152,7 +173,7 @@ export function RecentRunsPanel() {
                     flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                     fontSize: textSize.caption, color: colors.text,
                   }}>
-                    {run.promptTitle || run.project}
+                    {runTitle(run)}
                   </span>
                   <span style={{ fontSize: textSize.micro, color: colors.textMuted, fontFamily: font.mono, flexShrink: 0 }}>
                     {formatDuration(run.elapsedMs)}

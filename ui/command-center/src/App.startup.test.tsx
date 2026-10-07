@@ -118,6 +118,18 @@ describe('startup config contract', () => {
     expect(container.querySelector('[data-testid="wizard"]')).toBeNull();
   });
 
+  it('says an unpaired browser is unpaired', async () => {
+    const { setDaemonTokenError, resetDaemonTokenError } = await import('./lib/daemonAuth');
+    setDaemonTokenError('This browser is not paired with the daemon. Pair this device from Settings → Devices.');
+    mocks.getConfig.mockRejectedValue(Object.assign(new Error('unpaired'), { status: 401 }));
+    await enterLoading();
+    const text = container.querySelector('[data-testid="state-block"]')?.textContent ?? '';
+    expect(text).toContain("This browser isn't paired");
+    expect(text).toContain('Settings → Devices');
+    expect(text).not.toContain('not a first-run state');
+    resetDaemonTokenError();
+  });
+
   it('keeps malformed config distinct from first-run config', async () => {
     expect(classifyStartupConfig({ config: null })).toBe('malformed');
     expect(classifyStartupConfig({ config: { wizard_complete: 'false' } })).toBe('malformed');

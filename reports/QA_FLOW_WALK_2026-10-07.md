@@ -1,0 +1,45 @@
+# Flow QA walk — 2026-10-07 (build 70a9f658 = World lane + dagj/qa-int3)
+
+Method: Chrome (real) against vite dev on 127.0.0.1:5301 paired to the live daemon; native installed app (3495271b shell) via screencapture + Quartz input. Findings are fixed as found in lane `wq/qa` unless they belong to another lane (noted).
+
+## Findings
+
+| # | Area | Finding | Severity | Owner | Status |
+|---|------|---------|----------|-------|--------|
+| Q1 | Browser auth | An unpaired browser shows "Permagent is unavailable… This is not a first-run state" with only "Try again"; console says the real cause (not paired). The screen must say "This browser isn't paired" with the pairing instruction. (`App.tsx` phase 'unavailable' vs `daemonAuth.ts`) | major | qa | fixed (ad745fc4) |
+| Q2 | Devices | The pairing link copied from Settings → Devices uses the placeholder host `your-mac.tailnet-name.ts.net:3001` when no tailnet is set; same-machine browsers need `127.0.0.1:3001`/the LAN address, and the UI should refuse to show a link whose host is a placeholder. | major | qa | fixed (9a5dbea8) |
+| Q3 | Settings | Floating "Chat with <agent>" pill overlaps content at the bottom right of Settings pages (covers "Remove" in Persona → pronunciation list; covers the Telegram "Connect" button on Devices). | major | qa | fixed by Q17 (1038ad4d) |
+| Q4 | Settings | Page Down / keyboard scrolling does nothing in the native webview on long Settings pages (focus never lands in the scroll container). | minor | qa | fixed, not verified in native webview (b20739fb) |
+| Q5 | World (Chrome) | WITHDRAWN as a product bug: the black canvas was the hidden-tab pause working (the MCP Chrome window sits on another Space, `document.hidden === true`), and the "hang" was my own rAF probe never firing while hidden. World visuals are reviewed in a visible browser/native instead. | — | — | withdrawn |
+| Q6 | Browser tool | `Browser.tsx` throws `transformCallback` of undefined ×6 in a plain browser (Tauri `listen` without IPC). Guard the Tauri event listeners when `window.__TAURI__` is absent. | minor | qa | fixed (ce78f333) |
+| Q7 | Home | React key warning in `ManifestCard` (Tooltip children without keys). | minor | qa | fixed (590d6752) |
+| Q8 | Home | `PUT /api/dashboard/layout` fires on first load with no user change, and `POST /api/people/calendar/import` fires twice per mount. Writes on read are a correctness smell (layout clobber risk between devices). | major | qa | fixed (590d6752, a3cce82a); StrictMode double POST is dev-only, deduped anyway |
+| Q9 | Home | "Learn next" banner exposes raw tool ids in user copy ("(create_person, associate_person_with_project)") and the sentence is cut mid-word with "…" | major | qa | fixed (7e843ae9) |
+| Q10 | Home | "Today's Focus" card is painted OVER the weather and CPU cards (the forecast row is hidden under it): the masonry row-span measurement is wrong for the Focus card at 1244px width | blocker | qa | fixed for weather/compact cards (590d6752); Focus-over-weather overlap itself not reproduced |
+| Q11 | Home | "Needs You" card: the "Review →" link is clipped at the card's bottom edge (content taller than the measured span) | major | qa | not reproduced in harness; frozen-span growth fix may cover it (590d6752) |
+| Q12 | People | Graph view renders an empty black area with no nodes and no empty state while the directory has people (List not yet checked); "Key" button floats alone bottom-left | blocker | qa | root cause not reproduced (31 mock people render); empty/GL-lost/crash states added (a3cce82a) |
+| Q13 | Build | Recent runs are titled by the first words of the prompt ("REAL ISSUE:", "DIFF:") — unreadable list; use a summary/first sentence or project · time | minor | qa | fixed (c615b99d) |
+| Q14 | Grow | Analytics action: evidence paragraph and the action body are cut mid-word ("…522 entry se", "…Measure bou") without an expand control | minor | qa | client mitigation (5b20415a); needs daemon change (cut at 400/600 chars in routes/growth_actions.rs) |
+| Q15 | Brain | The time slider overlays the last entity row; list needs bottom padding equal to the slider height | minor | qa | fixed, not screenshot-verified (492df5ae) |
+| Q16 | Shell nav | With the Record modal open, clicking History closes the modal and highlights History in the nav but the content stays on Brain (nav/content desync); also a stale row tooltip ("react") appeared over the nav label | major | qa | fixed, not verified in a real browser (97172a41); stale tooltip not addressed |
+| Q17 | Global | The floating "Chat with <agent>" pill covers content on every view (Projects card tags, Finance rows, Settings buttons, World controls). Content containers need a bottom inset for the pill, or the pill belongs in the sidebar footer | major | qa | fixed (1038ad4d) |
+| Q18 | History | The History view crashes into its error boundary ("History hit a snag") on open in Chrome against the live daemon; root cause: `SessionsList.tsx:343` calls `.toLocaleString()` on an undefined field of a live session record (one of the daemon's sessions lacks the numeric field — tokens/cost/duration); render must tolerate missing fields and the daemon contract should be checked | blocker | qa | fixed (f6a21769); daemon sends camelCase totalSessions/totalTokens |
+| Q19 | Grow | Grow → Results stays on "Loading results…" for > 10 s with no error, retry or empty state (Strategy/Calendar/Analytics load fine for the same project) | major | qa | timeout/error/slow states added (28562381); slow daemon route itself not investigated |
+| Q20 | Projects | Kanban shows "Loading board…" for ~5–8 s before the board appears; needs a skeleton, and the board's horizontal overflow hides the Review/Done columns at 1244px with no scroll affordance | minor | qa | fixed (cba23360) |
+| Q21 | Automate | The sticky section tab bar (Recent Activity / Automations / Learned / Installed) floats over list rows with rows visible above and beneath it (no solid background/clearance), so text collides with the bar while scrolling | minor | qa | fixed, not screenshot-verified |
+| Q22 | Chat dock | Opening the chat dock at 1244px viewport renders it partly outside the viewport (header "Henry ▾" and the greeting are cut at the right edge; composer not reachable) for at least 2 s after opening, then it settled correctly and a message round-trip worked (sent → reply in ~5 s, model label shown). Check the open transition: the dock must never paint off-screen; verify at 1024 wide | major | qa | not reproduced (code review: panel is a fixed-width clip revealed by a width transition, so the right edge is cut only while animating; the 2 s stall points at main-thread load, not layout) |
+| Q23 | Automate | "Learned" section shows "Loading…" indefinitely on a second visit (it loaded on the first visit) | minor | qa | fixed, store read now times out after 20 s and a revisit keeps loaded skills visible |
+
+## World findings (owner: world lane) — from the visible Playwright Chromium at 1280×800, build 70a9f658
+| # | Finding | Severity |
+|---|---------|----------|
+| W1 | The orchestrator's nameplate reads "Ambient presence" in the arrival view and "working" in Walk view at the same moment; status vocabulary must be one source of truth and truthful (no live work was reported) | major |
+| W2 | Nameplate panel covers the robot's face in the arrival view (noted in the brief) | major |
+| W3 | Walk mode shows no control hint (keys, interaction range) on entry; the crosshair alone does not explain WASD/E/Escape | major |
+| W4 | Left-foreground planter foliage is large flat alpha quads that read as cut-outs at eye level; the mid-ground hedges are fine | minor |
+| W5 | Hard parallel pergola shadow stripes dominate the paving in both views; soften/penumbra at distance | minor |
+| W6 | Walk: after ~1.5 s of forward movement the camera ended INSIDE a robot's head (agents have no player collision / no pushback), with the robot's hat brim clipping the near plane | blocker |
+| Q24 | Devices | Opening a pairing link whose claim code is invalid/expired (POST /pair/claim → 404) leaves the splash screen up indefinitely; it must show "This pairing link is invalid or has expired — create a new one in Settings → Devices" and still let an already-paired browser continue | major | qa | fixed (9a5dbea8) |
+| Q25 | Shell nav | Clicking Settings while the World view is still loading highlights Settings in the nav and shows its tooltip but the content stays on World until a second click (second instance of nav/content desync, cf. Q16) | major | qa | not reproduced; looks like main-thread stall while World boots (World lane perf), not a nav bug |
+| W7 | Overview (e2164e96): the footprint now fits the frame, but the terrace slab ends in pure black with no landform skirt or atmospheric fade beneath its edge, so the habitat reads as a floating cut-out | minor |
+| W8 | Arrival (e2164e96): the new arrival camera is inside the host robot's head and the nameplate fills the screen — correction 1 sent to the World lane | blocker |

@@ -351,7 +351,13 @@ export function Dashboard() {
   // Refreshed every render (not an effect) so `measureCard` — stable, never
   // re-created — always reads the CURRENT configured `h` for a card, even one
   // just resized in Customize, without needing `h` in its own dependencies.
-  visibleCards.forEach(c => configuredHeights.current.set(c.id, c.size.h));
+  // An ambient manifest readout (layout 'compact': weather, system, status)
+  // has no inner scroller to give a height cap anything to scroll, so capping
+  // it at its configured `h` just slices the card — QA 2026-10-07: the
+  // weather forecast row was cut off at h:2. Such a card is drawn at its full
+  // content height; scrolling cards keep the cap.
+  const growsToFit = (type: string) => registry[type]?.manifest?.layout === 'compact';
+  visibleCards.forEach(c => configuredHeights.current.set(c.id, growsToFit(c.type) ? Math.max(c.size.h, 12) : c.size.h));
 
   return (
     <div
@@ -556,7 +562,7 @@ export function Dashboard() {
                 // above: that fix is what stops the now-shrunk box from
                 // leaving a reserved-but-empty band in the grid underneath it.
                 alignSelf: isEditMode ? undefined : 'start',
-                maxHeight: isEditMode ? undefined : h * ROW_HEIGHT + (h - 1) * GAP,
+                maxHeight: isEditMode || growsToFit(card.type) ? undefined : h * ROW_HEIGHT + (h - 1) * GAP,
                 cursor: isEditMode ? (isDragging ? 'grabbing' : 'grab') : 'default',
                 borderRadius: radius.lg,
                 outline: isDragTarget
