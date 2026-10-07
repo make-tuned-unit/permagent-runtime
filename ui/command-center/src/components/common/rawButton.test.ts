@@ -101,7 +101,7 @@ const STANDING_EXCEPTIONS: Record<string, { count: number; why: string }> = {
     count: 1,
     why: 'the habitat auth notice\'s "details" toggle is styled by .habitat-auth-toggle in the forum stylesheet',
   },
-  'components/world/forum/HankConversation.tsx': {
+  'components/world/forum/OrchestratorConversation.tsx': {
     count: 5,
     why: 'the in-world conversation dock\'s controls are positioned and styled by the forum stylesheet',
   },

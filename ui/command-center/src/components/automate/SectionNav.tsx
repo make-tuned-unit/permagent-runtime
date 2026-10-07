@@ -121,7 +121,6 @@ export function SectionNav({ items, scrollRoot }: { items: SectionNavItem[]; scr
         // (QA 2026-10-07 Q21). Chrome over scrolling content must be solid.
         background: colors.surface,
         WebkitBackdropFilter: 'none',
-        backdropFilter: 'none',
       }}
     >
       {items.map(item => {
