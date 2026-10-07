@@ -821,7 +821,7 @@ mod tests {
 
     #[test]
     fn wing_slug_did_returns_none() {
-        assert_eq!(derive_wing_slug("did:chitin:henry-malcolm"), None);
+        assert_eq!(derive_wing_slug("did:example:ada-lovelace"), None);
     }
 
     #[test]

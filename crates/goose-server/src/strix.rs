@@ -1021,10 +1021,10 @@ fn remote_strix_command(exports: &str, scan_rel: &str, runs_rel: &str) -> String
 fn remote_home() -> String {
     match strix::docker_ssh_target() {
         Some(t) if t.contains('@') => {
-            let user = t.split('@').next().unwrap_or("jessesharratt");
+            let user = t.split('@').next().unwrap_or("example-user");
             format!("/Users/{user}")
         }
-        _ => "/Users/jessesharratt".into(),
+        _ => "/Users/example-user".into(),
     }
 }
 
@@ -2117,7 +2117,7 @@ Some progress line
         );
         assert_eq!(
             remote_scan_abs(std::path::Path::new("/Users/j/app")),
-            "/Users/jessesharratt/permagent-strix-scans/Users_j_app"
+            "/Users/example-user/permagent-strix-scans/Users_j_app"
         );
         let long = format!("/{}", "a".repeat(200));
         let rel = remote_scan_rel(std::path::Path::new(&long));
@@ -2128,10 +2128,10 @@ Some progress line
 
     #[test]
     fn ssh_target_rejects_shell_metacharacters() {
-        assert!(validate_ssh_target("jessesharratt@m1").is_ok());
+        assert!(validate_ssh_target("example-user@m1").is_ok());
         assert!(validate_ssh_target("m1").is_ok());
         assert!(validate_ssh_target("user@host.example").is_ok());
-        assert!(validate_ssh_target("jessesharratt@m1; rm -rf /").is_err());
+        assert!(validate_ssh_target("example-user@m1; rm -rf /").is_err());
         assert!(validate_ssh_target("host$(reboot)").is_err());
         assert!(validate_ssh_target("").is_err());
         assert!(validate_ssh_target("@m1").is_err());
@@ -2159,8 +2159,8 @@ Some progress line
 
     #[test]
     fn preflight_briefing_names_the_remote_host_when_configured() {
-        let remote = preflight_briefing_detail(Some("jessesharratt@m1"));
-        assert!(remote.contains("jessesharratt@m1"));
+        let remote = preflight_briefing_detail(Some("example-user@m1"));
+        assert!(remote.contains("example-user@m1"));
         assert!(remote.contains("Colima"));
         assert!(!remote.contains("Docker Desktop"));
         let local = preflight_briefing_detail(None);

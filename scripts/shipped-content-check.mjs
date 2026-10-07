@@ -45,6 +45,8 @@ const REASON_CODES = new Set([
   'historicalComment',
   'runtimeEvidence',
   'catalogData',
+  'resolverModule',
+  'guardList',
 ]);
 const ALLOWED_REGEX_FLAGS = new Set(['i', 'm', 's', 'u']);
 
@@ -381,7 +383,7 @@ export function isTestPath(relPath) {
   return (
     /\.(test|spec)\.[a-z]+$/.test(relPath) ||
     /(^|\/)(tests|__tests__)\//.test(relPath) ||
-    /(^|\/)[a-z0-9_]*_tests?\.rs$/.test(relPath)
+    /(^|\/)(?:[a-z0-9_]*_)?tests?\.rs$/.test(relPath)
   );
 }
 
@@ -393,10 +395,6 @@ export function stripCommentsAndTests(relPath, text) {
   const isRust = relPath.endsWith('.rs');
   const cStyle = isRust || /\.(ts|tsx|js|mjs|cjs|jsx)$/.test(relPath);
   let src = text;
-  if (isRust) {
-    const m = /^[ \t]*#\[cfg\(test\)\]\s*\n?\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+\w+\s*\{/m.exec(src);
-    if (m) src = src.slice(0, m.index).replace(/[^\n]/g, (c) => c) + src.slice(m.index).replace(/[^\n]/g, ' ');
-  }
   if (!cStyle) return src;
   const out = src.split('');
   const n = src.length;
@@ -442,7 +440,28 @@ export function stripCommentsAndTests(relPath, text) {
       i += 1;
     }
   }
-  return out.join('');
+  let result = out.join('');
+  if (isRust) result = blankTestMods(result);
+  return result;
+}
+
+/** Blank every `#[cfg(test)] mod name { ... }` block (brace-matched on comment-free text). */
+function blankTestMods(code) {
+  const re = /^[ \t]*#\[cfg\(test\)\]\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+\w+\s*\{/gm;
+  const chars = code.split('');
+  let m;
+  while ((m = re.exec(code)) !== null) {
+    let depth = 1;
+    let j = m.index + m[0].length;
+    while (j < code.length && depth > 0) {
+      if (code[j] === '{') depth += 1;
+      else if (code[j] === '}') depth -= 1;
+      j += 1;
+    }
+    for (let k = m.index; k < j; k += 1) if (chars[k] !== '\n') chars[k] = ' ';
+    re.lastIndex = j;
+  }
+  return chars.join('');
 }
 
 function pathMatchesInclude(relPath, includeGlobs, excludeGlobs = []) {

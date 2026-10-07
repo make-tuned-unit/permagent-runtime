@@ -6,7 +6,7 @@
 //! annotations, graph triples — must canonicalize through this helper.
 //!
 //! The migration path for Mesh-verified entities (`person:slug` →
-//! `did:chitin:slug`) will use an alias table introduced in Phase 3+,
+//! `did:<method>:slug`) will use an alias table introduced in Phase 3+,
 //! not in-place rewriting.
 //!
 //! # Format
@@ -73,8 +73,8 @@ impl std::error::Error for CanonicalizeError {}
 ///     Ok("project:get-ladle".to_string())
 /// );
 /// assert_eq!(
-///     canonicalize_entity_id(EntityPrefix::Did("chitin".into()), "Henry Malcolm"),
-///     Ok("did:chitin:henry-malcolm".to_string())
+///     canonicalize_entity_id(EntityPrefix::Did("example".into()), "Ada Lovelace"),
+///     Ok("did:example:ada-lovelace".to_string())
 /// );
 /// ```
 pub fn canonicalize_entity_id(
@@ -176,8 +176,8 @@ mod tests {
     #[test]
     fn did_scheme() {
         assert_eq!(
-            canonicalize_entity_id(EntityPrefix::Did("chitin".into()), "Henry Malcolm"),
-            Ok("did:chitin:henry-malcolm".into())
+            canonicalize_entity_id(EntityPrefix::Did("example".into()), "Ada Lovelace"),
+            Ok("did:example:ada-lovelace".into())
         );
     }
 
