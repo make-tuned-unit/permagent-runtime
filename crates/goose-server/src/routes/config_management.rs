@@ -106,6 +106,7 @@ fn source_label(source: RoleModelSource) -> &'static str {
         RoleModelSource::Default => "default",
         RoleModelSource::HalfConfigured => "half_configured",
         RoleModelSource::Disabled => "disabled",
+        RoleModelSource::Unconfigured => "unconfigured",
     }
 }
 
@@ -153,13 +154,17 @@ fn resolved_model_routes() -> HashMap<String, ResolvedModelRoute> {
     };
 
     let chat = permagent::config::role_model_from_config(ModelRole::Chat);
+    let chat_notice = chat.source.reason().map(str::to_string);
     let chat_route = chat.route.map(|route| (route.provider, route.model));
 
     let voice = permagent::config::voice_model_from_config();
     let mut routes = HashMap::with_capacity(3);
     routes.insert(
         "chat".to_string(),
-        resolved_route(chat_route, fallback(), source_label(chat.source)),
+        ResolvedModelRoute {
+            notice: chat_notice,
+            ..resolved_route(chat_route, fallback(), source_label(chat.source))
+        },
     );
     routes.insert(
         "voice".to_string(),
@@ -1957,8 +1962,11 @@ mod tests {
             "GOOSE_MODEL" => Some("claude-haiku-4-5".to_string()),
             _ => None,
         };
-        let route =
-            harness_resolved_route(permagent::config::effective_harness_route(session_haiku));
+        let ctx = permagent::config::RoleContext::permissive();
+        let route = harness_resolved_route(permagent::config::model_roles::effective_harness_route_in(
+            session_haiku,
+            &ctx,
+        ));
         let measured = ModelRole::Harness.measured_default();
         assert_eq!(route.provider, measured.provider);
         assert_eq!(route.model, measured.model);
@@ -1969,7 +1977,10 @@ mod tests {
             .expect("a rerouted harness says why");
         assert!(notice.contains("anthropic/claude-haiku-4-5"), "{notice}");
 
-        let fresh = harness_resolved_route(permagent::config::effective_harness_route(|_| None));
+        let fresh = harness_resolved_route(permagent::config::model_roles::effective_harness_route_in(
+            |_| None,
+            &ctx,
+        ));
         assert_eq!(fresh.source, "default");
         assert_eq!(fresh.notice, None);
     }

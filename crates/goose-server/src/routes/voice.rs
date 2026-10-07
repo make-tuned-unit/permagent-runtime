@@ -6643,8 +6643,11 @@ mod tests {
     /// ever quietly reverts, the 7.4 s TTFT comes back with it.
     #[test]
     fn the_voice_path_defaults_to_the_benched_voice_model() {
-        let (route, source) = permagent::config::voice_model::resolve_voice_model(|_| None)
-            .expect("an unconfigured daemon still routes voice to the measured default");
+        let (route, source) = permagent::config::voice_model::resolve_voice_model_in(
+            |_| None,
+            &permagent::config::ProviderAvailability::all(),
+        )
+        .expect("a daemon with the measured provider routes voice to the measured default");
         assert_eq!(route, permagent::config::default_voice_model());
         assert_eq!(source, permagent::config::VoiceModelSource::Default);
     }

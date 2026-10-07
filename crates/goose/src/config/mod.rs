@@ -8,6 +8,7 @@ pub mod gmail_oauth;
 pub mod goose_mode;
 #[cfg(test)]
 mod identity_name_guard;
+pub mod local_model;
 mod migrations;
 pub mod model_roles;
 pub mod paths;
@@ -34,8 +35,12 @@ pub use extensions::{
     resolve_extensions_for_new_session, set_extension, set_extension_enabled, ExtensionEntry,
 };
 pub use goose_mode::GooseMode;
+pub use local_model::{
+    local_default_model, resolve_local_default_model, DEFAULT_LOCAL_MODEL, LOCAL_DEFAULT_MODEL_KEY,
+};
 pub use model_roles::{
-    assess_harness_coordinator, effective_harness_route, effective_harness_route_from_config,
+    assess_harness_coordinator, assess_harness_coordinator_in, trusted_default_models,
+    ProviderAvailability, RoleContext, DEFAULT_TRUSTED_DEFAULT_MODELS, TRUSTED_DEFAULT_MODELS_KEY, effective_harness_route, effective_harness_route_from_config,
     gate_harness_coordinator, resolve_role_model, role_model_from_config, CoordinatorEligibility,
     EffectiveHarnessRoute, HarnessGateDecision, HarnessGateOutcome, ModelRole, RoleModel,
     RoleModelSource, RoleResolution, HARNESS_COORDINATOR_MIN_ORCHESTRATION,
@@ -46,7 +51,8 @@ pub use signup_nanogpt::configure_nanogpt;
 pub use signup_openrouter::configure_openrouter;
 pub use signup_tetrate::configure_tetrate;
 pub use voice_model::{
-    default_voice_model, voice_model_from_config, VoiceModel, VoiceModelSource,
+    default_voice_model, default_voice_model_for, voice_model_from_config, voice_preferences,
+    VoiceModel, VoiceModelSource,
     DEFAULT_VOICE_MODEL_ID, DEFAULT_VOICE_PROVIDER_ID, VOICE_MODEL_KEY, VOICE_PROVIDER_KEY,
 };
 

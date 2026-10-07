@@ -375,12 +375,28 @@ pub fn failover_candidates(
     read: impl Fn(&str) -> Option<String>,
     role: SessionRole,
 ) -> Vec<FallbackCandidate> {
+    failover_candidates_in(
+        read,
+        role,
+        &crate::config::model_roles::RoleContext::live(),
+    )
+}
+
+/// [`failover_candidates`] over an explicit [`RoleContext`]: the trusted
+/// defaults offered behind the operator's keys are only those whose provider
+/// the user can actually use, so a failover never lands on a provider without
+/// a key.
+pub fn failover_candidates_in(
+    read: impl Fn(&str) -> Option<String>,
+    role: SessionRole,
+    ctx: &crate::config::model_roles::RoleContext,
+) -> Vec<FallbackCandidate> {
     let all = permanent_failure_candidates(&read);
     if role == SessionRole::General {
         return all;
     }
     use crate::config::model_roles::{
-        assess_harness_coordinator, resolve_role_model, CoordinatorEligibility, ModelRole,
+        assess_harness_coordinator_in, resolve_role_model_in, CoordinatorEligibility, ModelRole,
     };
 
     let mut out: Vec<FallbackCandidate> = all
@@ -398,7 +414,7 @@ pub fn failover_candidates(
     // workflow roles as `permanent_failure_candidates` listed them.
     let mut pool: Vec<FallbackCandidate> = Vec::new();
     let harness_label = ModelRole::Harness.label();
-    if let Some(route) = resolve_role_model(ModelRole::Harness, &read).route {
+    if let Some(route) = resolve_role_model_in(ModelRole::Harness, &read, ctx).route {
         pool.push(FallbackCandidate {
             target: RoleModel {
                 provider: route.provider,
@@ -407,22 +423,28 @@ pub fn failover_candidates(
             source: CandidateSource::Role(harness_label),
         });
     }
-    let measured = ModelRole::Harness.measured_default();
-    pool.push(FallbackCandidate {
-        target: RoleModel {
-            provider: measured.provider,
-            model: measured.model,
-        },
-        source: CandidateSource::Role(harness_label),
-    });
+    for trusted in ctx
+        .trusted
+        .iter()
+        .filter(|t| ctx.availability.is_usable(&t.provider))
+    {
+        pool.push(FallbackCandidate {
+            target: RoleModel {
+                provider: trusted.provider.clone(),
+                model: trusted.model.clone(),
+            },
+            source: CandidateSource::Role(harness_label),
+        });
+    }
     pool.extend(
         all.into_iter()
             .filter(|c| matches!(c.source, CandidateSource::Role(_))),
     );
 
-    let rank = |c: &FallbackCandidate| match assess_harness_coordinator(
+    let rank = |c: &FallbackCandidate| match assess_harness_coordinator_in(
         &c.target.provider,
         &c.target.model,
+        &ctx.trusted,
     ) {
         CoordinatorEligibility::TrustedDefault => Some(0u8),
         CoordinatorEligibility::HeuristicCandidate => Some(1u8),
@@ -2485,6 +2507,14 @@ mod tests {
             .collect()
     }
 
+    /// Every provider usable, and only the head of the trusted list, so the
+    /// ordering assertions below stay about ranking rather than host keys.
+    fn coord_ctx() -> crate::config::model_roles::RoleContext {
+        let mut ctx = crate::config::model_roles::RoleContext::permissive();
+        ctx.trusted.truncate(1);
+        ctx
+    }
+
     /// Session 20260924_3's config: no fallback keys, a local mechanical role
     /// and a cloud review role. A general session keeps the configured order;
     /// the coordinator gets only models the coordinator gate accepts,
@@ -2501,11 +2531,11 @@ mod tests {
             ("PERMAGENT_ROLE_REVIEW_MODEL", "glm-5.2"),
         ]);
         assert_eq!(
-            targets(&failover_candidates(&r, SessionRole::General)),
+            targets(&failover_candidates_in(&r, SessionRole::General, &coord_ctx())),
             targets(&permanent_failure_candidates(&r)),
         );
 
-        let coord = failover_candidates(&r, SessionRole::HarnessCoordinator);
+        let coord = failover_candidates_in(&r, SessionRole::HarnessCoordinator, &coord_ctx());
         let measured = ModelRole::Harness.measured_default();
         assert_eq!(
             (
@@ -2557,7 +2587,7 @@ mod tests {
             ("PERMAGENT_ROLE_REVIEW_PROVIDER", "zai"),
             ("PERMAGENT_ROLE_REVIEW_MODEL", "glm-5.2"),
         ]);
-        let coord = failover_candidates(&r, SessionRole::HarnessCoordinator);
+        let coord = failover_candidates_in(&r, SessionRole::HarnessCoordinator, &coord_ctx());
         assert_eq!(coord[0].source, CandidateSource::ExplicitOverride);
         assert_eq!(coord[1].source, CandidateSource::OrderedList);
         assert_eq!(coord[1].target.provider, "ollama");
@@ -2574,7 +2604,7 @@ mod tests {
             ("PERMAGENT_ROLE_REVIEW_PROVIDER", "zai"),
             ("PERMAGENT_ROLE_REVIEW_MODEL", "glm-5.2"),
         ]);
-        let coord = failover_candidates(&r, SessionRole::HarnessCoordinator);
+        let coord = failover_candidates_in(&r, SessionRole::HarnessCoordinator, &coord_ctx());
         let measured = ModelRole::Harness.measured_default();
         assert_eq!(
             targets(&coord),
