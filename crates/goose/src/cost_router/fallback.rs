@@ -490,8 +490,10 @@ pub enum Reach {
     Unknown,
 }
 
-/// The local provider id of the two-machine Qwen3.8 split. Nightly-only by
-/// design (launchd 01:50–06:10), so for most of the day its port is closed.
+/// The provider id of an optional user-run llama-server split. It is NEVER an
+/// implicit rung: it takes part in a fallback only when the user's own
+/// fallback config names it, and it is probed only when `QWEN38_SPLIT_HOST` is
+/// set. Its port may be closed for much of the day.
 pub const SPLIT_PROVIDER: &str = "qwen38_split";
 /// The local Ollama provider id (`providers/ollama.rs`). NOT `ollama_cloud`,
 /// which is a metered hosted API and never a stand-in for a local model.
@@ -929,9 +931,6 @@ const OLLAMA_FALLBACK_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::
 /// How long the split's TCP connect may take. It is on loopback: a closed port
 /// is refused immediately, so this only bounds a wedged listener.
 const SPLIT_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(700);
-/// The split's default endpoint — the same default
-/// `providers/declarative/qwen38_split.json` gives `QWEN38_SPLIT_HOST`.
-const SPLIT_DEFAULT_HOST: &str = "http://127.0.0.1:8081";
 
 /// GET `<OLLAMA_HOST>/api/tags`: `(Up, models)` on a 2xx, `(Down, [])` on any
 /// failure. Unlike `recommend::discover_ollama_models_async` this does NOT fold
@@ -973,11 +972,14 @@ fn split_socket(raw: &str) -> Option<(String, u16)> {
 /// question is only "is anything listening", and a loaded 27B split can take
 /// far longer to answer a request than the switch should wait.
 async fn probe_split() -> Reach {
-    let raw = crate::config::Config::global()
+    // No host configured means there is nothing to probe: do not guess a port.
+    let Some(raw) = crate::config::Config::global()
         .get_param::<String>("QWEN38_SPLIT_HOST")
         .ok()
         .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| SPLIT_DEFAULT_HOST.to_string());
+    else {
+        return Reach::Unknown;
+    };
     let Some((host, port)) = split_socket(&raw) else {
         return Reach::Down;
     };
