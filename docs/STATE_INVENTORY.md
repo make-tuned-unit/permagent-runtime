@@ -36,13 +36,13 @@ All paths are resolved through `crates/goose/src/config/paths.rs` via `Paths::ba
 
 | Field | Value |
 |-------|-------|
-| **Owner** | Spectral (template shipped in `crates/goose/assets/ontology.toml`) |
+| **Owner** | Spectral (a synthetic test fixture lives at `crates/goose/tests/fixtures/ontology.sample.toml`; the live file is user data and is not shipped) |
 | **Purpose** | Entity taxonomy -- defines canonical entity types, aliases, and visibility flags for the knowledge graph. |
 | **Schema** | TOML. `version = 1`. Sections per entity type with `canonical_name`, `aliases`, `visibility`. No pre-declared instances (enforced by test in `spectral_smoke.rs`). |
 | **Read-by** | Spectral `Brain::builder()` at init, `state.rs:72` (existence check at daemon startup) |
-| **Written-by** | Copied from `assets/ontology.toml` at first Brain init. Edited manually or via ontology cleanup PRs (e.g., PR #139). |
+| **Written-by** | Created per user at first Brain init; the repo ships only a synthetic test fixture (`crates/goose/tests/fixtures/ontology.sample.toml`). Edited manually or via ontology cleanup PRs (e.g., PR #139). |
 | **Migration** | Manual edits. `version` field is format version, not instance version. |
-| **Backup** | Safe to copy. If deleted, Brain fails to initialize (long-term memory disabled). Can be restored from `assets/ontology.toml`. |
+| **Backup** | Safe to copy. If deleted, Brain fails to initialize (long-term memory disabled). The schema and predicates can be restored from `crates/goose/tests/fixtures/ontology.sample.toml`. |
 
 ### `~/.permagent/brain/brain.id`
 

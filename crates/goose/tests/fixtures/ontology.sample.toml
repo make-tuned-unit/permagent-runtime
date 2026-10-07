@@ -1,0 +1,356 @@
+# Synthetic ontology fixture for tests. Every person, place, organization and
+# project below is fictional (or a public tool name); the schema and predicates
+# match the shipped format. It replaces the previous real knowledge graph.
+version = 1
+
+[[entity]]
+type = "person"
+canonical = "alex rivera"
+aliases = ["alex"]
+visibility = "private"
+
+[[entity]]
+type = "person"
+canonical = "sam okafor"
+aliases = ["sam"]
+visibility = "private"
+
+[[entity]]
+type = "person"
+canonical = "priya nair"
+aliases = ["priya"]
+visibility = "private"
+
+[[entity]]
+type = "person"
+canonical = "jordan lee"
+aliases = ["jordan"]
+visibility = "private"
+
+[[entity]]
+type = "person"
+canonical = "casey morgan"
+aliases = ["casey"]
+visibility = "private"
+
+[[entity]]
+type = "person"
+canonical = "robin ellis"
+aliases = ["robin"]
+visibility = "private"
+
+[[entity]]
+type = "project"
+canonical = "permagent"
+aliases = ["permagent.ai"]
+visibility = "private"
+
+[[entity]]
+type = "project"
+canonical = "goose"
+aliases = ["goose agent"]
+visibility = "private"
+
+[[entity]]
+type = "project"
+canonical = "harbor app"
+aliases = ["harbor"]
+visibility = "private"
+
+[[entity]]
+type = "project"
+canonical = "lantern site"
+aliases = ["lantern"]
+visibility = "private"
+
+[[entity]]
+type = "project"
+canonical = "northwind dashboard"
+aliases = ["northwind"]
+visibility = "private"
+
+[[entity]]
+type = "project"
+canonical = "orchard notes"
+aliases = ["orchard"]
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "claude"
+aliases = ["claude code", "claude api"]
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "codex"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "github"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "sqlite"
+aliases = ["sqlite3"]
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "stripe"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "vercel"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "next.js"
+aliases = ["nextjs", "next js"]
+visibility = "private"
+
+[[entity]]
+type = "tool"
+canonical = "rust"
+aliases = ["rustlang"]
+visibility = "private"
+
+[[entity]]
+type = "organization"
+canonical = "acme cooperative"
+aliases = ["acme co-op"]
+visibility = "private"
+
+[[entity]]
+type = "organization"
+canonical = "example council"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "organization"
+canonical = "riverbend partners"
+aliases = ["riverbend"]
+visibility = "private"
+
+[[entity]]
+type = "organization"
+canonical = "sample foundation"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "location"
+canonical = "springfield"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "location"
+canonical = "riverbend county"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "location"
+canonical = "lakeside"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "quarterly planning"
+aliases = ["q planning"]
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "grant application"
+aliases = ["grant applications"]
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "launch checklist"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "ground truth"
+aliases = []
+visibility = "private"
+
+[[entity]]
+type = "concept"
+canonical = "retrieval"
+aliases = []
+visibility = "private"
+
+[[predicate]]
+name = "anniversary"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
+
+[[predicate]]
+name = "board_chair"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
+
+[[predicate]]
+name = "built_with"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
+
+[[predicate]]
+name = "business"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
+
+[[predicate]]
+name = "client"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
+
+[[predicate]]
+name = "company"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
+
+[[predicate]]
+name = "colleague"
+domain = ["person"]
+range = ["person"]
+
+[[predicate]]
+name = "deployed_on"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
+
+[[predicate]]
+name = "employer"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
+
+[[predicate]]
+name = "favourite_coffee_shop"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
+
+[[predicate]]
+name = "favourite_color"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
+
+[[predicate]]
+name = "favourite_restaurant"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
+
+[[predicate]]
+name = "founded_by"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
+
+[[predicate]]
+name = "is"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
+
+[[predicate]]
+name = "location"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
+
+[[predicate]]
+name = "manager"
+domain = ["person"]
+range = ["person"]
+
+[[predicate]]
+name = "manages"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
+
+[[predicate]]
+name = "part_of"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
+
+[[predicate]]
+name = "partner"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
+
+[[predicate]]
+name = "primary_browser"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
+
+[[predicate]]
+name = "primary_messaging"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
+
+[[predicate]]
+name = "primary_strategy"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
+
+[[predicate]]
+name = "related_to"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
+
+[[predicate]]
+name = "role"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
+
+[[predicate]]
+name = "runs_on"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
+
+[[predicate]]
+name = "secondary_browser"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
+
+[[predicate]]
+name = "son"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
+
+[[predicate]]
+name = "spouse"
+domain = ["person"]
+range = ["person"]
+
+[[predicate]]
+name = "status"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
+
+[[predicate]]
+name = "tier1_model"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
+
+[[predicate]]
+name = "wife"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]
+
+[[predicate]]
+name = "works_on"
+domain = ["concept", "location", "organization", "person", "project", "tool"]
+range = ["concept", "location", "organization", "person", "project", "tool"]

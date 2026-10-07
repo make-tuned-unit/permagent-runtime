@@ -17,7 +17,7 @@
 use spectral::{Brain, RememberOpts, Visibility};
 use std::time::{Duration, Instant};
 
-const ONTOLOGY_TOML: &str = include_str!("../../goose/assets/ontology.toml");
+const ONTOLOGY_TOML: &str = include_str!("../../goose/tests/fixtures/ontology.sample.toml");
 
 const SAMPLE: usize = 40;
 

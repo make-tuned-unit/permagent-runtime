@@ -77,6 +77,24 @@ the first time. From your Apple Developer account, set these repo secrets:
 | `APPLE_PASSWORD` | an app-specific password (appleid.apple.com) |
 | `APPLE_TEAM_ID` | your 10-char team id |
 
+The signing identity is NOT committed. `ui/desktop/src-tauri/tauri.conf.json`
+sets `signingIdentity` to `null`, and Tauri reads the identity from the
+`APPLE_SIGNING_IDENTITY` environment variable. CI passes it from the secret
+above. For a local signed build, export it first:
+
+```sh
+export APPLE_SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID)"
+```
+
+With the variable unset the bundle is ad-hoc signed (fine for development; the
+identity changes every build, so keychain access prompts reappear).
+
+**Forks and the updater.** `plugins.updater.endpoints` in `tauri.conf.json`
+points at the official release feed and `pubkey` is the official update key. A
+fork that ships its own builds must replace BOTH with its own feed URL and
+minisign public key (generate the pair with `tauri signer generate`), or its
+users will be offered the upstream binary.
+
 Notes: signing enables the hardened runtime — the entitlements the daemon
 needs (V8 JIT) and the mic needs are in `src-tauri/Entitlements.plist`. The
 **first signed build should be smoke-tested end-to-end** (launch, dictation,

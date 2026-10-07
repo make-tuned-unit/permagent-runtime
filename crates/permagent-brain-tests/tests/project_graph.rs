@@ -22,7 +22,7 @@ use permagent::session::spectral_schema;
 use spectral::Brain;
 use sqlx::{Pool, Sqlite};
 
-const ONTOLOGY_TOML: &str = include_str!("../../goose/assets/ontology.toml");
+const ONTOLOGY_TOML: &str = include_str!("../../goose/tests/fixtures/ontology.sample.toml");
 
 /// A fresh Brain in its own tempdir (kept alive for the test), plus the raw
 /// Arc for store-level verification and the graph.sqlite path for the

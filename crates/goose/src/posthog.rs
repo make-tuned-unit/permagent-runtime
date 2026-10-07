@@ -13,8 +13,33 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use uuid::Uuid;
 
-const POSTHOG_API_KEY: &str = "phc_RyX5CaY01VtZJCQyhSR5KFh6qimUy81YwxsEpotAftT";
-const POSTHOG_CAPTURE_URL: &str = "https://us.i.posthog.com/capture/";
+/// Config key holding the PostHog project key events are sent to. Empty by
+/// default: with no key there is no sink and nothing is ever sent, even for a
+/// user who opted in. Permagent ships no project key of its own.
+pub const POSTHOG_KEY_KEY: &str = "telemetry_posthog_key";
+/// Config key holding the PostHog host (for example a self-hosted instance).
+/// Only consulted when a key is set; defaults to PostHog Cloud's US host.
+pub const POSTHOG_HOST_KEY: &str = "telemetry_posthog_host";
+const POSTHOG_DEFAULT_HOST: &str = "https://us.i.posthog.com";
+
+/// Pure: `(project key, capture URL)` from the two config values, or `None`
+/// when no key is configured.
+pub fn resolve_posthog_sink(key: Option<String>, host: Option<String>) -> Option<(String, String)> {
+    let key = key.map(|k| k.trim().to_string()).filter(|k| !k.is_empty())?;
+    let host = host
+        .map(|h| h.trim().trim_end_matches('/').to_string())
+        .filter(|h| !h.is_empty())
+        .unwrap_or_else(|| POSTHOG_DEFAULT_HOST.to_string());
+    Some((key, format!("{host}/capture/")))
+}
+
+fn posthog_sink() -> Option<(String, String)> {
+    let config = Config::global();
+    resolve_posthog_sink(
+        config.get_param::<String>(POSTHOG_KEY_KEY).ok(),
+        config.get_param::<String>(POSTHOG_HOST_KEY).ok(),
+    )
+}
 
 /// Config key for telemetry opt-out preference
 pub const TELEMETRY_ENABLED_KEY: &str = "GOOSE_TELEMETRY_ENABLED";
@@ -57,7 +82,7 @@ pub fn is_telemetry_enabled() -> bool {
 
 #[derive(Serialize)]
 struct CaptureEvent {
-    api_key: &'static str,
+    api_key: String,
     event: String,
     distinct_id: String,
     properties: HashMap<String, serde_json::Value>,
@@ -75,6 +100,11 @@ async fn posthog_capture(
         return Ok(());
     }
 
+    // No configured sink, no telemetry: there is nowhere to send it.
+    let Some((api_key, capture_url)) = posthog_sink() else {
+        return Ok(());
+    };
+
     // Bring telemetry egress under the sovereignty boundary (#327). This is the
     // single outbound choke point for all PostHog POSTs; under sovereign mode the
     // POST is HARD-SUPPRESSED (fail-closed) and, either way, the attempt is
@@ -83,7 +113,7 @@ async fn posthog_capture(
     // suppresses the POST, so no unaudited telemetry leaves the machine.
     let allowed = crate::sovereignty::guard_outbound_egress(
         crate::sovereignty::EgressKind::Telemetry,
-        POSTHOG_CAPTURE_URL,
+        &capture_url,
         event_name,
     )
     .await;
@@ -92,7 +122,7 @@ async fn posthog_capture(
     }
 
     let payload = CaptureEvent {
-        api_key: POSTHOG_API_KEY,
+        api_key,
         event: event_name.to_string(),
         distinct_id: distinct_id.to_string(),
         properties,
@@ -101,7 +131,7 @@ async fn posthog_capture(
 
     let client = reqwest::Client::new();
     client
-        .post(POSTHOG_CAPTURE_URL)
+        .post(&capture_url)
         .header("Content-Type", "application/json")
         .json(&payload)
         .send()
@@ -716,6 +746,20 @@ mod tests {
             rows.iter().filter(|r| r.kind == "telemetry").count(),
             0,
             "the consent guard must return before any egress attempt"
+        );
+    }
+
+    #[test]
+    fn no_key_means_no_sink_and_host_defaults_only_with_a_key() {
+        assert_eq!(resolve_posthog_sink(None, None), None);
+        assert_eq!(resolve_posthog_sink(Some("  ".into()), Some("https://h".into())), None);
+        assert_eq!(
+            resolve_posthog_sink(Some("k".into()), None),
+            Some(("k".to_string(), "https://us.i.posthog.com/capture/".to_string()))
+        );
+        assert_eq!(
+            resolve_posthog_sink(Some(" k ".into()), Some("https://ph.example.org/".into())),
+            Some(("k".to_string(), "https://ph.example.org/capture/".to_string()))
         );
     }
 }

@@ -1006,6 +1006,33 @@ impl FinanceClient {
     }
 }
 
+/// Which optional integration (if any) a tool belongs to.
+fn tool_integration(name: &str) -> Option<&'static str> {
+    match name {
+        "picker_status" | "picker_start" | "picker_scan" | "picker_top_picks" | "record_trade"
+        | "list_trades" => Some("scanner"),
+        n if n.starts_with("polybot_") => Some("polybot"),
+        _ => None,
+    }
+}
+
+/// True when the tool is not part of an optional integration, or that
+/// integration is configured.
+fn integration_ready(name: &str) -> bool {
+    match tool_integration(name) {
+        Some("scanner") => crate::picker::is_configured() || crate::picker::is_enabled(),
+        Some("polybot") => crate::polybot::is_enabled(),
+        _ => true,
+    }
+}
+
+fn integration_message(name: &str) -> String {
+    match tool_integration(name) {
+        Some("scanner") => crate::picker::NOT_CONFIGURED_MSG.to_string(),
+        _ => "Polybot is not enabled. Turn it on in Settings > Services.".to_string(),
+    }
+}
+
 #[async_trait]
 impl McpClientTrait for FinanceClient {
     async fn list_tools(
@@ -1014,8 +1041,15 @@ impl McpClientTrait for FinanceClient {
         _next_cursor: Option<String>,
         _cancel_token: CancellationToken,
     ) -> std::result::Result<ListToolsResult, Error> {
+        // The scanner and Polybot are optional integrations: their tools exist
+        // only once the user has configured them, so a fresh install does not
+        // advertise services it does not have.
+        let tools = Self::get_tools()
+            .into_iter()
+            .filter(|t| integration_ready(&t.name))
+            .collect();
         Ok(ListToolsResult {
-            tools: Self::get_tools(),
+            tools,
             next_cursor: None,
             meta: None,
         })
@@ -1028,6 +1062,12 @@ impl McpClientTrait for FinanceClient {
         arguments: Option<JsonObject>,
         _cancel_token: CancellationToken,
     ) -> std::result::Result<CallToolResult, Error> {
+        if !integration_ready(name) {
+            return Ok(CallToolResult::error(vec![Content::text(format!(
+                "Error: {}",
+                integration_message(name)
+            ))]));
+        }
         announce("working");
         let result = match name {
             "research_ticker" => self.handle_research(arguments).await,

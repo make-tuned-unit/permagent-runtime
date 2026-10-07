@@ -3,7 +3,7 @@ name = "permagent-app"
 version = "1.31.0"
 edition = "2021"
 description = "Permagent desktop application"
-authors = ["Jesse Sharratt"]
+authors = ["Permagent contributors"]
 license = "Apache-2.0"
 
 [build-dependencies]

@@ -78,8 +78,11 @@ CATEGORIES: software development, project management, task execution"#;
 // Ollama configuration
 // ---------------------------------------------------------------------------
 
-/// Default model used when LibrarianSchedule.model is empty or unavailable.
-const DEFAULT_MODEL: &str = "qwen2.5:7b";
+/// The default model used when LibrarianSchedule.model is empty or
+/// unavailable is `config::local_default_model()` (config key
+/// `local_default_model`). Tests pin the built-in default.
+#[cfg(test)]
+const DEFAULT_MODEL: &str = crate::config::DEFAULT_LOCAL_MODEL;
 
 /// Output cap and sampling temperature for a describe pass, shared by every
 /// backend so that changing engine is not silently also a change of sampling.
@@ -93,7 +96,7 @@ const LIBRARIAN_MAX_TOKENS: u32 = 150;
 const LIBRARIAN_TEMPERATURE: f32 = 0.2;
 
 /// Resolve the Librarian model: read from the schedule config file,
-/// fall back to DEFAULT_MODEL if empty or unreadable.
+/// fall back to the local default model if empty or unreadable.
 pub(crate) fn resolve_model() -> String {
     let path = crate::config::paths::Paths::in_data_dir("librarian_schedule.json");
     if let Ok(contents) = std::fs::read_to_string(&path) {
@@ -105,7 +108,7 @@ pub(crate) fn resolve_model() -> String {
             }
         }
     }
-    DEFAULT_MODEL.to_string()
+    crate::config::local_default_model()
 }
 
 fn librarian_native_response_schema() -> serde_json::Value {
@@ -1721,12 +1724,13 @@ async fn call_ollama_streaming_pooled_with_native_controls(
     // the nightly window, and either mini can be down — fall back to the
     // ordinary Ollama path with the default model rather than fail the pass:
     // a slightly worse description tonight beats no description.
+    let default_model = crate::config::local_default_model();
     if let Some(endpoint) = crate::config::librarian_endpoint() {
         if librarian_state::dedicated_endpoint_is_skipped(&endpoint) {
             return call_local_backends(
                 system,
                 prompt,
-                DEFAULT_MODEL,
+                &default_model,
                 emit_events,
                 memory_key,
                 session_id,
@@ -1798,7 +1802,7 @@ async fn call_ollama_streaming_pooled_with_native_controls(
                             endpoint = %endpoint,
                             backend = %backend,
                             error = %err,
-                            fallback_model = DEFAULT_MODEL,
+                            fallback_model = %default_model,
                             "Librarian endpoint answered but is NOT ready (still loading, or a \
                              foreign service on the port) — skipping it for the rest of this \
                              batch; the pass continues on the local pool"
@@ -1811,7 +1815,7 @@ async fn call_ollama_streaming_pooled_with_native_controls(
                             endpoint = %endpoint,
                             backend = %backend,
                             error = %err,
-                            fallback_model = DEFAULT_MODEL,
+                            fallback_model = %default_model,
                             "Librarian loopback endpoint is down — not retrying this pass; falling back to the local pool"
                         );
                         crate::events::emit(crate::events::integration_error(
@@ -1819,7 +1823,7 @@ async fn call_ollama_streaming_pooled_with_native_controls(
                             &format!(
                                 "Dedicated endpoint {endpoint} refused on loopback. \
                                  Start llama-server or unset PERMAGENT_LIBRARIAN_ENDPOINT. \
-                                 This pass continues on {DEFAULT_MODEL}."
+                                 This pass continues on {default_model}."
                             ),
                         ));
                     }
@@ -1828,7 +1832,7 @@ async fn call_ollama_streaming_pooled_with_native_controls(
                         endpoint = %endpoint,
                         backend = %backend,
                         error = %err,
-                        fallback_model = DEFAULT_MODEL,
+                        fallback_model = %default_model,
                         "Librarian endpoint unreachable; falling back to the Ollama pool with the default model"
                     );
                 }
@@ -1837,7 +1841,7 @@ async fn call_ollama_streaming_pooled_with_native_controls(
                 return call_local_backends(
                     system,
                     prompt,
-                    DEFAULT_MODEL,
+                    &default_model,
                     emit_events,
                     memory_key,
                     session_id,
@@ -2066,7 +2070,7 @@ pub async fn probe_dedicated_endpoint() -> bool {
                         split_refusal = split_refusal_reason()
                             .as_deref()
                             .unwrap_or("none (the split logged no refusal)"),
-                        fallback_model = DEFAULT_MODEL,
+                        fallback_model = %default_model,
                         "Librarian endpoint answered the readiness probe but is NOT ready — \
                          skipping the dedicated endpoint for this batch; it runs on the local pool"
                     );
@@ -2104,7 +2108,7 @@ pub async fn probe_dedicated_endpoint() -> bool {
             attempts = PROBE_ATTEMPTS,
             error = %last_error,
             split_refusal = reason.as_deref().unwrap_or("unknown (no status log configured)"),
-            fallback_model = DEFAULT_MODEL,
+            fallback_model = %default_model,
             "Librarian readiness probe found nothing listening on loopback — \
              skipping the dedicated endpoint for this pass; the batch runs on the local pool"
         );
@@ -2166,7 +2170,7 @@ pub async fn reprobe_dedicated_endpoint() {
                     endpoint = %endpoint,
                     backend = %backend,
                     reason = %why,
-                    fallback_model = DEFAULT_MODEL,
+                    fallback_model = %default_model,
                     "dedicated Librarian endpoint stopped being ready mid-window — \
                      the rest of this pass runs on the local pool"
                 );

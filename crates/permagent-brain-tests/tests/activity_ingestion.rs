@@ -63,7 +63,7 @@ fn make_always_event() -> ActivityEvent {
     }
 }
 
-const ONTOLOGY_TOML: &str = include_str!("../../goose/assets/ontology.toml");
+const ONTOLOGY_TOML: &str = include_str!("../../goose/tests/fixtures/ontology.sample.toml");
 
 // ── active project tracking tests ──
 

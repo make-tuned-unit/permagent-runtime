@@ -20,7 +20,7 @@ use std::sync::Arc;
 use tempfile::tempdir;
 
 fn ontology_toml() -> &'static str {
-    include_str!("../assets/ontology.toml")
+    include_str!("fixtures/ontology.sample.toml")
 }
 
 /// Content in the approval shape the hall rule keys on: a question the agent

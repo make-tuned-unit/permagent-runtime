@@ -186,8 +186,9 @@ pub fn chair_route() -> (String, String) {
             return (p, m);
         }
     }
-    let def = ModelRole::Chat.measured_default();
-    (def.provider, def.model)
+    // Nothing configured and no usable provider: there is no chair to name.
+    // Never fall back to a measured default that may need a key the user lacks.
+    (String::new(), String::new())
 }
 
 #[cfg(test)]

@@ -42,9 +42,15 @@
 //! silently outranking that choice with a benchmark result would be changing a
 //! setting the user made without asking. So:
 //!
-//! - **Nothing configured at all** (a fresh install) → the measured default
-//!   applies, reported as [`RoleModelSource::Default`]. New users get the bench
-//!   winner.
+//! - **Nothing configured at all** (a fresh install) → the default is chosen
+//!   from the providers the user has ACTUALLY configured, reported as
+//!   [`RoleModelSource::Default`]. The measured bench winners are only the
+//!   preference order among those: the first entry of [`ModelRole::preferences`]
+//!   whose provider has a key (or, for `ollama`, answers on its port) wins; the
+//!   local model ([`crate::config::local_default_model`]) is the last rung.
+//!   When no provider is usable the role has no route and the source is
+//!   [`RoleModelSource::Unconfigured`] ([`NO_PROVIDER_REASON`] says what to do).
+//!   A default that needs a key the user lacks is never returned.
 //! - **A session model is set, no role keys** → the session model, reported as
 //!   [`RoleModelSource::SessionModel`]. An existing choice is left alone for
 //!   ordinary chat. The coding harness applies one additional evidence gate at
@@ -74,8 +80,10 @@ pub const HARNESS_COORDINATOR_MIN_ORCHESTRATION: f64 = 0.60;
 /// Evidence status for a candidate coding-harness coordinator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CoordinatorEligibility {
-    /// The compiled-in measured harness route. It is the only trusted
-    /// coordinator until a benchmark-backed graduation record is added.
+    /// A route listed in the `trusted_default_models` config list (its
+    /// built-in default list holds the measured harness routes). Trusted
+    /// coordinators are the only ones that graduate until a benchmark-backed
+    /// graduation record is added.
     TrustedDefault,
     /// A known model cleared the knowledge-base heuristic, but has not yet
     /// graduated on Permagent's own coding harness evidence.
@@ -95,7 +103,7 @@ impl CoordinatorEligibility {
 
     pub fn reason(self) -> &'static str {
         match self {
-            Self::TrustedDefault => "compiled-in measured harness route",
+            Self::TrustedDefault => "listed in `trusted_default_models` (measured harness route)",
             Self::HeuristicCandidate => {
                 "knowledge-base heuristic clears the floor, but harness graduation evidence is missing"
             }
@@ -127,14 +135,30 @@ impl CoordinatorEligibility {
 /// widen THIS function's gate to match that one; they answer different
 /// questions with different blast radii.
 pub fn assess_harness_coordinator(provider: &str, model: &str) -> CoordinatorEligibility {
+    assess_harness_coordinator_in(provider, model, &trusted_default_models())
+}
+
+/// Pure core of [`assess_harness_coordinator`] over an explicit trusted list.
+pub fn assess_harness_coordinator_in(
+    provider: &str,
+    model: &str,
+    trusted: &[RoleModel],
+) -> CoordinatorEligibility {
+    let is_trusted = trusted.iter().any(|t| {
+        t.provider.eq_ignore_ascii_case(provider) && t.model.eq_ignore_ascii_case(model)
+    });
     let Some((knowledge, _confidence)) =
         crate::cost_router::lookup_with_confidence(provider, model)
     else {
-        return CoordinatorEligibility::Unrated;
+        // A trusted route with no knowledge row is still trusted: the operator
+        // (or the shipped list) vouched for it explicitly.
+        return if is_trusted {
+            CoordinatorEligibility::TrustedDefault
+        } else {
+            CoordinatorEligibility::Unrated
+        };
     };
-    if provider.eq_ignore_ascii_case(DEFAULT_HARNESS_PROVIDER_ID)
-        && model.eq_ignore_ascii_case(DEFAULT_HARNESS_MODEL_ID)
-    {
+    if is_trusted {
         CoordinatorEligibility::TrustedDefault
     } else if knowledge.orchestration_strength >= HARNESS_COORDINATOR_MIN_ORCHESTRATION {
         CoordinatorEligibility::HeuristicCandidate
@@ -209,7 +233,24 @@ pub fn gate_harness_coordinator(
     configured_fallback: Option<RoleModel>,
     explicit_override: bool,
 ) -> HarnessGateDecision {
-    let eligibility = assess_harness_coordinator(&requested.provider, &requested.model);
+    gate_harness_coordinator_in(
+        requested,
+        configured_fallback,
+        explicit_override,
+        &RoleContext::live(),
+    )
+}
+
+/// Pure core of [`gate_harness_coordinator`]. The last-resort graduated route
+/// is the first trusted default whose provider the user can actually use.
+pub fn gate_harness_coordinator_in(
+    requested: RoleModel,
+    configured_fallback: Option<RoleModel>,
+    explicit_override: bool,
+    ctx: &RoleContext,
+) -> HarnessGateDecision {
+    let eligibility =
+        assess_harness_coordinator_in(&requested.provider, &requested.model, &ctx.trusted);
     let keep = |outcome| HarnessGateDecision {
         route: requested.clone(),
         requested: requested.clone(),
@@ -222,15 +263,18 @@ pub fn gate_harness_coordinator(
     if explicit_override {
         return keep(HarnessGateOutcome::KeptExplicit);
     }
-    let target = [
-        configured_fallback,
-        Some(ModelRole::Harness.measured_default()),
-    ]
-    .into_iter()
-    .flatten()
-    .find(|candidate| {
-        assess_harness_coordinator(&candidate.provider, &candidate.model).is_eligible()
-    });
+    let trusted_usable = ctx
+        .trusted
+        .iter()
+        .find(|t| ctx.availability.is_usable(&t.provider))
+        .cloned();
+    let target = [configured_fallback, trusted_usable]
+        .into_iter()
+        .flatten()
+        .find(|candidate| {
+            assess_harness_coordinator_in(&candidate.provider, &candidate.model, &ctx.trusted)
+                .is_eligible()
+        });
     match target {
         Some(target) => HarnessGateDecision {
             requested: requested.clone(),
@@ -285,8 +329,10 @@ impl ModelRole {
         }
     }
 
-    /// The measured winner for this role. Applies only when the user has
-    /// configured no model at all — see the module docs on precedence.
+    /// The most-preferred measured winner for this role, IGNORING which
+    /// providers the user has. It is the head of [`Self::preferences`]; the
+    /// route actually used on a fresh install comes from
+    /// [`RoleContext::default_for`], which skips providers without credentials.
     ///
     /// Both numbers below come from
     /// `docs/research/MODEL_DEFAULTS_BENCH_2026-08-25.md`; if you change a value
@@ -297,6 +343,27 @@ impl ModelRole {
             ModelRole::Harness => {
                 RoleModel::new(DEFAULT_HARNESS_PROVIDER_ID, DEFAULT_HARNESS_MODEL_ID)
             }
+        }
+    }
+
+    /// The measured preference order for this role. A default is the first
+    /// entry whose provider the user has configured; the list spans several
+    /// providers so no single vendor is required.
+    pub fn preferences(self) -> Vec<RoleModel> {
+        let pair = |p: &str, m: &str| RoleModel::new(p, m);
+        match self {
+            ModelRole::Chat => vec![
+                pair(DEFAULT_CHAT_PROVIDER_ID, DEFAULT_CHAT_MODEL_ID),
+                pair("anthropic", "claude-haiku-4-5-20251001"),
+                pair("openai", "gpt-5.4-mini"),
+                pair("google", "gemini-3-pro"),
+            ],
+            ModelRole::Harness => vec![
+                pair(DEFAULT_HARNESS_PROVIDER_ID, DEFAULT_HARNESS_MODEL_ID),
+                pair("custom_deepseek", "deepseek-chat"),
+                pair("anthropic", "claude-haiku-4-5-20251001"),
+                pair("google", "gemini-3-pro"),
+            ],
         }
     }
 
@@ -335,6 +402,196 @@ pub const DEFAULT_HARNESS_PROVIDER_ID: &str = "openai";
 /// and the id the harness already knows how to pin.
 pub const DEFAULT_HARNESS_MODEL_ID: &str = "gpt-5.4-mini";
 
+/// Config key holding the list of `provider/model` routes trusted as the
+/// coding harness's top-level coordinator.
+pub const TRUSTED_DEFAULT_MODELS_KEY: &str = "trusted_default_models";
+
+/// The built-in trusted list: the routes the 2026-08 harness bench measured as
+/// cost-effective coordinators. It spans two providers so no single vendor is
+/// required. Override with `trusted_default_models:` in `config.yaml` (a list
+/// of `provider/model` strings; an explicit empty list trusts nothing).
+pub const DEFAULT_TRUSTED_DEFAULT_MODELS: &[&str] =
+    &["openai/gpt-5.4-mini", "custom_deepseek/deepseek-chat"];
+
+/// Why a role has no route when no provider is usable.
+pub const NO_PROVIDER_REASON: &str = "No model provider is configured. Add an API key or start a local Ollama in Settings > Models (or set GOOSE_PROVIDER and GOOSE_MODEL), then retry.";
+
+fn parse_route(raw: &str) -> Option<RoleModel> {
+    let (provider, model) = raw.trim().split_once('/')?;
+    let (provider, model) = (provider.trim(), model.trim());
+    (!provider.is_empty() && !model.is_empty()).then(|| RoleModel::new(provider, model))
+}
+
+/// Pure: the trusted list from a configured value (`None` = key unset).
+pub fn parse_trusted_default_models(configured: Option<Vec<String>>) -> Vec<RoleModel> {
+    match configured {
+        Some(list) => list.iter().filter_map(|r| parse_route(r)).collect(),
+        None => DEFAULT_TRUSTED_DEFAULT_MODELS
+            .iter()
+            .filter_map(|r| parse_route(r))
+            .collect(),
+    }
+}
+
+/// The trusted coordinator list, read from the process-global config.
+pub fn trusted_default_models() -> Vec<RoleModel> {
+    parse_trusted_default_models(
+        crate::config::Config::global()
+            .get_param::<Vec<String>>(TRUSTED_DEFAULT_MODELS_KEY)
+            .ok(),
+    )
+}
+
+/// Which providers the user can actually use right now.
+#[derive(Debug, Clone)]
+pub struct ProviderAvailability {
+    /// `None` means "treat every provider as usable" (pure tests).
+    usable: Option<std::collections::BTreeSet<String>>,
+}
+
+impl ProviderAvailability {
+    /// Every provider counts as usable.
+    pub fn all() -> Self {
+        Self {
+            usable: None,
+        }
+    }
+
+    /// Exactly these providers are usable (lowercase ids).
+    pub fn only(ids: &[&str]) -> Self {
+        Self {
+            usable: Some(ids.iter().map(|i| i.to_ascii_lowercase()).collect()),
+        }
+    }
+
+    /// No provider is usable.
+    pub fn none() -> Self {
+        Self::only(&[])
+    }
+
+    /// Detect from the machine: keyed providers with a configured key, plus
+    /// `ollama` when its port answers.
+    pub fn live() -> Self {
+        let mut usable = std::collections::BTreeSet::new();
+        for (provider, env) in crate::cost_router::recommend::BUILTIN_PROVIDERS {
+            if !env.is_empty() && crate::cost_router::cheap::is_key_configured(env) {
+                usable.insert(provider.to_string());
+            }
+        }
+        for c in crate::config::declarative_providers::all_declarative_provider_configs() {
+            if !c.api_key_env.trim().is_empty()
+                && crate::cost_router::cheap::is_key_configured(&c.api_key_env)
+            {
+                usable.insert(c.name.to_ascii_lowercase());
+            }
+        }
+        if ollama_reachable_cached() {
+            usable.insert("ollama".to_string());
+        }
+        Self {
+            usable: Some(usable),
+        }
+    }
+
+    pub fn is_usable(&self, provider: &str) -> bool {
+        match &self.usable {
+            None => true,
+            Some(set) => set.contains(&provider.to_ascii_lowercase()),
+        }
+    }
+}
+
+/// Ollama counts as usable only if something answers on its port. Cached for a
+/// few seconds because a role is resolved on every chat turn.
+fn ollama_reachable_cached() -> bool {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+    static CACHE: Mutex<Option<(Instant, bool)>> = Mutex::new(None);
+    if let Ok(guard) = CACHE.lock() {
+        if let Some((at, up)) = *guard {
+            if at.elapsed() < Duration::from_secs(15) {
+                return up;
+            }
+        }
+    }
+    let up = ollama_reachable();
+    if let Ok(mut guard) = CACHE.lock() {
+        *guard = Some((Instant::now(), up));
+    }
+    up
+}
+
+fn ollama_reachable() -> bool {
+    use std::net::ToSocketAddrs;
+    use std::time::Duration;
+    let raw = crate::config::Config::global()
+        .get_param::<String>("OLLAMA_HOST")
+        .ok();
+    let base = crate::cost_router::recommend::ollama_base_url(raw);
+    let Ok(url) = reqwest::Url::parse(&base) else {
+        return false;
+    };
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    let port = url.port_or_known_default().unwrap_or(11434);
+    (host, port)
+        .to_socket_addrs()
+        .ok()
+        .and_then(|mut addrs| addrs.next())
+        .is_some_and(|addr| {
+            std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(250)).is_ok()
+        })
+}
+
+/// Everything the default-selection rules need beyond the config reader.
+#[derive(Debug, Clone)]
+pub struct RoleContext {
+    pub availability: ProviderAvailability,
+    pub trusted: Vec<RoleModel>,
+    pub local_model: String,
+}
+
+impl RoleContext {
+    /// Detect availability from the machine and read the trusted list and
+    /// local model from the process-global config.
+    pub fn live() -> Self {
+        Self {
+            availability: ProviderAvailability::live(),
+            trusted: trusted_default_models(),
+            local_model: crate::config::local_default_model(),
+        }
+    }
+
+    /// Every provider usable, the built-in trusted list, the default local
+    /// model. For pure tests of the precedence rules.
+    pub fn permissive() -> Self {
+        Self::with_availability(ProviderAvailability::all())
+    }
+
+    pub fn with_availability(availability: ProviderAvailability) -> Self {
+        Self {
+            availability,
+            trusted: parse_trusted_default_models(None),
+            local_model: crate::config::DEFAULT_LOCAL_MODEL.to_string(),
+        }
+    }
+
+    /// The default route for a role given what the user has: the first
+    /// preference whose provider is usable, then the local model when Ollama is
+    /// up. `None` when nothing is usable — never a route that needs a missing key.
+    pub fn default_for(&self, role: ModelRole) -> Option<RoleModel> {
+        role.preferences()
+            .into_iter()
+            .find(|p| self.availability.is_usable(&p.provider))
+            .or_else(|| {
+                self.availability
+                    .is_usable("ollama")
+                    .then(|| RoleModel::new("ollama", self.local_model.clone()))
+            })
+    }
+}
+
 /// A resolved route: the concrete provider+model a role's turn goes to.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoleModel {
@@ -367,12 +624,21 @@ pub enum RoleModelSource {
     HalfConfigured,
     /// A role key held `session` / `off` / `none`: run on the session model.
     Disabled,
+    /// Nothing is configured and no provider is usable (no API key, no
+    /// reachable Ollama), so there is no default to offer. See
+    /// [`NO_PROVIDER_REASON`].
+    Unconfigured,
 }
 
 impl RoleModelSource {
     /// Whether the caller should emit a warning about a misconfiguration.
     pub fn should_warn(self) -> bool {
         matches!(self, RoleModelSource::HalfConfigured)
+    }
+
+    /// Plain-words explanation for the one source that has no route at all.
+    pub fn reason(self) -> Option<&'static str> {
+        matches!(self, RoleModelSource::Unconfigured).then_some(NO_PROVIDER_REASON)
     }
 }
 
@@ -386,13 +652,24 @@ pub struct RoleResolution {
     pub source: RoleModelSource,
 }
 
-/// Pure: resolve one role's route from a key reader.
+/// Pure: resolve one role's route from a key reader, with provider
+/// availability detected live (see [`RoleContext::live`]).
 ///
 /// `read` is given raw config keys — the role's two keys and, when they do not
 /// decide it, [`SESSION_PROVIDER_KEY`] / [`SESSION_MODEL_KEY`].
 pub fn resolve_role_model(
     role: ModelRole,
     read: impl Fn(&str) -> Option<String>,
+) -> RoleResolution {
+    resolve_role_model_in(role, read, &RoleContext::live())
+}
+
+/// [`resolve_role_model`] over an explicit [`RoleContext`] (tests, and callers
+/// that already hold one).
+pub fn resolve_role_model_in(
+    role: ModelRole,
+    read: impl Fn(&str) -> Option<String>,
+    ctx: &RoleContext,
 ) -> RoleResolution {
     let value = |key: &str| {
         read(key)
@@ -424,14 +701,18 @@ pub fn resolve_role_model(
 
     // No usable role keys. The session model is an explicit user choice and
     // outranks the bench; only a machine with nothing configured at all falls
-    // through to the measured default.
+    // through to a default chosen from the providers the user has.
     let session_provider = value(SESSION_PROVIDER_KEY);
     let session_model = value(SESSION_MODEL_KEY);
     let session_is_set = session_provider.is_some() && session_model.is_some();
 
     if half_configured {
         return RoleResolution {
-            route: (!session_is_set).then(|| role.measured_default()),
+            route: if session_is_set {
+                None
+            } else {
+                ctx.default_for(role)
+            },
             source: RoleModelSource::HalfConfigured,
         };
     }
@@ -441,9 +722,15 @@ pub fn resolve_role_model(
             source: RoleModelSource::SessionModel,
         };
     }
-    RoleResolution {
-        route: Some(role.measured_default()),
-        source: RoleModelSource::Default,
+    match ctx.default_for(role) {
+        Some(route) => RoleResolution {
+            route: Some(route),
+            source: RoleModelSource::Default,
+        },
+        None => RoleResolution {
+            route: None,
+            source: RoleModelSource::Unconfigured,
+        },
     }
 }
 
@@ -473,12 +760,20 @@ pub struct EffectiveHarnessRoute {
 /// model (the built-in `permagent-coding` recipe pins none). Those per-run
 /// layers cannot be known from config and are not represented here.
 pub fn effective_harness_route(read: impl Fn(&str) -> Option<String>) -> EffectiveHarnessRoute {
+    effective_harness_route_in(read, &RoleContext::live())
+}
+
+/// [`effective_harness_route`] over an explicit [`RoleContext`].
+pub fn effective_harness_route_in(
+    read: impl Fn(&str) -> Option<String>,
+    ctx: &RoleContext,
+) -> EffectiveHarnessRoute {
     let value = |key: &str| {
         read(key)
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
     };
-    let resolution = resolve_role_model(ModelRole::Harness, &read);
+    let resolution = resolve_role_model_in(ModelRole::Harness, &read, ctx);
     // `resolve_role_model` returns `None` when the session model applies.
     let requested = resolution.route.clone().or_else(|| {
         match (value(SESSION_PROVIDER_KEY), value(SESSION_MODEL_KEY)) {
@@ -493,15 +788,19 @@ pub fn effective_harness_route(read: impl Fn(&str) -> Option<String>) -> Effecti
             route: RoleModel::new(provider, model),
             source: resolution.source,
             outcome: None,
-            notice: Some(
-                "No session model is set, so the coding harness has no model to run on".into(),
-            ),
+            notice: Some(match resolution.source.reason() {
+                Some(reason) => reason.to_string(),
+                None => {
+                    "No session model is set, so the coding harness has no model to run on".into()
+                }
+            }),
         };
     };
-    let decision = gate_harness_coordinator(
+    let decision = gate_harness_coordinator_in(
         requested,
         resolution.route,
         resolution.source == RoleModelSource::Configured,
+        ctx,
     );
     EffectiveHarnessRoute {
         notice: decision.plain_notice(),
@@ -532,6 +831,24 @@ pub fn role_model_from_config(role: ModelRole) -> RoleResolution {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    // The precedence tests below are about ordering, not about what the host
+    // machine has configured, so they run with every provider usable. The
+    // provider-aware tests at the bottom pin availability explicitly.
+    fn resolve_role_model(
+        role: ModelRole,
+        read: impl Fn(&str) -> Option<String>,
+    ) -> RoleResolution {
+        resolve_role_model_in(role, read, &RoleContext::permissive())
+    }
+
+    fn effective_harness_route(read: impl Fn(&str) -> Option<String>) -> EffectiveHarnessRoute {
+        effective_harness_route_in(read, &RoleContext::permissive())
+    }
+
+    fn assess_harness_coordinator(provider: &str, model: &str) -> CoordinatorEligibility {
+        assess_harness_coordinator_in(provider, model, &RoleContext::permissive().trusted)
+    }
 
     fn reader(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
         let map: HashMap<String, String> = pairs
@@ -827,5 +1144,120 @@ mod tests {
         assert_eq!(effective.outcome, None);
         assert_eq!(effective.route, RoleModel::new("", ""));
         assert!(effective.notice.is_some());
+    }
+
+    fn ctx(providers: &[&str]) -> RoleContext {
+        RoleContext::with_availability(ProviderAvailability::only(providers))
+    }
+
+    #[test]
+    fn no_providers_means_no_route_and_a_configure_a_provider_reason() {
+        for role in ModelRole::all() {
+            let resolved = resolve_role_model_in(role, reader(&[]), &ctx(&[]));
+            assert_eq!(resolved.route, None, "{}", role.label());
+            assert_eq!(resolved.source, RoleModelSource::Unconfigured);
+            let reason = resolved.source.reason().expect("a reason is given");
+            assert!(reason.contains("No model provider is configured"), "{reason}");
+        }
+        let effective = effective_harness_route_in(reader(&[]), &ctx(&[]));
+        assert_eq!(effective.outcome, None);
+        assert!(effective
+            .notice
+            .as_deref()
+            .is_some_and(|n| n.contains("No model provider is configured")));
+    }
+
+    #[test]
+    fn only_an_anthropic_key_defaults_to_anthropic_never_a_provider_without_a_key() {
+        for role in ModelRole::all() {
+            let resolved = resolve_role_model_in(role, reader(&[]), &ctx(&["anthropic"]));
+            assert_eq!(resolved.source, RoleModelSource::Default);
+            let route = resolved.route.expect("anthropic is usable");
+            assert_eq!(route.provider, "anthropic", "{}", role.label());
+        }
+    }
+
+    #[test]
+    fn only_ollama_defaults_to_the_configured_local_model() {
+        let mut context = ctx(&["ollama"]);
+        context.local_model = "llama3.2:3b".to_string();
+        for role in ModelRole::all() {
+            let resolved = resolve_role_model_in(role, reader(&[]), &context);
+            assert_eq!(resolved.source, RoleModelSource::Default);
+            assert_eq!(resolved.route, Some(RoleModel::new("ollama", "llama3.2:3b")));
+        }
+    }
+
+    #[test]
+    fn a_keyed_provider_outranks_the_local_rung_and_preference_order_holds() {
+        let both = resolve_role_model_in(ModelRole::Harness, reader(&[]), &ctx(&["openai", "anthropic", "ollama"]));
+        assert_eq!(both.route, Some(ModelRole::Harness.measured_default()));
+        let deepseek = resolve_role_model_in(ModelRole::Chat, reader(&[]), &ctx(&["custom_deepseek", "openai"]));
+        assert_eq!(deepseek.route, Some(ModelRole::Chat.measured_default()));
+    }
+
+    #[test]
+    fn explicit_config_stays_authoritative_even_when_the_provider_looks_unusable() {
+        let resolved = resolve_role_model_in(
+            ModelRole::Chat,
+            reader(&[("chat_provider", "zai"), ("chat_model", "glm-5.3")]),
+            &ctx(&[]),
+        );
+        assert_eq!(resolved.source, RoleModelSource::Configured);
+        assert_eq!(resolved.route, Some(RoleModel::new("zai", "glm-5.3")));
+        let session = resolve_role_model_in(
+            ModelRole::Chat,
+            reader(&[(SESSION_PROVIDER_KEY, "zai"), (SESSION_MODEL_KEY, "glm-5.3")]),
+            &ctx(&[]),
+        );
+        assert_eq!(session.source, RoleModelSource::SessionModel);
+    }
+
+    #[test]
+    fn the_trusted_list_is_config_driven_and_spans_providers() {
+        let defaults = parse_trusted_default_models(None);
+        let providers: std::collections::BTreeSet<_> =
+            defaults.iter().map(|t| t.provider.as_str()).collect();
+        assert!(providers.len() >= 2, "{providers:?}");
+
+        let custom = parse_trusted_default_models(Some(vec![
+            "anthropic/claude-haiku-4-5-20251001".into(),
+            "garbage".into(),
+            "/x".into(),
+        ]));
+        assert_eq!(
+            custom,
+            vec![RoleModel::new("anthropic", "claude-haiku-4-5-20251001")]
+        );
+        assert_eq!(
+            assess_harness_coordinator_in("anthropic", "claude-haiku-4-5-20251001", &custom),
+            CoordinatorEligibility::TrustedDefault
+        );
+        assert_ne!(
+            assess_harness_coordinator_in("openai", "gpt-5.4-mini", &custom),
+            CoordinatorEligibility::TrustedDefault
+        );
+        assert!(parse_trusted_default_models(Some(vec![])).is_empty());
+    }
+
+    #[test]
+    fn the_gate_reroutes_to_a_trusted_route_the_user_can_actually_use() {
+        let context = ctx(&["custom_deepseek"]);
+        let decision = gate_harness_coordinator_in(
+            RoleModel::new("anthropic", "claude-haiku-4-5"),
+            None,
+            false,
+            &context,
+        );
+        assert_eq!(decision.outcome, HarnessGateOutcome::Rerouted);
+        assert_eq!(decision.route, RoleModel::new("custom_deepseek", "deepseek-chat"));
+
+        let nothing = gate_harness_coordinator_in(
+            RoleModel::new("anthropic", "claude-haiku-4-5"),
+            None,
+            false,
+            &ctx(&["anthropic"]),
+        );
+        assert_eq!(nothing.outcome, HarnessGateOutcome::KeptNoFallback);
     }
 }

@@ -95,7 +95,7 @@ pub async fn run_for_goal(
     pool: &Pool<Sqlite>,
     goal_id: &str,
 ) -> Result<VerificationRecord, String> {
-    run_for_goal_with(pool, goal_id, verifier::OLLAMA_BASE_URL).await
+    run_for_goal_with(pool, goal_id, &verifier::ollama_base_url()).await
 }
 
 /// Install the post-Review verification hook on L1's orchestrator extension
@@ -4344,7 +4344,7 @@ mod tests {
 
         let cfg = verifier::load_config();
         println!("VERIFIER MODEL: {}", cfg.model);
-        println!("OLLAMA BASE: {}", verifier::OLLAMA_BASE_URL);
+        println!("OLLAMA BASE: {}", verifier::ollama_base_url());
 
         let record = run_for_goal(&pool, &card.id).await.unwrap();
         println!(

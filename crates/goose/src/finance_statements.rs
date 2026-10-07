@@ -213,55 +213,180 @@ pub fn parse_ocr_lines(text: &str) -> Vec<ParsedTxn> {
     out
 }
 
+/// One merchant rule: a phrase (matched on whole words, case-insensitive)
+/// and the category it assigns.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct CategoryRule {
+    #[serde(rename = "match")]
+    pub phrase: String,
+    pub category: String,
+}
+
+/// Optional user rules file: `~/.permagent/finance_rules.yaml`.
+///
+/// ```yaml
+/// # Your own merchants, matched on whole words and checked BEFORE the
+/// # built-in generic rules. `category` must be one of CATEGORIES.
+/// rules:
+///   - match: corner market
+///     category: groceries
+///   - match: city power
+///     category: utilities
+/// ```
+#[derive(Debug, Default, Deserialize)]
+struct RulesFile {
+    #[serde(default)]
+    rules: Vec<CategoryRule>,
+}
+
+pub const RULES_FILE_NAME: &str = "finance_rules.yaml";
+
+/// Built-in, locale-neutral rules: generic words only, no regional merchants.
+/// Add regional ones in the user rules file.
+const BUILTIN_RULES: &[(&str, &str)] = &[
+    ("rent", "housing"),
+    ("mortgage", "housing"),
+    ("landlord", "housing"),
+    ("grocery", "groceries"),
+    ("groceries", "groceries"),
+    ("supermarket", "groceries"),
+    ("uber", "transport"),
+    ("lyft", "transport"),
+    ("taxi", "transport"),
+    ("transit", "transport"),
+    ("fuel", "transport"),
+    ("petrol", "transport"),
+    ("parking", "transport"),
+    ("restaurant", "dining"),
+    ("cafe", "dining"),
+    ("coffee", "dining"),
+    ("pizza", "dining"),
+    ("diner", "dining"),
+    ("electric", "utilities"),
+    ("electricity", "utilities"),
+    ("hydro", "utilities"),
+    ("water", "utilities"),
+    ("utility", "utilities"),
+    ("utilities", "utilities"),
+    ("internet", "utilities"),
+    ("telecom", "utilities"),
+    ("wireless", "utilities"),
+    ("netflix", "subscriptions"),
+    ("spotify", "subscriptions"),
+    ("subscription", "subscriptions"),
+    ("pharmacy", "health"),
+    ("clinic", "health"),
+    ("dental", "health"),
+    ("dentist", "health"),
+    ("hospital", "health"),
+    ("transfer", "transfer"),
+    ("etransfer", "transfer"),
+];
+
+/// Words of a payee, lowercased, split on anything that is not alphanumeric.
+fn words(text: &str) -> Vec<String> {
+    text.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Whole-word phrase match: every word of `phrase` appears, in order and
+/// adjacent, among the payee's words. "bell" no longer matches "bellevue" and
+/// "skip" no longer matches "skipton".
+fn phrase_matches(payee_words: &[String], phrase: &str) -> bool {
+    let needle = words(phrase);
+    if needle.is_empty() || needle.len() > payee_words.len() {
+        return false;
+    }
+    payee_words.windows(needle.len()).any(|w| w == needle.as_slice())
+}
+
+fn user_rules_path() -> std::path::PathBuf {
+    crate::config::paths::Paths::in_config_dir(RULES_FILE_NAME)
+}
+
+/// Pure: parse a rules file, dropping rules with an unknown category or an
+/// empty phrase (reported through the returned warnings).
+pub fn parse_rules(yaml: &str) -> (Vec<CategoryRule>, Vec<String>) {
+    let mut warnings = Vec::new();
+    let file: RulesFile = match serde_yaml::from_str(yaml) {
+        Ok(f) => f,
+        Err(e) => return (Vec::new(), vec![format!("{RULES_FILE_NAME} is not valid: {e}")]),
+    };
+    let mut rules = Vec::new();
+    for rule in file.rules {
+        let category = rule.category.trim().to_lowercase();
+        if words(&rule.phrase).is_empty() {
+            warnings.push("a rule has an empty `match`".to_string());
+        } else if !CATEGORIES.contains(&category.as_str()) {
+            warnings.push(format!(
+                "rule `{}` uses unknown category `{}`",
+                rule.phrase, rule.category
+            ));
+        } else {
+            rules.push(CategoryRule {
+                phrase: rule.phrase,
+                category,
+            });
+        }
+    }
+    (rules, warnings)
+}
+
+/// User rules, reloaded when the file changes.
+fn user_rules() -> std::sync::Arc<Vec<CategoryRule>> {
+    use std::sync::{Arc, Mutex};
+    use std::time::SystemTime;
+    static CACHE: Mutex<Option<(Option<SystemTime>, Arc<Vec<CategoryRule>>)>> = Mutex::new(None);
+    let path = user_rules_path();
+    let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+    let mut guard = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((cached_mtime, rules)) = guard.as_ref() {
+        if *cached_mtime == mtime {
+            return Arc::clone(rules);
+        }
+    }
+    let rules = match std::fs::read_to_string(&path) {
+        Ok(text) => {
+            let (rules, warnings) = parse_rules(&text);
+            for w in warnings {
+                tracing::warn!(target: "permagent::finance", "{w}");
+            }
+            rules
+        }
+        Err(_) => Vec::new(),
+    };
+    let rules = Arc::new(rules);
+    *guard = Some((mtime, Arc::clone(&rules)));
+    rules
+}
+
+/// Categorize with the user's rules file (if any) ahead of the built-ins.
 pub fn categorize(payee: &str, amount: f64) -> String {
+    categorize_with(payee, amount, &user_rules())
+}
+
+/// Pure core of [`categorize`] over explicit user rules.
+pub fn categorize_with(payee: &str, amount: f64, user: &[CategoryRule]) -> String {
+    let pw = words(payee);
     if amount > 0.0 {
-        let p = payee.to_lowercase();
-        if p.contains("e-transfer") || p.contains("transfer") || p.contains("venmo") {
+        if phrase_matches(&pw, "transfer")
+            || phrase_matches(&pw, "etransfer")
+            || phrase_matches(&pw, "venmo")
+        {
             return "transfer".into();
         }
         return "income".into();
     }
-    let p = payee.to_lowercase();
-    const RULES: &[(&str, &str)] = &[
-        ("rent", "housing"),
-        ("mortgage", "housing"),
-        ("landlord", "housing"),
-        ("grocery", "groceries"),
-        ("sobeys", "groceries"),
-        ("superstore", "groceries"),
-        ("walmart", "groceries"),
-        ("costco", "groceries"),
-        ("no frills", "groceries"),
-        ("uber", "transport"),
-        ("lyft", "transport"),
-        ("petro", "transport"),
-        ("shell", "transport"),
-        ("esso", "transport"),
-        ("parking", "transport"),
-        ("nslc", "dining"),
-        ("restaurant", "dining"),
-        ("coffee", "dining"),
-        ("starbucks", "dining"),
-        ("tim hortons", "dining"),
-        ("doordash", "dining"),
-        ("skip", "dining"),
-        ("nspower", "utilities"),
-        ("ns power", "utilities"),
-        ("hydro", "utilities"),
-        ("bell", "utilities"),
-        ("rogers", "utilities"),
-        ("eastlink", "utilities"),
-        ("netflix", "subscriptions"),
-        ("spotify", "subscriptions"),
-        ("apple.com/bill", "subscriptions"),
-        ("pharmacy", "health"),
-        ("shoppers", "health"),
-        ("clinic", "health"),
-        ("transfer", "transfer"),
-        ("e-transfer", "transfer"),
-    ];
-    for (needle, cat) in RULES {
-        if p.contains(needle) {
+    for rule in user {
+        if phrase_matches(&pw, &rule.phrase) {
+            return rule.category.clone();
+        }
+    }
+    for (needle, cat) in BUILTIN_RULES {
+        if phrase_matches(&pw, needle) {
             return (*cat).into();
         }
     }
@@ -451,7 +576,7 @@ mod tests {
 
     #[test]
     fn csv_debit_credit_and_amount_columns() {
-        let text = "Date,Description,Amount\n2026-01-15,Sobeys Halifax,-86.40\n2026-01-16,PAYROLL,2400.00\n";
+        let text = "Date,Description,Amount\n2026-01-15,Corner Grocery,-86.40\n2026-01-16,PAYROLL,2400.00\n";
         let rows = parse_csv(text).unwrap();
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].category, "groceries");
@@ -465,7 +590,7 @@ mod tests {
 <TRNTYPE>DEBIT
 <DTPOSTED>20260115
 <TRNAMT>-42.00
-<NAME>TIM HORTONS
+<NAME>MAIN STREET COFFEE
 </STMTTRN>
 "#;
         let rows = parse_ofx(text);
@@ -476,9 +601,46 @@ mod tests {
 
     #[test]
     fn ocr_line_with_date_and_amount() {
-        let rows = parse_ocr_lines("2026-03-02  NS POWER  -$128.11\nnot a txn\n");
+        let rows = parse_ocr_lines("2026-03-02  CITY ELECTRIC  -$128.11\nnot a txn\n");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].category, "utilities");
         assert!((rows[0].amount + 128.11).abs() < 0.01);
+    }
+
+    #[test]
+    fn builtins_are_generic_and_matched_on_whole_words() {
+        assert_eq!(categorize_with("Riverside Pharmacy #12", -9.0, &[]), "health");
+        assert_eq!(categorize_with("Metro Transit pass", -90.0, &[]), "transport");
+        assert_eq!(categorize_with("Acme Telecom", -60.0, &[]), "utilities");
+        // Regional merchants are not built in.
+        assert_eq!(categorize_with("Sobeys", -30.0, &[]), "uncategorized");
+        assert_eq!(categorize_with("Eastlink", -30.0, &[]), "uncategorized");
+    }
+
+    #[test]
+    fn substrings_inside_other_words_do_not_match() {
+        assert_eq!(categorize_with("Bellevue Dental", -50.0, &[]), "health");
+        assert_eq!(categorize_with("Shellfish Bar", -20.0, &[]), "uncategorized");
+        assert_eq!(categorize_with("Skipton Building Soc", -20.0, &[]), "uncategorized");
+        assert_eq!(categorize_with("Parkinson Rentals", -20.0, &[]), "uncategorized");
+        // But the word itself, with punctuation around it, still matches.
+        assert_eq!(categorize_with("E-TRANSFER SENT", 25.0, &[]), "transfer");
+        assert_eq!(categorize_with("COFFEE-HOUSE", -4.0, &[]), "dining");
+    }
+
+    #[test]
+    fn user_rules_load_from_yaml_and_win_over_builtins() {
+        let (rules, warnings) = parse_rules(
+            "rules:\n  - match: Corner Market\n    category: Groceries\n  - match: Water Street Pharmacy\n    category: dining\n  - match: x\n    category: nonsense\n",
+        );
+        assert_eq!(rules.len(), 2);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert_eq!(categorize_with("CORNER MARKET 41", -12.0, &rules), "groceries");
+        // A user rule outranks the built-in `pharmacy`.
+        assert_eq!(
+            categorize_with("Water Street Pharmacy", -5.0, &rules),
+            "dining"
+        );
+        assert_eq!(parse_rules("not: [valid").0.len(), 0);
     }
 }

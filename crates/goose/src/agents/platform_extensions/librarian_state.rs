@@ -109,7 +109,7 @@ pub fn get_state() -> LibrarianRuntimeState {
 pub fn set_warming(total_memories: usize, described: usize) {
     let mut state = LIBRARIAN_STATE.write().unwrap();
     state.phase = LibrarianPhase::Warming;
-    state.current_task = "Warming model — loading qwen2.5:3b into memory".to_string();
+    state.current_task = "Warming model — loading the local model into memory".to_string();
     state.current_memory = None;
     state.error_message = None;
     state.session_stats = SessionStats {

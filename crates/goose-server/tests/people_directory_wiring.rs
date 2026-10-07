@@ -16,7 +16,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use tower::ServiceExt;
 
-const ONTOLOGY_TOML: &str = include_str!("../../goose/assets/ontology.toml");
+const ONTOLOGY_TOML: &str = include_str!("../../goose/tests/fixtures/ontology.sample.toml");
 
 async fn body_json(resp: axum::response::Response) -> serde_json::Value {
     let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)

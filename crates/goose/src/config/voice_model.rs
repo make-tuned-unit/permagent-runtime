@@ -13,10 +13,15 @@
 //!
 //! - **There IS a default here, and it is deliberate.** Unlike
 //!   [`crate::cost_router::role_map`] — which routes delegated work and must never
-//!   pick a vendor on the user's behalf — the voice path has a measured winner and
-//!   a user who is waiting out loud. [`default_voice_model`] is that winner, and
-//!   [`resolve_voice_model`] reports [`VoiceModelSource::Default`] when it applies
-//!   so the log says plainly which model is speaking and why.
+//!   pick a vendor on the user's behalf — the voice path has measured winners and
+//!   a user who is waiting out loud. [`default_voice_model`] is the most
+//!   preferred of them; [`resolve_voice_model`] picks the first of
+//!   [`voice_preferences`] whose provider the user has configured (a key
+//!   present), and reports [`VoiceModelSource::Default`] when it applies so the
+//!   log says plainly which model is speaking and why. When none of them is
+//!   usable there is no voice default and the spoken turn runs on the session
+//!   model (`None`), exactly as if `voice_model: session` were set. A default
+//!   that needs a key the user lacks is never returned.
 //! - **Setting both keys overrides it.** Provider and model together, or not at
 //!   all: a half-configured pair falls back to the default and says so
 //!   ([`VoiceModelSource::HalfConfigured`]), because routing a spoken turn to a
@@ -30,6 +35,7 @@
 //! Pure core plus a thin IO wrapper, so the precedence logic is unit-testable
 //! without the process-global config.
 
+use super::model_roles::ProviderAvailability;
 use serde::{Deserialize, Serialize};
 
 /// Config key holding the voice provider id (e.g. `custom_deepseek`).
@@ -90,12 +96,41 @@ pub enum VoiceModelSource {
     HalfConfigured,
 }
 
-/// Pure: resolve the voice route from a key reader.
+/// The measured voice preference order: the only two candidates that skipped
+/// a reasoning block in the bench. Most-preferred first.
+pub fn voice_preferences() -> Vec<VoiceModel> {
+    vec![
+        default_voice_model(),
+        VoiceModel {
+            provider: "anthropic".to_string(),
+            model: "claude-haiku-4-5-20251001".to_string(),
+        },
+    ]
+}
+
+/// Pure: the first voice preference whose provider is usable.
+pub fn default_voice_model_for(availability: &ProviderAvailability) -> Option<VoiceModel> {
+    voice_preferences()
+        .into_iter()
+        .find(|p| availability.is_usable(&p.provider))
+}
+
+/// Pure: resolve the voice route from a key reader, with provider
+/// availability detected live.
 ///
-/// `None` means the operator turned the voice model off (`session` / `off` /
-/// `none`) and the spoken turn should run on the session model.
+/// `None` means the spoken turn should run on the session model: the operator
+/// turned the voice model off (`session` / `off` / `none`), or nothing
+/// configured can serve the measured default.
 pub fn resolve_voice_model(
     read: impl Fn(&str) -> Option<String>,
+) -> Option<(VoiceModel, VoiceModelSource)> {
+    resolve_voice_model_in(read, &ProviderAvailability::live())
+}
+
+/// [`resolve_voice_model`] over an explicit [`ProviderAvailability`].
+pub fn resolve_voice_model_in(
+    read: impl Fn(&str) -> Option<String>,
+    availability: &ProviderAvailability,
 ) -> Option<(VoiceModel, VoiceModelSource)> {
     let value = |key: &str| {
         read(key)
@@ -117,8 +152,10 @@ pub fn resolve_voice_model(
         (Some(provider), Some(model)) => {
             Some((VoiceModel { provider, model }, VoiceModelSource::Configured))
         }
-        (None, None) => Some((default_voice_model(), VoiceModelSource::Default)),
-        _ => Some((default_voice_model(), VoiceModelSource::HalfConfigured)),
+        (None, None) => {
+            default_voice_model_for(availability).map(|m| (m, VoiceModelSource::Default))
+        }
+        _ => default_voice_model_for(availability).map(|m| (m, VoiceModelSource::HalfConfigured)),
     }
 }
 
@@ -133,6 +170,14 @@ pub fn voice_model_from_config() -> Option<(VoiceModel, VoiceModelSource)> {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    // Precedence tests run with every provider usable; availability tests
+    // below pin it explicitly.
+    fn resolve_voice_model(
+        read: impl Fn(&str) -> Option<String>,
+    ) -> Option<(VoiceModel, VoiceModelSource)> {
+        resolve_voice_model_in(read, &ProviderAvailability::all())
+    }
 
     fn reader(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
         let map: HashMap<String, String> = pairs
@@ -242,9 +287,38 @@ mod tests {
 
         config.delete(VOICE_PROVIDER_KEY).unwrap();
         config.delete(VOICE_MODEL_KEY).unwrap();
-        let (route, source) = voice_model_from_config().expect("default applies once cleared");
+        let (route, source) = resolve_voice_model_in(
+            |key| config.get_param::<String>(key).ok(),
+            &ProviderAvailability::all(),
+        )
+        .expect("default applies once cleared");
         assert_eq!(route, default_voice_model());
         assert_eq!(source, VoiceModelSource::Default);
+    }
+
+    #[test]
+    fn the_default_follows_the_providers_the_user_has() {
+        let none = ProviderAvailability::none();
+        assert_eq!(resolve_voice_model_in(reader(&[]), &none), None);
+
+        let anthropic = ProviderAvailability::only(&["anthropic"]);
+        let (route, source) =
+            resolve_voice_model_in(reader(&[]), &anthropic).expect("anthropic serves voice");
+        assert_eq!(route.provider, "anthropic");
+        assert_eq!(source, VoiceModelSource::Default);
+
+        // Only a provider that cannot serve voice quickly: session model.
+        let ollama_only = ProviderAvailability::only(&["ollama"]);
+        assert_eq!(resolve_voice_model_in(reader(&[]), &ollama_only), None);
+
+        // An explicit pair stays authoritative regardless of availability.
+        let (route, source) = resolve_voice_model_in(
+            reader(&[(VOICE_PROVIDER_KEY, "minimax"), (VOICE_MODEL_KEY, "m")]),
+            &none,
+        )
+        .expect("configured");
+        assert_eq!(route.provider, "minimax");
+        assert_eq!(source, VoiceModelSource::Configured);
     }
 
     #[test]

@@ -1,6 +1,7 @@
-//! Picker — the stock-scanning service the user already runs, as a seam.
+//! Picker — an optional stock-scanning service the user already runs, as a seam.
 //!
-//! `~/dev/Picker/pre_surge_scanner` is a Flask service under launchd that owns
+//! The scanner is a Flask service (named by `finance_scanner_url`, with no
+//! default address) that owns
 //! the pre-surge ranking algorithm, its backtests, its leaderboard and its
 //! trade history. It is not ours to reimplement, and we do not spawn its
 //! Python: it is a long-lived service with an HTTP API, so this module is an
@@ -22,10 +23,9 @@
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
-/// Config key overriding where the scanner lives.
+/// Legacy spelling of [`FINANCE_SCANNER_URL_KEY`]; still honoured.
 pub const PICKER_URL_KEY: &str = "picker_url";
-/// Explicit override for the Picker checkout location, for a layout the
-/// conventional search below does not cover.
+/// The scanner checkout location, used only to bring the service up.
 pub const PICKER_ROOT_KEY: &str = "picker_root";
 /// Off until the user turns Picker on from the Finance tab. The ranked list
 /// and scanner card stay hidden without this — other people should not inherit
@@ -83,64 +83,66 @@ fn is_ticker(s: &str) -> bool {
         && s.chars().any(|c| c.is_ascii_alphabetic())
 }
 
-/// Loopback by default. The service has no authentication and its API can
-/// modify the trade history and start expensive scans, so it should not be
-/// reachable off this machine; see the bind comment in `csv_web_server.py`.
-const DEFAULT_BASE: &str = "http://127.0.0.1:8080";
+/// Config key naming the finance scanner service. Preferred over the older
+/// `picker_url` spelling, which is still honoured.
+pub const FINANCE_SCANNER_URL_KEY: &str = "finance_scanner_url";
+
+/// What every entry point says when no scanner URL is configured. The scanner
+/// is an optional integration: with no URL there is no probe, no card and no
+/// guessed port.
+pub const NOT_CONFIGURED_MSG: &str = "The finance scanner service is not configured. \
+Set `finance_scanner_url` in Settings > Services.";
 
 /// Short: a scanner that is down should be reported as down promptly, not
 /// waited on. The scan-triggering call uses its own, longer bound.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 const CALL_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// Where the user's Picker checkout lives, for bringing the service up.
-/// Locate the Picker checkout.
-///
-/// `~/dev/Picker` was hardcoded, which is only true on a machine whose repos
-/// live directly under $HOME. On 2026-08-13 this made the Financier report
-/// "nothing to start" on a machine where the checkout was sitting in
-/// `~/Documents/dev/Picker/pre_surge_scanner` — the third place in this
-/// codebase where a `~/dev` assumption survived a move between Macs (the
-/// storage scanner and the project root_paths were the others).
-///
-/// `picker_root` config key wins, so a checkout anywhere can be named
-/// explicitly rather than requiring a conventional layout.
+/// Where the scanner checkout lives, for bringing the service up. Only the
+/// `picker_root` config key names it; no conventional layout is guessed.
 fn picker_root() -> Option<std::path::PathBuf> {
-    if let Ok(configured) = crate::config::Config::global().get_param::<String>(PICKER_ROOT_KEY) {
-        let p = std::path::PathBuf::from(shellexpand::tilde(&configured).into_owned());
-        if p.is_dir() {
-            return Some(p);
-        }
-    }
-
-    // Shared resolver: onboarding asks where this user keeps code, and every
-    // path-guessing feature must read the same answer rather than inventing its
-    // own (see config::dev_roots for the four that did).
-    crate::config::dev_roots::dev_roots()
-        .into_iter()
-        .map(|root| root.join("Picker/pre_surge_scanner"))
-        .find(|p| p.is_dir())
+    let configured = crate::config::Config::global()
+        .get_param::<String>(PICKER_ROOT_KEY)
+        .ok()?;
+    let p = std::path::PathBuf::from(shellexpand::tilde(&configured).into_owned());
+    p.is_dir().then_some(p)
 }
 
-pub fn base_url() -> String {
-    // Unit tests must never reach the user's live scanner: the service on
-    // :8080 is real, holds real open trades, and `overbought`'s
-    // no-open-lots test failed on this machine because it read them (and then
-    // live quotes for them). Point tests at a loopback port nothing listens on
-    // (9, discard) so every call fails fast as "unreachable", exactly the
-    // down-scanner path the callers already handle. Tests that need scanner
-    // data parse fixtures directly (`parse_trade_row`, `parse_universe`).
+/// The configured scanner base URL, or `None` when the integration is not set
+/// up. Never a default port.
+pub fn configured_base() -> Option<String> {
+    // Unit tests must never reach a real scanner. Point them at a loopback
+    // port nothing listens on (9, discard) so every call fails fast as
+    // "unreachable", exactly the down-scanner path the callers already
+    // handle. Tests that need scanner data parse fixtures directly
+    // (`parse_trade_row`, `parse_universe`).
     #[cfg(test)]
     {
-        "http://127.0.0.1:9".to_string()
+        Some("http://127.0.0.1:9".to_string())
     }
     #[cfg(not(test))]
-    crate::config::Config::global()
-        .get_param::<String>(PICKER_URL_KEY)
-        .ok()
-        .map(|s| s.trim_end_matches('/').to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| DEFAULT_BASE.to_string())
+    {
+        let cfg = crate::config::Config::global();
+        [FINANCE_SCANNER_URL_KEY, PICKER_URL_KEY]
+            .iter()
+            .filter_map(|k| cfg.get_param::<String>(k).ok())
+            .map(|s| s.trim().trim_end_matches('/').to_string())
+            .find(|s| !s.is_empty())
+    }
+}
+
+/// True when a scanner URL is configured.
+pub fn is_configured() -> bool {
+    configured_base().is_some()
+}
+
+/// The base URL for messages and display; empty when not configured.
+pub fn base_url() -> String {
+    configured_base().unwrap_or_default()
+}
+
+fn require_base() -> Result<String, String> {
+    configured_base().ok_or_else(|| NOT_CONFIGURED_MSG.to_string())
 }
 
 fn client(timeout: Duration) -> Result<reqwest::Client, String> {
@@ -167,7 +169,12 @@ pub struct PickerStatus {
 }
 
 pub async fn status() -> PickerStatus {
-    let base = base_url();
+    let Some(base) = configured_base() else {
+        return PickerStatus {
+            detail: Some(NOT_CONFIGURED_MSG.to_string()),
+            ..Default::default()
+        };
+    };
     let mut out = PickerStatus {
         base_url: base.clone(),
         ..Default::default()
@@ -197,20 +204,15 @@ pub async fn status() -> PickerStatus {
                         .and_then(|n| n.as_u64());
                 } else {
                     out.detail = Some(format!(
-                        "{base} answered, but it is not the stock scanner. \
-                         The Librarian's nightly llama-server split moved off \
-                         this port to :8081 on 2026-08-25 — if something is \
-                         still serving llama-server here, it is an old \
-                         qwen38-split.sh. Stop that process or set picker_url \
-                         to the scanner."
+                        "{base} answered, but it is not the finance scanner. \
+                         Another service is using that address; point \
+                         `finance_scanner_url` at the scanner."
                     ));
                 }
             } else {
                 out.detail = Some(format!(
                     "{base} answered, but the body is not scanner JSON — \
-                     something else is bound to that port (the Librarian \
-                     split serves :8081 now, so a stale one here is the \
-                     usual culprit)"
+                     something else is bound to that address"
                 ));
             }
         }
@@ -264,7 +266,7 @@ pub fn picks_from_body(v: &serde_json::Value) -> Vec<serde_json::Value> {
 /// Tries `/api/top-picks` then `/api/results` — the live scanner only has the
 /// second route.
 pub async fn top_picks() -> Result<Vec<serde_json::Value>, String> {
-    let base = base_url();
+    let base = require_base()?;
     let c = client(CALL_TIMEOUT)?;
     for path in ["/api/top-picks", "/api/results"] {
         let resp = match c.get(format!("{base}{path}")).send().await {
@@ -324,7 +326,7 @@ pub async fn start_scan() -> Result<String, String> {
 }
 
 pub async fn start_scan_with(tickers: &[String]) -> Result<String, String> {
-    let base = base_url();
+    let base = require_base()?;
     let body = if tickers.is_empty() {
         serde_json::json!({})
     } else {
@@ -416,7 +418,7 @@ fn trade_body(id: Option<&str>, trade: &TradeEntry) -> serde_json::Value {
 pub async fn record_trade(trade: &TradeEntry) -> Result<serde_json::Value, String> {
     validate_trade(trade)?;
 
-    let base = base_url();
+    let base = require_base()?;
     let resp = client(CALL_TIMEOUT)?
         .post(format!("{base}/api/trades"))
         .json(trade)
@@ -546,7 +548,7 @@ async fn json_call(
     path: &str,
     body: Option<&serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
-    let base = base_url();
+    let base = require_base()?;
     let url = format!("{base}{path}");
     let c = client(CALL_TIMEOUT)?;
     let mut req = match method {
@@ -700,7 +702,7 @@ pub fn parse_money(raw: &str) -> Option<f64> {
 
 /// The trades already recorded.
 pub async fn trades() -> Result<Vec<serde_json::Value>, String> {
-    let base = base_url();
+    let base = require_base()?;
     let resp = client(CALL_TIMEOUT)?
         .get(format!("{base}/api/trades"))
         .send()
@@ -740,15 +742,9 @@ pub async fn ensure_running() -> Result<String, String> {
         return Err("starting the scanner is wired for launchd (macOS) only".into());
     }
     let root = picker_root().ok_or_else(|| {
-        format!(
-            "no Picker checkout found (looked for Picker/pre_surge_scanner under {}). \
-             Set picker_root, or start it with: python csv_web_server.py",
-            crate::config::dev_roots::dev_roots()
-                .iter()
-                .map(|p| p.display().to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
-        )
+        "the scanner checkout is not configured. Set `picker_root` to its folder, \
+         or start the scanner yourself."
+            .to_string()
     })?;
     let script = root.join("csv_web_server.py");
     if !script.is_file() {
@@ -766,8 +762,7 @@ pub async fn ensure_running() -> Result<String, String> {
         .map_err(|e| e.to_string())?;
     let plist_dst = agents.join("com.picker.stockscanner.plist");
     let plist_src = root.join("com.picker.stockscanner.plist");
-    // The checkout has never shipped a plist (observed 2026-08-22: Start
-    // scanner 502'd in 3ms with "no launchd job"). Write one that points at
+    // A checkout may not ship a plist. Write one that points at
     // the Flask entrypoint so launchd can Keep the process across daemon
     // restarts — the original reason this is not a child of permagentd.
     if plist_src.is_file() {
@@ -1142,10 +1137,10 @@ mod tests {
     }
 
     #[test]
-    fn the_default_base_is_loopback() {
-        // The scanner has no auth and can modify trades; it must not be
-        // addressed off-machine by default.
-        assert!(DEFAULT_BASE.starts_with("http://127.0.0.1"));
+    fn the_not_configured_message_names_the_real_key_and_no_dev_history() {
+        assert!(NOT_CONFIGURED_MSG.contains("`finance_scanner_url`"));
+        assert!(NOT_CONFIGURED_MSG.contains("not configured"));
+        assert!(!NOT_CONFIGURED_MSG.contains("8080"));
     }
 
     #[test]

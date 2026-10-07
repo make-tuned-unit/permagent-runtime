@@ -376,10 +376,11 @@ fn load_librarian_schedule_summary() -> Value {
                     .get("duration_minutes")
                     .and_then(|v| v.as_u64())
                     .unwrap_or(240);
+                let default_model = crate::config::local_default_model();
                 let model = schedule
                     .get("model")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("qwen2.5:7b");
+                    .unwrap_or(default_model.as_str());
                 json!({
                     "status": "available",
                     "enabled": enabled,
@@ -398,7 +399,7 @@ fn load_librarian_schedule_summary() -> Value {
             "enabled": true,
             "start_time": "02:00",
             "duration_minutes": 240,
-            "model": "qwen2.5:7b",
+            "model": crate::config::local_default_model(),
             "note": "no schedule file yet; using Librarian defaults"
         }),
         Err(e) => json!({

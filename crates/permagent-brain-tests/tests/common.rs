@@ -8,7 +8,7 @@
 use spectral::Brain;
 use std::sync::{Arc, OnceLock};
 
-const ONTOLOGY_TOML: &str = include_str!("../../goose/assets/ontology.toml");
+const ONTOLOGY_TOML: &str = include_str!("../../goose/tests/fixtures/ontology.sample.toml");
 
 /// Shared Brain instance for context_builder tests.
 /// Uses OnceLock to create once per test binary.

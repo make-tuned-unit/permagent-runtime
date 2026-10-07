@@ -64,7 +64,6 @@ pub const INITIATIVE_DRAFT_MODEL_KEY: &str = "INITIATIVE_DRAFT_MODEL";
 
 const DEFAULT_TICK_SECS: u64 = 60;
 const DEFAULT_DRAFT_PROVIDER: &str = "ollama";
-const DEFAULT_DRAFT_MODEL: &str = "qwen2.5:7b";
 
 /// Persisted cursors (RFC 3339 strings in config).
 const PREV_TICK_ACTIVITY_KEY: &str = "initiative_prev_tick_activity_at";
@@ -143,7 +142,7 @@ async fn resolve_draft_provider() -> Option<Arc<dyn Provider>> {
         .unwrap_or_else(|_| DEFAULT_DRAFT_PROVIDER.to_string());
     let model_name = config
         .get_param::<String>(INITIATIVE_DRAFT_MODEL_KEY)
-        .unwrap_or_else(|_| DEFAULT_DRAFT_MODEL.to_string());
+        .unwrap_or_else(|_| crate::config::local_default_model());
 
     // Explicit opt-out: empty provider/model → deterministic template drafts.
     if provider_name.trim().is_empty() || model_name.trim().is_empty() {

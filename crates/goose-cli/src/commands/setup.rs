@@ -73,12 +73,16 @@ pub struct NonInteractiveOpts {
     pub agent_name: Option<String>,
 }
 
-/// Test that Ollama is reachable at localhost:11434.
+/// Test that Ollama is reachable at the configured address (`OLLAMA_HOST`,
+/// default localhost:11434).
 async fn test_ollama_connection() -> Result<()> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(5))
         .build()?;
-    let resp = client.get("http://localhost:11434/api/tags").send().await?;
+    let resp = client
+        .get(format!("{}/api/tags", permagent::config::ollama_base_url()))
+        .send()
+        .await?;
     if resp.status().is_success() {
         Ok(())
     } else {
@@ -137,7 +141,10 @@ pub async fn handle_setup_interactive() -> Result<()> {
     let api_key = if provider_name == "ollama" {
         println!("Ollama runs locally - no API key needed.");
         // Test Ollama connection
-        print!("Testing connection to Ollama at localhost:11434... ");
+        print!(
+            "Testing connection to Ollama at {}... ",
+            permagent::config::ollama_base_url()
+        );
         match test_ollama_connection().await {
             Ok(()) => println!("connected."),
             Err(e) => {

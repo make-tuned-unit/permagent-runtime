@@ -375,12 +375,32 @@ pub fn failover_candidates(
     read: impl Fn(&str) -> Option<String>,
     role: SessionRole,
 ) -> Vec<FallbackCandidate> {
+    if role == SessionRole::General {
+        // No role-fit ranking is needed, so skip provider detection.
+        return permanent_failure_candidates(&read);
+    }
+    failover_candidates_in(
+        read,
+        role,
+        &crate::config::model_roles::RoleContext::live(),
+    )
+}
+
+/// [`failover_candidates`] over an explicit [`RoleContext`]: the trusted
+/// defaults offered behind the operator's keys are only those whose provider
+/// the user can actually use, so a failover never lands on a provider without
+/// a key.
+pub fn failover_candidates_in(
+    read: impl Fn(&str) -> Option<String>,
+    role: SessionRole,
+    ctx: &crate::config::model_roles::RoleContext,
+) -> Vec<FallbackCandidate> {
     let all = permanent_failure_candidates(&read);
     if role == SessionRole::General {
         return all;
     }
     use crate::config::model_roles::{
-        assess_harness_coordinator, resolve_role_model, CoordinatorEligibility, ModelRole,
+        assess_harness_coordinator_in, resolve_role_model_in, CoordinatorEligibility, ModelRole,
     };
 
     let mut out: Vec<FallbackCandidate> = all
@@ -398,7 +418,7 @@ pub fn failover_candidates(
     // workflow roles as `permanent_failure_candidates` listed them.
     let mut pool: Vec<FallbackCandidate> = Vec::new();
     let harness_label = ModelRole::Harness.label();
-    if let Some(route) = resolve_role_model(ModelRole::Harness, &read).route {
+    if let Some(route) = resolve_role_model_in(ModelRole::Harness, &read, ctx).route {
         pool.push(FallbackCandidate {
             target: RoleModel {
                 provider: route.provider,
@@ -407,22 +427,28 @@ pub fn failover_candidates(
             source: CandidateSource::Role(harness_label),
         });
     }
-    let measured = ModelRole::Harness.measured_default();
-    pool.push(FallbackCandidate {
-        target: RoleModel {
-            provider: measured.provider,
-            model: measured.model,
-        },
-        source: CandidateSource::Role(harness_label),
-    });
+    for trusted in ctx
+        .trusted
+        .iter()
+        .filter(|t| ctx.availability.is_usable(&t.provider))
+    {
+        pool.push(FallbackCandidate {
+            target: RoleModel {
+                provider: trusted.provider.clone(),
+                model: trusted.model.clone(),
+            },
+            source: CandidateSource::Role(harness_label),
+        });
+    }
     pool.extend(
         all.into_iter()
             .filter(|c| matches!(c.source, CandidateSource::Role(_))),
     );
 
-    let rank = |c: &FallbackCandidate| match assess_harness_coordinator(
+    let rank = |c: &FallbackCandidate| match assess_harness_coordinator_in(
         &c.target.provider,
         &c.target.model,
+        &ctx.trusted,
     ) {
         CoordinatorEligibility::TrustedDefault => Some(0u8),
         CoordinatorEligibility::HeuristicCandidate => Some(1u8),
@@ -468,8 +494,10 @@ pub enum Reach {
     Unknown,
 }
 
-/// The local provider id of the two-machine Qwen3.8 split. Nightly-only by
-/// design (launchd 01:50–06:10), so for most of the day its port is closed.
+/// The provider id of an optional user-run llama-server split. It is NEVER an
+/// implicit rung: it takes part in a fallback only when the user's own
+/// fallback config names it, and it is probed only when `QWEN38_SPLIT_HOST` is
+/// set. Its port may be closed for much of the day.
 pub const SPLIT_PROVIDER: &str = "qwen38_split";
 /// The local Ollama provider id (`providers/ollama.rs`). NOT `ollama_cloud`,
 /// which is a metered hosted API and never a stand-in for a local model.
@@ -907,9 +935,6 @@ const OLLAMA_FALLBACK_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::
 /// How long the split's TCP connect may take. It is on loopback: a closed port
 /// is refused immediately, so this only bounds a wedged listener.
 const SPLIT_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(700);
-/// The split's default endpoint — the same default
-/// `providers/declarative/qwen38_split.json` gives `QWEN38_SPLIT_HOST`.
-const SPLIT_DEFAULT_HOST: &str = "http://127.0.0.1:8081";
 
 /// GET `<OLLAMA_HOST>/api/tags`: `(Up, models)` on a 2xx, `(Down, [])` on any
 /// failure. Unlike `recommend::discover_ollama_models_async` this does NOT fold
@@ -951,11 +976,14 @@ fn split_socket(raw: &str) -> Option<(String, u16)> {
 /// question is only "is anything listening", and a loaded 27B split can take
 /// far longer to answer a request than the switch should wait.
 async fn probe_split() -> Reach {
-    let raw = crate::config::Config::global()
+    // No host configured means there is nothing to probe: do not guess a port.
+    let Some(raw) = crate::config::Config::global()
         .get_param::<String>("QWEN38_SPLIT_HOST")
         .ok()
         .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| SPLIT_DEFAULT_HOST.to_string());
+    else {
+        return Reach::Unknown;
+    };
     let Some((host, port)) = split_socket(&raw) else {
         return Reach::Down;
     };
@@ -2485,6 +2513,14 @@ mod tests {
             .collect()
     }
 
+    /// Every provider usable, and only the head of the trusted list, so the
+    /// ordering assertions below stay about ranking rather than host keys.
+    fn coord_ctx() -> crate::config::model_roles::RoleContext {
+        let mut ctx = crate::config::model_roles::RoleContext::permissive();
+        ctx.trusted.truncate(1);
+        ctx
+    }
+
     /// Session 20260924_3's config: no fallback keys, a local mechanical role
     /// and a cloud review role. A general session keeps the configured order;
     /// the coordinator gets only models the coordinator gate accepts,
@@ -2501,11 +2537,11 @@ mod tests {
             ("PERMAGENT_ROLE_REVIEW_MODEL", "glm-5.2"),
         ]);
         assert_eq!(
-            targets(&failover_candidates(&r, SessionRole::General)),
+            targets(&failover_candidates_in(&r, SessionRole::General, &coord_ctx())),
             targets(&permanent_failure_candidates(&r)),
         );
 
-        let coord = failover_candidates(&r, SessionRole::HarnessCoordinator);
+        let coord = failover_candidates_in(&r, SessionRole::HarnessCoordinator, &coord_ctx());
         let measured = ModelRole::Harness.measured_default();
         assert_eq!(
             (
@@ -2557,7 +2593,7 @@ mod tests {
             ("PERMAGENT_ROLE_REVIEW_PROVIDER", "zai"),
             ("PERMAGENT_ROLE_REVIEW_MODEL", "glm-5.2"),
         ]);
-        let coord = failover_candidates(&r, SessionRole::HarnessCoordinator);
+        let coord = failover_candidates_in(&r, SessionRole::HarnessCoordinator, &coord_ctx());
         assert_eq!(coord[0].source, CandidateSource::ExplicitOverride);
         assert_eq!(coord[1].source, CandidateSource::OrderedList);
         assert_eq!(coord[1].target.provider, "ollama");
@@ -2574,7 +2610,7 @@ mod tests {
             ("PERMAGENT_ROLE_REVIEW_PROVIDER", "zai"),
             ("PERMAGENT_ROLE_REVIEW_MODEL", "glm-5.2"),
         ]);
-        let coord = failover_candidates(&r, SessionRole::HarnessCoordinator);
+        let coord = failover_candidates_in(&r, SessionRole::HarnessCoordinator, &coord_ctx());
         let measured = ModelRole::Harness.measured_default();
         assert_eq!(
             targets(&coord),
