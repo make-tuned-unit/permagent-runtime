@@ -57,6 +57,8 @@ Checks: `habitatRichness.test.ts`, `habitatWaterFlow.test.ts`, and `staticGarden
 
 Open defects: final rendered foliage silhouettes, alpha edges, water movement, draw submissions, frame-time tails, and camera/nameplate review remain open.
 
+Commit: unavailable for the same worktree index permission error above.
+
 ## Correction 1 — camera clearance and nameplates
 
 Status: complete in source and frontend checks.
@@ -82,7 +84,7 @@ Nameplate clamp values: drei `Html` `distanceFactor={4}`; minimum camera distanc
 
 Checks: `habitatArrival.test.ts`, `ForumView.test.tsx`, and `habitatMotion.test.ts` passed together (16 tests). `npx tsc --noEmit` passed with exit code 0. `npx vite build` passed (`3127 modules transformed`, `34.17 s`); the existing dynamic-import and large-chunk warnings were emitted.
 
-Commit: unavailable for the same worktree index permission error above.
+Commit: `8aa3ca13` (`fix(world): correct habitat arrival framing`) succeeded on `wq/world` with the required co-author trailer.
 
 ## Lane constraints
 
