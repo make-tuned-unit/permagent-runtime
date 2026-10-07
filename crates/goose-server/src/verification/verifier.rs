@@ -15,7 +15,9 @@ use super::checks::{CheckResult, CheckStatus};
 /// Default Ollama base URL (loopback only — zero cloud tokens by construction).
 pub const OLLAMA_BASE_URL: &str = "http://localhost:11434";
 /// Default verifier model when no config override exists.
-pub const DEFAULT_VERIFIER_MODEL: &str = "qwen2.5:7b";
+pub fn default_verifier_model() -> String {
+    permagent::config::local_default_model()
+}
 /// Warm-load keep_alive in seconds.
 const WARM_KEEP_ALIVE_SECS: u64 = 300;
 
@@ -29,7 +31,7 @@ pub static VERIFY_MUTEX: LazyLock<tokio::sync::Mutex<()>> =
 /// Verifier configuration, persisted at `<data_dir>/verifier.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerifierConfig {
-    /// Model override; falls back to DEFAULT_VERIFIER_MODEL when empty.
+    /// Model override; falls back to `local_default_model` when empty.
     #[serde(default)]
     pub model: String,
     /// Optional USD rate per 1k worker tokens, used to render cost_usd in the
@@ -76,7 +78,7 @@ fn default_true() -> bool {
 impl Default for VerifierConfig {
     fn default() -> Self {
         Self {
-            model: DEFAULT_VERIFIER_MODEL.to_string(),
+            model: default_verifier_model(),
             usd_per_1k_tokens: None,
             auto_approve_goal_types: Vec::new(),
             panel_models: Vec::new(),
@@ -109,7 +111,7 @@ pub fn load_config() -> VerifierConfig {
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default();
     if cfg.model.is_empty() {
-        cfg.model = DEFAULT_VERIFIER_MODEL.to_string();
+        cfg.model = default_verifier_model();
     }
     cfg
 }
@@ -809,7 +811,7 @@ mod tests {
     #[test]
     fn config_panel_dedupes_and_defaults_to_single() {
         let mut cfg = VerifierConfig::default();
-        assert_eq!(cfg.panel(), vec![DEFAULT_VERIFIER_MODEL.to_string()]);
+        assert_eq!(cfg.panel(), vec![default_verifier_model()]);
         cfg.model = "a".to_string();
         cfg.panel_models = vec!["b".to_string(), "a".to_string(), String::new()];
         assert_eq!(cfg.panel(), vec!["a".to_string(), "b".to_string()]);

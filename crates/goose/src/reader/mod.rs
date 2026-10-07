@@ -87,7 +87,6 @@ const DEFAULT_MIN_CONFIDENCE: f64 = 0.45;
 // Dispatched through `crate::mesh::pool::generate` (Workload::Batch) — the
 // pool engine's scheduler + fallback ladder when PERMAGENT_MESH_ENGINE is on,
 // plain `resolve_route(Batch)` (config::ollama_host() under the hood) when off.
-const SUMMARY_MODEL: &str = "qwen2.5:7b";
 // The digest is what Henry SAYS to the user, so the summarizer must never
 // state a specific it might get wrong. Exact facts (dates, amounts, IDs, names)
 // live verbatim in the Brain and are RECALLED from there — the digest gives the
@@ -818,7 +817,7 @@ async fn ollama_summary(text: &str) -> Result<String, String> {
     // built by the engine's inference-only choke-point.
     crate::mesh::pool::generate(crate::mesh::pool::GenerateRequest {
         session_id: None,
-        model: SUMMARY_MODEL.to_string(),
+        model: crate::config::local_default_model(),
         prompt,
         system: Some(SUMMARY_SYSTEM.to_string()),
         options: Some(serde_json::json!({ "temperature": 0.2, "num_predict": 120 })),

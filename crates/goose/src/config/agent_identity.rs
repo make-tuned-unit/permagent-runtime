@@ -985,7 +985,7 @@ pub fn default_roster() -> HashMap<String, WorkerPersona> {
                    and pruning runs on its own schedule"
                 .to_string(),
             tool_kinds: vec!["memory_ops".to_string()],
-            availability_check: "model_loaded:qwen2.5".to_string(),
+            availability_check: format!("model_loaded:{}", crate::config::local_default_model()),
             cost_tier: "local_free".to_string(),
             engine: WorkerEngineKind::Pending,
             ..Default::default()
@@ -1859,7 +1859,7 @@ workers:
         assert_eq!(roster["librarian"].engine, WorkerEngineKind::Pending);
         assert_eq!(
             roster["librarian"].availability_check,
-            "model_loaded:qwen2.5"
+            format!("model_loaded:{}", crate::config::local_default_model())
         );
 
         // Steward: owns repo hygiene / CI. Registered so its scheduled recipe

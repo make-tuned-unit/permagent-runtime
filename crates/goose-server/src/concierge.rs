@@ -38,7 +38,6 @@ const MIN_GAP_HOURS: i64 = 20;
 const MAX_TRIAGE: usize = 10;
 /// The local model used to draft replies. Same family the Reader summarizes with,
 /// and it runs on-device (see the local-tier pin in `permagent::concierge`).
-const DRAFT_MODEL: &str = "qwen2.5:7b";
 
 /// How a reply body is composed. The real loop drafts on the LOCAL model; tests
 /// use the deterministic template so they stay offline and fast.
@@ -232,7 +231,7 @@ async fn compose_reply(msg: &InboxMessage, mode: ComposeMode) -> String {
 /// failure (caller falls back to the template).
 async fn local_draft(msg: &InboxMessage) -> Option<String> {
     let resp = permagent::mesh::pool::generate(permagent::mesh::pool::GenerateRequest {
-        model: DRAFT_MODEL.to_string(),
+        model: permagent::config::local_default_model(),
         prompt: concierge::build_draft_prompt(msg),
         system: Some(concierge::DRAFT_SYSTEM.to_string()),
         options: Some(serde_json::json!({ "temperature": 0.3, "num_predict": 220 })),

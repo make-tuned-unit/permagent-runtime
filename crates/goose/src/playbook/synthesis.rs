@@ -45,7 +45,6 @@ const DEFAULT_TICK_SECS: u64 = 6 * 60 * 60; // 6h
 pub const PLAYBOOK_DISTILL_PROVIDER_KEY: &str = "PLAYBOOK_DISTILL_PROVIDER";
 pub const PLAYBOOK_DISTILL_MODEL_KEY: &str = "PLAYBOOK_DISTILL_MODEL";
 const DEFAULT_DISTILL_PROVIDER: &str = "ollama";
-const DEFAULT_DISTILL_MODEL: &str = "qwen2.5:7b";
 
 /// Recent resolved decisions to scan per pass (across all projects, newest
 /// first). Bounds the query; older signal ages out of the window.
@@ -262,7 +261,7 @@ async fn resolve_distill_provider() -> Option<Arc<dyn Provider>> {
         .unwrap_or_else(|_| DEFAULT_DISTILL_PROVIDER.to_string());
     let model_name = config
         .get_param::<String>(PLAYBOOK_DISTILL_MODEL_KEY)
-        .unwrap_or_else(|_| DEFAULT_DISTILL_MODEL.to_string());
+        .unwrap_or_else(|_| crate::config::local_default_model());
 
     if provider_name.trim().is_empty() || model_name.trim().is_empty() {
         return None;

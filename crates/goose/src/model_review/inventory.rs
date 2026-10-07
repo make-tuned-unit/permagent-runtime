@@ -550,7 +550,7 @@ pub fn scan(input: &ScanInput) -> Inventory {
         .and_then(|v| v.get("model"))
         .and_then(Value::as_str)
         .filter(|m| !m.is_empty())
-        .unwrap_or("qwen2.5:7b");
+        .unwrap_or(crate::config::DEFAULT_LOCAL_MODEL);
     consumer(
         &mut inv,
         "librarian_schedule.model",
@@ -572,9 +572,9 @@ pub fn scan(input: &ScanInput) -> Inventory {
         "Fallback configuration; dedicated endpoint/runtime not probed",
     );
     for (id, model) in [
-        ("reader", "qwen2.5:7b"),
-        ("initiative", "qwen2.5:7b"),
-        ("playbook", "qwen2.5:7b"),
+        ("reader", crate::config::DEFAULT_LOCAL_MODEL),
+        ("initiative", crate::config::DEFAULT_LOCAL_MODEL),
+        ("playbook", crate::config::DEFAULT_LOCAL_MODEL),
         ("ollama provider default", "qwen3"),
         ("toolshim", "mistral-nemo"),
     ] {
