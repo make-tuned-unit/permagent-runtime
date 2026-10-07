@@ -12,7 +12,7 @@ Design: `reports/WIZARD_DESIGN_2026-10-07.md`. Evidence: `reports/wizard-evidenc
 | 5c063a83 | Tests: `WizardShell.flow.test.tsx` (8), `wizardLogic.test.ts` (12), `tokens.fitness.test.ts` (5) |
 | 6d5d12ca | Polish found in screenshots (help scrolls into view, single memory-model confirmation) |
 | da00872d | Evidence + the harness script (`ui/command-center/wizard-evidence.mjs`, kept in this commit for regeneration) |
-| final | Harness removed, this report |
+| a6f7c834 | Harness removed, this report |
 
 ## Checks (from `ui/command-center`)
 - `npx tsc --noEmit` → exit 0
