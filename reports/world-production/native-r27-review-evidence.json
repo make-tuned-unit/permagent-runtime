@@ -1,0 +1,27 @@
+{
+  "revision": "r27",
+  "raw_sha256": "46ff7898c8cd4f0c0e6ed6e802c07f7522c20b6771b37d4031c0920648a7e217",
+  "signed_sha256": "f268b01a9bec1494b7c94a2345d6a90f771eb46ef6cb938922e4704c60fe1f85",
+  "embedded_assets": 642,
+  "native_review": true,
+  "installed_baseline_unchanged": true,
+  "checks": [
+    "39/39 targeted regression tests passed",
+    "Full tsc passed after post collider scalar correction",
+    "7/7 affected wing tests passed again",
+    "31.1 second guarded offline native build",
+    "Deep strict codesign and ARM64 verified"
+  ],
+  "observations": [
+    "Connected northern wing visible in Overview; approximately45% extra footprint",
+    "Observatory garden Places link frames the real telescope",
+    "Gaia image loads successfully but native display is overly coarse and bright",
+    "Court too sparse; telescope primitive finish insufficient"
+  ],
+  "limits": [
+    "No native walking route review yet; production collision route tested",
+    "No new p95 performance capture",
+    "Scientific planets/moons and current portraits still incomplete"
+  ],
+  "next": "r28 source adds court inlay, benches with collisions, bridge lighting, planted trees, coherent detailed telescope and filtered/darker Gaia sky. Await native review."
+}

@@ -1,0 +1,53 @@
+{
+  "date": "2026-10-07",
+  "revision": "r26",
+  "screenshots": {
+    "native-r26-social-000.png": "73e939cd1882b2117809415e4f35bd2648f535ef779d3560c1f1ea665f422511",
+    "native-r26-social-overview-a.png": "f0f363a4cd68738e109313ee322f8b0925f4e8c2e134c2d534e720704fb5c583",
+    "native-r26-social-overview-b.png": "a17f098a9043b8aa4edb9c0eed6e9f5b855b2549382a2a07ac60f14d2360f204",
+    "native-r26-stop-reader-immediate.png": "46153aeec8377cf05c9deba65c39a583d31afc90eaf51b5205bc565d3ed6887d",
+    "native-r26-stop-reader-held.png": "30c7b1587d2545b7ba85e840ed213763f210bbd1ad419a8695e59dbd48640e1f",
+    "native-r26-stop-overview.png": "ce14bad2ea60d89b343c45a856a22391351cc3a7cf9cf1bf609ac81c64e3f142",
+    "native-r26-user-resume.png": "f40919fc7cc084c1a3743498ad4c9e6b195787aae5b0b6e94ebe6e4b6296842f",
+    "native-r26-cycle-observe-a.png": "52115fbc452730766517842494a2a28140a6257dba1759e0e470ee984374c6d7",
+    "native-r26-cycle-observe-b.png": "8bd9056534abed07ab5d9b01a64f9e1bbc540e3b090be7357ec7e06d48ddcc92",
+    "native-r26-pair-cycle-next-a.png": "600054004d231293b614f55ca1e95080955a10f2a360d7f55be89e6cc483dbbc",
+    "native-r26-close-cycle-0.png": "4d7cd677ab24069fecbd1699b9b81c2931f4df89b11b095c4dbc2568a61e92d6",
+    "native-r26-close-cycle-1.png": "4c999e9665a58132d1ec97a90bda1c4c25c7e4e0f831655d256e3d8abfe3e566",
+    "native-r26-close-cycle-2.png": "dc365e456e42140fcbd6361b51e20918a0a4ebedaa02689038546d76f0275eae",
+    "native-r26-close-cycle-3.png": "131478a81c61abffa8c9b3bf498eaa7ebe5243596120f63ac22f8e71beb084a1",
+    "native-r26-close-cycle-4.png": "78e3d9600f03da067540e251040b51d6e2b6d7b8f353416007812736e70d9c07",
+    "native-r26-henry-conversation.png": "f4852c82a4ea332adcddb2ea83114a5051966c6409a024769f3db9c07a333861",
+    "native-r26-left-table.png": "65a68b3b8c4bd12d0373767c4bab5d4aaac42240bb0be0e90bc196b93aad836a"
+  },
+  "raw_binary_sha256": "986dffbd88061794d36ef13f28c17d9afe4035cf55f00a45aa1a06e1773698ee",
+  "signed_binary_sha256": "821b272c506919814ce7adc6555d821b22711d03c14b55cca7590d21a2b319ee",
+  "native_observed": [
+    "Repeated ambient journeys beyond first 120-second cycle",
+    "Reader/Council approach, proximity and later departure",
+    "Reader Stop held for more than 70 seconds while others moved",
+    "Deliberate To workstation released Stop and returned Reader home",
+    "Body selection of moving Council initiated one-shot focus",
+    "Henry seated at conversation table; Start voice chat remained available and was not clicked",
+    "Leave table returned normal world controls; review app then quit"
+  ],
+  "validation": {
+    "social_tests": "11/11, exit0",
+    "motion_tests": "4/4, exit0",
+    "typecheck": "exit0",
+    "diff_check": "pass",
+    "native_build_seconds": 29.1,
+    "embedded_assets": "640 assets plus index.html and test-new-window.html exact verification"
+  },
+  "limits": [
+    "Screenshots are discrete observations, not continuous video",
+    "Short mutual greeting gesture not unequivocally captured natively; production-motion test covers simultaneous gesture",
+    "No fresh native frame-time benchmark, reduced-motion setting toggle, or real live-work dispatch",
+    "Close selected Reader nameplate can obscure face; focus framing still needs polish",
+    "Residual source review: empty appendCycle with nonempty candidates can retry every frame; work-return timer clock-reset and failed work route retry deserve bounded followup",
+    "Character portraits and scientific solar system still pending"
+  ],
+  "installed_app_changed": false,
+  "fal_spend_this_slice": 0,
+  "committed": false
+}

@@ -1,0 +1,49 @@
+CODEX SOURCE REVIEW — FIRST CURSOR WATER PASS
+Prepared during the first turn; verify against the final current source before fixing.
+
+1. Shader compile blocker: waterMaterial injects both `vec2 p` and `float t` in
+   color_fragment and normal_fragment_maps inside the same GLSL main scope.
+   Three expands both chunks into one function; duplicate declarations should
+   fail shader compilation. Use explicit local blocks or distinct variables.
+   TypeScript/Vitest cannot establish that the WebGL shader compiles. Inspect
+   the fully expanded generated shader and use a meaningful compile check if
+   an existing renderer harness is available; Codex still owns native proof.
+
+2. Incorrect upstream foam: the GLSL wake uses exp(-max(along,0)^2/...)*.55,
+   leaving a nonzero .55 wake everywhere upstream, including the upper basin.
+   The pure impactFoamWeight helper has an upstream cutoff that the renderer
+   does not use. Confine foam to the actual lower/rill landing and downstream
+   wake, with a soft mask around the strike, and ensure it is zero in the upper
+   basin. Tests must cover a production-used contract, not a disconnected
+   duplicate helper whose shader counterpart behaves differently.
+
+3. Faux Fresnel: vWaterView is in view coordinates, so viewDir.y is camera-up,
+   not incidence to the world water normal. The physical material already
+   calculates dielectric Fresnel. Remove the ad-hoc camera-up color brightening
+   or use a correct normal/view dot product in an appropriate shader stage.
+
+4. Check hollow-basin edges and floor/wall joins: the current upper bed is
+   narrower than the inner wall span; translucent edges must not reveal a void.
+   Preserve conservative colliders and bridge routing. Verify that the fall
+   emerges over the lip rather than clipping through it and lands in the rill.
+
+5. Apply the user's clarified compact Collaborators-panel correction at the
+   end of CURSOR_ASSIGNMENT.txt before this batch's native review. Consult
+   native-r23-collaborators-before.png and HEAD's earlier styling; keep the
+   current functional fixes and canonical colors. Scope is the bottom-left
+   HabitatAgentDock only. Target a substantially shorter, less visually heavy
+   card, about 300-320 x 125-145 CSS pixels by default, without the large solid
+   cyan action slab. Retain keyboard reachability, movement cancel, follow,
+   work feed, selection/focus, Details, Sit, Brief and duplicate-dock hiding.
+
+6. Focus coverage currently tests only a revision increment helper. Add a
+   behavior test that actually exercises the production selection callback
+   wired to world agents (and fallback/dock where practical), asserting a new
+   focus request on repeated same-agent selection and no movement/job/voice
+   side effect. Existing conversation tests mock Canvas to null, so they do
+   not cover direct 3D clicks. Verify click behavior in walking/flying modes:
+   do not silently queue focus behind a still-active first-person controller.
+   Keep manual camera interruption and reduced-motion semantics intact.
+
+Return corrected source, focused verification results and remaining native
+risks. No heavy native build; no claims that source checks prove visual quality.

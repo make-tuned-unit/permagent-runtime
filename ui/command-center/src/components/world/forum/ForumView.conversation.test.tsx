@@ -40,3 +40,25 @@ it('explicitly leaving the table ends voice and restores garden controls', () =>
   expect(useCommandCenter.getState().worldConversationActive).toBe(false);
   expect(host.querySelector('[aria-label="Agent movement and work"]')).toBeTruthy();
 });
+
+it('keeps movement on demand and reading the work feed does not move the camera', () => {
+  expect(host.querySelector('#habitat-movement')).toBeNull();
+  click('Work feed');
+  expect(host.querySelector('#habitat-work-feed')).toBeTruthy();
+  click('Movement');
+  const follow = [...host.querySelectorAll('button')].find(b => b.textContent === 'Follow')!;
+  expect(follow.getAttribute('aria-pressed')).toBe('false');
+  click('Move agent');
+  expect(host.querySelector('.habitat-destinations')).toBeTruthy();
+  click('Movement');
+  expect(host.querySelector('.habitat-destinations')).toBeNull();
+  expect(host.querySelector('#habitat-movement')).toBeNull();
+});
+it('keeps the evidence exercise reachable from the consolidated agent desk', () => {
+  click('Agent desk'); click('Evidence');
+  expect(host.querySelector('#forum-agent-desk')?.getAttribute('aria-hidden')).toBe('false');
+  expect(host.querySelector('[aria-label="Completion evidence demonstration"]')).toBeTruthy();
+  click('Garden room confirmed');
+  expect(host.textContent).toContain('Supported by the records.');
+  expect(host.querySelector('.habitat-view-tools')?.textContent).not.toContain('Inspect evidence');
+});

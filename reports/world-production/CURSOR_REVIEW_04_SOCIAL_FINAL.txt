@@ -1,0 +1,43 @@
+PERMAGENT WORLD — CURSOR SOCIAL FINAL SOURCE CORRECTION (pre-native r26)
+Prepared 2026-10-07. Worker: Cursor (supervised by Codex). Worktree: world-production-20261006.
+
+SCOPE
+Final bounded source correction before native r26. Water/dock/focus/astronomy untouched.
+No native build/stage, FAL, commit, voice, or real jobs.
+
+DEFECTS FIXED (minimal)
+1. ensurePlanAhead infinite loop
+   - At most one appendCycle per tick; prune consumed events (slice planCursor).
+   - Zero candidates → planIdle (explicit empty-plan idle); never while-spin on [].
+2. beginReturn failure
+   - issueAmbientReturn (station home, workArrival=true for "At workstation") separate from stroll-safe issueAmbient.
+   - On failed return: clearAmbientHabitatTravel before reset (stops stale outbound route).
+3. Work return after user travel
+   - HeroRobot useFrame reconciles live working return ~1 Hz after ownership releases;
+     still respects Follow/direct/conversation(henry), Stop/canHabitatWorkReturn; skips when already source=work.
+4. Return endpoints / labels
+   - canAmbientReturnHome + successful return restores travel label "At workstation" via workArrival.
+5. Acceptance tests tightened
+   - Continuation requires pathCommands > prior and nontrivial traversal after 120s; 300s schedule with bounded retained plan.
+   - Pair depart asserts movement away from meeting stands (or home), not idle-anywhere.
+   - New edges: zero-candidate idle, unreachable-return clears ambient, workstation label, work retry after user arrival.
+   - 120s simultaneous-gesture proof retained (not weakened).
+
+FILES
+- habitatSocial.ts / habitatSocial.test.ts
+- HeroGardenKit.tsx (bounded work-return reconciliation only)
+- habitatMotion.ts unchanged this pass (prior ownership rules still apply)
+
+VALIDATION (serialized; explicit exits; one job at a time)
+- social_vitest_exit=0   (habitatSocial.test.ts, 11/11, ~50s)
+- motion_vitest_exit=0   (habitatMotion.test.ts, 4/4, ~30s)
+- typecheck_exit=0       (tsc --noEmit)
+- avail_giB≈40           (>=10 GiB floor)
+
+NATIVE (Codex-owned; not run)
+r26 build/stage/CUA: arrival resters, 120s pair+journeys, Stop/Follow/Sit with Hank, RM/hide freeze, second-cycle activity, work-return after manual walk.
+
+RESIDUAL
+- planIdle is permanent once candidates are empty (intentional); non-empty but occasionally empty appendCycle merely skips that tick.
+- Work-return reconciliation is ~1 Hz, not event-driven on travel arrival pub/sub.
+- Ambient still uses solid A* (bounded), not mesh BVH planning.

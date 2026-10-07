@@ -8,7 +8,7 @@ Runtime `processed/desk-v1.glb` is 1,313,304 bytes, 12,000 triangles, one primit
 
 Measured usable tabletop is 0.88968–0.88983 m at the sampled tool/book contact points. Source uses one instanced batch for 11 desks, keeps role-specific tools, corrects floating book stacks/keyboard contact, and preserves the original procedural desks as independent loading/error fallback. Collision now covers the complete desk height and depth. Thirteen targeted tests passed in 32.84 s, including actual embedded PBR decoding, transformed collider containment, contact raycasts, all 26 routes and terrace geometry.
 
-Native acceptance is pending. The next native review also refines the sun halo and planet shading. Source tests and isolated Blender renders do not establish app appearance or frame rate.
+Native r21 review accepted the crafted archive desks and grounded tool/book contact. Actual app evidence is in `reports/world-production/native-r21-archive-desks.png`. Day/night inspection also confirmed the tighter sun halo and visible celestial shadow hemispheres. This is visual acceptance, not a new performance measurement.
 
 Estimated FAL cost is $0.675 for this completed job; total completed-trial estimate is $6.45 against the user's reported $25 credit purchase. This is an estimate, not an account billing balance. No additional credit purchase or pasted API key was needed.
 

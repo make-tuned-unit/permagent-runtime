@@ -1,0 +1,32 @@
+{
+  "date": "2026-10-07",
+  "revision": "r25",
+  "screenshots": {
+    "native-r24-arrival.png": "2765513da9c5214487c511c2d8d98d66a870f8d33406c30dd6adb4e63c1fa866",
+    "native-r24-direct-librarian-focus.png": "827f0f2e810e277b2833c4a2a9c617f0654809ba95200e26994add498cb8baee",
+    "native-r24-water-overview-a.png": "ecc04dbc3f4d79d2e36fc748c204e4a3d935a6c57cac6578f9f745b146f100a4",
+    "native-r24-water-overview-b.png": "6aa0ae7f1af397d696bbb5b5b88c85afff01b4a12fc1023be26d8aab337378dc",
+    "native-r24-water-daylight.png": "0649d4dcdb210db85840706e6aa7fef21bc86ad62915e87f1624c5b23d5ae386",
+    "native-r24-water-eye-level.png": "ee70e6216a94ca7e57d438a5620247d1ade6bc549152930dabf19549e0f5cb0e",
+    "native-r25-water-system-a.png": "49fa2900e593eb3a9571d1455b160204d8d8bd84a3118944434e2a58d6182662",
+    "native-r25-water-daylight-a.png": "0bcecf41c6d9fd2f643ac4a5f3c0804fed182635e9ae973ed9bb5add00f60a13",
+    "native-r25-water-daylight-b.png": "09fddac4a51449bdd050dc38b44c4c97dea6b742bf9a92d33f963b9a012e5c65",
+    "native-r25-water-eye-daylight.png": "701942668c86be08bd47e67516898d00f27eb3e0e4fec6959c034a10afe591a4",
+    "native-r25-water-night.png": "a3ce09185086ab5366b97b3be9dc45490fe30c72f1f4e41b97ab86a146c25632"
+  },
+  "accepted": [
+    "compact collaborator dock",
+    "movement disclosure cancels target mode",
+    "independent work feed",
+    "Details hides duplicate dock",
+    "native direct-body Henry/Librarian focus",
+    "body selection exits Walk",
+    "reduced broad pool highlights in system/day/night"
+  ],
+  "limits": [
+    "Fine water realism remains unfinished",
+    "No continuous video or fresh frame-time benchmark",
+    "Native reduced-motion preference not toggled; helper tests pass",
+    "Social, matching portraits, scientific solar system remain pending"
+  ]
+}

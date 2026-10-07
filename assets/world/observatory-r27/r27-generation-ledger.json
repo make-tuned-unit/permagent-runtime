@@ -1,0 +1,102 @@
+{
+  "date": "2026-10-07",
+  "reference_job": {
+    "status": "submitted",
+    "recipe": {
+      "endpoint_id": "fal-ai/nano-banana-pro",
+      "input": {
+        "prompt": "Single magnificent precision astronomical telescope, crafted solarpunk observatory centerpiece, full object studio product photograph, three-quarter view. Long ivory enamel refractor barrel angled 30 degrees upward, generous dark teal optical glass front lens, heavy warm aged brass altitude fork and visible convincing mechanical pivots. Carved pale sandstone octagonal pedestal on a sturdy broad stepped circular stone base. Subtle incised botanical and celestial ornament; walnut adjustment handles, elegant copper hardware. Refined tactile material detail, physically plausible construction, readable clean silhouette from every side. Approximately 2.6 meters tall with 2.4 meter long barrel and 1.8 meter wide base. All components solidly connected, no thin floating ornaments. Whole object including base entirely in frame with margin, centered occupying 80% of square, seamless off-white background, balanced soft neutral studio lighting with gentle shadows. Only one telescope. No people, lettering, labels, scenery, collage, cutaway, floor props or watermarks. A real usable architectural game prop, not a stylized icon.",
+        "resolution": "1K",
+        "aspect_ratio": "1:1",
+        "num_images": 1,
+        "output_format": "png",
+        "seed": 20261007,
+        "limit_generations": true,
+        "enable_web_search": false
+      },
+      "note": "These are the submitted inputs, not resolved server defaults. For a variation, copy them and change only requested fields; reuse returned_seed when supported by the schema. Source URLs may expire."
+    },
+    "request_id": "01a116d8-ee67-7261-a4b0-6360991360cf",
+    "endpoint_id": "fal-ai/nano-banana-pro",
+    "status_url": "https://queue.fal.run/fal-ai/nano-banana-pro/requests/01a116d8-ee67-7261-a4b0-6360991360cf/status",
+    "response_url": "https://queue.fal.run/fal-ai/nano-banana-pro/requests/01a116d8-ee67-7261-a4b0-6360991360cf",
+    "cancel_url": "https://queue.fal.run/fal-ai/nano-banana-pro/requests/01a116d8-ee67-7261-a4b0-6360991360cf/cancel",
+    "poll_after_seconds": 20,
+    "polling_hint": "Wait poll_after_seconds before calling check_job with the same request_id and status_url. This interval is not an ETA. Report meaningful status changes rather than repeating unchanged progress. Do not submit another job to check progress.",
+    "hint": "Job submitted. Use check_job with status_url to check status, then get_job_result with response_url when it completes."
+  },
+  "reference_result": {
+    "status": "completed",
+    "endpoint_id": "fal-ai/nano-banana-pro",
+    "request_id": "01a116d8-ee67-7261-a4b0-6360991360cf",
+    "response_url": "https://queue.fal.run/fal-ai/nano-banana-pro/requests/01a116d8-ee67-7261-a4b0-6360991360cf",
+    "result": {
+      "images": [
+        {
+          "url": "https://v3b.fal.media/files/b/0aad6fa3/B3HxoxcGEtbEtyXda6ZYO_u7HtxzDl.png",
+          "content_type": "image/png",
+          "file_name": "B3HxoxcGEtbEtyXda6ZYO_u7HtxzDl.png",
+          "file_size": null,
+          "width": null,
+          "height": null
+        }
+      ],
+      "description": ""
+    },
+    "media": [
+      {
+        "url": "https://v3b.fal.media/files/b/0aad6fa3/B3HxoxcGEtbEtyXda6ZYO_u7HtxzDl.png",
+        "json_path": "result.images[0].url",
+        "output_path": "/images/0/url",
+        "media_type": "image",
+        "content_type": "image/png",
+        "file_name": "B3HxoxcGEtbEtyXda6ZYO_u7HtxzDl.png",
+        "reference": {
+          "$fal_ref": {
+            "kind": "job",
+            "endpoint_id": "fal-ai/nano-banana-pro",
+            "request_id": "01a116d8-ee67-7261-a4b0-6360991360cf",
+            "response_url": "https://queue.fal.run/fal-ai/nano-banana-pro/requests/01a116d8-ee67-7261-a4b0-6360991360cf",
+            "output_path": "/images/0/url"
+          }
+        }
+      }
+    ],
+    "display_hint": "Present completed media to the user. Forward attached image content blocks to the host's image display helper (for example, image(block)); do not stringify image blocks as text. For Markdown previews use previews[].preview_url, and separately link original_url as the full-resolution file. If no preview is available, show a clearly labeled original-file link. Do not claim a preview rendered unless it is visible. Video, audio and 3D URLs are original result files, not queue URLs.",
+    "previews": [
+      {
+        "original_url": "https://v3b.fal.media/files/b/0aad6fa3/B3HxoxcGEtbEtyXda6ZYO_u7HtxzDl.png",
+        "preview_url": "https://refinery.fal.media/url/https%3A%2F%2Fv3b.fal.media%2Ffiles%2Fb%2F0aad6fa3%2FB3HxoxcGEtbEtyXda6ZYO_u7HtxzDl.png/tr:w-768,h-768,c-at_max,q-75/preview.webp",
+        "mime_type": "image/webp",
+        "max_dimension": 768
+      }
+    ]
+  },
+  "mesh_attempt": {
+    "status": "error",
+    "error": "Model input validation is unavailable. No generation was submitted.",
+    "operation_status": "not_started",
+    "validation_status": "unavailable",
+    "field_errors": [],
+    "http_status": 503,
+    "schema_checked_at": "2026-10-07T14:58:53.177Z",
+    "schema_fingerprint": "abcaa8d9f6195deb5e3999899937b4ec2200c75d51b455b9b9ba9634ad9feaf6",
+    "validation_dialect": "2020",
+    "validation_mode": "fal-openapi-compatibility",
+    "retryable": false,
+    "diagnostics": {
+      "stage": "input",
+      "reason": "upstream"
+    },
+    "recovery_hint": "No paid submission occurred. Wait for the schema service or resolve the exact accessible endpoint; do not bypass validation."
+  },
+  "pricing": {
+    "prior_completed_estimate_usd": 6.45,
+    "reference_estimate_usd": 0.15,
+    "new_completed_estimate_usd": 6.6,
+    "mesh_spend_usd": 0,
+    "total_authorized_usd": 25,
+    "balance": "unknown; billing read denied"
+  },
+  "review": "Reference image accepted for solid coherent telescope silhouette; no 3D job submitted because schema validation service unavailable for Hunyuan3.1Pro and Meshy7.1. Do not claim generated mesh."
+}

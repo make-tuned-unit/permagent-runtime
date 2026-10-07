@@ -24,7 +24,7 @@ describe('inhabited garden paths',()=>{
     }finally{release();const materials=new Set<{dispose:()=>void}>();source.traverse(o=>{if(o instanceof Mesh){o.geometry.dispose();(Array.isArray(o.material)?o.material:[o.material]).forEach(m=>materials.add(m));}});materials.forEach(m=>m.dispose());}
   },60000);
   it('rejects water, occupied desks and destinations outside the bounded landscape',()=>{
-    for(const to of [[4,0,0],[-3,0,3],[20,0,0],[0,0,-40]] as Point3[])expect(findHabitatPath(HABITAT_START,to)).toBeNull();
+    for(const to of [[4,0,0],[-3,0,3],[20,0,0],[0,0,-55]] as Point3[])expect(findHabitatPath(HABITAT_START,to)).toBeNull();
   });
   it.each([false,true])('keeps moving to the observatory around another agent (moves into route: %s)',movesIntoRoute=>{
     const source=habitatCollisionSource(),release=registerForumCollision(source);

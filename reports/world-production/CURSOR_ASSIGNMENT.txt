@@ -1,0 +1,64 @@
+PERMAGENT WORLD — CURSOR CLI IMPLEMENTATION ASSIGNMENT
+Prepared 2026-10-06. Lead/reviewer: Codex. Implementer: Cursor CLI.
+
+AUTHORITY AND SCOPE
+The user's latest instruction replaces Claude delegation with Cursor CLI because Claude usage is exhausted. Ignore the Claude-specific model/provider requirements in OPUS_ASSIGNMENT.txt; retain its product requirements, design direction, scientific data standards and resource limits. Do not contact Claude or use its sign-in code. The current Cursor account/model must be reported from actual execution, not assumed. Do not change paid plan, enable overage or purchase credits.
+
+Read reports/world-production/OPUS_ASSIGNMENT.txt as the detailed product/design specification, plus the latest CHECKPOINT.md and the actual dirty diff. This file takes precedence on implementer and immediate order. Work only in /Users/j/Documents/dev/permagent-worktrees/world-production-20261006, branch world/production-20261006, starting HEAD 77c1768a. Preserve all pending changes. The r23 UI refinement is now built, staged and visually reviewed, superseding the old brief's unbuilt status. Do not reset/stash/clean/commit or touch production /Applications/Permagent.app. The .cursor/rules/guard-m1-docker.mdc rule applies; no Docker/Colima work is required for this task.
+
+Codex has installed a local cursor-worker MCP bridge over official Cursor ACP. It exposes status, start, poll, respond, followup and cancel. One-time tool decisions are reviewed by Codex; no blanket approval bypass. Cursor authentication was verified through the real MCP connection after the user completed the supported scoped file-store login. The initial assignment then stopped at the disk guard as availability dropped below 10 GiB; no previous Cursor implementation exists. Next native source build after your edits is r24 or later.
+
+FIRST DELIVERY: CONVINCING FLOWING WATER, THEN CLICK-TO-FOCUS
+Implement this bounded first iteration and return it for Codex's native review. Do not return only a plan, and do not attempt the entire solar-system rewrite before we can inspect the water. Broad World scope remains open after this first delivery.
+
+OBSERVED DEFECT
+The user says the water looks bad and does not move/flow. Codex inspected the actual r22 review app and saved:
+- reports/world-production/native-r22-water-before-a.png
+- reports/world-production/native-r22-water-before-b.png
+Same camera, later frame: pixel comparison confirms changing water pixels, so this is not established as a stopped timer. Native appearance remains poor: flat opaque turquoise pool panels with a regular diagonal/checker pattern; waterfall looks like repetitive vertical corrugated stripes; weak visual continuity/impact at the receiving pool. Do not dismiss the user's experience because a uniform changes.
+
+Existing source is ui/command-center/src/components/world/forum/HabitatWater.tsx. It uses MeshPhysicalMaterial with onBeforeCompile normal/color waves, plus a transparent custom cascade shader. Pool color uses multiplied sinusoidal patterns; the waterfall includes competing phase directions. Time is gated by getReduceMotion and incremented in useFrame. Keep accessibility preferences working; do not globally disable reduced motion.
+
+WATER ART / MOTION TARGET
+A crafted garden water court: water gathers gently in the raised basin, moves toward the lip, accelerates over the edge into a thin uneven translucent sheet, strikes the receiving rill, sends expanding broken ripples outward, and continues beneath the bridge into the lower pool. Calm pooled areas and fast falling water should read differently. Preserve the existing footprints, bridge and safe navigation.
+Use physically motivated stylization suited to the existing renderer, not a costly fluid simulation. Prioritize in this order:
+1. One coherent flow direction and timing across surfaces; no apparent upward waterfall or stationary regular striped mask.
+2. Break repeating checker/corrugation patterns with a small number of nonaligned advected wave/noise layers, appropriate wavelength/speed variation and lower albedo modulation. Visible motion should come mainly from normals/reflections, surface transport and contact effects rather than pulsing paint.
+3. A believable wet lip and falling sheet. Make the top/bottom meet their pools without floating seams, opaque stone through the sheet, rectangular cutoff, z-fighting or water spilling through coping. Small geometry displacement is acceptable within safe bounds.
+4. Localized irregular foam/impact turbulence and low-cost splash detail at the landing, spreading downstream and fading. Do not whiten the whole surface or make decorative foam scroll independently of the flow. Keep the effect subtle and visible at normal camera distance.
+5. Water depth and Fresnel reflection: darker deeper areas, lighter shallow margins, restrained glints and plausible translucency. Inspect actual pool floor/wall geometry before enabling transmission; a transparent plane over an empty void is not depth. Avoid bright checker highlights, uniform teal plastic, glass-like mirror panels or double-layer sorting artifacts.
+6. Good native day/night appearance, proper Three tone mapping/color space, stable highlights at overview and eye level. Do not change the entire scene exposure to hide a water defect.
+
+GEOMETRY CONTRACT / READ BEFORE EDITING
+- Read HabitatArchitecture.tsx around the water court, habitatLayout.ts solids/walkability, HabitatScene.tsx lighting, and current material setup before changing water.
+- Current upper pool: center [4,1.255,-8.05], X/Z dimensions [3.04,3.22]. Lower pool: [4,.085,-2], dimensions [3.76,5.94]. Rill: [4,.085,-5.51], dimensions [2.78,1.10]. Cascade falls from Y1.255 to about .085, toward increasing Z starting -6.43. Treat these as existing measured design coordinates; inspect actual edge geometry, do not assume every join is perfect.
+- Codex's architecture audit found the upper basin is currently a solid stone box topped by a dark thin plate at Y1.235, thickness .025. Its plate top is only .0075 m below the water surface. A transmission-only material change will not create convincing pool depth; a hollow visual basin/floor correction may be needed while preserving the conservative collision footprint. The lower pool and receiving rill also need an intentional visible bed if translucency is used.
+- Preserve bridge walking and static colliders. Coordinate any small visual lip correction with actual solid geometry only if needed. Do not widen water into agent routes.
+- Share materials/geometries where appropriate; keep per-frame uniform changes outside React state, bound delta after resume, dispose GPU resources. No frame-by-frame mesh allocation or unbounded particles. Prefer a handful of draw calls; justify any reflection render pass with native performance.
+- Use existing dependencies. No external renderer, heavy new package, scene-wide ray tracing or FAL generation for flowing water. FAL can later supply a carefully chosen texture/physical asset; it cannot fix disconnected flow or bad shader behavior.
+
+WATER VERIFICATION
+Add meaningful tests for any extracted flow/motion/geometry contract: downstream phase/transport, spill continuity/bounds, time handling and reduced-motion behavior. Do not merely assert that GLSL strings contain their own names. Use existing habitatTerrace, habitatMotion/walkCollision and relevant asset suites if their contracts are affected. Typecheck the UI. The actual shader must compile in the native app; passing TypeScript is insufficient.
+Return exact native review steps. Codex will compare fixed-camera captures several seconds apart, inspect top/side/eye-level views in day/night, observe at least 15 seconds, and verify no seam/opacity/shimmer/flicker regression. Static screenshots alone cannot establish that flow looks right. Verify reduced-motion mode separately without silently changing the user's global setting.
+Record added draw calls, geometry/textures and a matched viewport frame-time comparison if measurement hooks exist. Preserve the >=10 GiB disk floor and single-heavy-process rule. Do not run a heavy native build while Codex runs another. Codex owns staging and actual native CUA capture.
+
+CLICK-TO-FOCUS QUICK WIN (SAME ITERATION IF WATER SOURCE IS READY)
+Read the interaction section of OPUS_ASSIGNMENT.txt. The direct HeroGardenAgents onSelect currently updates selection/tab but does not set focusAgent, while HabitatAgentDock's picker does. Unify that behavior so clicking an actual agent smoothly frames its current position. Cover fallback agents, repeated clicks, walking targets, reduced motion, user camera interruption and desk open/closed. Never trigger movement commands, voice or a daemon job just by selecting. Preserve the existing .85-second transition/OrbitControls behavior where sound. Do not implement the larger social scheduler until the first native review accepts this batch.
+
+CONTINUATION ORDER AFTER CODEX REVIEW
+1. Correct water/camera findings until native motion and interactions pass.
+2. Implement social movement using existing A*/collision with user/work/conversation priority above ambient behavior.
+3. Unify all twelve current agent portraits with their actual distinctive world designs; use the identity matrix in the master brief.
+4. Build sourced scientific solar-system data, honest catalog coverage and true-scale platform/body navigation, with independent numerical checks.
+5. Add targeted FAL craft/planting/wardrobe assets only where they measurably improve the accepted visual target. Total existing FAL authorization $25; completed estimate $6.45, not a verified balance. Codex handles connected FAL tools and tracks receipts.
+6. Final routes, downloads, native performance and visual review. Do not mark the whole goal complete early.
+
+RETURN TO CODEX
+Report changed files and concrete behavior, exact tests/results, permission/tool failures, remaining risks, artifact paths and next native review actions. Do not claim a build or screenshot you did not actually obtain. Do not access credential stores, unrelated private files, send messages, publish, dispatch real tasks, start voice or overwrite the installed app.
+
+USER DESIGN CORRECTION — BOTTOM-LEFT COLLABORATORS PANEL
+The user explicitly clarified the panel: "The collaborators panel in the bottom left hand corner." They want it smaller and less obtrusive and preferred the earlier design, with the right Permagent colors. This is HabitatAgentDock, not the top-right World toolbar, Agent desk, left app navigation or global Chat with Henry launcher. The first water/focus turn was already in progress; Codex will assign this correction in a followup before native acceptance of the batch.
+
+Codex inspected actual r23 at 1280x800 logical pixels: current default panel is about 340x196, covers too much of the foreground, has a 36px square emblem, oversized gaps, a large full cyan Sit with Henry button, and a separate padded utilities row. Compare HEAD's earlier HabitatAgentDock.tsx and forum.css for its denser styling and circular identity emblem. Preserve current functional fixes (separate movement/work feed, cancellation on closing movement, hidden duplicate dock when Agent desk is open); do not blindly revert the whole file.
+
+Target a default card around 300-320px wide and 125-145px tall at desktop, using the earlier compact visual hierarchy: 10-12px outer padding, small circular identity mark (about 28px), restrained label/name hierarchy, compact status line and action controls. Restore the older light visual weight using current shared graphite/glass and ThemeColors cyan/violet. Avoid a broad saturated primary-button slab. Keep text readable and focus/hit targets practical. Utility disclosures may expand on demand, with bounded scrolling for small viewports. Preserve collaborator selection, Details, Sit with Henry, Give a brief, movement, follow, stop and work feed without adding default-visible explanations or a new large header. Do not change unrelated global controls. Codex will inspect the native idle footprint and both expanded disclosures, test keyboard access and verify no accidental voice/task dispatch.

@@ -1,4 +1,14 @@
 import { BoxGeometry, BufferGeometry, Float32BufferAttribute, Group, Mesh, MeshStandardMaterial } from 'three';
+import {
+  OBSERVATORY_BRIDGE,
+  OBSERVATORY_BENCHES,
+  OBSERVATORY_PAD,
+  observatoryGuardSegments,
+  OBSERVATORY_GARDEN_PLACE,
+  OBSERVATORY_PLINTH,
+  OBSERVATORY_WING_HEIGHT,
+  onObservatoryWing,
+} from './habitatObservatoryWing';
 import { terraceSurfaceGeometry } from './habitatTerrace';
 import { GARDEN_PLACES, PLANT_BASE_Y, type GardenDecorPlacement } from './gardenLayout';
 
@@ -12,15 +22,22 @@ export const HABITAT_START: Point3 = [1.8, 0, 8.6];
 /** All three levels belong to one continuous, gently sloping walking surface. */
 export function habitatHeight(z: number) { return z >= -8 ? 0 : z <= -14 ? 3.4 : (-8-z)*(3.4/6); }
 export function onGardenBridge(x:number,z:number){return x>=1&&x<=7&&z>=-3.2&&z<=-1.2;}
-export function habitatElevation(x:number,z:number){return onGardenBridge(x,z)?Math.min(.45,(x-1)*.45,(7-x)*.45):habitatHeight(z);}
+export function habitatElevation(x:number,z:number){
+  if(onObservatoryWing(x,z,0))return OBSERVATORY_WING_HEIGHT;
+  return onGardenBridge(x,z)?Math.min(.45,(x-1)*.45,(7-x)*.45):habitatHeight(z);
+}
 export function gardenBridgeGeometry(){
   const p:number[]=[],indices:number[]=[];
   for(let x=1;x<7;x+=.25){const i=p.length/3;p.push(x,habitatElevation(x,-2.2),-3.2,x,habitatElevation(x,-2.2),-1.2,x+.25,habitatElevation(x+.25,-2.2),-1.2,x+.25,habitatElevation(x+.25,-2.2),-3.2);indices.push(i,i+1,i+2,i,i+2,i+3);}
   const g=new BufferGeometry();g.setAttribute('position',new Float32BufferAttribute(p,3));g.setIndex(indices);g.computeVertexNormals();return g;
 }
-export function onHabitat(x: number, z: number, margin = 0) {
+export function onMainTerrace(x: number, z: number, margin = 0) {
   const qx=Math.max(Math.abs(x)-12,0), qz=Math.max(Math.abs(z+6)-18,0);
   return Math.hypot(qx,qz) <= 4-margin && Math.abs(x)<=16-margin && z>=-28+margin && z<=16-margin;
+}
+export function onHabitat(x: number, z: number, margin = 0) {
+  if (onObservatoryWing(x, z, margin)) return true;
+  return onMainTerrace(x, z, margin);
 }
 export type Station = {id:string;name:string;detail:string;position:Point3;heading:number;color:string;cloth:string;pace:number;gesture:'explain'|'read'|'type'|'scan'|'tend'};
 const station = (id:string,name:string,detail:string,x:number,z:number,color:string,cloth:string,pace:number,gesture:Station['gesture']):Station => ({id,name,detail,position:[x,habitatHeight(z),z],heading:Math.PI,color,cloth,pace,gesture});
@@ -44,6 +61,7 @@ export const HABITAT_PLACES = [
   {...GARDEN_PLACES[1],name:'Garden archive',subtitle:'Sources, stories & memory',position:[-8,3.4,-18] as Point3},
   {...GARDEN_PLACES[2],name:'Maker workshop',subtitle:'See the work take shape',position:[9,3.4,-17] as Point3,agent:'steward'},
   {...GARDEN_PLACES[3],name:'Observatory',subtitle:'A wider view',position:[2,3.4,-23] as Point3,agent:'forecaster'},
+  {...GARDEN_PLACES[3],id:OBSERVATORY_GARDEN_PLACE.id,name:OBSERVATORY_GARDEN_PLACE.name,subtitle:OBSERVATORY_GARDEN_PLACE.subtitle,description:OBSERVATORY_GARDEN_PLACE.description,position:OBSERVATORY_GARDEN_PLACE.position,agent:'forecaster'},
   {...GARDEN_PLACES[2],id:'conservatory',name:'Conservatory',subtitle:'Cultivate & measure',position:[10,0,-7] as Point3,agent:'growth_measurement'},
 ];
 export type HabitatSolid = {name:string;at:Point3;size:Point3;water?:boolean};
@@ -55,6 +73,7 @@ export const STATION_DESKS:GardenDecorPlacement[]=HABITAT_STATIONS.filter(s=>s.i
   asset:'desk',position:[s.position[0],s.position[1],s.position[2]-.90],scale:1,heading:0,
 }));
 export const HABITAT_SOLIDS: HabitatSolid[] = [
+  ...OBSERVATORY_BENCHES.map(({x,z})=>({name:'observatory bench',at:[x,OBSERVATORY_WING_HEIGHT+.45,z] as Point3,size:[3.4,.9,.75] as Point3})),
   {name:'commons table',at:[-3,.495,3],size:[2.7,.99,2.7]},
   {name:'water garden',at:[4,.05,-2],size:[3.8,.1,6]},
   {name:'bridge north rail',at:[4,.95,-3.23],size:[4,.9,.07]},
@@ -65,7 +84,8 @@ export const HABITAT_SOLIDS: HabitatSolid[] = [
   ...ARCHIVE_DECOR.map(p=>({name:p.asset==='column'?'archive pillar':'archive shelves',at:[p.position[0],p.position[1]+p.solid![1]/2,p.position[2]] as Point3,size:p.solid!})),
   {name:'archive rear wall',at:[-10,5,-23],size:[8,3.2,.35]},
   ...[7,14].map(x=>({name:'workshop pillar',at:[x,5,-16] as Point3,size:[.2,3.2,.2] as Point3})),
-  ...[-.2,6.2].flatMap(x=>[-21.7,-26.3].map(z=>({name:'observatory pillar',at:[x,4.5,z] as Point3,size:[.16,2.2,.16] as Point3}))),
+  ...[-.2,8.8].flatMap(x=>[-21.7,-26.3].map(z=>({name:'observatory pillar',at:[x,4.5,z] as Point3,size:[.16,2.2,.16] as Point3}))),
+  {name:'observatory plinth',at:[OBSERVATORY_PLINTH.x,OBSERVATORY_WING_HEIGHT+OBSERVATORY_PLINTH.height/2,OBSERVATORY_PLINTH.z],size:[OBSERVATORY_PLINTH.radius*2,OBSERVATORY_PLINTH.height,OBSERVATORY_PLINTH.radius*2]},
 ];
 export const HABITAT_BEDS: {x:number;z:number;rx:number;rz:number;groundcover?:boolean}[] = [
   {x:-9,z:2,rx:1.8,rz:2.1},{x:-5,z:-6,rx:2.1,rz:2.4},
@@ -78,6 +98,9 @@ export const HABITAT_BEDS: {x:number;z:number;rx:number;rz:number;groundcover?:b
   {x:-1.5,z:-10.7,rx:3.0,rz:.7,groundcover:true},
   {x:10.6,z:-10.7,rx:2.3,rz:.7,groundcover:true},
   {x:-2,z:-13.3,rx:2.8,rz:.65,groundcover:true},
+  {x:OBSERVATORY_PAD.cx-10,z:OBSERVATORY_PAD.cz-.5,rx:2.3,rz:3.0,groundcover:true},
+  {x:OBSERVATORY_PAD.cx+10,z:OBSERVATORY_PAD.cz-1,rx:2.3,rz:3.0,groundcover:true},
+  {x:OBSERVATORY_PAD.cx,z:OBSERVATORY_PAD.cz-8,rx:5.5,rz:1.4,groundcover:true},
 ];
 HABITAT_BEDS.forEach(b=>HABITAT_SOLIDS.push({name:'raised planting bed',at:[b.x,habitatHeight(b.z)+.25,b.z],size:[b.rx*2,.5,b.rz*2]}));
 export const HABITAT_DECOR: GardenDecorPlacement[] = [
@@ -91,13 +114,19 @@ function plant(asset:keyof typeof PLANT_BASE_Y,x:number,z:number,scale:number,he
 // Layered planting beds frame routes, with clear trunks and working sightlines.
 const trees: [number,number,number][]=[[-7.8,5.8,1.6],[7.7,10,1.5],[-13,11,1.4],[-14,2,1.5],[-14,-10,1.6],[-14,-24,1.65],[-5,-25,1.55],[8,-26,1.45],[14,-12,1.4],[14,0,1.3],[0,-12,1.2]];
 trees.forEach(([x,z,s],i)=>plant('canopy',x,z,s,i*1.31));
+for(const side of [-1,1])plant('canopy',OBSERVATORY_PAD.cx+side*10,OBSERVATORY_PAD.cz-.7,1.1,side*.8);
 for(let side=-1;side<=1;side+=2) for(let i=0;i<22;i++) {
   const z=12-i*1.7, x=side*(14.5+Math.sin(i*2.1)*.35);
   if(onHabitat(x,z,1)) { plant('shrub',x,z,.75+(i%3)*.13,i*2.4); plant('fern',x-side*1.0,z+.35,.68,i*1.7); plant('flowers',x-side*.7,z-.45,.65,i); }
 }
 for(let i=0;i<17;i++) {
   const x=-12+i*1.5,z=-25.7+Math.sin(i)*.5;
+  if(x>OBSERVATORY_BRIDGE.x0-.8&&x<OBSERVATORY_BRIDGE.x1+.8)continue;
   plant('shrub',x,z,.72+(i%3)*.14,i);plant('flowers',x,z+1,.8,i*1.6);
+}
+for(const [dx,dz,s,h] of [[-10,-1,.85,1.2],[-8,-4,.78,2.1],[10,-1,.82,3.4],[9,-4,.74,4.8],[-2,-8,.7,5.6]] as [number,number,number,number][]){
+  const x=OBSERVATORY_PAD.cx+dx,z=OBSERVATORY_PAD.cz+dz;
+  plant('shrub',x,z,s,h);plant('fern',x+.55,z+.45,.68,h+.5);
 }
 // Intimate foreground beds and planting around the water, away from circulation.
 for(const [x,z] of [[-7,3],[-7,1],[-7,-1],[7,3],[7,-1],[7,-4],[7,-6],[-5,10],[-3,11],[-1,11],[1,11],[-11,13],[10,12]] as [number,number][]) {
@@ -110,7 +139,7 @@ for(const bed of HABITAT_BEDS.filter(b=>!b.groundcover))for(let i=0;i<16;i++) {
   HABITAT_DECOR.push({asset,position:[x,habitatHeight(bed.z)+.45-PLANT_BASE_Y[asset]*.85,z],scale:.72+(i%3)*.13,heading:a});
 }
 for(const s of HABITAT_STATIONS.filter(s=>s.id!=='henry')) {
-  const x=s.position[0]+1.3,z=s.position[2]-1.4,y=habitatHeight(z);
+  const x=s.position[0]+(s.id==='forecaster'?-1.35:1.3),z=s.position[2]-1.4,y=habitatHeight(z);
   HABITAT_DECOR.push({asset:'planter',position:[x,y,z],scale:.7,heading:0,solid:[1.1,.67,1.1]});
   HABITAT_DECOR.push({asset:'fern',position:[x,y+.4025-PLANT_BASE_Y.fern*.7,z],scale:.7,heading:x});
 }
@@ -126,7 +155,10 @@ export function habitatCollisionSource() {
   const ground=new Mesh(terrainGeometry(),material);ground.name='connected garden terraces';root.add(ground);const bridge=new Mesh(gardenBridgeGeometry(),material);bridge.name='walkable garden bridge';root.add(bridge);
   const solids=[...HABITAT_SOLIDS];
   // Physical rails coincide with the visible boundary. Rounded corners remain planted.
-  solids.push({name:'west rail',at:[-15.7,2.4,-6],size:[.25,6,38]}, {name:'east rail',at:[15.7,2.4,-6],size:[.25,6,38]}, {name:'north rail',at:[0,4.2,-27.6],size:[25,2,.25]}, {name:'south rail',at:[0,.5,15.6],size:[25,1,.25]});
+  solids.push({name:'west rail',at:[-15.7,2.4,-6],size:[.25,6,38]}, {name:'east rail',at:[15.7,2.4,-6],size:[.25,6,38]});
+  const bridgeGap0=OBSERVATORY_BRIDGE.x0,bridgeGap1=OBSERVATORY_BRIDGE.x1;
+  solids.push({name:'north rail west',at:[(-12+bridgeGap0)/2,4.2,-27.6],size:[12+bridgeGap0,2,.25]},{name:'north rail east',at:[(12+bridgeGap1)/2,4.2,-27.6],size:[12-bridgeGap1,2,.25]},{name:'south rail',at:[0,.5,15.6],size:[25,1,.25]});
+  for(const {a,b} of observatoryGuardSegments())solids.push({name:'observatory guard',at:[(a[0]+b[0])/2,OBSERVATORY_WING_HEIGHT+.5,(a[1]+b[1])/2],size:[Math.abs(b[0]-a[0])+.08,1,Math.abs(b[1]-a[1])+.08]});
   HABITAT_DECOR.forEach(p=>{if(p.solid)solids.push({name:p.asset,at:[p.position[0],p.position[1]+p.solid[1]*p.scale/2,p.position[2]],size:decorSolidSize(p)});});
   for(const s of solids){const m=s.name==='water garden'?material.clone():material;if(s.name==='water garden')m.name='Water';const mesh=new Mesh(new BoxGeometry(...s.size),m);mesh.name=s.name;mesh.position.set(...s.at);root.add(mesh);}
   root.updateMatrixWorld(true);return root;

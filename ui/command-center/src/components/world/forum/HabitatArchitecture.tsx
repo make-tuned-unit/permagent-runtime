@@ -1,11 +1,14 @@
 import { useEffect, useMemo } from 'react';
 import { useTexture } from '@react-three/drei';
-import { DoubleSide, LatheGeometry, RepeatWrapping, SphereGeometry, SRGBColorSpace, Vector2 } from 'three';
-import { terraceHullGeometry, terracePerimeter, terraceSurfaceGeometry } from './habitatTerrace';
+import { DoubleSide, Mesh, MeshStandardMaterial, LatheGeometry, RingGeometry, RepeatWrapping, SphereGeometry, SRGBColorSpace, Vector2 } from 'three';
+import { OBSERVATORY_BENCHES, OBSERVATORY_BRIDGE, OBSERVATORY_PAD, OBSERVATORY_PLINTH, OBSERVATORY_WING_HEIGHT, onObservatoryBridgeOpening, observatoryGuardSegments } from './habitatObservatoryWing';
+import { buildObservatoryTelescope } from './habitatObservatoryTelescope';
+import { observatoryPadPerimeter, observatoryWingHullGeometry, terraceHullGeometry, terracePerimeter, terraceSurfaceGeometry } from './habitatTerrace';
 import { CraftedLibrary } from './CraftedLibrary';
 import { CraftedDesks } from './CraftedDesks';
 import { DetailBuilder, finishDetails, material } from './habitatGeometry';
 import { COMMONS_SURFACE_Y, HABITAT_BEDS, HABITAT_STATIONS, habitatElevation, habitatHeight, type Point3 } from './habitatLayout';
+import { WATER_COURT } from './habitatWaterFlow';
 
 export function HabitatArchitecture(){
   const maps=useTexture([
@@ -51,6 +54,7 @@ export function HabitatArchitecture(){
     const b=new DetailBuilder();
     b.add(terraceSurfaceGeometry(true),[0,-.001,0],[1,1,1],paving);
     b.add(terraceHullGeometry(),[0,0,0],[1,1,1],stone);
+    b.add(observatoryWingHullGeometry(),[0,0,0],[1,1,1],stone);
     for(const bed of HABITAT_BEDS){
       const y=habitatHeight(bed.z);b.sphere([bed.x,y+.22,bed.z],[bed.rx,.24,bed.rz],soil);
       for(let i=0;i<44;i++){
@@ -72,7 +76,11 @@ export function HabitatArchitecture(){
     }
     // Bronze edge rail, planted on the safe side of the connected floor.
     for(const x of [-15.7,15.7])for(let z=-24;z<13;z+=1.6){const y=habitatHeight(z);b.cylinder([x,y+.48,z],.035,.96,bronze);b.box([x,y+.96,z+.8],[.07,.07,1.6],bronze,[z<-8&&z>-14?Math.atan(3.4/6):0,0,0]);}
-    for(const z of [-27.6,15.6])for(let x=-12;x<12;x+=1.5){const y=habitatHeight(z);b.cylinder([x,y+.48,z],.035,.96,bronze);b.box([x+.75,y+.96,z],[1.5,.07,.07],bronze);}
+    for(const [x0,x1,z] of [[-12,OBSERVATORY_BRIDGE.x0,-27.6],[OBSERVATORY_BRIDGE.x1,12,-27.6],[-12,12,15.6]]){
+      const y=habitatHeight(z),n=Math.ceil((x1-x0)/1.5);
+      b.box([(x0+x1)/2,y+.96,z],[x1-x0,.07,.07],bronze);
+      for(let i=0;i<=n;i++)b.cylinder([x0+(x1-x0)*i/n,y+.48,z],.035,.96,bronze);
+    }
     // Arrival arbor: curved side ribs, fine timber slats and hanging lanterns.
     for(const z of [1,6.6]){
       b.tube([[-7.5,0,z],[-7.5,2.8,z],[-6.7,3.6,z],[-3.5,3.9,z],[-.5,3.45,z]],.10,bronze);
@@ -121,7 +129,7 @@ export function HabitatArchitecture(){
     // Open observatory: a ribbed glazed canopy above a reachable instrument
     // court. Its lower edge clears standing agents; four posts carry the roof.
     b.add(new SphereGeometry(3.8,48,24,0,Math.PI*2,0,Math.PI/2),[3,5.6,-24],[1,1,1],domeGlass);
-    for(const x of [-.2,6.2])for(const z of [-21.7,-26.3]){
+    for(const x of [-.2,8.8])for(const z of [-21.7,-26.3]){
       b.cylinder([x,4.5,z],.07,2.2,bronze);b.cylinder([x,3.49,z],.17,.18,stone);b.ring([x,5.55,z],.16,.025,bronze);
     }
     for(let i=0;i<16;i++){
@@ -130,6 +138,52 @@ export function HabitatArchitecture(){
     }
     for(const angle of [.35,.70,1.05,Math.PI/2])b.ring([3,5.6+Math.cos(angle)*3.8,-24],Math.sin(angle)*3.8,.026,bronze);
     b.ring([3,3.415,-24],2.7,.012,bronze);b.ring([3,3.415,-24],2.85,.01,bronze);
+    // Connected observatory garden wing: open bridge rails, layered borders, instrument court.
+    const wingPerimeter=observatoryPadPerimeter(.05);
+    for(let i=0;i<wingPerimeter.length;i++){
+      const [x,z]=wingPerimeter[i],[nx,nz]=wingPerimeter[(i+1)%wingPerimeter.length],length=Math.hypot(nx-x,nz-z);
+      b.tube([[x,OBSERVATORY_WING_HEIGHT-.19,z],[nx,OBSERVATORY_WING_HEIGHT-.19,nz]],.022,bronze);
+      if(length>.04)b.tube([[x,OBSERVATORY_WING_HEIGHT-.045,z],[nx,OBSERVATORY_WING_HEIGHT-.045,nz]],.04,edge);
+    }
+    // A supported five-metre crossing, with longitudinal guards shared with collision.
+    const bridgeNorth=OBSERVATORY_PAD.cz+OBSERVATORY_PAD.hz;
+    b.box([(OBSERVATORY_BRIDGE.x0+OBSERVATORY_BRIDGE.x1)/2,OBSERVATORY_WING_HEIGHT-.13,(-28+bridgeNorth)/2],[OBSERVATORY_BRIDGE.x1-OBSERVATORY_BRIDGE.x0,.24,-28-bridgeNorth],stone);
+    for(const {a,c} of observatoryGuardSegments().map(s=>({a:s.a,c:s.b}))){
+      const length=Math.hypot(c[0]-a[0],c[1]-a[1]),n=Math.max(1,Math.ceil(length/1.6));
+      b.tube([[a[0],OBSERVATORY_WING_HEIGHT+.98,a[1]],[c[0],OBSERVATORY_WING_HEIGHT+.98,c[1]]],.035,bronze);
+      b.tube([[a[0],OBSERVATORY_WING_HEIGHT+.36,a[1]],[c[0],OBSERVATORY_WING_HEIGHT+.36,c[1]]],.018,bronze);
+      for(let i=0;i<n;i++)b.cylinder([a[0]+(c[0]-a[0])*i/n,OBSERVATORY_WING_HEIGHT+.49,a[1]+(c[1]-a[1])*i/n],.027,.98,bronze);
+    }
+    for(const [x,z,r] of [[OBSERVATORY_PAD.cx-OBSERVATORY_PAD.hx+1.2,OBSERVATORY_PAD.cz,.9],[OBSERVATORY_PAD.cx+OBSERVATORY_PAD.hx-1.2,OBSERVATORY_PAD.cz,.9],[OBSERVATORY_PAD.cx,OBSERVATORY_PAD.cz-OBSERVATORY_PAD.hz+1.1,.85]] as [number,number,number][]){
+      for(let i=0;i<8;i++){const a=i/8*Math.PI*2,bx=x+Math.cos(a)*r,bz=z+Math.sin(a)*r*.55;if(!onObservatoryBridgeOpening(bx,bz,.2))b.sphere([bx,OBSERVATORY_WING_HEIGHT+.12,bz],[.22,.14,.22],soil);}
+    }
+    // Inlaid azimuth court: fine brass divisions and dark stone concentric bands.
+    const courtY=OBSERVATORY_WING_HEIGHT+.013,cx=OBSERVATORY_PLINTH.x,cz=OBSERVATORY_PLINTH.z;
+    for(const [r,width] of [[3.6,.085],[5.7,.19],[7.6,.075]]){
+      b.add(new RingGeometry(r-width,r,128),[cx,courtY,cz],[1,1,1],dark,[-Math.PI/2,0,0]);
+      b.ring([cx,courtY+.004,cz],r,.012,bronze);
+    }
+    for(let i=0;i<96;i++){
+      const a=i*Math.PI/48,major=i%8===0,r=5.42;
+      b.box([cx+Math.sin(a)*r,courtY+.004,cz+Math.cos(a)*r],[major?.035:.018,.009,major?.38:.14],bronze,[0,a,0]);
+    }
+    // Flush bridge wayfinding strips and small shielded lanterns.
+    for(const x of [OBSERVATORY_BRIDGE.x0+.32,OBSERVATORY_BRIDGE.x1-.32]){
+      b.box([x,courtY,-30.5],[.045,.014,5.2],bronze);
+      for(const z of [-28.7,-32.2]){b.cylinder([x,OBSERVATORY_WING_HEIGHT+.18,z],.075,.36,bronze);b.cylinder([x,OBSERVATORY_WING_HEIGHT+.365,z],.054,.028,glow);}
+    }
+    for(const {x,z} of OBSERVATORY_BENCHES){
+      for(const dx of [-1.32,1.32])b.box([x+dx,OBSERVATORY_WING_HEIGHT+.23,z],[.19,.46,.65],stone);
+      for(let i=0;i<6;i++)b.box([x,OBSERVATORY_WING_HEIGHT+.49,z-.27+i*.105],[3.4,.075,.085],wood);
+      for(let i=0;i<4;i++)b.box([x,OBSERVATORY_WING_HEIGHT+.67+i*.09,z-.34],[3.4,.065,.045],wood,[-.12,0,0]);
+      for(const dx of [-1.4,1.4]){b.box([x+dx,OBSERVATORY_WING_HEIGHT+.66,z-.3],[.045,.62,.05],bronze);b.box([x+dx,OBSERVATORY_WING_HEIGHT+.69,z],[.08,.04,.6],bronze);}
+      const lx=x+(x<cx?-2:2);
+      b.cylinder([lx,OBSERVATORY_WING_HEIGHT+.45,z],.065,.9,bronze);
+      b.cylinder([lx,OBSERVATORY_WING_HEIGHT+.91,z],.11,.08,glow);
+      b.cylinder([lx,OBSERVATORY_WING_HEIGHT+.99,z],.16,.035,bronze);
+    }
+    b.cylinder([OBSERVATORY_PLINTH.x,OBSERVATORY_WING_HEIGHT+OBSERVATORY_PLINTH.height/2,OBSERVATORY_PLINTH.z],OBSERVATORY_PLINTH.radius,OBSERVATORY_PLINTH.height,stone);
+    b.ring([OBSERVATORY_PLINTH.x,OBSERVATORY_WING_HEIGHT+OBSERVATORY_PLINTH.height,OBSERVATORY_PLINTH.z],OBSERVATORY_PLINTH.radius+.08,.025,bronze);
     b.cylinder([3,9.55,-24],.055,.55,bronze,.025);b.sphere([3,9.85,-24],[.055,.055,.055],glow);
     for(const x of [-14,-6,7,14]){
       const h=x===-14||x===14?3.6:2.6;
@@ -165,6 +219,10 @@ export function HabitatArchitecture(){
     }
     // One continuous water court: a supported upper basin spills into a
     // receiving rill and the bridge pool. Coping follows the water's edges.
+    // Beds sit below the water planes so translucency shows real depth rather
+    // than a dark plate millimetres under the surface. Collision solids stay
+    // the conservative HABITAT_SOLIDS footprints.
+    const wetBed=material('#1a3334',.62);
     for(const x of [2,6]){
       b.box([x,.15,-2],[.22,.3,6.25],stone);
       b.box([x,.307,-2],[.25,.035,6.28],edge);
@@ -172,8 +230,14 @@ export function HabitatArchitecture(){
     }
     b.box([4,.15,1],[4.2,.3,.22],stone);
     for(const x of [2.25,5.75])b.box([x,.15,-5],[.72,.3,.22],stone);
-    b.box([4,.61,-8],[3.6,1.22,3.2],stone);
-    b.box([4,1.235,-8.05],[3.10,.025,3.22],dark);
+    // Hollow raised basin: outer walls + recessed floor (was a solid stone fill
+    // topped by a near-surface plate that erased any sense of depth). Inner
+    // faces sit at x≈2.48/5.52 and z≈-9.32/-6.68; the bed fills that span.
+    b.box([2.34,.61,-8],[.28,1.22,3.2],stone);
+    b.box([5.66,.61,-8],[.28,1.22,3.2],stone);
+    b.box([4,.61,-9.46],[3.04,1.22,.28],stone);
+    b.box([4,.55,-6.54],[3.04,1.1,.28],stone);
+    b.box([...WATER_COURT.beds.upper.center],[...WATER_COURT.beds.upper.size],wetBed);
     for(const x of [2.34,5.66]){
       b.box([x,1.285,-8.04],[.25,.19,3.45],stone);
       b.box([x,1.39,-8.04],[.29,.035,3.48],edge);
@@ -181,6 +245,9 @@ export function HabitatArchitecture(){
     }
     b.box([4,1.285,-9.73],[3.6,.19,.22],stone);
     b.box([4,1.236,-6.40],[2.84,.035,.20],bronze);
+    // Shallow wet beds under the receiving rill and bridge pool.
+    b.box([...WATER_COURT.beds.rill.center],[...WATER_COURT.beds.rill.size],wetBed);
+    b.box([...WATER_COURT.beds.lower.center],[...WATER_COURT.beds.lower.size],wetBed);
     for(const x of [2.48,5.52]){
       b.box([x,.15,-5.67],[.18,.3,1.55],stone);
       b.box([x,.315,-5.67],[.21,.03,1.59],edge);
@@ -198,8 +265,22 @@ export function HabitatArchitecture(){
     for(const x of [-5.2,8.1])for(const z of [-13,-7,1,9]){const y=habitatHeight(z);b.cylinder([x,y+.23,z],.09,.46,bronze);b.cylinder([x,y+.47,z],.065,.05,glow);}
     const group=b.finish('Authored habitat architecture');
     group.children.forEach(mesh=>{if('material' in mesh&&mesh.material===domeGlass)mesh.castShadow=false;});
-    return {group,materials:[stone,paving,edge,wood,bronze,dark,soil,cloth,glass,glow,domeGlass],maps:ownMaps};
+    const telescope=buildObservatoryTelescope();
+    telescope.position.set(OBSERVATORY_PLINTH.x,OBSERVATORY_WING_HEIGHT+OBSERVATORY_PLINTH.height,OBSERVATORY_PLINTH.z);
+    telescope.rotation.y=Math.PI/7;
+    // The pedestal uses the same owned photographed sandstone as the architecture.
+    const replaced=new Set<MeshStandardMaterial>();
+    telescope.traverse(o=>{if(o instanceof Mesh&&!Array.isArray(o.material)&&o.material.name==='telescope sandstone'){
+      replaced.add(o.material as MeshStandardMaterial);o.material=stone;
+    }});replaced.forEach(m=>m.dispose());
+    group.add(telescope);
+    return {group,materials:[stone,paving,edge,wood,bronze,dark,wetBed,soil,cloth,glass,glow,domeGlass],maps:ownMaps,telescope};
   },[maps]);
-  useEffect(()=>()=>{finishDetails(built.group);built.materials.forEach(m=>m.dispose());built.maps.forEach(t=>t.dispose());},[built]);
+  useEffect(()=>()=>{
+    const materials=new Set(built.materials);
+    built.telescope.traverse(o=>{if(o instanceof Mesh)for(const m of Array.isArray(o.material)?o.material:[o.material])materials.add(m as MeshStandardMaterial);});
+    finishDetails(built.group);materials.forEach(m=>m.dispose());built.maps.forEach(t=>t.dispose());
+  },[built]);
+
   return <><primitive object={built.group} dispose={null}/><CraftedLibrary/><CraftedDesks/></>;
 }

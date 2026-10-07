@@ -56,37 +56,116 @@ export function findHabitatPath(from:Point3,to:Point3,occupied:readonly Point3[]
   }
   return null;
 }
-export type TravelState={id:string;label:string;moving:boolean;path:Point3[];destination:Point3|null;blocked:number;replans:number;workArrival:boolean};
+export type TravelSource='none'|'user'|'work'|'ambient';
+export type TravelState={id:string;label:string;moving:boolean;path:Point3[];destination:Point3|null;blocked:number;replans:number;workArrival:boolean;source:TravelSource};
 const travel=new Map<string,TravelState>();
+/** Durable user ownership after Stop — ambient/work cannot reclaim until the next *successful* user command. */
+const userHold=new Set<string>();
 const listeners=new Set<()=>void>();let revision=0;
 const publish=()=>{revision++;listeners.forEach(fn=>fn());};
+
+function nearStation(id:string,radius=.55){
+  const m=getForumMotion(id),s=stationFor(id);
+  return !!m&&Math.hypot(m.x-s.position[0],m.z-s.position[2])<radius;
+}
+
 export function initializeHabitatAgent(id:string) {
   const s=stationFor(id),[x,y,z]=s.position,m=ensureForumMotion(id,{x,y,z});
   Object.assign(m,{x,y,z,heading:s.heading,walking:false,strideDistance:0,engaged:'none'});
-  travel.set(id,{id,label:'At workstation',moving:false,path:[],destination:null,blocked:0,replans:0,workArrival:false});
+  userHold.delete(id);
+  travel.set(id,{id,label:'At workstation',moving:false,path:[],destination:null,blocked:0,replans:0,workArrival:false,source:'none'});
   return m;
 }
 export function getHabitatTravel(id:string){return travel.get(id);}
+export function hasHabitatUserHold(id:string){return userHold.has(id);}
+/** Live work may return only when user ownership (hold or active/paused user travel) is absent. */
+export function canHabitatWorkReturn(id:string){
+  if(userHold.has(id))return false;
+  const t=travel.get(id);
+  return !(t&&t.source==='user');
+}
 export function useHabitatTravel(id:string){useSyncExternalStore(fn=>{listeners.add(fn);return()=>listeners.delete(fn);},()=>revision);return travel.get(id);}
 function agentObstacles(id:string){
   const points:Point3[]=[];
   for(const s of HABITAT_STATIONS){if(s.id===id)continue;const m=getForumMotion(s.id);if(m)points.push([m.x,m.y,m.z]);}
   return points;
 }
-export function commandHabitatAgent(id:string,to:Point3,label='Walking to destination',workArrival=false) {
+/**
+ * Issue travel. Priority: user > work > ambient.
+ * Default source is always user; callers must pass 'work' or 'ambient' explicitly.
+ * A failed user route does not release Stop hold and retains user ownership.
+ */
+export function commandHabitatAgent(id:string,to:Point3,label='Walking to destination',workArrival=false,source:TravelSource='user') {
   const m=getForumMotion(id);if(!m)return false;
+  const current=travel.get(id);
+  if(source==='ambient'){
+    if(userHold.has(id)||(current&&(current.source==='user'||current.source==='work')))return false;
+  }
+  if(source==='work'){
+    if(!canHabitatWorkReturn(id))return false;
+  }
   const path=findHabitatPath([m.x,m.y,m.z],to,agentObstacles(id));
-  const next:TravelState={id,label:path?label:'No clear route — choose another place',moving:!!path,path:path??[],destination:path?to:null,blocked:0,replans:0,workArrival};
-  travel.set(id,next);publish();return !!path;
+  if(!path){
+    if(source==='user'){
+      // Failed user route: keep Stop hold; retain user ownership deliberately.
+      const next:TravelState={
+        id,
+        label:'No clear route — choose another place',
+        moving:false,
+        path:[],
+        destination:null,
+        blocked:0,
+        replans:0,
+        workArrival:false,
+        source:'user',
+      };
+      travel.set(id,next);
+      if(m)m.walking=false;
+      publish();
+    }
+    return false;
+  }
+  if(source==='user')userHold.delete(id);
+  travel.set(id,{id,label,moving:true,path,destination:to,blocked:0,replans:0,workArrival,source});
+  publish();
+  return true;
 }
-export function stopHabitatAgent(id:string){const t=travel.get(id),m=getForumMotion(id);if(t){t.path=[];t.moving=false;t.label='Movement paused';}if(m)m.walking=false;publish();}
+export function stopHabitatAgent(id:string){
+  const t=travel.get(id),m=getForumMotion(id);
+  userHold.add(id);
+  if(t){t.path=[];t.moving=false;t.label='Movement paused';t.destination=null;t.source='user';t.workArrival=false;}
+  if(m){m.walking=false;m.engaged='none';}
+  publish();
+}
+/** Drop ambient-owned travel without creating a durable user hold. Truthful label by location. */
+export function clearAmbientHabitatTravel(id:string){
+  const t=travel.get(id),m=getForumMotion(id);
+  if(!t||t.source!=='ambient')return;
+  t.path=[];t.moving=false;t.destination=null;t.source='none';t.workArrival=false;
+  t.label=nearStation(id)?'At workstation':'Standing by';
+  if(m){m.walking=false;m.engaged='none';}
+  publish();
+}
 const feet=new Vector3();
 export function advanceHabitatAgent(id:string,rawDt:number) {
   const t=travel.get(id),m=getForumMotion(id);if(!m||!t)return;
   m.walking=false;const target=t.path[0];if(!target)return;
   const dt=Math.min(rawDt,.05),dx=target[0]-m.x,dz=target[2]-m.z,d=Math.hypot(dx,dz);
   if(d<.075){
-    t.path.shift();if(!t.path.length){t.moving=false;t.label=t.workArrival?'At workstation':'Arrived';if(t.workArrival)m.heading=stationFor(id).heading;publish();}return;
+    t.path.shift();if(!t.path.length){
+      t.moving=false;
+      if(t.workArrival){
+        t.label='At workstation';
+        m.heading=stationFor(id).heading;
+      }else{
+        t.label='Arrived';
+      }
+      // Deliberate arrival ownership: user/work/ambient travel resolves to none
+      // unless an explicit Stop hold remains. Ambient may then resume.
+      if(!userHold.has(id))t.source='none';
+      else t.source='user';
+      publish();
+    }return;
   }
   const distance=Math.min(d,stationFor(id).pace*dt),nx=dx/d*distance,nz=dz/d*distance;
   const occupied=HABITAT_STATIONS.some(s=>{if(s.id===id)return false;const other=getForumMotion(s.id);return other&&Math.hypot(other.x-m.x-nx,other.z-m.z-nz)<.72;});
@@ -101,6 +180,11 @@ export function advanceHabitatAgent(id:string,rawDt:number) {
       const route=findHabitatPath([m.x,m.y,m.z],t.destination,agentObstacles(id));
       if(route){t.path=route;t.blocked=0;return;}
     }
-    if(t.blocked>3){t.moving=false;t.path=[];t.label='Route occupied — choose another destination';publish();}
+    if(t.blocked>3){
+      t.moving=false;t.path=[];t.destination=null;t.label='Route occupied — choose another destination';
+      if(userHold.has(id))t.source='user';
+      else if(t.source==='ambient')t.source='none';
+      publish();
+    }
   }
 }

@@ -1,0 +1,95 @@
+I'll inspect the motion, agent, navigation, and conversation interfaces read-only and draft a bounded social-controller plan without changing any source.## Status
+r24 source left untouched (read-only). Disk ≈ **16 GiB**. CUA window recovery is Codex’s; this is the next **social-agent** proposal only.
+
+---
+
+## Reality check (compact habitat)
+Primary kit path mounts `HeroGardenAgents` + `habitatMotion` only. `ForumInhabitants` / `GARDEN_ROUTE` patrol is **not** running when the hero kit is ready. Ambient life must sit **above** `commandHabitatAgent` / `advanceHabitatAgent` / `findHabitatPath`, not the campus patrol layer.
+
+---
+
+## Proposed module
+| File | Role |
+|---|---|
+| **`habitatSocial.ts` (new)** | Seeded, fake-clock controller: states `idle → stroll → approach → face → gesture → return`. Owns meeting reservations; calls existing `commandHabitatAgent` / `stopHabitatAgent` only when ambient owns the agent. |
+| **`habitatSocial.test.ts` (new)** | Deterministic fake-clock tests (no WebGL). |
+| **`HeroGardenKit.tsx`** | One group-level `useFrame` call to `advanceHabitatSocial(...)` (not ×12). Read `engaged` / a small social pose flag for greeting limbs; never invent work HUD. |
+| **`habitatMotion.ts`** | Tiny ownership hook: tag ambient-issued travel (e.g. `source: 'ambient'`) so user/`workArrival`/`stop` cancel ambient cleanly; no A* rewrite. |
+| **`ForumView.tsx`** | Pass pause flags only: `conversation`, `onPanel && pageVisible`, reduced-motion already via `getReduceMotion()`. No fake jobs/messages. |
+
+Do **not** start portraits / solar / FAL in this slice.
+
+---
+
+## Integration points
+1. **Motion** — Reuse `findHabitatPath`, `commandHabitatAgent`, `advanceHabitatAgent`, `agentObstacles`, `habitatWalkable`. Replan/timeout already in `TravelState.blocked` / `replans`.
+2. **Runtime truth** — `useAgentRuntimeStates` / `hudState === 'working' && live`: yield; keep existing workstation return in `HeroRobot`.
+3. **Conversation** — While `conversation`, cancel ambient for `henry`; keep him free for `HANK_TABLE_SEAT` / `sitWithHank`. Other agents may still stroll if paths stay clear of the table seat.
+4. **User control** — Dock Move / Follow / Stop / directing click, and any non-ambient `commandHabitatAgent`, clear that agent’s ambient ownership immediately.
+5. **Visibility / RM** — Advance only when Canvas `frameloop === 'always'` (already gated by `onPanel && pageVisible`). Under `getReduceMotion()`, no stroll/approach; idle + rare in-place face turns only.
+6. **Animation hooks (existing)** — `pose.walking` / `strideDistance` gait; `station.gesture` for real work; head look on select/hover; unused `engaged` → set briefly for greeting/inspect pose without changing daemon status text (“Ambient presence” stays honest).
+
+---
+
+## Safe meeting coordinates (derive, then prove)
+Filter candidates with `habitatWalkable` + successful `findHabitatPath` from each participant’s station (empty occupied first, then with peers):
+
+- Bench / recess seats from `HABITAT_DECOR` benches and `GARDEN_AGENT_SEATS` after elevation via `habitatElevation`
+- Near `HABITAT_PLACES` stand-offs (commons `[.5,0,4.8]` already used by dock destinations; archive/workshop/observatory approach points)
+- Avoid water solids, desks, bridge rail corridors, and `HANK_TABLE_SEAT` reservation while conversation is active
+- Keep **≥4 agents** mostly idle at stations so the scene stays intentional; schedule **one pair** + **several strolls** over a 120s fake clock
+
+Seed schedules from agent id + integer epoch (no `Math.random()` in tests).
+
+---
+
+## Priority / cancellation ownership
+```
+user/follow/direct/stop  >  conversation(henry)  >  live working return  >  ambient
+```
+Ambient never calls `askFromForum`, voice, or fabricates `hudState`. Labels like “Walking to destination” for ambient should stay clearly non-work (e.g. “Strolling” / “Meeting briefly”) so the dock status line doesn’t look like a job.
+
+---
+
+## Fake-clock tests (meaningful)
+- Priority: user command cancels ambient mid-path; working agent skips schedule; henry locked during conversation
+- Reservations: two agents can’t claim the same meeting slot; timeout releases
+- Blocked path: fail → replan once → idle, no teleport
+- Reduced motion: zero path commands
+- Hidden/paused clock: no progress while “not visible”
+- No React roster rerender requirement (controller is module state + existing travel pub/sub)
+
+Reuse collider registration patterns from `habitatMotion.test.ts`.
+
+---
+
+## Camera focus gaps (source findings only — do not edit yet)
+1. Fixed frame offset `[+2.9,+2.05,+4.1]` / look `y+1.0` — no headwear/bounds or desk-open width compensation.
+2. One-shot focus does not track a walking agent after the 0.85s ease (only Follow does).
+3. Archive occlusion special-case is district-only, not agent-at-archive focus.
+4. Walk `E` inspect (`inspectAgent`) opens desk without framing; framing only after walk ends if user selects again.
+5. Selecting during seated conversation updates `focusAgent` but camera stays table-locked (OK) — leaving table clears focus, so the selected agent may not stay framed.
+6. Tall silhouettes (Strix/Librarian) share the same look height as short ones.
+
+Treat these as a **follow-up focus polish** after native r24 water/focus acceptance, not blockers for the social controller design.
+
+---
+
+## Native two-minute review (after implement + r25+)
+1. Arrival idle 15s: several agents stay put; no crowd jam into water/rails.
+2. Watch ≥120s: ≥2 distinct journeys + one clear pair (approach, face, short gesture, depart).
+3. Sit with Hank mid-stroll: Henry cancels ambient and joins table; voice still only on explicit Start.
+4. Dock Move / Stop on a strolling agent: ambient releases; truthful travel label.
+5. Force a live `working` state if available: workstation return beats ambient; HUD stays daemon-truthful.
+6. Reduced motion + hide World panel: motion freezes; no backlog teleport on return.
+7. Spot-check no foot slide / interpenetration vs current motion tests’ clearance (~0.72 m).
+
+---
+
+## Risks
+- Ambient × user path contention on the bridge/archive choke points
+- Label wording confusing ambient with work
+- Gesture reuse of `station.gesture` must not imply daemon work
+- Performance: one scheduler tick + existing per-agent `advanceHabitatAgent` only
+
+**Hold implementation until Codex returns native r24 visual evidence and green-lights this slice.**

@@ -1,0 +1,67 @@
+{
+  "root": "/Users/j/Documents/dev/permagent-runtime",
+  "timestamp": 1791331263.135597,
+  "items": [
+    {
+      "path": ".hermit/rust/registry",
+      "allocated_kib": 1313908,
+      "removed": true
+    },
+    {
+      "path": ".hermit/rust/git",
+      "allocated_kib": 37788,
+      "removed": true
+    },
+    {
+      "path": ".hermit/rust/advisory-db",
+      "allocated_kib": 44476,
+      "removed": true
+    },
+    {
+      "path": ".hermit/node/cache",
+      "allocated_kib": 92584,
+      "removed": true
+    },
+    {
+      "path": "target/debug",
+      "allocated_kib": 329308,
+      "removed": true
+    },
+    {
+      "path": "ui/desktop/src-tauri/target",
+      "allocated_kib": 940944,
+      "removed": true
+    },
+    {
+      "path": "ui/desktop/src-tauri/binaries/permagentd-aarch64-apple-darwin",
+      "allocated_kib": 353116,
+      "removed": true
+    },
+    {
+      "path": "ui/desktop/src-tauri/binaries/permagent-aarch64-apple-darwin",
+      "allocated_kib": 267344,
+      "removed": true
+    },
+    {
+      "path": "unreal/SolarForum/Intermediate",
+      "allocated_kib": 124776,
+      "removed": true
+    },
+    {
+      "path": "unreal/SolarForum/DerivedDataCache",
+      "allocated_kib": 1608,
+      "removed": true
+    }
+  ],
+  "free_before": 12289216512,
+  "free_after": 15289769984,
+  "source_state_unchanged": true,
+  "before": {
+    "status": " M ios/PermagentMobile/PermagentMobile.xcodeproj/project.pbxproj\n?? .claude/launch.json\n?? .playwright-mcp/\n?? VOICE_DISPATCH_READY.txt\n?? VOICE_FIXES_QUICK_REFERENCE.md\n?? VOICE_FIXES_STATUS.md\n?? a1326479-5473-4389-8d98-042ee5583eef/\n?? assets/world/forum/campus-preview.png\n?? assets/world/forum/forum-night-preview.png\n?? assets/world/forum/forum-preview.png\n?? assets/world/garden-hero-ai/\n?? docs/design/solar-forum/AI_ENVIRONMENT_RESEARCH_2026-09-26.md\n?? docs/design/solar-forum/COMPACT_CONCEPT_PROMPT_2026-10-06.md\n?? docs/design/solar-forum/FABLE_WORLD_LOOP.md\n?? docs/design/solar-forum/SOL_PRODUCTION_BRIEF_2026-10-06.md\n?? docs/design/solar-forum/WORLD_PRODUCTION_PLAN_2026-10-06.md\n?? docs/design/solar-forum/WORLD_REVIEW_2026-10-06.md\n?? docs/design/solar-forum/compact-habitat-concept-2026-10-06.png\n?? docs/design/solar-forum/unreal-envmap-night.json\n?? r7-blank-test.png\n?? recovery/\n?? \"reports/Cheap coding harness on Mac minis.md\"\n?? \"reports/Coding harness best practices 2026.md\"\n?? \"reports/Decision inbox modal design.md\"\n?? research_notes/\n?? scripts/world-fable-supervisor.py\n",
+    "diff_sha256": "0c4ee84adf60c8b810a0aa66e1edde0e9ebb53e77fd9280b725bd59af3c86b6e"
+  },
+  "after": {
+    "status": " M ios/PermagentMobile/PermagentMobile.xcodeproj/project.pbxproj\n?? .claude/launch.json\n?? .playwright-mcp/\n?? VOICE_DISPATCH_READY.txt\n?? VOICE_FIXES_QUICK_REFERENCE.md\n?? VOICE_FIXES_STATUS.md\n?? a1326479-5473-4389-8d98-042ee5583eef/\n?? assets/world/forum/campus-preview.png\n?? assets/world/forum/forum-night-preview.png\n?? assets/world/forum/forum-preview.png\n?? assets/world/garden-hero-ai/\n?? docs/design/solar-forum/AI_ENVIRONMENT_RESEARCH_2026-09-26.md\n?? docs/design/solar-forum/COMPACT_CONCEPT_PROMPT_2026-10-06.md\n?? docs/design/solar-forum/FABLE_WORLD_LOOP.md\n?? docs/design/solar-forum/SOL_PRODUCTION_BRIEF_2026-10-06.md\n?? docs/design/solar-forum/WORLD_PRODUCTION_PLAN_2026-10-06.md\n?? docs/design/solar-forum/WORLD_REVIEW_2026-10-06.md\n?? docs/design/solar-forum/compact-habitat-concept-2026-10-06.png\n?? docs/design/solar-forum/unreal-envmap-night.json\n?? r7-blank-test.png\n?? recovery/\n?? \"reports/Cheap coding harness on Mac minis.md\"\n?? \"reports/Coding harness best practices 2026.md\"\n?? \"reports/Decision inbox modal design.md\"\n?? research_notes/\n?? scripts/world-fable-supervisor.py\n",
+    "diff_sha256": "0c4ee84adf60c8b810a0aa66e1edde0e9ebb53e77fd9280b725bd59af3c86b6e"
+  }
+}

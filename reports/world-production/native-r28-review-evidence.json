@@ -1,0 +1,58 @@
+{
+  "revision": "r28",
+  "native_build_sha256": "b174c9275d390a151e624553b66d8c308578ae1f7592c3093c73c7a34dc7e998",
+  "staged_binary_sha256": "6ed4d3b0fa8554365ad3bfcdb793f932bc059b876537918bce2d9b19aa631530",
+  "built_staged_and_native_reviewed": true,
+  "installed_baseline_unchanged": true,
+  "changes": [
+    "Shared bench geometry/collisions, azimuth court inlays, bridge lights, two additional canopy trees",
+    "Detailed17mesh/15040triangle telescope from FAL image reference with centered transverse fork, objective bands, finder scope and shared sandstone pedestal",
+    "Gaia sky mild mip bias1.8, subdued exposure, revised artistic orientation",
+    "Sun shadow coverage extended over new wing"
+  ],
+  "verification": [
+    "r27 regression39/39 passed; fulltsc0 after collider correction",
+    "r28 affectedwing7+telescope4=11/11 passed; fulltsc0 and diffcheck0",
+    "Guarded offline native build37.2s,642exactassets+2HTML",
+    "ARM64 and deep strict codesign; previous review rollback preserved"
+  ],
+  "native_observations": [
+    "Reviewed telescope/court in System, Warm daylight and Lantern night",
+    "Gaia dust structure now readable and sky less coarse; one-shot Places framing works",
+    "Walk mode starts on actual new terrace; short keyboard movement remains grounded",
+    "Forecaster Movement > Observatory garden reached Arrived on new court; To workstation returned to original station, Follow maintained body framing",
+    "Overview shows continuous bridge, separate supported wing and furnished court"
+  ],
+  "screenshots": [
+    "native-r28-observatory-system.png",
+    "native-r28-observatory-day.png",
+    "native-r28-observatory-night.png",
+    "native-r28-overview-day.png",
+    "native-r28-forecaster-return.png"
+  ],
+  "limits": [
+    "No direct continuous native manual walk of entire bridge; production attemptWalk/findHabitatPath route is tested",
+    "No matched frame-time p95 benchmark in this pass",
+    "Astronomical body catalog/dated runtime positions and canonical current portraits remain unfinished",
+    "Procedural gas giant/moon remain illustrative; Gaia orientation/exposure artistic",
+    "Only FAL reference generation completed; no generated3Dmesh"
+  ],
+  "next": [
+    "Below10GiBbuildfloor; restore sufficient free disk before another native build",
+    "Consider overview look target[0,-3,-12] versus current[2,1,-20] based on projected bounds; this camera refinement is only proposed, not implemented",
+    "Continue canonical portrait/scientific ephemeris integration and performance evidence"
+  ],
+  "free_disk_gib_at_save": 7.59,
+  "review_app_running": false,
+  "fal_estimated_total_usd": 6.6,
+  "fal_additional_spend_this_polish": 0,
+  "fal_readonly_recovery": {
+    "validation": "Meshy input validated after upstream recovery",
+    "decisions": [
+      "d4e304ce-455f-4ce6-83ec-dadd8434cc7e",
+      "469c5007-4a40-4c6b-adf8-a48cee0ad669"
+    ],
+    "last_status": "evidence_unavailable",
+    "submitted": false
+  }
+}

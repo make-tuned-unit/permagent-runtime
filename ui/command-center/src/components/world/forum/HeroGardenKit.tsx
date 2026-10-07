@@ -19,7 +19,8 @@ import { createAgentWardrobe } from './agentWardrobe';
 import { heroNode, replaceFixedHeroMouth } from './heroRig';
 import { speechOpening, smoothSpeech } from './agentSpeech';
 import { DetailBuilder, material, finishDetails } from './habitatGeometry';
-import { advanceHabitatAgent, commandHabitatAgent, getHabitatTravel, initializeHabitatAgent } from './habitatMotion';
+import { advanceHabitatAgent, canHabitatWorkReturn, commandHabitatAgent, getHabitatTravel, initializeHabitatAgent } from './habitatMotion';
+import { advanceHabitatSocial, prepareHabitatSocial, resetHabitatSocial } from './habitatSocial';
 
 const KIT_URL = `${import.meta.env.BASE_URL}world/garden-hero/hero-kit-v3b.glb?v=e114f28bedaa`;
 function cloneAsset(scene:Object3D,name:string){const original=scene.getObjectByName(name);if(!original)throw new Error(`Hero kit missing ${name}`);const copy=original.clone(true);copy.position.set(0,0,0);copy.traverse(o=>{if(o instanceof Mesh){o.castShadow=true;o.receiveShadow=true;}});return copy;}
@@ -64,7 +65,7 @@ export function HeroGardenDecor(){
     })}
   </>;
 }
-function HeroRobot({id,index,state,live,selected,hovered,name,conversation,onSelect,onHover}:{id:string;index:number;state:keyof typeof STATE;live:boolean;selected:boolean;hovered:boolean;name:string;conversation:boolean;onSelect:(id:string)=>void;onHover:(id:string|null)=>void}){
+function HeroRobot({id,index,state,live,selected,hovered,name,conversation,following,directing,onSelect,onHover}:{id:string;index:number;state:keyof typeof STATE;live:boolean;selected:boolean;hovered:boolean;name:string;conversation:boolean;following:string|null;directing:string|null;onSelect:(id:string)=>void;onHover:(id:string|null)=>void}){
   const {scene}=useGLTF(KIT_URL,false,false,extendForumLoader),root=useRef<Group>(null),station=stationFor(id);
   const owned=useMemo(()=>{
     const object=cloneAsset(scene,'robot'),materials:MeshStandardMaterial[]=[],geometries:BufferGeometry[]=[],wardrobe=createAgentWardrobe(id);
@@ -94,10 +95,25 @@ function HeroRobot({id,index,state,live,selected,hovered,name,conversation,onSel
   },[scene,id]);
   const pose=useMemo(()=>initializeHabitatAgent(id),[id]);
   const speech=useRef({opening:0,bins:new Uint8Array(32)});
+  const workReturnAt=useRef(0);
   useEffect(()=>()=>{owned.materials.forEach(m=>m.dispose());owned.geometries.forEach(g=>g.dispose());owned.wardrobe.materials.forEach(m=>m.dispose());finishDetails(owned.wardrobe.body);finishDetails(owned.wardrobe.headwear);finishDetails(owned.seatedBody);owned.seatMaterials.forEach(m=>m.dispose());owned.mouth.geometry.dispose();(owned.mouth.material as MeshBasicMaterial).dispose();},[owned]);
-  useEffect(()=>{owned.materials.forEach(m=>{if(m.name.startsWith('Eyes')){const eyeColor=id==='henry'?'#a0dbb9':station.color;m.color.set(eyeColor);m.emissive.set(eyeColor);m.emissiveIntensity=live&&state==='working'?.8:.6;}});if(!(conversation&&id==='henry')&&state==='working'&&live)commandHabitatAgent(id,[...station.position],'Returning to workstation',true);},[owned,state,live,id,station,conversation]);
+  useEffect(()=>{owned.materials.forEach(m=>{if(m.name.startsWith('Eyes')){const eyeColor=id==='henry'?'#a0dbb9':station.color;m.color.set(eyeColor);m.emissive.set(eyeColor);m.emissiveIntensity=live&&state==='working'?.8:.6;}});
+    const userBusy=following===id||directing===id||(conversation&&id==='henry');
+    if(!userBusy&&state==='working'&&live&&canHabitatWorkReturn(id))commandHabitatAgent(id,[...station.position],'Returning to workstation',true,'work');
+  },[owned,state,live,id,station,conversation,following,directing]);
   useFrame(({clock,camera},dt)=>{
     advanceHabitatAgent(id,dt);const host=root.current;if(!host)return;host.position.set(pose.x,pose.y,pose.z);host.rotation.y=pose.heading;
+    // After user travel/Stop clears, retry live work return at most ~1 Hz (not every failed frame).
+    const userBusy=following===id||directing===id||(conversation&&id==='henry');
+    const travel=getHabitatTravel(id);
+    const atDesk=Math.hypot(pose.x-station.position[0],pose.z-station.position[2])<.8;
+    if(live&&state==='working'&&!userBusy&&!atDesk&&canHabitatWorkReturn(id)&&travel?.source!=='work'){
+      const now=clock.elapsedTime;
+      if(now-workReturnAt.current>=1){
+        workReturnAt.current=now;
+        commandHabitatAgent(id,[...station.position],'Returning to workstation',true,'work');
+      }
+    }
     const reduced=getReduceMotion(),working=state==='working'&&live&&!getHabitatTravel(id)?.moving&&Math.hypot(pose.x-station.position[0],pose.z-station.position[2])<.8;
     const seated=conversation&&id==='henry'&&!getHabitatTravel(id)?.moving&&Math.hypot(pose.x-HANK_TABLE_SEAT[0],pose.z-HANK_TABLE_SEAT[2])<.25;
     owned.seatedBody.visible=seated;if(seated){pose.heading=0;host.rotation.y=0;}
@@ -116,6 +132,10 @@ function HeroRobot({id,index,state,live,selected,hovered,name,conversation,onSel
         else if(station.gesture==='tend'){target=-1.04+rhythm*.10;spread=(i===0?-1:1)*.06;}
         else if(station.gesture==='scan'){target=i===0?-.88+rhythm*.07:-.30;}
         else {target=-.75+rhythm*.11;spread=(i===0?1:-1)*.15;}
+      }else if(!working&&pose.engaged==='standing'&&i<2){
+        // Ambient greeting / inspect pose — visual only, not daemon work.
+        const rhythm=reduced?0:Math.sin(t*2.4+i*Math.PI);
+        target=-.62+rhythm*.07;spread=(i===0?-1:1)*.12;
       }
       const ease=1-Math.exp(-dt*12);limb.rotation.x+=(target-limb.rotation.x)*ease;limb.rotation.z+=(spread-limb.rotation.z)*ease;
     });
@@ -130,12 +150,23 @@ function HeroRobot({id,index,state,live,selected,hovered,name,conversation,onSel
     {!conversation&&(selected||hovered)&&<Html position={[0,2.05,0]} center distanceFactor={8} zIndexRange={[20,0]}><div className="habitat-nameplate"><b>{name}</b><span>{live?state:'Ambient presence'}</span></div></Html>}
   </group>;
 }
-export function HeroGardenAgents({onSelect,onHover,selected='',hovered='',orchestratorName='Your orchestrator',conversation=false}:{onSelect:(id:string)=>void;onHover:(id:string|null)=>void;selected?:string;hovered?:string|null;orchestratorName?:string;conversation?:boolean}){
+export function HeroGardenAgents({onSelect,onHover,selected='',hovered='',orchestratorName='Your orchestrator',conversation=false,following=null,directing=null,socialActive=true}:{onSelect:(id:string)=>void;onHover:(id:string|null)=>void;selected?:string;hovered?:string|null;orchestratorName?:string;conversation?:boolean;following?:string|null;directing?:string|null;socialActive?:boolean}){
   const states=useAgentRuntimeStates(),authError=useCommandCenter(s=>s.daemonAuthError);
   const bodies=useMemo(()=>{const geometry=new CylinderGeometry(.33,.33,1.85,16),material=new MeshStandardMaterial();return {geometry,material,meshes:ROSTER.map(a=>{const body=new Mesh(geometry,material);body.name=`${a.id} moving body`;return body;})};},[]);
-  useEffect(()=>{const release=registerForumActorCollisions(bodies.meshes);return()=>{release();bodies.geometry.dispose();bodies.material.dispose();};},[bodies]);
+  useEffect(()=>{
+    resetHabitatSocial();
+    prepareHabitatSocial();
+    const release=registerForumActorCollisions(bodies.meshes);
+    return()=>{release();resetHabitatSocial();bodies.geometry.dispose();bodies.material.dispose();};
+  },[bodies]);
+  // One group scheduler tick before per-agent locomotion (priority -2 < robot frames).
+  useFrame((_,dt)=>{
+    const liveWorking=new Set<string>();
+    for(const state of states){if(!authError&&state.source==='daemon'&&state.hudState==='working')liveWorking.add(state.id);}
+    advanceHabitatSocial({dt,active:socialActive,reducedMotion:getReduceMotion(),conversation,liveWorking,following,directing});
+  },-2);
   useFrame(()=>{bodies.meshes.forEach((body,i)=>{const pose=getForumMotion(ROSTER[i].id);if(pose){body.position.set(pose.x,pose.y+.925,pose.z);body.updateMatrixWorld(true);}});},-1);
 
-  return <group><AgentStateSources/>{ROSTER.map((a,i)=>{const state=states.find(s=>s.id===a.id);return <HeroRobot key={a.id} id={a.id} index={i} conversation={conversation} name={a.isHenry?orchestratorName:a.name} selected={selected===a.id} hovered={hovered===a.id} state={state?.hudState??'idle'} live={!authError&&state?.source==='daemon'} onSelect={onSelect} onHover={onHover}/>;})}</group>;
+  return <group><AgentStateSources/>{ROSTER.map((a,i)=>{const state=states.find(s=>s.id===a.id);return <HeroRobot key={a.id} id={a.id} index={i} conversation={conversation} following={following} directing={directing} name={a.isHenry?orchestratorName:a.name} selected={selected===a.id} hovered={hovered===a.id} state={state?.hudState??'idle'} live={!authError&&state?.source==='daemon'} onSelect={onSelect} onHover={onHover}/>;})}</group>;
 }
 export const getHeroPosition=getForumMotion;

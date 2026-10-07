@@ -1,0 +1,68 @@
+PERMAGENT WORLD — CURSOR SOCIAL CORRECTION RESULTS
+Prepared 2026-10-07. Worker: Cursor (supervised by Codex). Worktree: world-production-20261006.
+
+AUTHORITY
+Codex source review of the ambient social pass required eight defect corrections before native build.
+Water / dock / focus / camera baselines were not modified this turn. No native build, FAL, commit, voice, or real job dispatch.
+
+DEFECTS ADDRESSED
+1. Ownership priority
+   - commandHabitatAgent default source is always 'user'.
+   - HeroRobot daemon return passes source 'work' explicitly and skips when Follow/direct/conversation(henry) or !canHabitatWorkReturn.
+   - Work refuses userHold and any travel.source==='user' (active or paused).
+   - Failed user route retains source 'user', does not clear Stop hold, publishes failure label.
+   - Arrival deliberately sets source to 'none' unless Stop hold remains (then 'user').
+
+2. Meeting teardown / labels
+   - cancelAmbient no longer early-returns past orphan ambient travel while phase idle.
+   - releaseMeeting is atomic for both participants; only ambient-owned routes are cleared.
+   - clearAmbientHabitatTravel labels 'At workstation' near home else 'Standing by'; publishes.
+
+3. Pair face/gesture sync
+   - New 'ready' phase: face/gesture only after BOTH arrive at distinct stands.
+   - meetingStands requires >=0.84 separation; no same-slot fallback.
+   - Reservation released on partial failure, override, timeout; return has its own timeout (no teleport).
+
+4. Schedule conflict + real 120s acceptance
+   - Strollers exclude reader/council; meet is reader+council in a non-overlapping window.
+   - Acceptance test advances real scheduler + production static colliders + actors; records simultaneous gesture for both near separated stands, then departure; asserts >=2 nontrivial traversals and >=4 mostly resting. No debugForce in that test.
+
+5. Repeating cycles
+   - Bounded seeded cycles every 120s via ensurePlanAhead; clock frozen while hidden/RM so resume cannot burst-catch up. Activity asserted after first 120s.
+
+6. Reduced motion
+   - RM freezes clock, cancels ambient safely, issues no path commands, does not spin headings.
+
+7. Mount lifetime / planning cost
+   - HeroGardenAgents mount: resetHabitatSocial + prepareHabitatSocial; unmount resets.
+   - Candidate pool bounded (max 10, fewer probes/seats). planningMs recorded (test asserts <5s).
+
+8. Motion polish
+   - facePartner uses bounded easing; stroll uses short dwell before return; engaged pose remains ambient-only.
+
+FILES TOUCHED
+- ui/command-center/src/components/world/forum/habitatMotion.ts
+- ui/command-center/src/components/world/forum/habitatSocial.ts
+- ui/command-center/src/components/world/forum/habitatSocial.test.ts
+- ui/command-center/src/components/world/forum/HeroGardenKit.tsx
+(Water, HabitatAgentDock compact styling, agent focus, astronomy untouched this correction.)
+
+VALIDATION (serialized; no pipes masking exits; one heavy job at a time)
+- social_vitest_exit=0  (habitatSocial.test.ts, 7/7, ~85s)
+- regression_vitest_exit=0  (habitatMotion, agentFocus, ForumView.conversation, habitatWaterFlow — 20/20)
+- typecheck_exit=0  (npm run typecheck / tsc --noEmit)
+- avail_giB≈33 after checks (>=10 GiB floor retained)
+
+NATIVE REVIEW (Codex-owned; not run here)
+1. Arrival 15s: several agents rest; no water/rail jam.
+2. Watch >=120s: >=2 journeys + one clear pair (both arrive, face, gesture together, depart).
+3. Sit with Hank / Follow / Stop / Move mid-ambient: user wins; Stop not immediately reclaimed; work return cannot steal user travel.
+4. Reduced motion + hide panel: freeze; no spin; no backlog teleport on resume.
+5. After ~2–3 minutes: second-cycle ambient still appears with controlled actor count.
+
+RESIDUAL LIMITATIONS
+- Planning still uses CPU A* over solids (not mesh BVH); bounded but not free on cold prepare.
+- Pair meet timing depends on path length; very slow machines may need the 180s vitest timeout (already set).
+- Ambient labels are honest but dock still shows travel.label only — no separate social phase chip.
+- Camera focus gaps from CURSOR_SOCIAL_PROPOSAL remain follow-up.
+- Native visual acceptance of ambient life is still pending Codex r26+ build/stage.

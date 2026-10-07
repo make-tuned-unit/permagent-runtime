@@ -1,96 +1,107 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
-import { BufferGeometry, DoubleSide, Float32BufferAttribute, MeshPhysicalMaterial, ShaderMaterial } from 'three';
+import { BufferGeometry, DoubleSide, Float32BufferAttribute, ShaderMaterial } from 'three';
 import { getReduceMotion } from '../../../styles/tokens';
-
-/** Small shared ripple shader: the existing sky environment supplies reflections. */
-function waterMaterial(time: { value: number }) {
-  const material = new MeshPhysicalMaterial({
-    color: '#2d7069', roughness: .4, metalness: 0, ior: 1.333,
-    // One rippled dielectric surface. Broaden the direct-light highlight so
-    // the elevated overview retains jade water between the moving glints.
-    clearcoat: 0, specularIntensity: .55, envMapIntensity: .8,
-  });
-  material.onBeforeCompile = shader => {
-    shader.uniforms.uWaterTime = time;
-    shader.vertexShader = 'varying vec3 vWaterWorld;\n' + shader.vertexShader;
-    shader.vertexShader = shader.vertexShader.replace('#include <worldpos_vertex>', `
-      #include <worldpos_vertex>
-      vWaterWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;
-    `);
-    shader.fragmentShader = 'uniform float uWaterTime; varying vec3 vWaterWorld;\n' + shader.fragmentShader;
-    shader.fragmentShader = shader.fragmentShader.replace('#include <normal_fragment_maps>', `
-      #include <normal_fragment_maps>
-      vec2 p = vWaterWorld.xz;
-      float a = p.x * 7.2 + p.y * 3.7 + uWaterTime * .75;
-      float b = p.x * -4.3 + p.y * 9.1 - uWaterTime * .56;
-      vec2 slope = vec2(cos(a) * .034 - cos(b) * .016, cos(a) * .018 + cos(b) * .029);
-      normal = normalize(mat3(viewMatrix) * vec3(-slope.x, 1., -slope.y));
-    `);
-    shader.fragmentShader = shader.fragmentShader.replace('#include <color_fragment>', `
-      #include <color_fragment>
-      float ripple = sin(vWaterWorld.x * 11. + sin(vWaterWorld.z * 7. + uWaterTime * .35))
-                   * sin(vWaterWorld.z * 13. - uWaterTime * .42);
-      diffuseColor.rgb *= .90 + .10 * ripple;
-    `);
-  };
-  material.customProgramCacheKey = () => 'habitat-water-ripples-v1';
-  return material;
-}
+import {
+  WATER_COURT,
+  advanceWaterTime,
+  cascadeVertex,
+} from './habitatWaterFlow';
+import { createHabitatWaterMaterial } from './habitatWaterMaterial';
 
 function cascadeGeometry() {
-  const positions: number[] = [], uvs: number[] = [], indices: number[] = [];
-  for (let row = 0; row <= 20; row++) for (let col = 0; col <= 24; col++) {
-    const v = row / 20, u = col / 24;
-    // Water clears the lip, curves outward, then meets the receiving rill.
-    positions.push(4 + (u - .5) * 2.76, 1.255 - v * 1.17, -6.43 + Math.sqrt(v) * .39);
-    uvs.push(u, 1 - v);
-    if (row < 20 && col < 24) {
-      const i = row * 25 + col;
-      indices.push(i, i + 25, i + 1, i + 1, i + 25, i + 26);
+  const { rows, cols } = WATER_COURT.cascade;
+  const positions: number[] = [];
+  const uvs: number[] = [];
+  const indices: number[] = [];
+  for (let row = 0; row <= rows; row++) {
+    for (let col = 0; col <= cols; col++) {
+      const u = col / cols;
+      const v = row / rows;
+      const p = cascadeVertex(u, v);
+      positions.push(p.x, p.y, p.z);
+      uvs.push(u, 1 - v);
+      if (row < rows && col < cols) {
+        const i = row * (cols + 1) + col;
+        indices.push(i, i + cols + 1, i + 1, i + 1, i + cols + 1, i + cols + 2);
+      }
     }
   }
   const geometry = new BufferGeometry();
   geometry.setAttribute('position', new Float32BufferAttribute(positions, 3));
   geometry.setAttribute('uv', new Float32BufferAttribute(uvs, 2));
-  geometry.setIndex(indices); geometry.computeVertexNormals();
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
   return geometry;
+}
+
+function cascadeMaterial(time: { value: number }) {
+  return new ShaderMaterial({
+    side: DoubleSide,
+    transparent: true,
+    depthWrite: false,
+    uniforms: { uTime: time },
+    vertexShader: `
+      varying vec2 vUv;
+      varying float vFall;
+      void main() {
+        vUv = uv;
+        vFall = 1.0 - uv.y;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      varying vec2 vUv;
+      varying float vFall;
+      uniform float uTime;
+      void main() {
+        float flow = vFall * 16.0 - uTime * 3.4;
+        float sheet = sin(vUv.x * 19.0 + sin(flow) * 1.1 + vUv.x * 3.7) * 0.5 + 0.5;
+        float breakUp = sin(vUv.x * 37.0 - flow * 0.62 + sin(vUv.x * 11.0) * 0.8) * 0.5 + 0.5;
+        float fine = sin(vUv.x * 71.0 + flow * 0.35 - vFall * 2.0) * 0.5 + 0.5;
+        float edge = smoothstep(0.0, 0.05, vUv.x) * smoothstep(0.0, 0.05, 1.0 - vUv.x);
+        float body = mix(0.62, 0.28, smoothstep(0.05, 0.55, vFall));
+        float landFoam = pow(smoothstep(0.72, 1.0, vFall), 1.8) * (0.35 + breakUp * 0.25);
+        vec3 deep = vec3(0.10, 0.24, 0.22);
+        vec3 lit = vec3(0.42, 0.58, 0.52);
+        vec3 color = mix(deep, lit, sheet * 0.35 + fine * 0.12 + landFoam);
+        float alpha = edge * (body + sheet * 0.18 + landFoam * 0.35);
+        gl_FragColor = vec4(color, clamp(alpha, 0.0, 0.78));
+        #include <tonemapping_fragment>
+        #include <colorspace_fragment>
+      }
+    `,
+  });
 }
 
 export function HabitatWater() {
   const time = useRef({ value: 0 });
   const built = useMemo(() => ({
-    water: waterMaterial(time.current), cascade: cascadeGeometry(),
-    flow: new ShaderMaterial({
-      side: DoubleSide, transparent: true, depthWrite: false,
-      uniforms: { uTime: time.current },
-      vertexShader: 'varying vec2 vUv;void main(){vUv=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}',
-      fragmentShader: `varying vec2 vUv;uniform float uTime;
-        void main(){
-          float strands=sin(vUv.x*83.+sin(vUv.y*13.-uTime*1.8)*.7)*.5+.5;
-          float fine=sin(vUv.x*217.+vUv.y*7.-uTime*.5)*.5+.5;
-          float drop=sin(vUv.y*41.+uTime*4.5+vUv.x*19.)*.5+.5;
-          float edge=smoothstep(0.,.045,vUv.x)*smoothstep(0.,.045,1.-vUv.x);
-          float foam=pow(1.-vUv.y,9.)*.35;
-          vec3 color=mix(vec3(.08,.20,.17),vec3(.47,.65,.57),strands*.45+fine*.15+drop*.1+foam);
-          gl_FragColor=vec4(color,edge*(.43+strands*.28+foam));
-          #include <tonemapping_fragment>
-          #include <colorspace_fragment>
-        }`,
-    }),
+    water: createHabitatWaterMaterial(time.current),
+    cascade: cascadeGeometry(),
+    flow: cascadeMaterial(time.current),
   }), []);
-  useFrame((_, dt) => { if (!getReduceMotion()) time.current.value += Math.min(dt, .05); });
-  useEffect(() => () => { built.water.dispose(); built.flow.dispose(); built.cascade.dispose(); }, [built]);
-  return <group name="Continuous garden cascade">
-    <mesh position={[4,.085,-2]} rotation-x={-Math.PI/2} material={built.water}>
-      <planeGeometry args={[3.76,5.94]}/>
-    </mesh>
-    <mesh position={[4,1.255,-8.05]} rotation-x={-Math.PI/2} material={built.water}>
-      <planeGeometry args={[3.04,3.22]}/>
-    </mesh>
-    <mesh position={[4,.085,-5.51]} rotation-x={-Math.PI/2} material={built.water}>
-      <planeGeometry args={[2.78,1.10]}/>
-    </mesh>
-    <mesh geometry={built.cascade} material={built.flow}/>
-  </group>;
+  useFrame((_, dt) => {
+    time.current.value = advanceWaterTime(time.current.value, dt, getReduceMotion());
+  });
+  useEffect(() => () => {
+    built.water.dispose();
+    built.flow.dispose();
+    built.cascade.dispose();
+  }, [built]);
+  const { upper, lower, rill } = WATER_COURT;
+  return (
+    <group name="Continuous garden cascade">
+      <mesh position={[...lower.center]} rotation-x={-Math.PI / 2} material={built.water}>
+        <planeGeometry args={[...lower.sizeXZ]} />
+      </mesh>
+      <mesh position={[...upper.center]} rotation-x={-Math.PI / 2} material={built.water}>
+        <planeGeometry args={[...upper.sizeXZ]} />
+      </mesh>
+      <mesh position={[...rill.center]} rotation-x={-Math.PI / 2} material={built.water}>
+        <planeGeometry args={[...rill.sizeXZ]} />
+      </mesh>
+      <mesh geometry={built.cascade} material={built.flow} />
+    </group>
+  );
 }

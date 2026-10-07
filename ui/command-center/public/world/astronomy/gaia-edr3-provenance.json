@@ -1,0 +1,16 @@
+{
+  "title": "The colour of the sky from Gaia's Early Data Release 3 \u2014 equirectangular",
+  "source_page": "https://www.esa.int/ESA_Multimedia/Images/2020/12/The_colour_of_the_sky_from_Gaia_s_Early_Data_Release_32",
+  "original_url": "https://www.esa.int/var/esa/storage/images/esa_multimedia/images/2020/12/the_colour_of_the_sky_from_gaia_s_early_data_release_32/22358132-1-eng-GB/The_colour_of_the_sky_from_Gaia_s_Early_Data_Release_3.png",
+  "retrieved": "2026-10-07",
+  "published": "2020-12-03",
+  "credit": "ESA/Gaia/DPAC; CC BY-SA 3.0 IGO. Acknowledgement: A. Moitinho.",
+  "license": "https://creativecommons.org/licenses/by-sa/3.0/igo/",
+  "derivative_license": "CC BY-SA 3.0 IGO",
+  "changes": "Original 4000x2000 equirectangular PNG converted to WebP quality92; no crops or generated contents. Runtime exposure/orientation may be artistic; not yet a time-calibrated observer orientation.",
+  "kind": "2D all-sky survey brightness/colour backdrop; not navigable 3D galactic star positions",
+  "original_sha256": "68fef2ee355015f84a43105bbf296f5a8d8b38d2fe8fe1a068ba1402e9ce5550",
+  "runtime_sha256": "a042bdfadcc897c7bd5b9364afc2cd4d69dfe26a8de46e966142b022aa796b81",
+  "width": 4000,
+  "height": 2000
+}
