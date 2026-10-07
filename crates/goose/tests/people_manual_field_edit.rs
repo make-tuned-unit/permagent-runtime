@@ -27,7 +27,7 @@ use spectral::{Brain, DeviceId};
 use tempfile::{tempdir, TempDir};
 
 fn ontology_toml() -> &'static str {
-    include_str!("../assets/ontology.toml")
+    include_str!("fixtures/ontology.sample.toml")
 }
 
 /// Build a `SafeBrain` off the async executor, exactly as `state.rs` does. The

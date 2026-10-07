@@ -13,7 +13,7 @@
 use permagent::reader;
 use permagent_daemon::routes::projects::reindex_project_code;
 
-const ONTOLOGY_TOML: &str = include_str!("../../goose/assets/ontology.toml");
+const ONTOLOGY_TOML: &str = include_str!("../../goose/tests/fixtures/ontology.sample.toml");
 
 #[tokio::test(flavor = "multi_thread")]
 async fn note_only_project_reindex_succeeds_before_no_source_files() {

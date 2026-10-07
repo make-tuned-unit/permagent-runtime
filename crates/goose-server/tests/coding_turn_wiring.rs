@@ -36,7 +36,7 @@ use axum::http::{Request, StatusCode};
 use std::time::Duration;
 use tower::ServiceExt;
 
-const ONTOLOGY_TOML: &str = include_str!("../../goose/assets/ontology.toml");
+const ONTOLOGY_TOML: &str = include_str!("../../goose/tests/fixtures/ontology.sample.toml");
 
 fn turn_req(bearer: Option<&str>, body: serde_json::Value) -> Request<Body> {
     let mut b = Request::builder()

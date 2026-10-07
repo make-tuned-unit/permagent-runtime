@@ -21,7 +21,7 @@ use tower::ServiceExt;
 use permagent::identity::canonical::graph_entity_id_hex;
 use permagent::people_provenance::Provenance;
 
-const ONTOLOGY_TOML: &str = include_str!("../../goose/assets/ontology.toml");
+const ONTOLOGY_TOML: &str = include_str!("../../goose/tests/fixtures/ontology.sample.toml");
 
 async fn send(app: &axum::Router, req: Request<Body>) -> axum::response::Response {
     app.clone().oneshot(req).await.unwrap()

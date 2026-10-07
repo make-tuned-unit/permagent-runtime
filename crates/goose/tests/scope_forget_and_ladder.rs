@@ -27,7 +27,7 @@ use spectral::graph::graph_store::{Entity, Triple};
 use spectral::{Brain, DeviceId, RememberOpts, Visibility};
 
 fn ontology_toml() -> &'static str {
-    include_str!("../assets/ontology.toml")
+    include_str!("fixtures/ontology.sample.toml")
 }
 
 /// Build a real Brain at `Paths::brain_dir()`. MUST be called inside

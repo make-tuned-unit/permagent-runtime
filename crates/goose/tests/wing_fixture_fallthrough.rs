@@ -43,7 +43,7 @@ const FIXTURE_BAIT: &str = "Reviewed the pricing strategy for next quarter and \
 
 fn brain_with_rules(rules: Option<Vec<(String, String)>>) -> (tempfile::TempDir, Brain) {
     let dir = tempfile::tempdir().expect("tempdir");
-    let ontology = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/ontology.toml");
+    let ontology = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ontology.sample.toml");
     let mut builder = Brain::builder()
         .data_dir(dir.path())
         .ontology_path(&ontology);

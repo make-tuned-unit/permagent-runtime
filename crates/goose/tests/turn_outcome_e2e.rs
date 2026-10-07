@@ -17,7 +17,7 @@ fn temp_brain() -> (tempfile::TempDir, Brain) {
     let dir = tempfile::tempdir().expect("tempdir");
     // Same ontology the daemon mounts (state.rs), so the taxonomy under test
     // is the real one rather than a stub.
-    let ontology = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/ontology.toml");
+    let ontology = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ontology.sample.toml");
     let brain = Brain::builder()
         .data_dir(dir.path())
         .ontology_path(&ontology)

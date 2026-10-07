@@ -20,7 +20,7 @@ use spectral::{Brain, DeviceId, RememberOpts, Visibility};
 use tempfile::tempdir;
 
 fn ontology_toml() -> &'static str {
-    include_str!("../assets/ontology.toml")
+    include_str!("fixtures/ontology.sample.toml")
 }
 
 #[test]
