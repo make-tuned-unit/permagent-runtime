@@ -1090,7 +1090,7 @@ mod tests {
         assert_eq!(ProjectHint::slug_from_canonical("permagent"), None);
         assert_eq!(ProjectHint::slug_from_canonical("project:"), None);
         assert_eq!(
-            ProjectHint::slug_from_canonical("did:chitin:henry-malcolm"),
+            ProjectHint::slug_from_canonical("did:example:ada-lovelace"),
             None
         );
     }

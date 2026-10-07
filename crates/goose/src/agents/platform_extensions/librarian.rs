@@ -2070,7 +2070,7 @@ pub async fn probe_dedicated_endpoint() -> bool {
                         split_refusal = split_refusal_reason()
                             .as_deref()
                             .unwrap_or("none (the split logged no refusal)"),
-                        fallback_model = %default_model,
+                        fallback_model = %crate::config::local_default_model(),
                         "Librarian endpoint answered the readiness probe but is NOT ready — \
                          skipping the dedicated endpoint for this batch; it runs on the local pool"
                     );
@@ -2108,7 +2108,7 @@ pub async fn probe_dedicated_endpoint() -> bool {
             attempts = PROBE_ATTEMPTS,
             error = %last_error,
             split_refusal = reason.as_deref().unwrap_or("unknown (no status log configured)"),
-            fallback_model = %default_model,
+            fallback_model = %crate::config::local_default_model(),
             "Librarian readiness probe found nothing listening on loopback — \
              skipping the dedicated endpoint for this pass; the batch runs on the local pool"
         );
@@ -2170,7 +2170,7 @@ pub async fn reprobe_dedicated_endpoint() {
                     endpoint = %endpoint,
                     backend = %backend,
                     reason = %why,
-                    fallback_model = %default_model,
+                    fallback_model = %crate::config::local_default_model(),
                     "dedicated Librarian endpoint stopped being ready mid-window — \
                      the rest of this pass runs on the local pool"
                 );

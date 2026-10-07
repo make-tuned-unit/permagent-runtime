@@ -110,7 +110,8 @@
         "pattern": "\\bHank\\b|HankConversation|henry-malcolm",
         "flags": ""
       },
-      "message": "Legacy agent alias: use the persona name or a neutral label."
+      "message": "Legacy agent alias: use the persona name or a neutral label.",
+      "scope": "code"
     },
     {
       "id": "developer-wallet",
@@ -123,7 +124,8 @@
         "pattern": "0x[0-9a-fA-F]{40}",
         "flags": ""
       },
-      "message": "Wallet/contract addresses belong in user config, not source."
+      "message": "Wallet/contract addresses belong in user config, not source.",
+      "scope": "all"
     },
     {
       "id": "developer-did",
@@ -139,7 +141,8 @@
         "pattern": "did:chitin:",
         "flags": ""
       },
-      "message": "On-chain identity is opt-in config; no DID literal in source."
+      "message": "On-chain identity is opt-in config; no DID literal in source.",
+      "scope": "all"
     },
     {
       "id": "developer-places-projects",
@@ -156,7 +159,8 @@
       "exclude": [
         "ui/desktop/src-tauri/tauri.conf.json",
         "ui/desktop/src-tauri/Cargo.toml"
-      ]
+      ],
+      "scope": "code"
     },
     {
       "id": "personal-hosts-ids",
@@ -166,14 +170,33 @@
       ],
       "match": {
         "type": "regex",
-        "pattern": "jessesharratt|jesses-mac|[A-Za-z0-9-]+\\.tail[0-9a-f]+\\.ts\\.net|Z58XSBM78S|mini\\.local",
+        "pattern": "[A-Za-z0-9-]+\\.tail[0-9a-f]+\\.ts\\.net|Z58XSBM78S|mini\\.local",
         "flags": ""
       },
       "message": "Personal host or account id: read it from config or use an example host.",
       "exclude": [
         "ui/desktop/src-tauri/tauri.conf.json",
         "ui/desktop/src-tauri/Cargo.toml"
-      ]
+      ],
+      "scope": "code"
+    },
+    {
+      "id": "personal-account-names",
+      "kind": "operationalLiteral",
+      "include": [
+        "**/*"
+      ],
+      "match": {
+        "type": "regex",
+        "pattern": "jessesharratt|jesses-mac",
+        "flags": ""
+      },
+      "message": "Personal account or machine name: read it from config or use an example.",
+      "exclude": [
+        "ui/desktop/src-tauri/tauri.conf.json",
+        "ui/desktop/src-tauri/Cargo.toml"
+      ],
+      "scope": "all"
     },
     {
       "id": "telemetry-key",
@@ -202,7 +225,8 @@
         "pattern": "nslc|nspower|eastlink",
         "flags": "i"
       },
-      "message": "Regional merchant rules belong in user-supplied rules, not shipped finance code."
+      "message": "Regional merchant rules belong in user-supplied rules, not shipped finance code.",
+      "scope": "code"
     },
     {
       "id": "hardcoded-local-model",
@@ -219,7 +243,8 @@
         "pattern": "qwen2\\.5:|qwen3\\.8",
         "flags": ""
       },
-      "message": "Resolve the local model from config; only the resolver modules may name one."
+      "message": "Resolve the local model from config; only the resolver modules may name one.",
+      "scope": "code"
     }
   ],
   "exceptions": [
@@ -241,23 +266,68 @@
       "reasonCode": "illustrativeExample",
       "reason": "Template labels the path as an example in the report shape, not a configured root.",
       "reviewBy": "2026-12-22"
+    }
+  ],
+  "fileExceptions": [
+    {
+      "id": "local-model-resolver",
+      "ruleId": "hardcoded-local-model",
+      "paths": [
+        "crates/goose/src/config/local_model.rs"
+      ],
+      "reasonCode": "resolverModule",
+      "reason": "The resolver module is the one place the default local model id may live; the config key local_default_model overrides it.",
+      "reviewBy": "2027-01-31"
     },
     {
-      "id": "terminal-reattach-label-example",
-      "ruleId": "developer-places-projects",
-      "path": "ui/command-center/src/components/terminal/terminalReattach.ts",
-      "line": 104,
-      "exactLine": "/** `~/Documents/dev/GetLadle` -> `GetLadle`. Falls back to the whole string. */",
-      "contextBefore": [
-        ""
+      "id": "local-model-harvester-default",
+      "ruleId": "hardcoded-local-model",
+      "paths": [
+        "crates/permagent-harvester/src/config.rs"
       ],
-      "contextAfter": [
-        "export function labelForCwd(cwd: string): string {"
+      "reasonCode": "resolverModule",
+      "reason": "Standalone crate cannot depend on the resolver; it mirrors the default and is overridden by LOCAL_DEFAULT_MODEL or [models] generation.",
+      "reviewBy": "2027-01-31"
+    },
+    {
+      "id": "local-model-setup-suggestions",
+      "ruleId": "hardcoded-local-model",
+      "paths": [
+        "crates/goose-cli/src/commands/setup.rs"
       ],
-      "matchedText": "GetLadle",
-      "expectedMatches": 2,
-      "reasonCode": "illustrativeExample",
-      "reason": "Doc-comment example path in a file whose bytes are hash-pinned by terminalChrome.test.ts (gate 6); editing it would force a re-freeze without a behaviour change.",
+      "reasonCode": "catalogData",
+      "reason": "Suggested model names offered in the setup picker; the user types or picks any model and nothing requires these.",
+      "reviewBy": "2027-01-31"
+    },
+    {
+      "id": "local-model-review-catalog",
+      "ruleId": "hardcoded-local-model",
+      "paths": [
+        "crates/goose/src/model_review/known_models.json",
+        "crates/goose/src/model_review/inventory.rs"
+      ],
+      "reasonCode": "catalogData",
+      "reason": "Known-model family table and a paused inventory row for reporting only; absence of the model changes nothing.",
+      "reviewBy": "2027-01-31"
+    },
+    {
+      "id": "local-model-declarative-provider",
+      "ruleId": "hardcoded-local-model",
+      "paths": [
+        "crates/goose/src/providers/declarative/qwen38_split.json"
+      ],
+      "reasonCode": "catalogData",
+      "reason": "Optional declarative provider listing; never selected automatically and only used when the user configures its host.",
+      "reviewBy": "2027-01-31"
+    },
+    {
+      "id": "legacy-alias-guard-list",
+      "ruleId": "legacy-agent-alias",
+      "paths": [
+        "crates/goose/src/config/identity_name_guard.rs"
+      ],
+      "reasonCode": "guardList",
+      "reason": "The guard itself must name the legacy aliases it forbids elsewhere.",
       "reviewBy": "2027-01-31"
     }
   ]

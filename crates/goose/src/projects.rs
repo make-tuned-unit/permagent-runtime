@@ -97,7 +97,7 @@ pub fn slugify(name: &str) -> String {
 
 /// Expand `~`, require a real directory on this machine, and return the
 /// canonical path to store. `None`/empty stays optional — projects like
-/// Personal have no local folder. Invented homes (`/Users/jessesharratt/...`
+/// Personal have no local folder. Invented homes (`/Users/someone-else/...`
 /// on a Mac whose HOME is `/Users/j`) must fail here, not at harness launch.
 pub fn resolve_root_path(raw: &str) -> Result<String, String> {
     let trimmed = raw.trim();

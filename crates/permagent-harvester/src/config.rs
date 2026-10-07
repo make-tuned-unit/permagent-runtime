@@ -78,7 +78,12 @@ impl Default for Models {
     fn default() -> Self {
         Self {
             base_url: "http://127.0.0.1:11434".into(),
-            generation: "qwen2.5:7b".into(),
+            // Standalone crate: mirrors permagent::config::local_model::DEFAULT_LOCAL_MODEL.
+            // Override with LOCAL_DEFAULT_MODEL or `[models] generation` in the config file.
+            generation: env::var("LOCAL_DEFAULT_MODEL")
+                .ok()
+                .filter(|m| !m.trim().is_empty())
+                .unwrap_or_else(|| "qwen2.5:7b".into()),
             embedding: "qwen3-embedding:0.6b".into(),
         }
     }
