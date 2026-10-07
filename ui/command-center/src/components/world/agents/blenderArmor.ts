@@ -74,12 +74,12 @@ export function decodeBlenderArmor(scene: Object3D): BlenderArmor {
 }
 
 const cache = new Map<string, Promise<BlenderArmor>>();
-export function loadBlenderArmor(identity: string, variant: 'world' | 'forum' = 'world'): Promise<BlenderArmor> {
+export function loadBlenderArmor(identity: string): Promise<BlenderArmor> {
   if (!/^[a-z_]+$/.test(identity)) return Promise.reject(new Error('Invalid character identity'));
-  const key = `${variant}:${identity}`;
+  const key = identity;
   let pending = cache.get(key);
   if (!pending) {
-    pending = new GLTFLoader().loadAsync(`${import.meta.env.BASE_URL}world/${variant === 'forum' ? 'forum-characters' : 'characters'}/${identity}.glb`)
+    pending = new GLTFLoader().loadAsync(`${import.meta.env.BASE_URL}world/characters/${identity}.glb`)
       .then(gltf => {
         try { return decodeBlenderArmor(gltf.scene); }
         finally {

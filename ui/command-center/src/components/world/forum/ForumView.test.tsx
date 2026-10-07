@@ -2,8 +2,10 @@
 import { beforeEach, afterEach, expect, it, vi } from 'vitest';
 import { createRoot, Root } from 'react-dom/client';
 import { act } from 'react-dom/test-utils';
-const canvas = vi.hoisted(() => ({ props: null as Record<string, unknown> | null }));
-vi.mock('@react-three/fiber', () => ({ Canvas: (props: Record<string, unknown>) => { canvas.props = props; return null; } }));
+import { execFileSync } from 'node:child_process';
+import { join } from 'node:path';
+const canvas = vi.hoisted(() => ({ props: null as Record<string, unknown> | null, portraitProps: [] as Record<string, unknown>[] }));
+vi.mock('@react-three/fiber', () => ({ Canvas: (props: Record<string, unknown>) => { if (props.className === 'forum-canvas') canvas.props = props; else canvas.portraitProps.push(props); return null; } }));
 const identityName = vi.hoisted(() => ({ value: 'Aster' }));
 vi.mock('../shared/useOrchestratorName', () => ({ useOrchestratorName: () => identityName.value }));
 vi.mock('./ForumConversation', () => ({ ForumConversation: () => null }));
@@ -16,7 +18,7 @@ import { ForumView } from './ForumView';
 let root: Root, host: HTMLDivElement;
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 beforeEach(() => { window.history.replaceState({}, '', '/?campus=1'); host = document.createElement('div'); document.body.append(host); root = createRoot(host); act(() => root.render(<ForumView />)); });
-afterEach(() => { window.history.replaceState({}, '', '/'); act(() => root.unmount()); host.remove(); vi.restoreAllMocks(); });
+afterEach(() => { window.history.replaceState({}, '', '/'); act(() => root.unmount()); host.remove(); canvas.props = null; canvas.portraitProps.length = 0; vi.restoreAllMocks(); });
 function click(label: string) { const b = [...host.querySelectorAll('button')].find(b => b.textContent?.includes(label)); expect(b).toBeTruthy(); act(() => b!.click()); }
 it('turns a lesson into an editable draft without claiming dispatch', () => {
   expect(host.textContent).toContain('Job feed unavailable');
@@ -93,6 +95,14 @@ it('identifies the user-named sovereign and finds it after selecting a specialis
   expect(host.querySelector('option[value="henry"]')?.textContent).toBe('Nova · Sovereign orchestrator');
   expect(host.querySelector('.forum-agent-portrait h3')?.textContent).toBe('Nova');
   identityName.value = 'Aster';
+});
+
+it('mounts the live hero portrait in Meet and never references the retired portrait path', () => {
+  expect(host.querySelector('[data-testid="live-agent-portrait"]')).toBeTruthy();
+  expect(canvas.portraitProps.some(props => props.frameloop === 'demand')).toBe(true);
+  const sourceRoot = join(process.cwd(), 'src');
+  const legacyPortraitPath = ['forum', 'characters'].join('-');
+  expect(() => execFileSync('rg', ['--fixed-strings', legacyPortraitPath, sourceRoot], { encoding: 'utf8', stdio: 'pipe' })).toThrow();
 });
 
 it('asks the renderer for a shadow map type three has not deprecated', () => {
