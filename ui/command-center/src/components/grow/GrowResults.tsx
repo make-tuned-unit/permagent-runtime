@@ -8,7 +8,7 @@
  * projects. This lens is that summary, from `growth_action_outcomes`.
  */
 
-import { useCallback, useEffect, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import { font, space, textSize } from '../../styles/tokens';
 import type { ThemeColors } from '../../styles/tokens';
 import { growCard, growLabel } from './growChrome';
@@ -58,6 +58,10 @@ function statusLabel(status: string): string {
 
 /** Matches GrowView's VERDICT_POLL_MS — one cadence for one fact. */
 const RESULTS_POLL_MS = 120_000;
+/** A read that has not answered by now is reported, not waited on forever
+ *  (QA 2026-10-07 Q19: "Loading results…" for 10+ s with no way out). */
+const RESULTS_TIMEOUT_MS = 20_000;
+const RESULTS_SLOW_MS = 6_000;
 
 export function GrowResults({ project, colors }: { project: Project; colors: ThemeColors }) {
   const [data, setData] = useState<GrowthResultsData | null>(null);
@@ -65,23 +69,32 @@ export function GrowResults({ project, colors }: { project: Project; colors: The
   /** When these verdicts were last confirmed true. */
   const [asOf, setAsOf] = useState<number | null>(null);
   const projectsRev = useCommandCenter((s) => s.projectsRev);
+  const loadGen = useRef(0);
+  const [slow, setSlow] = useState(false);
 
   /** `silent` keeps a background re-read from throwing the lens back to its
    *  loading copy: a refresh must not look like a first load. A failed silent
    *  read also keeps the last good verdicts rather than blanking them — but it
    *  leaves `asOf` where it was, so nothing stale reads as fresh. */
   const load = useCallback((id: string, opts?: { silent?: boolean }) => {
-    if (!opts?.silent) setState('loading');
+    if (!opts?.silent) { setState('loading'); setSlow(false); }
+    const gen = ++loadGen.current;
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), RESULTS_TIMEOUT_MS);
+    const slowTimer = opts?.silent ? 0 : window.setTimeout(() => { if (gen === loadGen.current) setSlow(true); }, RESULTS_SLOW_MS);
     apiFetch<GrowthResultsData>(
       `/api/growth-results?projectId=${encodeURIComponent(id)}`,
+      { signal: controller.signal },
     )
+      .finally(() => { window.clearTimeout(timeout); window.clearTimeout(slowTimer); })
       .then((d) => {
+        if (gen !== loadGen.current) return;
         setData(d);
         setState('ready');
         setAsOf(Date.now());
       })
       .catch(() => {
-        if (opts?.silent) return;
+        if (opts?.silent || gen !== loadGen.current) return;
         setData(null);
         setState('error');
       });
@@ -129,12 +142,16 @@ export function GrowResults({ project, colors }: { project: Project; colors: The
   }, [project.id, load]);
 
   if (state === 'loading' && !data) {
-    return <p style={{ fontSize: textSize.small, color: colors.textDim }}>Loading results…</p>;
+    return (
+      <p style={{ fontSize: textSize.small, color: colors.textDim }} role="status">
+        {slow ? 'Still loading results — this is taking longer than usual…' : 'Loading results…'}
+      </p>
+    );
   }
   if (state === 'error' && !data) {
     return (
       <p style={{ fontSize: textSize.small, color: colors.danger }}>
-        Could not load growth results.{' '}
+        Could not load growth results (the request failed or timed out).{' '}
         <Button
           colors={colors}
           variant="bare"
