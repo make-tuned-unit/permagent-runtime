@@ -509,6 +509,7 @@ derive_utoipa!(IconTheme as IconThemeSchema);
         permagent::providers::catalog::ModelCapabilities,
         super::routes::config_management::CreateCustomProviderResponse,
         super::routes::config_management::CheckProviderRequest,
+        super::routes::config_management::ProviderCheckResult,
         super::routes::config_management::SetProviderRequest,
         super::routes::config_management::ModelInfoQuery,
         super::routes::config_management::ModelInfoResponse,

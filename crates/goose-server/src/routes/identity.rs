@@ -1,3 +1,4 @@
+use crate::routes::errors::ErrorResponse;
 use crate::state::AppState;
 use axum::{
     extract::State,
@@ -51,12 +52,34 @@ async fn get_identity(State(state): State<Arc<AppState>>) -> Json<IdentityRespon
     Json(IdentityResponse::from(&*persona))
 }
 
+/// Longest agent name the identity route accepts. Generous for any real name,
+/// short enough that the chat header and world nameplate can always show it.
+const MAX_NAME_CHARS: usize = 40;
+
+/// The agent's name is what every surface prints; an empty or whitespace-only
+/// one would leave the chat header, the nameplate and the greeting blank. The
+/// UI already substitutes a default for a blank field — this is the server
+/// refusing to store a blank one from any client.
+fn validated_first_name(raw: &str) -> Result<String, ErrorResponse> {
+    let name = raw.trim();
+    if name.is_empty() {
+        return Err(ErrorResponse::bad_request("The agent needs a name."));
+    }
+    if name.chars().count() > MAX_NAME_CHARS {
+        return Err(ErrorResponse::bad_request(format!(
+            "Keep the agent's name under {MAX_NAME_CHARS} characters."
+        )));
+    }
+    Ok(name.to_string())
+}
+
 async fn put_identity(
     State(state): State<Arc<AppState>>,
     Json(update): Json<IdentityUpdate>,
-) -> Result<Json<IdentityResponse>, axum::http::StatusCode> {
+) -> Result<Json<IdentityResponse>, ErrorResponse> {
+    let first_name = validated_first_name(&update.first_name)?;
     let new_persona = PrimaryPersona {
-        first_name: update.first_name,
+        first_name,
         last_name: update.last_name,
         nickname: update.nickname,
         traits: update.traits,
@@ -75,7 +98,7 @@ async fn put_identity(
         workers,
     };
     agent_identity::save_agent_config(&config)
-        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?;
+        .map_err(|err| ErrorResponse::internal(format!("Couldn't save the agent's identity: {err}")))?;
 
     // Hot-reload via RwLock
     let response = IdentityResponse::from(&new_persona);
@@ -121,6 +144,46 @@ mod tests {
             .await
             .unwrap();
         serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[test]
+    fn first_name_is_trimmed_and_required() {
+        assert_eq!(validated_first_name("  Nova ").unwrap(), "Nova");
+        let blank = validated_first_name("   ").expect_err("blank name refused");
+        assert_eq!(blank.status, StatusCode::BAD_REQUEST);
+        assert!(blank.message.contains("name"));
+        let long = "x".repeat(MAX_NAME_CHARS + 1);
+        assert_eq!(
+            validated_first_name(&long).unwrap_err().status,
+            StatusCode::BAD_REQUEST
+        );
+    }
+
+    /// An empty name is refused at the route, before anything is written.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn put_identity_rejects_an_empty_name() {
+        let root = crate::test_support::test_root();
+        let home = tempfile::tempdir().unwrap();
+        let _guard = env_lock::lock_env([
+            ("HOME", Some(home.path().to_str().unwrap())),
+            ("PERMAGENT_PATH_ROOT", Some(root.to_str().unwrap())),
+        ]);
+        let state = AppState::new(true).await.unwrap();
+        let app = routes(state);
+        let put = Request::builder()
+            .uri("/api/agent/identity")
+            .method("PUT")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"first_name":"  ","last_name":null,"nickname":null,
+                    "traits":[],"tone":"","opening_greeting":"","voice_id":null}"#,
+            ))
+            .unwrap();
+        let response = app.oneshot(put).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = body_json(response).await;
+        assert!(body["message"].as_str().unwrap().contains("name"));
     }
 
     /// #167 pin: PUT persists to agent.yaml AND hot-reloads shared state, the
