@@ -375,6 +375,10 @@ pub fn failover_candidates(
     read: impl Fn(&str) -> Option<String>,
     role: SessionRole,
 ) -> Vec<FallbackCandidate> {
+    if role == SessionRole::General {
+        // No role-fit ranking is needed, so skip provider detection.
+        return permanent_failure_candidates(&read);
+    }
     failover_candidates_in(
         read,
         role,
