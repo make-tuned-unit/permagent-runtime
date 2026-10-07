@@ -60,7 +60,7 @@
         "binaries/libonnxruntime.dylib"
       ],
       "minimumSystemVersion": "11.0",
-      "signingIdentity": "Developer ID Application: Jesse Sharratt (Z58XSBM78S)",
+      "signingIdentity": null,
       "entitlements": "Entitlements.plist"
     },
     "externalBin": [
