@@ -43,3 +43,10 @@ Method: Chrome (real) against vite dev on 127.0.0.1:5301 paired to the live daem
 | Q25 | Shell nav | Clicking Settings while the World view is still loading highlights Settings in the nav and shows its tooltip but the content stays on World until a second click (second instance of nav/content desync, cf. Q16) | major | qa | not reproduced; looks like main-thread stall while World boots (World lane perf), not a nav bug |
 | W7 | Overview (e2164e96): the footprint now fits the frame, but the terrace slab ends in pure black with no landform skirt or atmospheric fade beneath its edge, so the habitat reads as a floating cut-out | minor |
 | W8 | Arrival (e2164e96): the new arrival camera is inside the host robot's head and the nameplate fills the screen — correction 1 sent to the World lane | blocker |
+
+## Coordinator re-check after merge ed45adcc (real Chrome + visible Playwright Chromium)
+- Q10 FIXED (weather forecast visible, no overlap). Q18 FIXED (History renders). Q1/Q2/Q24 copy verified in source only.
+- Q11 STILL OPEN: "Needs You" clips "Review →" with 6 content lines → sent back to the QA lane.
+- Q12 WITHDRAWN as a live bug: the graph renders 31 people in a visible browser; the blank graph was the background-throttled Chrome tab. The added empty/GL-lost/error states stay.
+- Q25 WITHDRAWN: same cause (background tab throttling delayed the nav state update).
+- World long-task measurement during World boot in a visible browser: 3 long tasks, 343 ms total (worst 155 ms) — no multi-second stall.
