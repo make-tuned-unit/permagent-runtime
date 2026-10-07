@@ -22,6 +22,7 @@ import { toast } from './lib/notifications';
 import { VersionSkewBanner } from './components/version/VersionSkewBanner';
 import { StateBlock } from './components/common/StateBlock';
 import { api, fileToBase64 } from './lib/api';
+import { getDaemonTokenError } from './lib/daemonAuth';
 import { createChatWindow } from './lib/chatWindow';
 import type { LayoutNode } from './lib/store';
 import { useAppNavigate } from './hooks/useAppNavigate';
@@ -210,7 +211,8 @@ function App() {
   }, [theme, themePref, gradient.shell]);
 
   const [phase, setPhase] = useState<'splash' | 'loading' | 'unavailable' | 'wizard' | 'app'>('splash');
-  const [startupFailure, setStartupFailure] = useState<'connection' | 'malformed' | null>(null);
+  const [startupFailure, setStartupFailure] = useState<'connection' | 'malformed' | 'unpaired' | null>(null);
+  const [unpairedDetail, setUnpairedDetail] = useState<string | null>(null);
 
   // Install the bundled dictation model on first run so the mic "just works"
   // offline, with no download and no setup. Resolves the bundled Whisper model
@@ -273,7 +275,19 @@ function App() {
             setPhase(result);
           }
           return;
-        } catch {
+        } catch (e) {
+          // An unpaired (or credential-rejected) browser can never succeed by
+          // retrying: say so, with the pairing instruction, instead of the
+          // generic "unavailable" screen (QA 2026-10-07 Q1).
+          const authMessage = getDaemonTokenError();
+          if ((e as { status?: number })?.status === 401 && authMessage) {
+            if (!cancelled) {
+              setUnpairedDetail(authMessage);
+              setStartupFailure('unpaired');
+              setPhase('unavailable');
+            }
+            return;
+          }
           if (attempt < maxAttempts) {
             await new Promise(r => setTimeout(r, delayMs));
           }
@@ -386,10 +400,14 @@ function App() {
       <div style={{ background: gradient.shell, width: '100vw', height: '100vh', paddingTop: TITLEBAR_HEIGHT }}>
         <StateBlock
           tone="error"
-          title={startupFailure === 'malformed' ? 'The daemon returned an invalid configuration.' : 'Permagent is unavailable.'}
-          detail={startupFailure === 'malformed'
-            ? 'The daemon answered, but its startup configuration was not valid. Try again after checking the daemon.'
-            : 'The command center could not connect to the daemon. This is not a first-run state.'}
+          title={startupFailure === 'unpaired'
+            ? "This browser isn't paired."
+            : startupFailure === 'malformed' ? 'The daemon returned an invalid configuration.' : 'Permagent is unavailable.'}
+          detail={startupFailure === 'unpaired'
+            ? (unpairedDetail ?? 'Open the Permagent app, then pair this device from Settings → Devices.')
+            : startupFailure === 'malformed'
+              ? 'The daemon answered, but its startup configuration was not valid. Try again after checking the daemon.'
+              : 'The command center could not connect to the daemon. This is not a first-run state.'}
           onRetry={() => setPhase('loading')}
         />
       </div>
