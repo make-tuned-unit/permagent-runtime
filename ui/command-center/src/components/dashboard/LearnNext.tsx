@@ -18,6 +18,7 @@ import { HomeBanner, bannerGhostBtn, bannerPrimaryBtn } from './HomeBanner';
 import { useBannerSlot } from './bannerSlot';
 import { useCommandCenter } from '../../lib/store';
 import { setSpeakReplies } from '../../lib/speakReplies';
+import { toolLabel } from '../../lib/toolLabel';
 
 import { Tooltip } from '../common/Tooltip';
 const LS_KEY = 'permagent-learn-next-state';
@@ -61,11 +62,27 @@ function writeState(s: DismissState) {
   }
 }
 
-/** First sentence (or a clamped slice) of a capability's description. */
-function summarize(text: string): string {
-  const firstStop = text.indexOf('. ');
-  const s = firstStop > 40 ? text.slice(0, firstStop) : text;
-  return s.length > 200 ? `${s.slice(0, 197)}…` : s;
+const TOOL_ID = /\b[a-z][a-z0-9]*(?:_{1,2}[a-z0-9]+)+\b/g;
+
+/** Wire identifiers in user copy become plain labels (R3): a parenthesised
+ *  list of tool ids is dropped (the sentence reads fine without it), and any
+ *  other snake_case id is replaced by its registry label, lower-cased. */
+export function humanizeToolIds(text: string): string {
+  const noLists = text.replace(/\s*\((?:\s*[a-z][a-z0-9_]*\s*,?)+\)/g, m => (TOOL_ID.test(m) ? (TOOL_ID.lastIndex = 0, '') : m));
+  return noLists.replace(TOOL_ID, id => toolLabel(id).toLowerCase());
+}
+
+/** First sentence of a capability's description, ending on a word boundary,
+ *  never mid-word (QA 2026-10-07 Q9). Returned WITHOUT a trailing period. */
+export function summarize(text: string): string {
+  const clean = humanizeToolIds(text).replace(/\s+/g, ' ').trim();
+  const firstStop = clean.search(/[.!?](\s|$)/);
+  let s = firstStop > 40 ? clean.slice(0, firstStop) : clean.replace(/[.!?]$/, '');
+  if (s.length > 200) {
+    const cut = s.slice(0, 197);
+    s = `${cut.slice(0, Math.max(cut.lastIndexOf(' '), 100)).replace(/[\s,;:–—-]+$/, '')}…`;
+  }
+  return s;
 }
 
 export function LearnNext() {
@@ -183,7 +200,7 @@ export function LearnNext() {
     >
       You haven&apos;t tried{' '}
       <span style={{ fontWeight: 700, color: colors.cyan }}>{item.display_name}</span> yet —{' '}
-      <span style={{ color: colors.textMuted }}>{summarize(item.what_it_does)}.</span>
+      <span style={{ color: colors.textMuted }}>{summarize(item.what_it_does)}{summarize(item.what_it_does).endsWith('…') ? '' : '.'}</span>
     </HomeBanner>
   );
 }
