@@ -96,7 +96,6 @@ afterEach(() => {
 const flush = async () => { await act(async () => { for (let i = 0; i < 8; i += 1) await Promise.resolve(); }); };
 const text = () => container.textContent ?? '';
 const progress = () => container.querySelector('[aria-live="polite"]')?.textContent;
-const heading = () => container.querySelector('main h1')?.textContent;
 function byText<T extends Element = HTMLElement>(selector: string, label: string | RegExp): T {
   const el = Array.from(container.querySelectorAll<T>(selector)).find(e => (typeof label === 'string' ? e.textContent?.trim() === label : label.test(e.textContent ?? '')));
   if (!el) throw new Error(`no ${selector} with ${label}; text: ${text().slice(0, 400)}`);
@@ -244,7 +243,7 @@ describe('WizardShell', () => {
   it('save failure shows the banner; Retry saves and finishes', async () => {
     localStorage.setItem(DRAFT_KEY, JSON.stringify({ step: 5, name: 'Nova', toneId: 'warm', firstMessage: '', modelChoice: 'later' }));
     let fail = true;
-    m.apiFetch.mockImplementation(async (path: string, init?: RequestInit) => {
+    m.apiFetch.mockImplementation(async (_path: string, init?: RequestInit) => {
       if (init?.method === 'PUT') {
         if (fail) { fail = false; throw new Error('disk is read-only'); }
         return {};

@@ -134,6 +134,10 @@ function HostedPanel({ providers, onAction, onDone }: {
   const [phase, setPhase] = useState<HostedPhase>('idle');
   const [message, setMessage] = useState('');
   const [showHelp, setShowHelp] = useState(false);
+  const helpRef = useRef<HTMLOListElement>(null);
+  useEffect(() => {
+    if (showHelp) helpRef.current?.scrollIntoView?.({ block: 'nearest' });
+  }, [showHelp]);
   const [manager, setManager] = useState<SecretBackendStatus | null>(null);
   const [useReference, setUseReference] = useState(false);
   const [reference, setReference] = useState('');
@@ -275,7 +279,7 @@ function HostedPanel({ providers, onAction, onDone }: {
         )}
 
         {selected && showHelp && (
-          <ol style={{ margin: 0, paddingLeft: space.xxxl, display: 'flex', flexDirection: 'column', gap: space.xs }}>
+          <ol ref={helpRef} style={{ margin: 0, paddingLeft: space.xxxl, display: 'flex', flexDirection: 'column', gap: space.xs }}>
             {selected.setupSteps.map((s, i) => {
               const part = splitStepLink(s);
               return (

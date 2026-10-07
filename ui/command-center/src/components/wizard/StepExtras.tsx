@@ -297,7 +297,8 @@ function MemorySetup({ onState, onDownloading }: {
         await readStatus();
       }
       await writeSchedule(true);
-      if (alive.current) setNote({ tone: 'ok', text: `On. ${model} will tidy your memory overnight.` });
+      // The "On · model" line below is the confirmation; no second message.
+      if (alive.current) setNote(null);
       return true;
     } catch (e) {
       abortRef.current = null;
