@@ -93,6 +93,20 @@ export function BrainView() {
   // so the graph doesn't fit itself under the bar.
   const headerRef = useRef<HTMLDivElement>(null);
   const sliderBarRef = useRef<HTMLDivElement>(null);
+  // The list must end above the time slider's MEASURED top edge (QA
+  // 2026-10-07 Q15: the slider sat over the last entity row). Slider height +
+  // its bottom offset + a gap.
+  const [sliderClearance, setSliderClearance] = useState(0);
+  useEffect(() => {
+    const el = sliderBarRef.current;
+    if (!el) return;
+    const measure = () => setSliderClearance(Math.ceil(el.getBoundingClientRect().height) + space.xxl + space.md);
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
   const [legendEl, setLegendEl] = useState<HTMLElement | null>(null);
 
   // List by default; Graph is a toggle away and the choice sticks (J12). The
@@ -399,7 +413,7 @@ export function BrainView() {
 
       {/* List view */}
       {viewMode === 'list' && (
-        <div style={{ position: 'absolute', inset: 0, top: 64, bottom: 64 }}>
+        <div style={{ position: 'absolute', inset: 0, top: 64, bottom: Math.max(64, sliderClearance) }}>
           <BrainList
             onSelect={onSelect}
             selectedId={selected?.id ?? null}
