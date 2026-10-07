@@ -816,6 +816,14 @@ function authHeaders(): Record<string, string> {
   return h;
 }
 
+/** What POST /config/check_provider proved about a provider's key. */
+export interface ProviderCheckResult {
+  live: boolean;
+  model: string;
+  models_available: number;
+  note: string | null;
+}
+
 export async function apiFetch<T>(endpoint: string, options?: RequestInit): Promise<T> {
   return apiFetchOnce<T>(endpoint, options, true);
 }
@@ -2128,7 +2136,13 @@ export const api = {
         description: string;
         default_model: string;
         known_models: Array<{ name: string }>;
-        config_keys: Array<{ name: string; required: boolean; secret: boolean; description?: string }>;
+        config_keys: Array<{
+          name: string; required: boolean; secret: boolean; description?: string;
+          default?: string | null; oauth_flow?: boolean; primary?: boolean;
+        }>;
+        /** The provider's own key-setup walkthrough (may contain a URL). */
+        setup_steps?: string[];
+        model_doc_link?: string;
       };
       is_configured: boolean;
       is_default?: boolean;
@@ -2204,10 +2218,12 @@ export const api = {
 
   /** Validate a provider against stored config, optionally overlaying a typed
    *  key for validate-without-save. The overlay is not persisted; a stored
-   *  keychain value still wins. Resolves on success; rejects on failure.
-   *  POST /config/check_provider returns an empty 200 body on success. */
-  checkProvider: (provider: string, apiKey?: string): Promise<void> =>
-    apiFetch<void>('/config/check_provider', {
+   *  keychain value still wins. Rejects when the provider cannot be built or
+   *  refuses the key. Resolves with what was proved: `live` is true only when
+   *  the key answered an authenticated model listing. An older daemon answers
+   *  with an empty body, which resolves `undefined` (built, not proved live). */
+  checkProvider: (provider: string, apiKey?: string): Promise<ProviderCheckResult | undefined> =>
+    apiFetch<ProviderCheckResult | undefined>('/config/check_provider', {
       method: 'POST',
       body: JSON.stringify({
         provider,

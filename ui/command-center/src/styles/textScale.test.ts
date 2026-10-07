@@ -89,7 +89,6 @@ const OFF_RAMP_BUDGET: Record<string, number> = {
   // that remain are all 10px, and the ruling above says that cohort is a
   // product call about density, not a screen lane's to make.
   'components/voice': 6,
-  'components/wizard': 6,
   'components/world': 32,
 };
 

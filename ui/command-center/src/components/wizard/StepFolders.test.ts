@@ -1,5 +1,5 @@
 /**
- * Setup-time dev-root selection (MomentCode).
+ * Setup-time dev-root selection (StepFolders).
  *
  * The step exists because four features independently guessed `~/dev` and all
  * four failed by finding NOTHING — indistinguishable from a clean machine. The
@@ -7,7 +7,7 @@
  * and quietly restore the guess, so it is pinned here.
  */
 import { describe, expect, it } from 'vitest';
-import { mergeRoots } from './MomentCode';
+import { mergeRoots } from './StepFolders';
 
 describe('mergeRoots', () => {
   it('pre-ticks discovery on a first run', () => {
