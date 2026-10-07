@@ -1,0 +1,9 @@
+# World lane — correction 1 (coordinator visual review of e2164e96 in a visible Chromium at 1280×800)
+
+Observed, not inferred: with the new `HABITAT_ARRIVAL` ([-1.2, 1.62, 3.8] → [-1.1, 1.30, -1.5]) the arrival camera sits INSIDE the hero robot's head: the first frame shows the inside of the ivory shell, two eye discs and a brass stud at macro scale, and the HTML nameplate "available" is rendered at ~200 px because it is centimetres from the camera. The orchestrator's runtime position is at/near that spot (its station/seat beside the table, and the social controller's home), so `habitatArrival.test.ts`'s host-distance check is testing against the wrong position data.
+
+Required:
+1. Build the arrival test on the SAME position data the runtime uses for every agent (the station/seat/home tables in `habitatLayout.ts` / `habitatSocial.ts` / `HeroGardenKit.tsx`, including `ORCHESTRATOR_TABLE_SEAT` and the arrival/"Sit with" seat), and assert ≥ 2.0 m horizontal distance from EVERY agent body and ≥ 0.6 m from every solid collider, at eye height 1.55–1.65 m. The camera must look at the host from 2–4 m with the table and the water route in frame.
+2. Clamp nameplate scale: the drei `<Html>` labels must use a `distanceFactor` and a minimum distance so a label can never exceed ~140 px wide, and labels within 1.5 m of the camera fade out instead of filling the screen.
+3. Re-check the reverse view and the overview target with the corrected position; keep the overview footprint-fit test.
+4. Run the focused tests (`habitatArrival`, `ForumView`, `habitatMotion`) and `npx tsc --noEmit`, then `npx vite build`. Commit on branch `wq/world` (base now e2164e96; if `git commit` is refused by the sandbox, leave edits uncommitted and say so). Update `WORLD_LANE_REPORT_2026-10-07.md` with a "Correction 1" section: exact new camera numbers, the agent positions you tested against, and the label clamp values.
