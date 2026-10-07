@@ -57,8 +57,11 @@ it('keeps movement on demand and reading the work feed does not move the camera'
 it('keeps the evidence exercise reachable from the consolidated agent desk', () => {
   click('Agent desk'); click('Evidence');
   expect(host.querySelector('#forum-agent-desk')?.getAttribute('aria-hidden')).toBe('false');
-  expect(host.querySelector('[aria-label="Completion evidence demonstration"]')).toBeTruthy();
-  click('Garden room confirmed');
-  expect(host.textContent).toContain('Supported by the records.');
+  expect(host.querySelector('[aria-label="World learning demonstrations"]')).toBeTruthy();
+  // Scope to the lesson: the Places rail also has a "Garden archive" button.
+  const lesson = host.querySelector('[aria-label="World learning demonstrations"]')!;
+  act(() => [...lesson.querySelectorAll('button')].find(b => b.textContent === 'Garden archive')!.click());
+  act(() => [...lesson.querySelectorAll('button')].find(b => b.textContent?.includes('Garden room confirmed'))!.click());
+  expect(host.textContent).toContain('Supported by the newer record.');
   expect(host.querySelector('.habitat-view-tools')?.textContent).not.toContain('Inspect evidence');
 });

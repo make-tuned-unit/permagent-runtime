@@ -86,7 +86,11 @@ describe('in-world labels stack beneath the forum HUD', () => {
   it('puts the HUD after the canvas host and at or above it', () => {
     const world = host.querySelector('.forum-world')!;
     const canvasHost = host.querySelector('.forum-canvas')!;
-    for (const sel of ['.forum-lane-left', '.forum-lane-right', '.forum-desk-toggle']) {
+    // The legacy campus renders a separate desk toggle; the compact habitat
+    // folds it into the right lane's view tools, so only assert it when present.
+    const hudSelectors = ['.forum-lane-left', '.forum-lane-right'];
+    if (world.querySelector('.forum-desk-toggle')) hudSelectors.push('.forum-desk-toggle');
+    for (const sel of hudSelectors) {
       const el = world.querySelector(sel);
       expect(el, `${sel} rendered`).not.toBeNull();
       // Same parent, later in the tree: an equal z-index still paints on top.
