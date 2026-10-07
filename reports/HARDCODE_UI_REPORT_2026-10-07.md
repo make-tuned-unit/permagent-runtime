@@ -11,7 +11,7 @@ Branch `wq/hardcode-ui`. Lanes L1, L11 (UI), L12.
 - L12: guard widened (roots, `.toml/.json/.html`, `skipFiles`, rule `exclude`), 8 new rules, `LEGACY_AGENT_NAMES = [Henry, Hank]`, Rust test `shipped_content_policy_holds`.
 
 ## Guard status
-`node scripts/shipped-content-check.mjs` exits 1: 291 hits, ALL under `crates/**` (Rust lane). Zero in `ui/**`. List of rule/file:line is in the commit-time output; per file counts, biggest: cost_router/fallback.rs 36, providers/ollama.rs 29, voice/proper_noun_corrector.rs 21, session_wing.rs 17, mesh/pool.rs 16, session/builder.rs 13, analytics_drain.rs 11.
+`node scripts/shipped-content-check.mjs` exits 1: 291 hits, ALL under `crates/**` (Rust lane). Zero in `ui/**`. Full rule file:line list: `reports/HARDCODE_GUARD_HITS_2026-10-07.txt`; per file counts, biggest: cost_router/fallback.rs 36, providers/ollama.rs 29, voice/proper_noun_corrector.rs 21, session_wing.rs 17, mesh/pool.rs 16, session/builder.rs 13, analytics_drain.rs 11.
 Single-hit items for the Rust lane: telemetry key `posthog.rs:16`; `henry-malcolm` in `identity/canonical.rs`, `session_wing.rs:1093`, `activity/ingestion.rs:824`; regional merchants in `finance_statements.rs:241-253`.
 
 ## Decisions to review
