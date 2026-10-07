@@ -1,0 +1,798 @@
+{
+  "runs": [
+    {
+      "ctx": "1024x640-dark",
+      "run": "hosted",
+      "errors": [],
+      "identity": {
+        "first_name": "Aria",
+        "last_name": null,
+        "nickname": null,
+        "traits": [
+          "direct",
+          "concise"
+        ],
+        "tone": "Brief and to the point. No filler.",
+        "opening_greeting": "Hi, I'm Aria. Tell me what you need and I'll get straight to it.",
+        "voice_id": null
+      },
+      "wizardComplete": true,
+      "devRoots": [
+        "/Users/alex/code/atlas",
+        "/Users/alex/code/notes-app"
+      ],
+      "librarian": true
+    },
+    {
+      "ctx": "1024x640-dark",
+      "run": "no-model",
+      "errors": [],
+      "wizardComplete": true,
+      "devRoots": [],
+      "provider": null
+    },
+    {
+      "ctx": "1024x640-dark",
+      "run": "download",
+      "errors": []
+    },
+    {
+      "ctx": "1024x640-dark",
+      "audits": [
+        {
+          "label": "1024x640-dark-01-welcome",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 1 of 6 · Welcome"
+        },
+        {
+          "label": "1024x640-dark-02-model",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 2 of 6 · Model"
+        },
+        {
+          "label": "1024x640-dark-03-model-local-not-running",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 2 of 6 · Model"
+        },
+        {
+          "label": "1024x640-dark-04-model-local-installed",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 2 of 6 · Model"
+        },
+        {
+          "label": "1024x640-dark-05-model-local-ready",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 2 of 6 · Model"
+        },
+        {
+          "label": "1024x640-dark-06-model-later",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 2 of 6 · Model"
+        },
+        {
+          "label": "1024x640-dark-07-model-hosted-providers",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 2 of 6 · Model"
+        },
+        {
+          "label": "1024x640-dark-08-model-hosted-key",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 2 of 6 · Model"
+        },
+        {
+          "label": "1024x640-dark-09-model-hosted-rejected",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 2 of 6 · Model"
+        },
+        {
+          "label": "1024x640-dark-10-model-hosted-works",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 2 of 6 · Model"
+        },
+        {
+          "label": "1024x640-dark-11-agent",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 3 of 6 · Agent"
+        },
+        {
+          "label": "1024x640-dark-12-folders",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 4 of 6 · Code folders"
+        },
+        {
+          "label": "1024x640-dark-13-extras",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 5 of 6 · Extras"
+        },
+        {
+          "label": "1024x640-dark-14-extras-search",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 5 of 6 · Extras"
+        },
+        {
+          "label": "1024x640-dark-15-extras-memory",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 5 of 6 · Extras"
+        },
+        {
+          "label": "1024x640-dark-16-extras-memory-on",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 5 of 6 · Extras"
+        },
+        {
+          "label": "1024x640-dark-17-review",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 6 of 6 · Review"
+        },
+        {
+          "label": "1024x640-dark-18-review-save-failed",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 6 of 6 · Review"
+        },
+        {
+          "label": "1024x640-dark-19-review-no-model",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 6 of 6 · Review"
+        },
+        {
+          "label": "1024x640-dark-20-model-local-downloading",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 2 of 6 · Model"
+        },
+        {
+          "label": "1024x640-dark-21-model-local-download-cancelled",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 2 of 6 · Model"
+        }
+      ]
+    },
+    {
+      "ctx": "1024x640-light",
+      "run": "hosted",
+      "errors": [],
+      "identity": {
+        "first_name": "Aria",
+        "last_name": null,
+        "nickname": null,
+        "traits": [
+          "direct",
+          "concise"
+        ],
+        "tone": "Brief and to the point. No filler.",
+        "opening_greeting": "Hi, I'm Aria. Tell me what you need and I'll get straight to it.",
+        "voice_id": null
+      },
+      "wizardComplete": true,
+      "devRoots": [
+        "/Users/alex/code/atlas",
+        "/Users/alex/code/notes-app"
+      ],
+      "librarian": true
+    },
+    {
+      "ctx": "1024x640-light",
+      "run": "no-model",
+      "errors": [],
+      "wizardComplete": true,
+      "devRoots": [],
+      "provider": null
+    },
+    {
+      "ctx": "1024x640-light",
+      "run": "download",
+      "errors": []
+    },
+    {
+      "ctx": "1024x640-light",
+      "audits": [
+        {
+          "label": "1024x640-light-01-welcome",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 1 of 6 · Welcome"
+        },
+        {
+          "label": "1024x640-light-02-model",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 2 of 6 · Model"
+        },
+        {
+          "label": "1024x640-light-03-model-local-not-running",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 2 of 6 · Model"
+        },
+        {
+          "label": "1024x640-light-04-model-local-installed",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 2 of 6 · Model"
+        },
+        {
+          "label": "1024x640-light-05-model-local-ready",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 2 of 6 · Model"
+        },
+        {
+          "label": "1024x640-light-06-model-later",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 2 of 6 · Model"
+        },
+        {
+          "label": "1024x640-light-07-model-hosted-providers",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 2 of 6 · Model"
+        },
+        {
+          "label": "1024x640-light-08-model-hosted-key",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 2 of 6 · Model"
+        },
+        {
+          "label": "1024x640-light-09-model-hosted-rejected",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 2 of 6 · Model"
+        },
+        {
+          "label": "1024x640-light-10-model-hosted-works",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 2 of 6 · Model"
+        },
+        {
+          "label": "1024x640-light-11-agent",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 3 of 6 · Agent"
+        },
+        {
+          "label": "1024x640-light-12-folders",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 4 of 6 · Code folders"
+        },
+        {
+          "label": "1024x640-light-13-extras",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 5 of 6 · Extras"
+        },
+        {
+          "label": "1024x640-light-14-extras-search",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 5 of 6 · Extras"
+        },
+        {
+          "label": "1024x640-light-15-extras-memory",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 5 of 6 · Extras"
+        },
+        {
+          "label": "1024x640-light-16-extras-memory-on",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 5 of 6 · Extras"
+        },
+        {
+          "label": "1024x640-light-17-review",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 6 of 6 · Review"
+        },
+        {
+          "label": "1024x640-light-18-review-save-failed",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 6 of 6 · Review"
+        },
+        {
+          "label": "1024x640-light-19-review-no-model",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 6 of 6 · Review"
+        },
+        {
+          "label": "1024x640-light-20-model-local-downloading",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 2 of 6 · Model"
+        },
+        {
+          "label": "1024x640-light-21-model-local-download-cancelled",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 2 of 6 · Model"
+        }
+      ]
+    },
+    {
+      "ctx": "1440x900-dark",
+      "run": "hosted",
+      "errors": [],
+      "identity": {
+        "first_name": "Aria",
+        "last_name": null,
+        "nickname": null,
+        "traits": [
+          "direct",
+          "concise"
+        ],
+        "tone": "Brief and to the point. No filler.",
+        "opening_greeting": "Hi, I'm Aria. Tell me what you need and I'll get straight to it.",
+        "voice_id": null
+      },
+      "wizardComplete": true,
+      "devRoots": [
+        "/Users/alex/code/atlas",
+        "/Users/alex/code/notes-app"
+      ],
+      "librarian": true
+    },
+    {
+      "ctx": "1440x900-dark",
+      "run": "no-model",
+      "errors": [],
+      "wizardComplete": true,
+      "devRoots": [],
+      "provider": null
+    },
+    {
+      "ctx": "1440x900-dark",
+      "run": "download",
+      "errors": []
+    },
+    {
+      "ctx": "1440x900-dark",
+      "audits": [
+        {
+          "label": "1440x900-dark-01-welcome",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 1 of 6 · Welcome"
+        },
+        {
+          "label": "1440x900-dark-02-model",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 2 of 6 · Model"
+        },
+        {
+          "label": "1440x900-dark-03-model-local-not-running",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 2 of 6 · Model"
+        },
+        {
+          "label": "1440x900-dark-04-model-local-installed",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 2 of 6 · Model"
+        },
+        {
+          "label": "1440x900-dark-05-model-local-ready",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 2 of 6 · Model"
+        },
+        {
+          "label": "1440x900-dark-06-model-later",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 2 of 6 · Model"
+        },
+        {
+          "label": "1440x900-dark-07-model-hosted-providers",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 2 of 6 · Model"
+        },
+        {
+          "label": "1440x900-dark-08-model-hosted-key",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 2 of 6 · Model"
+        },
+        {
+          "label": "1440x900-dark-09-model-hosted-rejected",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 2 of 6 · Model"
+        },
+        {
+          "label": "1440x900-dark-10-model-hosted-works",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 2 of 6 · Model"
+        },
+        {
+          "label": "1440x900-dark-11-agent",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 3 of 6 · Agent"
+        },
+        {
+          "label": "1440x900-dark-12-folders",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 4 of 6 · Code folders"
+        },
+        {
+          "label": "1440x900-dark-13-extras",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 5 of 6 · Extras"
+        },
+        {
+          "label": "1440x900-dark-14-extras-search",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 5 of 6 · Extras"
+        },
+        {
+          "label": "1440x900-dark-15-extras-memory",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 5 of 6 · Extras"
+        },
+        {
+          "label": "1440x900-dark-16-extras-memory-on",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 5 of 6 · Extras"
+        },
+        {
+          "label": "1440x900-dark-17-review",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 6 of 6 · Review"
+        },
+        {
+          "label": "1440x900-dark-18-review-save-failed",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 6 of 6 · Review"
+        },
+        {
+          "label": "1440x900-dark-19-review-no-model",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 6 of 6 · Review"
+        },
+        {
+          "label": "1440x900-dark-20-model-local-downloading",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 2 of 6 · Model"
+        },
+        {
+          "label": "1440x900-dark-21-model-local-download-cancelled",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 2 of 6 · Model"
+        }
+      ]
+    },
+    {
+      "ctx": "1440x900-light",
+      "run": "hosted",
+      "errors": [],
+      "identity": {
+        "first_name": "Aria",
+        "last_name": null,
+        "nickname": null,
+        "traits": [
+          "direct",
+          "concise"
+        ],
+        "tone": "Brief and to the point. No filler.",
+        "opening_greeting": "Hi, I'm Aria. Tell me what you need and I'll get straight to it.",
+        "voice_id": null
+      },
+      "wizardComplete": true,
+      "devRoots": [
+        "/Users/alex/code/atlas",
+        "/Users/alex/code/notes-app"
+      ],
+      "librarian": true
+    },
+    {
+      "ctx": "1440x900-light",
+      "run": "no-model",
+      "errors": [],
+      "wizardComplete": true,
+      "devRoots": [],
+      "provider": null
+    },
+    {
+      "ctx": "1440x900-light",
+      "run": "download",
+      "errors": []
+    },
+    {
+      "ctx": "1440x900-light",
+      "audits": [
+        {
+          "label": "1440x900-light-01-welcome",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 1 of 6 · Welcome"
+        },
+        {
+          "label": "1440x900-light-02-model",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 2 of 6 · Model"
+        },
+        {
+          "label": "1440x900-light-03-model-local-not-running",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 2 of 6 · Model"
+        },
+        {
+          "label": "1440x900-light-04-model-local-installed",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 2 of 6 · Model"
+        },
+        {
+          "label": "1440x900-light-05-model-local-ready",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 2 of 6 · Model"
+        },
+        {
+          "label": "1440x900-light-06-model-later",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 2 of 6 · Model"
+        },
+        {
+          "label": "1440x900-light-07-model-hosted-providers",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 2 of 6 · Model"
+        },
+        {
+          "label": "1440x900-light-08-model-hosted-key",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 2 of 6 · Model"
+        },
+        {
+          "label": "1440x900-light-09-model-hosted-rejected",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 2 of 6 · Model"
+        },
+        {
+          "label": "1440x900-light-10-model-hosted-works",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 2 of 6 · Model"
+        },
+        {
+          "label": "1440x900-light-11-agent",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 3 of 6 · Agent"
+        },
+        {
+          "label": "1440x900-light-12-folders",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 4 of 6 · Code folders"
+        },
+        {
+          "label": "1440x900-light-13-extras",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 5 of 6 · Extras"
+        },
+        {
+          "label": "1440x900-light-14-extras-search",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 5 of 6 · Extras"
+        },
+        {
+          "label": "1440x900-light-15-extras-memory",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 5 of 6 · Extras"
+        },
+        {
+          "label": "1440x900-light-16-extras-memory-on",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 5 of 6 · Extras"
+        },
+        {
+          "label": "1440x900-light-17-review",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 6 of 6 · Review"
+        },
+        {
+          "label": "1440x900-light-18-review-save-failed",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 6 of 6 · Review"
+        },
+        {
+          "label": "1440x900-light-19-review-no-model",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 6 of 6 · Review"
+        },
+        {
+          "label": "1440x900-light-20-model-local-downloading",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 2 of 6 · Model"
+        },
+        {
+          "label": "1440x900-light-21-model-local-download-cancelled",
+          "headingVisible": true,
+          "primaryVisible": true,
+          "horizontalOverflow": false,
+          "progress": "Step 2 of 6 · Model"
+        }
+      ]
+    }
+  ],
+  "keyboard": {
+    "steps": [
+      "Step 1 of 6 · Welcome",
+      "Step 2 of 6 · Model",
+      {
+        "focusOnEntry": "hosted"
+      },
+      "Step 3 of 6 · Agent",
+      {
+        "focusOnEntry": "INPUT:Aria"
+      },
+      {
+        "afterEscape": "Step 2 of 6 · Model"
+      },
+      {
+        "footerFocused": "Test saved key"
+      },
+      {
+        "nameKept": "Nova"
+      },
+      "Step 4 of 6 · Code folders",
+      "Step 5 of 6 · Extras",
+      {
+        "searchExpanded": "true"
+      },
+      "Step 6 of 6 · Review"
+    ],
+    "errors": [],
+    "identity": {
+      "first_name": "Nova",
+      "last_name": null,
+      "nickname": null,
+      "traits": [
+        "clear",
+        "helpful"
+      ],
+      "tone": "Clear and friendly. Gets to the point without being curt.",
+      "opening_greeting": "Hi, I'm Nova. What would you like to work on?",
+      "voice_id": null
+    },
+    "wizardComplete": true
+  }
+}
