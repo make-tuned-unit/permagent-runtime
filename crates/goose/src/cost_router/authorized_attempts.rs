@@ -31,11 +31,20 @@ use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
+use crate::providers::errors::ProviderError;
 use crate::session::{CostReservationOutcome, SessionManager};
+use futures::future::BoxFuture;
+
+/// An authorization seam that runs immediately before each
+/// physical provider operation (including retries). Native reviewers use it
+/// to revalidate the candidate and contributor snapshot before transport.
+pub(crate) type NativePretransportGate =
+    Arc<dyn Fn() -> BoxFuture<'static, Result<(), ProviderError>> + Send + Sync>;
 
 struct AttemptAuthorization {
     granted: AtomicU32,
     transport_attempts: AtomicU32,
+    not_sent_attempts: AtomicU32,
     ambiguous_transport_failure: AtomicBool,
     extension: Option<(Arc<SessionManager>, String)>,
     extension_lock: tokio::sync::Mutex<()>,
@@ -48,6 +57,7 @@ impl AttemptAuthorization {
         Arc::new(Self {
             granted: AtomicU32::new(attempts),
             transport_attempts: AtomicU32::new(0),
+            not_sent_attempts: AtomicU32::new(0),
             ambiguous_transport_failure: AtomicBool::new(false),
             extension,
             extension_lock: tokio::sync::Mutex::new(()),
@@ -59,6 +69,29 @@ impl AttemptAuthorization {
 
 tokio::task_local! {
     static AUTHORIZED_ATTEMPTS: Arc<AttemptAuthorization>;
+    static NATIVE_PRETRANSPORT_GATE: NativePretransportGate;
+}
+
+/// Run a provider operation under a mandatory pretransport policy. Provider
+/// retry loops consult this scope before every physical attempt, and fail
+/// closed if the callback rejects the current candidate.
+pub(crate) async fn with_native_pretransport_gate<F: Future>(
+    gate: NativePretransportGate,
+    future: F,
+) -> F::Output {
+    NATIVE_PRETRANSPORT_GATE.scope(gate, future).await
+}
+
+/// Run the installed policy before one physical provider operation. Callers
+/// that are not native-bound have no policy and retain existing behavior.
+pub(crate) async fn check_native_pretransport_gate() -> Result<(), ProviderError> {
+    let gate = NATIVE_PRETRANSPORT_GATE
+        .try_with(|gate| Arc::clone(gate))
+        .ok();
+    if let Some(gate) = gate {
+        gate().await?;
+    }
+    Ok(())
 }
 
 /// Run `future` with `attempts` physical provider attempts authorized by the
@@ -118,24 +151,47 @@ pub(crate) async fn with_reservation_attempts<F: Future>(
 /// Preserve transport evidence after the authorization scope ends. A later
 /// explicit pre-reply rejection can release the hold only if no earlier
 /// physical attempt in that hold might have been billed.
+pub(crate) struct AttemptEvidence {
+    /// Every HTTP attempt was rejected at transport level before generation.
+    pub safe_rate_rejection: bool,
+    /// Every retry closure ended with a typed local pre-wire refusal. This is
+    /// stronger than an absent usage row, and remains false after any earlier
+    /// accepted or ambiguous attempt in the same financial reservation.
+    pub all_not_sent: bool,
+}
+
 pub(crate) async fn with_reservation_attempts_evidence<F: Future>(
     manager: Arc<SessionManager>,
     invocation_id: String,
     attempts: Option<u32>,
     future: F,
-) -> (F::Output, bool) {
+) -> (F::Output, AttemptEvidence) {
     let Some(attempts) = attempts else {
-        return (future.await, false);
+        return (
+            future.await,
+            AttemptEvidence {
+                safe_rate_rejection: false,
+                all_not_sent: false,
+            },
+        );
     };
     let authorization = AttemptAuthorization::new(attempts, Some((manager, invocation_id)));
     let output = AUTHORIZED_ATTEMPTS
         .scope(Arc::clone(&authorization), future)
         .await;
-    let known_transport = authorization.transport_attempts.load(Ordering::Acquire) > 0
-        && !authorization
-            .ambiguous_transport_failure
-            .load(Ordering::Acquire);
-    (output, known_transport)
+    let attempts_made = authorization.transport_attempts.load(Ordering::Acquire);
+    let ambiguous = authorization
+        .ambiguous_transport_failure
+        .load(Ordering::Acquire);
+    (
+        output,
+        AttemptEvidence {
+            safe_rate_rejection: attempts_made > 0 && !ambiguous,
+            all_not_sent: attempts_made > 0
+                && attempts_made == authorization.not_sent_attempts.load(Ordering::Acquire)
+                && !ambiguous,
+        },
+    )
 }
 
 /// Release only a rejected invocation with no output or ambiguous stream retry.
@@ -151,6 +207,35 @@ pub(crate) fn is_unbilled_rate_rejection(
     ) && transport_rejection_safe
         && !stream_committed
         && !first_byte_stall_retried
+}
+
+/// A local refusal releases the hold only when the *whole* reserved call was
+/// never handed to HTTP. A final NotSent after an earlier timeout or accepted
+/// stream says nothing about what that earlier attempt cost.
+pub(crate) fn is_proven_not_sent(
+    error: &crate::providers::errors::ProviderError,
+    evidence: &AttemptEvidence,
+) -> bool {
+    matches!(error, crate::providers::errors::ProviderError::NotSent(_)) && evidence.all_not_sent
+}
+
+/// `stream_response_from_provider` represents a provider error during stream
+/// creation as the first error *frame* of an otherwise successfully-created
+/// stream. Preserve the pre-wire proof at that seam as well as for a direct
+/// stream-creation error, but never release after content has been committed.
+pub(crate) fn is_unbilled_stream_error(
+    error: &crate::providers::errors::ProviderError,
+    evidence: &AttemptEvidence,
+    stream_committed: bool,
+    first_byte_stall_retried: bool,
+) -> bool {
+    (!stream_committed && !first_byte_stall_retried && is_proven_not_sent(error, evidence))
+        || is_unbilled_rate_rejection(
+            error,
+            evidence.safe_rate_rejection,
+            stream_committed,
+            first_byte_stall_retried,
+        )
 }
 
 pub(crate) fn record_transport_success() {
@@ -182,6 +267,11 @@ pub(crate) fn record_transport_attempt() {
 
 pub(crate) fn record_transport_failure(error: &crate::providers::errors::ProviderError) {
     use crate::providers::errors::ProviderError;
+    if matches!(error, ProviderError::NotSent(_)) {
+        let _ =
+            AUTHORIZED_ATTEMPTS.try_with(|a| a.not_sent_attempts.fetch_add(1, Ordering::Relaxed));
+        return;
+    }
     // Do not infer non-billing from an absent usage row, a timeout, or a 5xx.
     let rejected = matches!(
         error,
@@ -271,6 +361,9 @@ mod tests {
             "rejected",
             "timeout_then_rejected",
             "accepted_then_stream_rejected",
+            "local_not_sent",
+            "timeout_then_not_sent",
+            "accepted_then_not_sent",
         ] {
             let temp = tempfile::tempdir().unwrap();
             let manager = Arc::new(SessionManager::new(temp.path().to_path_buf()));
@@ -299,7 +392,8 @@ mod tests {
                 panic!("{reserve:?}")
             };
             let calls = AtomicU32::new(0);
-            let (result, evidence) = with_reservation_attempts_evidence(
+            let http_calls = AtomicU32::new(0);
+            let provider_future = with_reservation_attempts_evidence(
                 Arc::clone(&manager),
                 "first".into(),
                 Some(2),
@@ -307,9 +401,27 @@ mod tests {
                     || async {
                         let attempt = calls.fetch_add(1, Ordering::SeqCst);
                         if scenario == "accepted_then_stream_rejected" {
+                            http_calls.fetch_add(1, Ordering::SeqCst);
                             return Ok(());
                         }
-                        if scenario == "timeout_then_rejected" && attempt == 0 {
+                        if scenario == "local_not_sent"
+                            || (scenario == "timeout_then_not_sent" && attempt == 1)
+                        {
+                            return Err(ProviderError::NotSent(
+                                "local admission rejected before HTTP".into(),
+                            ));
+                        }
+                        http_calls.fetch_add(1, Ordering::SeqCst);
+                        if scenario == "accepted_then_not_sent" && attempt == 0 {
+                            record_transport_success();
+                            return Err(ProviderError::NetworkError(
+                                "accepted response stream failed".into(),
+                            ));
+                        }
+                        if (scenario == "timeout_then_rejected"
+                            || scenario == "timeout_then_not_sent")
+                            && attempt == 0
+                        {
                             return Err(ProviderError::NetworkError(
                                 "timeout after dispatch".into(),
                             ));
@@ -321,15 +433,43 @@ mod tests {
                     },
                     RetryConfig::new(1, 0, 1.0, 0).with_rate_limit_floor_ms(0),
                 ),
-            )
-            .await;
+            );
+            let (result, evidence) = if scenario == "accepted_then_not_sent" {
+                let gate_calls = Arc::new(AtomicU32::new(0));
+                let gate_counter = Arc::clone(&gate_calls);
+                let gate: NativePretransportGate = Arc::new(move || {
+                    let attempt = gate_counter.fetch_add(1, Ordering::SeqCst);
+                    Box::pin(async move {
+                        if attempt == 1 {
+                            Err(ProviderError::NotSent(
+                                "candidate changed after earlier possible dispatch".into(),
+                            ))
+                        } else {
+                            Ok(())
+                        }
+                    })
+                });
+                with_native_pretransport_gate(gate, provider_future).await
+            } else {
+                provider_future.await
+            };
             let error = result
                 .err()
                 .unwrap_or_else(|| ProviderError::RateLimitExceeded {
                     details: "in-band rejection after HTTP acceptance".into(),
                     retry_delay: None,
                 });
-            let release = is_unbilled_rate_rejection(&error, evidence, false, false);
+            if scenario == "local_not_sent" {
+                assert_eq!(
+                    calls.load(Ordering::SeqCst),
+                    1,
+                    "local refusal is permanent"
+                );
+                assert!(evidence.all_not_sent);
+            } else {
+                assert!(!evidence.all_not_sent, "{scenario}");
+            }
+            let release = is_unbilled_stream_error(&error, &evidence, false, false);
             finalize_missing_usage(&manager, &reservation_id, release)
                 .await
                 .unwrap();
@@ -342,7 +482,7 @@ mod tests {
             .unwrap();
             assert_eq!(
                 state,
-                if scenario == "rejected" {
+                if scenario == "rejected" || scenario == "local_not_sent" {
                     "released"
                 } else {
                     "unknown"
@@ -350,9 +490,20 @@ mod tests {
                 "{scenario}"
             );
             assert!(calls.load(Ordering::SeqCst) <= 2);
+            assert_eq!(
+                http_calls.load(Ordering::SeqCst),
+                if scenario == "local_not_sent" {
+                    0
+                } else if scenario == "accepted_then_not_sent" {
+                    1
+                } else {
+                    calls.load(Ordering::SeqCst) - u32::from(scenario.ends_with("then_not_sent"))
+                },
+                "{scenario}"
+            );
             // A retry uses a fresh invocation; release must not consume the
             // budget or synthesize a ledger charge for the rejected request.
-            if scenario == "rejected" {
+            if scenario == "rejected" || scenario == "local_not_sent" {
                 let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM cost_ledger")
                     .fetch_one(&pool)
                     .await
@@ -393,6 +544,7 @@ mod tests {
                     parent_session_id: None,
                     task_id: Some(task.clone()),
                     goal_id: None,
+                    goal_attempt_id: None,
                     subagent_id: None,
                     provider: Some("test".into()),
                     model: Some("test".into()),
@@ -437,6 +589,68 @@ mod tests {
                 assert_eq!(charged, 0.02);
             }
         }
+    }
+
+    #[tokio::test]
+    async fn cancellation_during_a_pre_wire_wait_does_not_claim_a_not_sent_proof() {
+        use crate::providers::errors::ProviderError;
+        use crate::providers::{ProviderRetry, RetryConfig};
+
+        let temp = tempfile::tempdir().unwrap();
+        let manager = Arc::new(SessionManager::new(temp.path().to_path_buf()));
+        let session = manager
+            .create_session(
+                temp.path().to_path_buf(),
+                "cancelled wait".into(),
+                crate::session::SessionType::User,
+                crate::config::GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let task = manager.begin_budget_task(&session.id).await.unwrap();
+        let CostReservationOutcome::Granted { reservation_id } = manager
+            .reserve_provider_invocation(
+                "waiting",
+                &session.id,
+                Some(&task),
+                0.5,
+                "2099-01-01T00:00:00Z",
+                &crate::cost_router::budget::BudgetConfig::default(),
+            )
+            .await
+            .unwrap()
+        else {
+            panic!("test reservation was not granted")
+        };
+        // A local pacer can suspend here before response_post. Dropping that
+        // future returns no typed error or scope evidence; the financial hold
+        // must stay conservative even though this fixture performed no HTTP.
+        let cancelled = tokio::time::timeout(
+            std::time::Duration::from_millis(20),
+            with_reservation_attempts_evidence(
+                Arc::clone(&manager),
+                "waiting".into(),
+                Some(1),
+                TransportProvider.with_retry_config(
+                    || async { std::future::pending::<Result<(), ProviderError>>().await },
+                    RetryConfig::new(0, 0, 1.0, 0),
+                ),
+            ),
+        )
+        .await;
+        assert!(cancelled.is_err());
+        manager
+            .mark_provider_invocation_unknown(&reservation_id)
+            .await
+            .unwrap();
+        let pool = manager.pool_clone().await.unwrap();
+        let state: String = sqlx::query_scalar(
+            "SELECT state FROM cost_reservations WHERE invocation_id = 'waiting'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(state, "unknown");
     }
 
     async fn rejection_evidence(errors: Vec<crate::providers::errors::ProviderError>) -> bool {

@@ -3578,6 +3578,9 @@ mod tests {
         assert_eq!(verdict.tier, "test-tier");
         assert_eq!(verdict.micro_suite_pass_pct, Some(1.0));
         assert_eq!(verdict.dag_selection_pct, Some(1.0));
+        let mut unavailable = record.clone();
+        unavailable.provider_unavailable = true;
+        assert!(capability_verdict(&unavailable, "test-tier", &results, today).is_none());
         results[1].selection_correct = Some(false);
         let record = capability_test_record(&results);
         assert!(

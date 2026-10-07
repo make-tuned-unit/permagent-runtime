@@ -306,6 +306,9 @@ pub struct AgentRunnerConfig {
     /// extension-grant mechanism entirely and so is otherwise unreachable
     /// by the profile's tool-set narrowing.
     pub compact_worker_profile: bool,
+    /// Only the headless coding recipe's top-level coordinator. Goal workers
+    /// get fresh AgentRunnerConfig values and retain their own tool grants.
+    pub headless_coding_coordinator: bool,
 }
 
 impl AgentRunnerConfig {
@@ -325,6 +328,7 @@ impl AgentRunnerConfig {
             disable_session_naming,
             goose_platform,
             compact_worker_profile: false,
+            headless_coding_coordinator: false,
         }
     }
 
@@ -469,6 +473,31 @@ pub struct Agent {
     test_failover_request_tokens: Mutex<Vec<Option<usize>>>,
 }
 
+/// The headless coding root plans and supervises; dispatched workers receive
+/// fresh agent configs and keep their own implementation/verification tools.
+/// Match full public names so a same-named tool from another extension cannot
+/// inherit a coordinator grant.
+pub(super) fn headless_coding_coordinator_allows_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "read"
+            | "tree"
+            | "search"
+            | "map_query"
+            | "analyze"
+            | "delegate"
+            | "orchestrator__routing_roster"
+            | "orchestrator__check_worker"
+            | "orchestrator__decompose_roadmap"
+            | "orchestrator__create_roadmap"
+            | "orchestrator__goal_advance"
+            | "orchestrator__goal_status"
+            | "orchestrator__goal_list"
+            | "orchestrator__resume_roadmap"
+            | "orchestrator__escalate"
+    ) || name == FINAL_OUTPUT_TOOL_NAME
+}
+
 #[derive(Clone, Debug)]
 pub enum AgentEvent {
     Message(Message),
@@ -506,8 +535,8 @@ pub enum AgentRuntimeOutcome {
 /// as failed), to the HUD, and, once the scheduler starts reading the outcome,
 /// to the three-strike auto-pause, which would pause a working job.
 ///
-/// So `iteration_errored` is cleared by [`Self::begin_iteration`] at the top of
-/// every outer-loop iteration and is what the outcome reads. Keeping both in
+/// So `iteration_errored` is cleared by [`Self::begin_iteration`] when the
+/// entry guards allow another outer-loop attempt and is what the outcome reads. Keeping both in
 /// the guard means the 15 `mark_error` call sites need no edits and a new
 /// failure path gets the correct behaviour for free.
 ///
@@ -1713,6 +1742,21 @@ impl Agent {
         cancellation_token: Option<CancellationToken>,
         session: &Session,
     ) -> (String, Result<ToolCallResult, ErrorData>) {
+        if self.config.headless_coding_coordinator
+            && !headless_coding_coordinator_allows_tool(&tool_call.name)
+        {
+            return (
+                request_id,
+                Err(ErrorData::new(
+                    ErrorCode::RESOURCE_NOT_FOUND,
+                    format!(
+                        "Tool '{}' is unavailable to the headless coding coordinator",
+                        tool_call.name
+                    ),
+                    None,
+                )),
+            );
+        }
         let input_summary =
             redacted_tool_input_summary(&tool_call.name, tool_call.arguments.as_ref());
         tracing::Span::current().record("input", tracing::field::display(&input_summary));
@@ -1727,6 +1771,7 @@ impl Agent {
             .record_tool_arguments(&tool_call.arguments, &session.working_dir);
 
         if tool_call.name == PLATFORM_MANAGE_SCHEDULE_TOOL_NAME {
+            crate::session::run_timing::record_approved_dispatch(&session.id);
             let arguments = tool_call
                 .arguments
                 .map(Value::Object)
@@ -1739,6 +1784,7 @@ impl Agent {
         }
 
         if tool_call.name == PLATFORM_LOAD_FEATURE_LESSON_TOOL_NAME {
+            crate::session::run_timing::record_approved_dispatch(&session.id);
             let feature_id = tool_call
                 .arguments
                 .as_ref()
@@ -1753,6 +1799,7 @@ impl Agent {
 
         if tool_call.name == FINAL_OUTPUT_TOOL_NAME {
             return if let Some(final_output_tool) = self.final_output_tool.lock().await.as_mut() {
+                crate::session::run_timing::record_approved_dispatch(&session.id);
                 let result = final_output_tool.execute_tool_call(tool_call.clone()).await;
                 (request_id, Ok(result))
             } else {
@@ -2344,6 +2391,10 @@ impl Agent {
             }
         }
 
+        if self.config.headless_coding_coordinator {
+            prefixed_tools.retain(|tool| headless_coding_coordinator_allows_tool(&tool.name));
+        }
+
         prefixed_tools
     }
 
@@ -2854,17 +2905,17 @@ impl Agent {
             let mut retry_of_failed_call: Option<String> = None;
 
             loop {
-                // Only the per-iteration fact is cleared; the HUD's sticky
-                // latch survives the whole turn. See `ReplyStateGuard`.
-                state_guard.begin_iteration();
-
                 if is_token_cancelled(&cancel_token) {
+                    // Preserve the existing cancellation outcome rather than
+                    // reporting the preceding failed attempt as this exit.
+                    state_guard.begin_iteration();
                     break;
                 }
 
                 {
                     let guard = self.final_output_tool.lock().await;
                     if let Some(ref output) = guard.as_ref().and_then(|fot| fot.final_output.clone()) {
+                        state_guard.begin_iteration();
                         yield AgentEvent::Message(Message::assistant().with_text(output));
                         break;
                     }
@@ -2874,6 +2925,11 @@ impl Agent {
                     turns_taken += 1;
                 }
                 if turns_taken > max_turns {
+                    // Re-entry means the prior attempt still needed a tool
+                    // follow-up or continuation; reaching this cap is not a
+                    // completed reply even if that attempt's provider call
+                    // itself succeeded.
+                    state_guard.mark_error();
                     yield AgentEvent::Message(
                         Message::assistant().with_text(
                             "I've reached the maximum number of actions I can do without user input. Would you like me to continue?"
@@ -2881,6 +2937,11 @@ impl Agent {
                     );
                     break;
                 }
+
+                // Clear the prior attempt's error only after the entry guards
+                // allow a real next iteration. An after-turn continuation
+                // stopped by max_turns has not recovered from that failure.
+                state_guard.begin_iteration();
 
                 // Lane X-lat (coding-harness excellence iteration): one
                 // recorder per outer-loop turn attempt. `finish()` is called
@@ -3122,10 +3183,46 @@ impl Agent {
                 // instead of a fresh window — see the retry arm below and
                 // `stream_budget::FIRST_BYTE_WINDOW_OVERRIDE`'s doc comment.
                 let first_byte_wait_started = std::time::Instant::now();
+                if let Some(reservation_id) = invocation.reservation_id.as_deref() {
+                    match session_manager
+                        .mark_provider_invocation_dispatch_possible(reservation_id)
+                        .await
+                    {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            let message = Message::assistant().with_text(
+                                "I did not send this request because its provider reservation was no longer active.",
+                            );
+                            persist_turn_ending_message(
+                                &session_manager,
+                                &session_config.id,
+                                &message,
+                            )
+                            .await;
+                            yield AgentEvent::Message(message);
+                            state_guard.mark_error();
+                            break;
+                        }
+                        Err(error) => {
+                            let message = Message::assistant().with_text(format!(
+                                "I did not send this request because its provider dispatch could not be recorded: {error}.",
+                            ));
+                            persist_turn_ending_message(
+                                &session_manager,
+                                &session_config.id,
+                                &message,
+                            )
+                            .await;
+                            yield AgentEvent::Message(message);
+                            state_guard.mark_error();
+                            break;
+                        }
+                    }
+                }
                 // Carry the hold's count and extension authorizer into physical
                 // retries. Exhausting the count requires a new one-attempt grant.
                 // Unpaid work keeps the provider's retry policy unchanged.
-                let (stream_result, transport_rejection_safe) = crate::cost_router::authorized_attempts::with_reservation_attempts_evidence(
+                let (stream_result, attempt_evidence) = crate::cost_router::authorized_attempts::with_reservation_attempts_evidence(
                     Arc::clone(&session_manager),
                     invocation.invocation_id.clone(),
                     invocation.attempts_reserved,
@@ -3143,14 +3240,28 @@ impl Agent {
                 let mut stream = match stream_result {
                     Ok(stream) => stream,
                     Err(error) => {
-                        // stream_split can fail after handing work to a remote
-                        // endpoint. Treat this as an unknown paid outcome; only
-                        // the reservation layer may release a proven
-                        // pre-dispatch failure.
+                        // A typed local admission refusal can prove that no
+                        // retry reached HTTP. Every other pre-stream error may
+                        // have handed work to the provider and keeps its hold.
+                        let proven_not_sent =
+                            crate::cost_router::authorized_attempts::is_proven_not_sent(
+                                &error,
+                                &attempt_evidence,
+                            );
                         if let Some(reservation_id) = invocation.reservation_id.as_deref() {
-                            session_manager
-                                .mark_provider_invocation_unknown(reservation_id)
-                                .await?;
+                            crate::cost_router::authorized_attempts::finalize_missing_usage(
+                                &session_manager,
+                                reservation_id,
+                                proven_not_sent,
+                            )
+                            .await?;
+                        }
+                        if proven_not_sent {
+                            crate::agents::reply_parts::mark_provider_dispatch_not_sent(
+                                &session_manager,
+                                &invocation,
+                            )
+                            .await?;
                         }
                         let message = Message::assistant()
                             .with_text(format!("Ran into this error: {error}."));
@@ -3245,8 +3356,8 @@ impl Agent {
                         stream_outcome.observe_message(response);
                     }
                     if let Err(error) = &next {
-                        rejected_without_usage = crate::cost_router::authorized_attempts::is_unbilled_rate_rejection(
-                            error, transport_rejection_safe, stream_committed, first_byte_stall_retried,
+                        rejected_without_usage = crate::cost_router::authorized_attempts::is_unbilled_stream_error(
+                            error, &attempt_evidence, stream_committed, first_byte_stall_retried,
                         );
                     }
                     match next {
@@ -5916,6 +6027,284 @@ impl Agent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Clone, Copy)]
+    enum OutcomeFirstReply {
+        Failure,
+        Text,
+        Read,
+    }
+
+    struct OutcomeSequenceProvider {
+        calls: std::sync::atomic::AtomicUsize,
+        first_reply: OutcomeFirstReply,
+        read_path: String,
+        cancel_on_failure: Option<CancellationToken>,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for OutcomeSequenceProvider {
+        fn get_name(&self) -> &str {
+            "outcome-sequence-fixture"
+        }
+        fn get_model_config(&self) -> crate::model::ModelConfig {
+            crate::model::ModelConfig::new_or_fail("gpt-5.4-mini")
+        }
+        fn cost_tier(&self) -> crate::session::CostTier {
+            crate::session::CostTier::LocalFree
+        }
+        async fn stream(
+            &self,
+            _model_config: &crate::model::ModelConfig,
+            _session_id: &str,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> std::result::Result<crate::providers::base::MessageStream, ProviderError> {
+            let first = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0;
+            if first && matches!(self.first_reply, OutcomeFirstReply::Failure) {
+                if let Some(cancel) = &self.cancel_on_failure {
+                    cancel.cancel();
+                }
+                return Err(ProviderError::NotSent(
+                    "fixture admission refusal".to_string(),
+                ));
+            }
+            let message = if first && matches!(self.first_reply, OutcomeFirstReply::Read) {
+                Message::assistant().with_tool_request(
+                    "fixture-read",
+                    Ok(CallToolRequestParams::new("read")
+                        .with_arguments(rmcp::object!({"path": self.read_path.clone()}))),
+                )
+            } else {
+                Message::assistant().with_text("Recovered successfully.")
+            };
+            Ok(crate::providers::base::stream_from_single_message(
+                message,
+                ProviderUsage::new(
+                    self.get_name().to_string(),
+                    crate::providers::base::Usage::default(),
+                ),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn reply_outcome_preserves_failure_at_cap_and_allows_real_recovery() -> anyhow::Result<()>
+    {
+        for (first_reply, max_turns, cancel_after_failure, expected, expected_calls) in [
+            (
+                OutcomeFirstReply::Failure,
+                1,
+                false,
+                AgentRuntimeOutcome::Failed,
+                1,
+            ),
+            (
+                OutcomeFirstReply::Failure,
+                2,
+                false,
+                AgentRuntimeOutcome::Succeeded,
+                2,
+            ),
+            (
+                OutcomeFirstReply::Failure,
+                2,
+                true,
+                AgentRuntimeOutcome::Cancelled,
+                1,
+            ),
+            (
+                OutcomeFirstReply::Read,
+                1,
+                false,
+                AgentRuntimeOutcome::Failed,
+                1,
+            ),
+            (
+                OutcomeFirstReply::Text,
+                1,
+                false,
+                AgentRuntimeOutcome::Succeeded,
+                1,
+            ),
+        ] {
+            let directory = tempfile::tempdir()?;
+            let manager = Arc::new(SessionManager::new(directory.path().to_path_buf()));
+            let mut agent = Agent::with_config(AgentRunnerConfig::new(
+                Arc::clone(&manager),
+                PermissionManager::instance(),
+                None,
+                GooseMode::Auto,
+                true,
+                GoosePlatform::GooseCli,
+            ));
+            let session = manager
+                .create_session(
+                    directory.path().to_path_buf(),
+                    "reply outcome sequence".to_string(),
+                    crate::session::session_manager::SessionType::Hidden,
+                    GooseMode::Auto,
+                )
+                .await?;
+            // Hidden worker sessions inherit identity in production. This
+            // standalone fixture must establish the same durable task boundary.
+            let task_message = Message::user().with_text("Perform the operation.");
+            manager
+                .begin_budget_task_with_contract(&session.id, &task_message)
+                .await?;
+            let cancellation = CancellationToken::new();
+            let provider = Arc::new(OutcomeSequenceProvider {
+                calls: std::sync::atomic::AtomicUsize::new(0),
+                first_reply,
+                cancel_on_failure: cancel_after_failure.then(|| cancellation.clone()),
+                read_path: directory
+                    .path()
+                    .join("fixture.txt")
+                    .to_string_lossy()
+                    .into_owned(),
+            });
+            if matches!(first_reply, OutcomeFirstReply::Read) {
+                std::fs::write(&provider.read_path, "fixture contents")?;
+                agent
+                    .add_extension(
+                        ExtensionConfig::Builtin {
+                            name: "developer".to_string(),
+                            description: String::new(),
+                            display_name: None,
+                            timeout: None,
+                            bundled: None,
+                            available_tools: vec!["read".to_string()],
+                        },
+                        &session.id,
+                    )
+                    .await?;
+            }
+            agent.update_provider(provider.clone(), &session.id).await?;
+            agent.after_turn_manager = crate::after_turn::AfterTurnManager::new();
+            let mut reply = agent
+                .reply(
+                    task_message,
+                    SessionConfig {
+                        id: session.id,
+                        schedule_id: None,
+                        max_turns: Some(max_turns),
+                        retry_config: None,
+                    },
+                    Some(cancellation),
+                )
+                .await?;
+            let mut outcome = None;
+            let mut successful_tool = false;
+            let mut observed_tool_results = Vec::new();
+            while let Some(event) = reply.next().await {
+                match event? {
+                    AgentEvent::RuntimeOutcome(observed) => outcome = Some(observed),
+                    AgentEvent::Message(message) => {
+                        for content in message.content {
+                            if let MessageContent::ToolResponse(response) = content {
+                                observed_tool_results.push(format!("{:?}", response.tool_result));
+                                successful_tool |= response
+                                    .tool_result
+                                    .is_ok_and(|result| !result.is_error.unwrap_or(false));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            assert_eq!(outcome, Some(expected));
+            assert_eq!(
+                provider.calls.load(std::sync::atomic::Ordering::SeqCst),
+                expected_calls
+            );
+            if matches!(first_reply, OutcomeFirstReply::Read) {
+                assert!(
+                    successful_tool,
+                    "read fixture did not succeed: {observed_tool_results:?}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn headless_coordinator_hides_and_denies_worker_tools_without_narrowing_workers(
+    ) -> anyhow::Result<()> {
+        let directory = tempfile::tempdir()?;
+        let manager = Arc::new(crate::session::SessionManager::new(
+            directory.path().to_path_buf(),
+        ));
+        let config = AgentRunnerConfig::new(
+            Arc::clone(&manager),
+            PermissionManager::instance(),
+            None,
+            GooseMode::Auto,
+            true,
+            GoosePlatform::GooseCli,
+        );
+        let mut coordinator = Agent::with_config(config.clone());
+        coordinator.config.headless_coding_coordinator = true;
+        let session = manager
+            .create_session(
+                directory.path().to_path_buf(),
+                "coordinator-tool-scope".to_string(),
+                crate::session::session_manager::SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await?;
+        let developer = || crate::agents::extension::ExtensionConfig::Builtin {
+            name: "developer".to_string(),
+            description: String::new(),
+            display_name: None,
+            timeout: None,
+            bundled: None,
+            available_tools: Vec::new(),
+        };
+        coordinator.add_extension(developer(), &session.id).await?;
+        let coordinator_tools = coordinator.list_tools(&session.id, None).await;
+        let coordinator_names: Vec<_> = coordinator_tools
+            .iter()
+            .map(|tool| tool.name.as_ref())
+            .collect();
+        assert!(coordinator_names.contains(&"read"));
+        for forbidden in ["edit", "write", "shell", "verify"] {
+            assert!(
+                !coordinator_names.contains(&forbidden),
+                "{forbidden} was exposed"
+            );
+            let (_, result) = coordinator
+                .dispatch_tool_call(
+                    CallToolRequestParams::new(forbidden.to_string()),
+                    format!("blocked-{forbidden}"),
+                    None,
+                    &session,
+                )
+                .await;
+            let Err(error) = result else {
+                panic!("{forbidden} must be denied before dispatch");
+            };
+            assert_eq!(error.code, ErrorCode::RESOURCE_NOT_FOUND);
+        }
+
+        // A dispatched worker constructs its own Agent; the coordinator's
+        // request-only tool scope must not be persisted into inherited grants.
+        let worker = Agent::with_config(config);
+        worker.add_extension(developer(), &session.id).await?;
+        let worker_names: Vec<_> = worker
+            .list_tools(&session.id, None)
+            .await
+            .into_iter()
+            .map(|tool| tool.name.into_owned())
+            .collect();
+        for authorized in ["edit", "write", "shell", "verify"] {
+            assert!(
+                worker_names.iter().any(|name| name == authorized),
+                "{authorized} missing from worker"
+            );
+        }
+        Ok(())
+    }
 
     /// 2026-09-25: a gpt-5.4-mini worker's turn held only a reasoning item
     /// (the output cap ran out while it thought). That is not the model

@@ -781,6 +781,13 @@ pub enum PermissionRouting {
 /// Base trait for AI providers (OpenAI, Anthropic, etc)
 #[async_trait]
 pub trait Provider: Send + Sync {
+    /// Opt in only for source-audited request adapters whose physical operations
+    /// await ProviderRetry inside the native gate scope. Custom/spawned adapters
+    /// are ineligible until they carry and re-enter that required scope.
+    fn supports_native_pretransport_gate(&self) -> bool {
+        false
+    }
+
     /// Get the name of this provider instance
     fn get_name(&self) -> &str;
 

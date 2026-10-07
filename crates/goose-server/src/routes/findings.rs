@@ -172,6 +172,14 @@ pub struct Finding {
     /// deleted 133 GB and how" without guessing.
     #[serde(default)]
     pub action_source: Option<String>,
+    /// Another saved finding already covers this path. Listed, not deleted on
+    /// its own, so the same bytes are not trashed twice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contained_in: Option<String>,
+    /// Present when deleting this row would also delete an in-use or protected
+    /// path. The category is unchanged; the action path refuses it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked_reason: Option<String>,
 }
 
 /// Ledgers written before categories existed carry no `category`. Nothing
@@ -249,6 +257,17 @@ fn eligibility(
         observed_at: Utc::now().to_rfc3339(),
         profiles: Vec::new(),
     };
+    if let Some(reason) = f.blocked_reason.clone() {
+        result.reason = reason;
+        return result;
+    }
+    if f.contained_in.is_some()
+        && f.category != classify::CAT_IN_USE
+        && f.category != classify::CAT_MACOS
+    {
+        result.reason = "Included in another finding; it is removed only with that item".into();
+        return result;
+    }
     let check = || -> Result<classify::Classification, String> {
         if !classify::ALL_CATEGORIES.contains(&f.category.as_str()) {
             return Err("Unknown category".into());
@@ -592,15 +611,27 @@ fn refuse_agent_source(source: &str) -> Option<(StatusCode, Json<ErrorBody>)> {
 /// "In use" and "Managed by macOS" are not merely deselected by default — a
 /// bulk action cannot take them at all, so no sequence of clicks reaches them.
 fn bulk_refusal(f: &Finding) -> Option<BlockedItem> {
-    if classify::bulk_trashable(&f.category) {
-        return None;
+    if !classify::bulk_trashable(&f.category) {
+        return Some(BlockedItem {
+            finding_id: f.id.clone(),
+            path: f.path.clone(),
+            category: f.category.clone(),
+            consequence: f.consequence.clone(),
+        });
     }
-    Some(BlockedItem {
-        finding_id: f.id.clone(),
-        path: f.path.clone(),
-        category: f.category.clone(),
-        consequence: f.consequence.clone(),
-    })
+    if f.blocked_reason.is_some() || f.contained_in.is_some() {
+        return Some(BlockedItem {
+            finding_id: f.id.clone(),
+            path: f.path.clone(),
+            category: f.category.clone(),
+            consequence: f.blocked_reason.clone().or_else(|| {
+                f.contained_in
+                    .as_ref()
+                    .map(|id| format!("Included in finding {id}"))
+            }),
+        });
+    }
+    None
 }
 
 /// Legacy callers receive a recheck hint for a saved busy category. Even a
@@ -1463,21 +1494,39 @@ async fn recovery_total(State(_state): State<Arc<AppState>>) -> Json<RecoveryTot
 
 // ── GET /automation/run/:run_id/findings ────────────────────────────
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct RejectedFinding {
+    pub id: String,
+    #[serde(default)]
+    pub path: Option<String>,
+    pub reason: String,
+}
+
 #[derive(Serialize)]
 pub struct FindingsResponse {
     run_id: String,
     findings: Vec<Finding>,
+    /// Scanner rows that were kept out of the selectable list. They are not
+    /// paths the UI may delete.
+    #[serde(default)]
+    rejected: Vec<RejectedFinding>,
     /// Missing/corrupt files are never an explicitly empty successful scan.
     ledger_state: &'static str,
     created_at: Option<String>,
+    /// Set only when this ledger was rebuilt from a saved scan-tool response.
+    /// Distinct from `created_at`, which stays the original scan time.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    recovered_at: Option<String>,
 }
 
 fn findings_response(dir: &Path, run_id: &str) -> FindingsResponse {
     let missing = || FindingsResponse {
         run_id: run_id.into(),
         findings: Vec::new(),
+        rejected: Vec::new(),
         ledger_state: "missing",
         created_at: None,
+        recovered_at: None,
     };
     if run_id.is_empty()
         || !run_id
@@ -1501,6 +1550,10 @@ fn findings_response(dir: &Path, run_id: &str) -> FindingsResponse {
     FindingsResponse {
         run_id: data.run_id,
         findings: data.findings,
+        rejected: value
+            .get("rejected")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default(),
         ledger_state: if value.get("validated").and_then(|v| v.as_bool()) == Some(true) {
             "valid"
         } else {
@@ -1510,6 +1563,10 @@ fn findings_response(dir: &Path, run_id: &str) -> FindingsResponse {
             .get("created_at")
             .and_then(|v| v.as_str())
             .map(str::to_owned),
+        recovered_at: value
+            .get("recovered_at")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned),
     }
 }
 
@@ -1517,6 +1574,81 @@ async fn get_findings(
     State(_state): State<Arc<AppState>>,
     AxumPath(run_id): AxumPath<String>,
 ) -> Result<Json<FindingsResponse>, (StatusCode, Json<ErrorBody>)> {
+    Ok(Json(findings_response(&findings_dir(), &run_id)))
+}
+
+fn valid_automation_run_id(run_id: &str) -> bool {
+    !run_id.is_empty()
+        && run_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// POST /automation/run/:run_id/recover-findings
+///
+/// Loads the saved session on the server and rebuilds the ledger from an
+/// authentic scan-tool response. The request body is ignored. This does not
+/// start a scan and does not delete files.
+async fn recover_findings(
+    State(state): State<Arc<AppState>>,
+    AxumPath(run_id): AxumPath<String>,
+) -> Result<Json<FindingsResponse>, (StatusCode, Json<ErrorBody>)> {
+    if !valid_automation_run_id(&run_id) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorBody {
+                error: "Invalid run id".into(),
+            }),
+        ));
+    }
+    let session = state
+        .session_manager()
+        .get_session(&run_id, true)
+        .await
+        .map_err(|_| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(ErrorBody {
+                    error: "This run has no saved conversation.".into(),
+                }),
+            )
+        })?;
+    let Some(conversation) = session.conversation else {
+        return Err((
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ErrorBody {
+                error: "This run has no saved conversation to recover from.".into(),
+            }),
+        ));
+    };
+    let home = std::env::var("HOME").map(PathBuf::from).map_err(|_| {
+        (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ErrorBody {
+                error: "Cleanup home is unavailable.".into(),
+            }),
+        )
+    })?;
+    if let Err(error) = permagent::storage_health::scanner::recover_saved_scan(
+        &conversation,
+        &run_id,
+        &findings_dir(),
+        &home,
+        &ActionProbe,
+    ) {
+        let message = error.to_string();
+        let status = if message.contains("not a validated scan") {
+            StatusCode::CONFLICT
+        } else {
+            StatusCode::UNPROCESSABLE_ENTITY
+        };
+        return Err((
+            status,
+            Json(ErrorBody {
+                error: format!("Saved scan results could not be recovered. {message}"),
+            }),
+        ));
+    }
     Ok(Json(findings_response(&findings_dir(), &run_id)))
 }
 
@@ -1571,6 +1703,10 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route(
             "/automation/run/{run_id}/findings",
             get(get_findings).post(save_findings_endpoint),
+        )
+        .route(
+            "/automation/run/{run_id}/recover-findings",
+            post(recover_findings),
         )
         .route(
             "/automation/run/{run_id}/bulk-action",
@@ -1647,6 +1783,8 @@ mod tests {
                 actioned_at: None,
                 size_recovered_bytes: None,
                 action_source: None,
+                contained_in: None,
+                blocked_reason: None,
             }],
         }
     }
@@ -1722,6 +1860,8 @@ mod tests {
                 actioned_at: Some("2026-07-20T00:00:00Z".to_string()),
                 size_recovered_bytes: Some(*bytes),
                 action_source: Some(SOURCE_UI_CLICK.to_string()),
+                contained_in: None,
+                blocked_reason: None,
             })
             .collect();
         for i in 0..pending {
@@ -1739,6 +1879,8 @@ mod tests {
                 actioned_at: None,
                 size_recovered_bytes: None,
                 action_source: None,
+                contained_in: None,
+                blocked_reason: None,
             });
         }
         save_findings_to(
@@ -1829,6 +1971,8 @@ mod tests {
             actioned_at: None,
             size_recovered_bytes: None,
             action_source: None,
+            contained_in: None,
+            blocked_reason: None,
         }
     }
 
@@ -1888,6 +2032,42 @@ mod tests {
             .filter_map(|f| bulk_refusal(f).map(|_| f.id.as_str()))
             .collect();
         assert_eq!(blocked, vec!["finding-008", "finding-015"]);
+    }
+
+    #[test]
+    fn contained_and_blocked_findings_are_not_removable() {
+        struct IdleProbe;
+        impl ActivityProbe for IdleProbe {
+            fn check(
+                &self,
+                _: &Path,
+            ) -> Result<Vec<permagent::storage_health::inuse::ProcessRef>, String> {
+                Ok(Vec::new())
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().canonicalize().unwrap();
+        let mut contained = categorized("child", "/tmp/child", classify::CAT_SAFE, 10);
+        contained.contained_in = Some("parent".into());
+        let result = eligibility(&mut contained, true, true, &home, &IdleProbe);
+        assert!(!result.eligible);
+        assert_eq!(
+            result.reason,
+            "Included in another finding; it is removed only with that item"
+        );
+        assert!(bulk_refusal(&contained).is_some());
+
+        let mut blocked = categorized("parent", "/tmp/parent", classify::CAT_SAFE, 20);
+        blocked.blocked_reason = Some("Contains an in-use or protected item".into());
+        let refused = bulk_refusal(&blocked).expect("a protected ancestor must be blocked");
+        assert_eq!(
+            refused.consequence.as_deref(),
+            Some("Contains an in-use or protected item")
+        );
+        let observed = eligibility(&mut blocked, true, true, &home, &IdleProbe);
+        assert!(!observed.eligible);
+        assert_eq!(observed.reason, "Contains an in-use or protected item");
+        assert_eq!(blocked.category, classify::CAT_SAFE);
     }
 
     #[test]
@@ -2388,6 +2568,8 @@ mod st1_acceptance {
             actioned_at: None,
             size_recovered_bytes: None,
             action_source: None,
+            contained_in: None,
+            blocked_reason: None,
         }
     }
     fn idle() -> Probe {
@@ -2597,6 +2779,8 @@ mod st1_acceptance {
             actioned_at: None,
             size_recovered_bytes: None,
             action_source: None,
+            contained_in: None,
+            blocked_reason: None,
         };
         let checks = ActionChecks {
             home: &home,
@@ -2649,6 +2833,8 @@ mod st1_acceptance {
             actioned_at: None,
             size_recovered_bytes: None,
             action_source: None,
+            contained_in: None,
+            blocked_reason: None,
         };
         let checks = ActionChecks {
             run_id: "fixture",
@@ -2699,6 +2885,8 @@ mod st1_acceptance {
                 actioned_at: None,
                 size_recovered_bytes: None,
                 action_source: None,
+                contained_in: None,
+                blocked_reason: None,
             };
             let checks = ActionChecks {
                 home: &home,
@@ -2809,6 +2997,8 @@ mod st1_acceptance {
                 actioned_at: None,
                 size_recovered_bytes: None,
                 action_source: None,
+                contained_in: None,
+                blocked_reason: None,
             };
             let current = eligibility(&mut f, regen, review, &home, &idle());
             assert_eq!(current.eligible, eligible, "{relative}: {}", current.reason);
@@ -2844,6 +3034,8 @@ mod st1_acceptance {
             actioned_at: None,
             size_recovered_bytes: None,
             action_source: None,
+            contained_in: None,
+            blocked_reason: None,
         };
         struct Replace;
         impl ActivityProbe for Replace {
@@ -2893,5 +3085,150 @@ mod st1_acceptance {
             serde_json::from_slice(&std::fs::read(ledger_dir.join("fixture.json")).unwrap())
                 .unwrap();
         assert_eq!(saved.findings.len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod saved_scan_recovery_http_tests {
+    use crate as permagent_daemon;
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use permagent::conversation::message::{Message, MessageContent};
+    use serde_json::{json, Value};
+    use tower::ServiceExt;
+
+    async fn request(app: &axum::Router, method: &str, uri: &str) -> (StatusCode, Value) {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, serde_json::from_slice(&body).unwrap())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial_test::serial]
+    async fn saved_scan_recovery_restores_authentic_rows_and_preserves_the_ledger() {
+        let home = tempfile::tempdir().unwrap();
+        let canonical_home = home.path().canonicalize().unwrap();
+        let root = crate::test_support::test_root();
+        let _environment = env_lock::lock_env([
+            ("HOME", Some(canonical_home.to_str().unwrap())),
+            ("PERMAGENT_PATH_ROOT", Some(root.to_str().unwrap())),
+            ("PERMAGENT_DISABLE_KEYRING", Some("true")),
+        ]);
+        let cache = canonical_home.join("Library/Caches/Fixture");
+        std::fs::create_dir_all(&cache).unwrap();
+        let state = permagent_daemon::state::AppState::new(true).await.unwrap();
+        let manager = state.session_manager();
+        let session = manager
+            .create_session(
+                canonical_home.clone(),
+                "Saved scan fixture".into(),
+                permagent::session::SessionType::Scheduled,
+                permagent::config::GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let request_content: MessageContent = serde_json::from_value(json!({
+            "type":"toolRequest","id":"scan-1","toolCall":{"status":"success",
+            "value":{"name":"scan_storage_health","arguments":{}}}}))
+        .unwrap();
+        let rows = json!([{"id":"cache-1","type":"app_cache","path":cache,
+            "size_bytes":100,"age_days":null,"recommendation":"Safe to remove",
+            "category":"safe_to_remove","consequence":"Rebuilt on next use"}]);
+        let text = format!("Findings JSON (emit this in <findings>...</findings> tags):\n{rows}");
+        let response_content: MessageContent = serde_json::from_value(json!({
+            "type":"toolResponse","id":"scan-1","toolResult":{"status":"success",
+            "value":{"content":[{"type":"text","text":text}],"isError":false}}}))
+        .unwrap();
+        let mut source_request = Message::assistant().with_content(request_content);
+        source_request.created = 1_725_999_995;
+        let mut source_response = Message::user().with_content(response_content);
+        source_response.created = 1_726_000_000;
+        manager
+            .add_message(&session.id, &source_request)
+            .await
+            .unwrap();
+        manager
+            .add_message(&session.id, &source_response)
+            .await
+            .unwrap();
+        manager
+            .add_message(
+                &session.id,
+                &Message::assistant().with_text("6.9 GB across 13 items."),
+            )
+            .await
+            .unwrap();
+        let original = manager
+            .get_session(&session.id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap();
+        let app = permagent_daemon::routes::findings::routes(state.clone());
+        let base = format!("/automation/run/{}", session.id);
+        assert_eq!(
+            request(&app, "GET", &format!("{base}/findings")).await.1["ledger_state"],
+            "missing"
+        );
+        assert_eq!(
+            request(
+                &app,
+                "POST",
+                "/automation/run/missing-session/recover-findings"
+            )
+            .await
+            .0,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            request(&app, "POST", "/automation/run/bad!id/recover-findings")
+                .await
+                .0,
+            StatusCode::BAD_REQUEST
+        );
+        let (status, recovered) = request(&app, "POST", &format!("{base}/recover-findings")).await;
+        assert_eq!(status, StatusCode::OK, "{recovered}");
+        assert_eq!(recovered["ledger_state"], "valid");
+        assert_eq!(
+            recovered["findings"].as_array().unwrap().len(),
+            1,
+            "{recovered}"
+        );
+        assert_eq!(recovered["findings"][0]["id"], "cache-1");
+        assert_eq!(recovered["created_at"], "2024-09-10T20:26:40+00:00");
+        assert_ne!(recovered["created_at"], recovered["recovered_at"]);
+        let ledger = canonical_home
+            .join(".permagent/automation/findings")
+            .join(format!("{}.json", session.id));
+        let bytes = std::fs::read(&ledger).unwrap();
+        let (status, repeated) = request(&app, "POST", &format!("{base}/recover-findings")).await;
+        assert_eq!(status, StatusCode::OK, "{repeated}");
+        assert_eq!(std::fs::read(&ledger).unwrap(), bytes);
+        let after = manager
+            .get_session(&session.id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(after).unwrap(),
+            serde_json::to_value(original).unwrap()
+        );
+        assert!(cache.is_dir(), "recovery must not remove the scanned cache");
     }
 }

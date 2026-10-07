@@ -118,12 +118,27 @@ fn dependency_setup_brief(worktree: &Path) -> String {
 /// leaving a dirty trunk that then blocked their own goal from landing.
 pub(crate) fn worktree_scope_brief(worktree: &Path) -> String {
     format!(
-        "\n\nWRITABLE ROOT: {} — this worktree is the ONLY directory you may create, edit, \
+        "EXECUTION DIRECTORY / WRITABLE ROOT: {} — this worktree is the ONLY directory you may create, edit, \
          delete or commit files in, and it is where your goal branch is checked out. Read \
          anywhere you like, but never write outside it: the project checkout is NOT yours to \
          touch, and a stray write or commit there blocks your own work from landing. Your \
-         shell already starts in this worktree and relative paths resolve there.",
+         shell already starts in this worktree and relative paths resolve there. \
+         Any Project root or Working directory named in the original task below is source-reference \
+         context, not your execution directory. Resolve repository-relative paths for reads, edits, \
+         dependency setup, tests and commits against this execution directory. Do not cd to the \
+         source checkout to run those operations.",
         worktree.display()
+    )
+}
+
+/// Put the actual execution directory before any preserved task paths. The
+/// original contract remains byte-for-byte task data, not a cwd override.
+fn scoped_worker_prompt(instructions: &str, worktree: &Path) -> String {
+    format!(
+        "{}{}\n\n{}",
+        worktree_scope_brief(worktree),
+        dependency_setup_brief(worktree),
+        instructions
     )
 }
 
@@ -324,6 +339,7 @@ pub struct GoalEvidence {
 /// Per-goal data handed to an engine. Engine-specific capabilities (provider,
 /// session manager, CLI binary) live on the engine struct, not here.
 pub struct GoalTask {
+    pub start_permit: Option<crate::goal_attempts::StartPermit>,
     pub card_title: String,
     /// Fully-formatted goal instructions (goal / description / project / root).
     pub instructions: String,
@@ -389,6 +405,178 @@ pub struct DispatchedWork {
     /// bidirectional stdin protocol today). `None` = not steerable; the steer
     /// tool reports that honestly instead of pretending.
     pub steer: Option<std::sync::Arc<SteerHandle>>,
+}
+
+/// Worker resources with no provider/tool/child execution yet. The native
+/// orchestrator finalizes the exact claim before consuming this start gate.
+pub struct PreparedWork {
+    pub run_id: String,
+    pub(crate) start: Option<
+        Box<
+            dyn FnOnce() -> futures::future::BoxFuture<'static, Result<DispatchedWork, String>>
+                + Send,
+        >,
+    >,
+    pub(crate) cleanup: Option<PreparedCleanup>,
+}
+
+pub(crate) struct PreparedCleanup {
+    repo: PathBuf,
+    pub(crate) worktree: Option<PathBuf>,
+    pub(crate) baseline: Option<String>,
+    session_id: String,
+    manager: Option<Arc<SessionManager>>,
+    permit: Option<crate::goal_attempts::StartPermit>,
+    crossed: std::sync::atomic::AtomicBool,
+    kill: Arc<std::sync::Mutex<GoalKill>>,
+}
+
+impl PreparedCleanup {
+    pub(crate) fn new(
+        repo: PathBuf,
+        session_id: String,
+        manager: Option<Arc<SessionManager>>,
+        permit: Option<crate::goal_attempts::StartPermit>,
+    ) -> Self {
+        Self {
+            repo,
+            worktree: None,
+            baseline: None,
+            session_id,
+            manager,
+            permit,
+            crossed: std::sync::atomic::AtomicBool::new(false),
+            kill: Arc::new(std::sync::Mutex::new(GoalKill::None)),
+        }
+    }
+    fn kill_owned(&self) {
+        if let Ok(kill) = self.kill.lock() {
+            kill.kill();
+        }
+    }
+    async fn discard(self, cancelled: bool) {
+        let mut started = self.crossed.load(std::sync::atomic::Ordering::SeqCst);
+        if let Some(permit) = &self.permit {
+            if let Ok(mut tx) = permit.pool.begin_with("BEGIN IMMEDIATE").await {
+                let state = sqlx::query_scalar::<_, String>(
+                    "SELECT execution_state FROM goal_attempts WHERE goal_id=? AND claim_id=?",
+                )
+                .bind(&permit.goal_id)
+                .bind(&permit.claim_id)
+                .fetch_optional(&mut *tx)
+                .await;
+                // A cancelled await can occur after the start transaction
+                // committed. Missing state is unknown, never cleanup authority.
+                started |= !matches!(state, Ok(Some(ref s)) if s == "claimed" || s == "prepared");
+                let result = if cancelled && started {
+                    crate::goal_attempts::cancel_tx(&mut tx, &permit.goal_id, &permit.claim_id)
+                        .await
+                } else {
+                    crate::goal_attempts::release_tx(
+                        &mut tx,
+                        &permit.goal_id,
+                        &permit.claim_id,
+                        if started {
+                            "Worker start failed after execution boundary"
+                        } else {
+                            "Prepared worker discarded before execution"
+                        },
+                    )
+                    .await
+                };
+                if result.is_ok() {
+                    let _ = tx.commit().await;
+                }
+            } else {
+                started = true;
+            }
+        }
+        if started {
+            self.kill_owned();
+            return;
+        }
+        if let (Some(worktree), Some(baseline)) = (&self.worktree, &self.baseline) {
+            let clean = Command::new("git")
+                .arg("-C")
+                .arg(worktree)
+                .args(["status", "--porcelain"])
+                .output()
+                .await
+                .is_ok_and(|o| o.status.success() && o.stdout.is_empty());
+            let unchanged = Command::new("git")
+                .arg("-C")
+                .arg(worktree)
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .await
+                .is_ok_and(|o| {
+                    o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == baseline
+                });
+            if !clean || !unchanged || worktree == &self.repo {
+                return;
+            }
+            let removed = Command::new("git")
+                .arg("-C")
+                .arg(&self.repo)
+                .args(["worktree", "remove"])
+                .arg(worktree)
+                .output()
+                .await;
+            if !removed.is_ok_and(|o| o.status.success()) {
+                return;
+            }
+        }
+        // No execution occurred and no changed work is discarded. The native
+        // journal keeps the failed preparation identity even after empty session cleanup.
+        if let Some(manager) = self.manager {
+            let _ = manager.delete_session(&self.session_id).await;
+        }
+    }
+}
+
+impl PreparedWork {
+    pub async fn start(mut self) -> Result<DispatchedWork, String> {
+        if let Some(permit) = self.cleanup.as_ref().and_then(|c| c.permit.as_ref()) {
+            if let Err(error) = permit.start().await {
+                if let Some(cleanup) = self.cleanup.take() {
+                    cleanup.discard(false).await;
+                }
+                return Err(error.to_string());
+            }
+        }
+        let start = self
+            .start
+            .take()
+            .ok_or_else(|| "Prepared worker already consumed".to_string())?;
+        if let Some(cleanup) = self.cleanup.as_ref() {
+            cleanup
+                .crossed
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        match start().await {
+            Ok(work) => {
+                self.cleanup.take();
+                Ok(work)
+            }
+            Err(error) => {
+                if let Some(cleanup) = self.cleanup.take() {
+                    cleanup.discard(false).await;
+                }
+                Err(error)
+            }
+        }
+    }
+}
+
+impl Drop for PreparedWork {
+    fn drop(&mut self) {
+        if let Some(cleanup) = self.cleanup.take() {
+            cleanup.kill_owned();
+            if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                runtime.spawn(cleanup.discard(true));
+            }
+        }
+    }
 }
 
 /// Mid-run steering for a claude external-CLI worker (hardening pass,
@@ -491,6 +679,7 @@ impl SteerHandle {
 /// per in-flight goal in a process-global registry keyed by card id; the cancel
 /// path takes it and calls [`kill`](GoalKill::kill) before marking the goal
 /// Cancelled.
+#[derive(Clone)]
 pub enum GoalKill {
     /// External CLI: the worker runs in its own process group (pgid == the
     /// leader pid). SIGKILLing the whole group reaps the CLI *and* any tool
@@ -502,6 +691,48 @@ pub enum GoalKill {
     /// the goal terminal; a still-running worker no-ops at completion (its card
     /// has already left in_progress) and dies on the dispatch timeout.
     None,
+}
+
+/// Owns a started execution until the registry and completion tracker take over.
+/// Dropping a dispatch future during bookkeeping must stop only its own worker.
+pub(crate) struct StartedWorkGuard {
+    kill: Option<GoalKill>,
+    permit: crate::goal_attempts::StartPermit,
+}
+impl StartedWorkGuard {
+    pub(crate) fn new(kill: &GoalKill, permit: crate::goal_attempts::StartPermit) -> Self {
+        Self {
+            kill: Some(kill.clone()),
+            permit,
+        }
+    }
+    pub(crate) fn disarm(&mut self) {
+        self.kill.take();
+    }
+}
+impl Drop for StartedWorkGuard {
+    fn drop(&mut self) {
+        if let Some(kill) = self.kill.take() {
+            kill.kill();
+            let permit = self.permit.clone();
+            if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                runtime.spawn(async move {
+                    if let Ok(mut tx) = permit.pool.begin_with("BEGIN IMMEDIATE").await {
+                        if crate::goal_attempts::cancel_tx(
+                            &mut tx,
+                            &permit.goal_id,
+                            &permit.claim_id,
+                        )
+                        .await
+                        .is_ok()
+                        {
+                            let _ = tx.commit().await;
+                        }
+                    }
+                });
+            }
+        }
+    }
 }
 
 impl GoalKill {
@@ -538,6 +769,9 @@ pub trait GoalEngine: Send + Sync {
     /// completion tracker awaits. `Err` here means the goal never started
     /// (card stays Ready, attempt not consumed).
     async fn spawn(&self, task: GoalTask) -> Result<DispatchedWork, String>;
+    async fn prepare(&self, _task: GoalTask) -> Result<PreparedWork, String> {
+        Err("This engine has no native prepare/start gate".into())
+    }
 }
 
 // ── Internal subagent engine (Slice 0 — extracted verbatim) ───────────────
@@ -572,6 +806,9 @@ pub struct InternalSubagentEngine {
 #[async_trait]
 impl GoalEngine for InternalSubagentEngine {
     async fn spawn(&self, task: GoalTask) -> Result<DispatchedWork, String> {
+        self.prepare(task).await?.start().await
+    }
+    async fn prepare(&self, task: GoalTask) -> Result<PreparedWork, String> {
         let subagent_session = self
             .session_manager
             .create_session_with_parent(
@@ -585,6 +822,17 @@ impl GoalEngine for InternalSubagentEngine {
             .map_err(|e| format!("Failed to create subagent session: {}", e))?;
 
         let session_id = subagent_session.id.clone();
+        let mut prepared = PreparedWork {
+            run_id: session_id.clone(),
+            start: None,
+            cleanup: Some(PreparedCleanup::new(
+                task.working_dir.clone(),
+                session_id.clone(),
+                Some(self.session_manager.clone()),
+                task.start_permit.clone(),
+            )),
+        };
+
         inherit_worker_metadata(
             &self.session_manager,
             &session_id,
@@ -599,6 +847,12 @@ impl GoalEngine for InternalSubagentEngine {
         // benchmark cells (2026-08-11 bench contamination) and left the
         // completion path with no worktree to credential-scan, so a failure to
         // isolate now fails the dispatch rather than degrading into it.
+        if let (Some(cleanup), Some(baseline)) =
+            (prepared.cleanup.as_mut(), task.baseline_commit.as_ref())
+        {
+            cleanup.worktree = Some(goal_worktrees_dir(&task.working_dir).join(&session_id));
+            cleanup.baseline = Some(baseline.clone());
+        }
         let (worktree, baseline) = resolve_internal_isolation(
             &task.working_dir,
             task.baseline_commit.as_deref(),
@@ -606,6 +860,10 @@ impl GoalEngine for InternalSubagentEngine {
         )
         .await?;
         let work_dir = worktree.clone();
+        if let Some(cleanup) = prepared.cleanup.as_mut() {
+            cleanup.worktree = Some(worktree.clone());
+            cleanup.baseline = Some(baseline.clone());
+        }
 
         // Y3: the session row above was created with `task.working_dir` — the
         // PRIMARY checkout — because the worktree branch name (`goal/<session_id>`)
@@ -698,12 +956,9 @@ impl GoalEngine for InternalSubagentEngine {
         )
         .with_compact_worker_profile(self.compact_worker_profile);
 
-        let worker_prompt = format!(
-            "{}{}{}{}",
-            task.instructions,
-            COMMIT_ONLY_BRIEF,
-            worktree_scope_brief(&work_dir),
-            dependency_setup_brief(&work_dir)
+        let worker_prompt = scoped_worker_prompt(
+            &format!("{}{}", task.instructions, COMMIT_ONLY_BRIEF),
+            &work_dir,
         );
         let recipe = Recipe::builder()
             .version("1.0.0")
@@ -738,40 +993,62 @@ impl GoalEngine for InternalSubagentEngine {
                     .any(|c| matches!(c, MessageContent::ToolRequest(_)));
             }
         });
-        let join = tokio::spawn(async move {
-            // GM6 (dagK): `return_last_only: true` makes the Ok value the
-            // worker's own closing message — the in-process counterpart to
-            // what `worker_closing_summary` extracts for the external-CLI
-            // engine. It used to be discarded with `.map(|_| ())`, so every
-            // in-process subagent's Evidence panel showed the literal string
-            // "in-process subagent run" instead of what the worker actually
-            // said it did.
-            let run = run_subagent_task(SubagentRunParams {
-                config: agent_config,
-                recipe,
-                task_config,
-                return_last_only: true,
-                session_id: run_session_id,
-                cancellation_token: Some(cancel_token),
-                on_message: Some(on_message),
-                notification_tx: None,
-                persona_override,
-            })
-            .await
-            .map_err(|e| e.to_string());
-            let worker_plan = captured_plan.lock().unwrap().0.clone();
-            finalize_internal_run(&worktree, &baseline, run, worker_plan).await
-        });
+        if let Some(permit) = &task.start_permit {
+            permit
+                .prepare_worker(&session_id, &worktree, task.budget_task_id.as_deref())
+                .await
+                .map_err(|e| e.to_string())?;
+            permit
+                .mark_provider_accounting(&session_id)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        if let Some(cleanup) = prepared.cleanup.as_ref() {
+            *cleanup
+                .kill
+                .lock()
+                .map_err(|_| "Prepared kill guard poisoned".to_string())? =
+                GoalKill::Cancel(cancel_token.clone());
+        }
+        prepared.start = Some(Box::new(move || {
+            Box::pin(async move {
+                let join = tokio::spawn(async move {
+                    // GM6 (dagK): `return_last_only: true` makes the Ok value the
+                    // worker's own closing message — the in-process counterpart to
+                    // what `worker_closing_summary` extracts for the external-CLI
+                    // engine. It used to be discarded with `.map(|_| ())`, so every
+                    // in-process subagent's Evidence panel showed the literal string
+                    // "in-process subagent run" instead of what the worker actually
+                    // said it did.
+                    let run = run_subagent_task(SubagentRunParams {
+                        config: agent_config,
+                        recipe,
+                        task_config,
+                        return_last_only: true,
+                        session_id: run_session_id,
+                        cancellation_token: Some(cancel_token),
+                        on_message: Some(on_message),
+                        notification_tx: None,
+                        persona_override,
+                    })
+                    .await
+                    .map_err(|e| e.to_string());
+                    let worker_plan = captured_plan.lock().unwrap().0.clone();
+                    finalize_internal_run(&worktree, &baseline, run, worker_plan).await
+                });
 
-        Ok(DispatchedWork {
-            run_id: session_id,
-            process_id: None,
-            join,
-            kill,
-            // In-process subagents have no stdin protocol; steering them is a
-            // different seam (session message), not built yet.
-            steer: None,
-        })
+                Ok(DispatchedWork {
+                    run_id: session_id,
+                    process_id: None,
+                    join,
+                    kill,
+                    // In-process subagents have no stdin protocol; steering them is a
+                    // different seam (session message), not built yet.
+                    steer: None,
+                })
+            })
+        }));
+        Ok(prepared)
     }
 }
 
@@ -920,28 +1197,6 @@ impl ExternalCliEngine {
             )
             .await
             .map_err(|e| format!("Failed to create durable external worker session: {e}"))?;
-        inherit_worker_metadata(
-            &self.session_manager,
-            &session.id,
-            task.budget_task_id.as_deref(),
-            task.goal_id.as_deref(),
-        )
-        .await?;
-        let worker = self
-            .session_manager
-            .get_session(&session.id, false)
-            .await
-            .map_err(|e| format!("Failed to verify durable external worker session: {e}"))?;
-        let persisted_goal = crate::session::goal_id(&worker.extension_data);
-        let persisted_budget = crate::session::budget_task_id(&worker.extension_data);
-        if persisted_goal.as_deref() != task.goal_id.as_deref()
-            || persisted_budget.as_deref() != task.budget_task_id.as_deref()
-        {
-            return Err(
-                "Durable external worker session identity did not match goal_id/budget_task_id; worker was not started"
-                    .to_string(),
-            );
-        }
         Ok(session.id)
     }
 }
@@ -1011,6 +1266,9 @@ fn worker_identity_env(
 #[async_trait]
 impl GoalEngine for ExternalCliEngine {
     async fn spawn(&self, task: GoalTask) -> Result<DispatchedWork, String> {
+        self.prepare(task).await?.start().await
+    }
+    async fn prepare(&self, task: GoalTask) -> Result<PreparedWork, String> {
         self.validate_adapter()?;
         let baseline = task.baseline_commit.clone().ok_or_else(|| {
             "External-CLI dispatch requires a git baseline commit, but the project root is not a \
@@ -1024,7 +1282,55 @@ impl GoalEngine for ExternalCliEngine {
         // SessionManager-owned id, and goal accounting can resolve it after a
         // restart instead of losing the external worker's spend.
         let run_id = self.create_worker_session(&task).await?;
+        let mut prepared = PreparedWork {
+            run_id: run_id.clone(),
+            start: None,
+            cleanup: Some(PreparedCleanup::new(
+                task.working_dir.clone(),
+                run_id.clone(),
+                Some(self.session_manager.clone()),
+                task.start_permit.clone(),
+            )),
+        };
+
+        inherit_worker_metadata(
+            &self.session_manager,
+            &run_id,
+            task.budget_task_id.as_deref(),
+            task.goal_id.as_deref(),
+        )
+        .await?;
+        let worker = self
+            .session_manager
+            .get_session(&run_id, false)
+            .await
+            .map_err(|e| format!("Failed to verify durable external worker session: {e}"))?;
+        let persisted_goal = crate::session::goal_id(&worker.extension_data);
+        let persisted_budget = crate::session::budget_task_id(&worker.extension_data);
+        if persisted_goal.as_deref() != task.goal_id.as_deref()
+            || persisted_budget.as_deref() != task.budget_task_id.as_deref()
+        {
+            return Err(
+                "Durable external worker session identity did not match goal_id/budget_task_id; worker was not started"
+                    .to_string(),
+            );
+        }
+
+        if let Some(cleanup) = prepared.cleanup.as_mut() {
+            cleanup.worktree = Some(
+                task.working_dir
+                    .parent()
+                    .unwrap_or(&task.working_dir)
+                    .join(GOAL_WORKTREES_DIR)
+                    .join(&run_id),
+            );
+            cleanup.baseline = Some(baseline.clone());
+        }
         let worktree = create_goal_worktree(&task.working_dir, &baseline, &run_id).await?;
+        if let Some(cleanup) = prepared.cleanup.as_mut() {
+            cleanup.worktree = Some(worktree.clone());
+            cleanup.baseline = Some(baseline.clone());
+        }
 
         // Fix (#523): install the work-base capture hooks BEFORE the worker runs,
         // so the parent of its first commit (its true fork point) is recorded the
@@ -1034,11 +1340,7 @@ impl GoalEngine for ExternalCliEngine {
         // and the verifier records Uncertain rather than guessing a stale base.
         let work_base_hooks = install_work_base_hooks(&worktree).await;
 
-        let prompt = format!(
-            "{}{}",
-            self.build_prompt(&task.instructions),
-            dependency_setup_brief(&worktree)
-        );
+        let prompt = scoped_worker_prompt(&self.build_prompt(&task.instructions), &worktree);
         let mut args: Vec<String> = self
             .args
             .iter()
@@ -1143,51 +1445,81 @@ impl GoalEngine for ExternalCliEngine {
         ) {
             cmd.env(key, value);
         }
-        let mut child = cmd
-            // permagent-dispatch: seam=goal_external_worker_v1 class=excluded reason=goal_task_supervision authority=goal_task_billing_gate
-            .spawn()
-            .map_err(|e| format!("Failed to run `{}`: {}", bin, e))?;
-        let kill = match child.id() {
-            Some(pid) => GoalKill::ProcessGroup(pid),
-            None => GoalKill::None,
-        };
-        let pid = child.id();
-
-        let steer = if steerable {
-            match child.stdin.take() {
-                Some(stdin) => {
-                    let handle = std::sync::Arc::new(SteerHandle::new(stdin));
-                    handle.open_with_prompt(&prompt).await?;
-                    Some(handle)
+        if let Some(permit) = &task.start_permit {
+            permit
+                .prepare_worker(&run_id, &worktree, task.budget_task_id.as_deref())
+                .await
+                .map_err(|e| e.to_string())?;
+            permit
+                .mark_external_execution(&run_id)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        let start_kill = prepared
+            .cleanup
+            .as_ref()
+            .ok_or_else(|| "Missing prepared cleanup".to_string())?
+            .kill
+            .clone();
+        prepared.start = Some(Box::new(move || {
+            Box::pin(async move {
+                let mut child = cmd
+                    // permagent-dispatch: seam=goal_external_worker_v1 class=excluded reason=goal_task_supervision authority=goal_task_billing_gate
+                    .spawn()
+                    .map_err(|e| format!("Failed to run `{}`: {}", bin, e))?;
+                if let Some(pid) = child.id() {
+                    match start_kill.lock() {
+                        Ok(mut guard) => *guard = GoalKill::ProcessGroup(pid),
+                        Err(_) => {
+                            GoalKill::ProcessGroup(pid).kill();
+                            return Err("Prepared kill guard poisoned".to_string());
+                        }
+                    }
                 }
-                None => None,
-            }
-        } else {
-            None
-        };
+                let kill = match child.id() {
+                    Some(pid) => GoalKill::ProcessGroup(pid),
+                    None => GoalKill::None,
+                };
+                let pid = child.id();
 
-        let reader_steer = steer.clone();
-        let join = tokio::spawn(async move {
-            await_external_child(
-                child,
-                pid,
-                bin,
-                worktree,
-                baseline,
-                timeout,
-                output_tx,
-                reader_steer,
-            )
-            .await
-        });
+                let steer = if steerable {
+                    match child.stdin.take() {
+                        Some(stdin) => {
+                            let handle = std::sync::Arc::new(SteerHandle::new(stdin));
+                            handle.open_with_prompt(&prompt).await?;
+                            Some(handle)
+                        }
+                        None => None,
+                    }
+                } else {
+                    None
+                };
 
-        Ok(DispatchedWork {
-            run_id,
-            process_id: pid,
-            join,
-            kill,
-            steer,
-        })
+                let reader_steer = steer.clone();
+                let join = tokio::spawn(async move {
+                    await_external_child(
+                        child,
+                        pid,
+                        bin,
+                        worktree,
+                        baseline,
+                        timeout,
+                        output_tx,
+                        reader_steer,
+                    )
+                    .await
+                });
+
+                Ok(DispatchedWork {
+                    run_id,
+                    process_id: pid,
+                    join,
+                    kill,
+                    steer,
+                })
+            })
+        }));
+        Ok(prepared)
     }
 }
 
@@ -1248,6 +1580,7 @@ pub(crate) async fn create_goal_worktree(
     let dest = base_dir.join(run_id);
 
     let mut cmd = Command::new("git");
+    cmd.kill_on_drop(true);
     cmd.arg("-C")
         .arg(repo)
         .arg("worktree")
@@ -3652,6 +3985,24 @@ mod tests {
     }
 
     #[test]
+    fn worker_execution_scope_precedes_and_preserves_original_contract_paths() {
+        let worktree = tempfile::tempdir().unwrap();
+        let original = "Project root: /repos/CityCircle\nOriginal task contract: \"Working directory: /repos/CityCircle; viewport_position: above_fold|below_fold\"";
+        let prompt = scoped_worker_prompt(original, worktree.path());
+        assert!(prompt.starts_with("EXECUTION DIRECTORY / WRITABLE ROOT:"));
+        assert!(prompt.contains(&worktree.path().display().to_string()));
+        assert!(
+            prompt.ends_with(original),
+            "the original contract must be unchanged"
+        );
+        assert!(prompt.find("ONLY directory").unwrap() < prompt.find("/repos/CityCircle").unwrap());
+        assert!(prompt.contains("source-reference context, not your execution directory"));
+        assert!(
+            prompt.contains("dependency setup, tests and commits against this execution directory")
+        );
+    }
+
+    #[test]
     fn external_cli_rejects_acp_adapters_instead_of_misreporting_support() {
         let engine = ExternalCliEngine {
             bin: "claude-agent-acp".to_string(),
@@ -3667,6 +4018,7 @@ mod tests {
 
     fn billing_gate_task(root: &Path, billing_class: &str) -> GoalTask {
         GoalTask {
+            start_permit: None,
             card_title: "billing gate".to_string(),
             instructions: "do not run".to_string(),
             working_dir: root.to_path_buf(),
@@ -3768,6 +4120,7 @@ mod tests {
             .await
             .unwrap();
         let task = GoalTask {
+            start_permit: None,
             card_title: "Implement accounting".to_string(),
             instructions: "do the work".to_string(),
             working_dir: temp.path().to_path_buf(),
@@ -4370,6 +4723,7 @@ mod tests {
             session_manager: Arc::new(SessionManager::instance()),
         };
         let task = GoalTask {
+            start_permit: None,
             card_title: "t".to_string(),
             instructions: "do it".to_string(),
             working_dir: std::env::temp_dir(),
@@ -4738,6 +5092,7 @@ mod tests {
 
     fn internal_worker_task(root: &Path, baseline: &str) -> GoalTask {
         GoalTask {
+            start_permit: None,
             card_title: "y3 isolation repair".to_string(),
             instructions: "do not actually run".to_string(),
             working_dir: root.to_path_buf(),
@@ -5462,6 +5817,299 @@ mod tests {
         .unwrap();
 
         (tmp, pool, card.id, session_id)
+    }
+
+    async fn native_external_prepared_fixture() -> (
+        tempfile::TempDir,
+        sqlx::Pool<sqlx::Sqlite>,
+        String,
+        crate::goal_attempts::StartPermit,
+        PreparedWork,
+        PathBuf,
+        PathBuf,
+    ) {
+        let (tmp, pool, goal, _) = stalled_watchdog_fixture().await;
+        let (repo, baseline) = init_repo_with_remote(tmp.path());
+        let root = std::fs::canonicalize(&repo).unwrap();
+        let claim = "ordering-claim";
+        sqlx::query("UPDATE cards SET metadata_json=json_set(metadata_json,'$.dispatch_claim_id',?) WHERE id=?")
+            .bind(claim).bind(&goal).execute(&pool).await.unwrap();
+        let mut tx = pool.begin().await.unwrap();
+        crate::goal_attempts::claim_tx(
+            &mut tx,
+            &goal,
+            crate::projects::PERSONAL_PROJECT_ID,
+            &crate::goal_attempts::ClaimInput {
+                claim_id: claim.into(),
+                lifecycle_id: "test-lifecycle".into(),
+                worker_key: "test-shell".into(),
+                execution_root: Some(root.to_string_lossy().into_owned()),
+                input_head: Some(baseline.clone()),
+            },
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        let permit = crate::goal_attempts::StartPermit {
+            pool: pool.clone(),
+            goal_id: goal.clone(),
+            claim_id: claim.into(),
+        };
+        let marker = tmp.path().join("execution-marker");
+        let engine = ExternalCliEngine {
+            bin: "/bin/sh".into(),
+            args: vec![
+                "-c".into(),
+                "printf executed > \"$1\"; sleep 30".into(),
+                "test-worker".into(),
+                marker.to_string_lossy().into_owned(),
+            ],
+            persona_override: None,
+            session_manager: Arc::new(SessionManager::new(tmp.path().to_path_buf())),
+        };
+        let mut task = billing_gate_task(&root, "local_free");
+        task.goal_id = Some(goal.clone());
+        task.baseline_commit = Some(baseline);
+        task.start_permit = Some(permit.clone());
+        let prepared = engine.prepare(task).await.unwrap();
+        let worktree = goal_worktrees_dir(&repo).join(&prepared.run_id);
+        (tmp, pool, goal, permit, prepared, marker, worktree)
+    }
+
+    #[tokio::test]
+    async fn native_external_prepare_does_not_spawn_and_unfinalized_start_refuses() {
+        let (_tmp, pool, goal, _permit, prepared, marker, worktree) =
+            native_external_prepared_fixture().await;
+        assert!(worktree.exists());
+        assert!(
+            !marker.exists(),
+            "prepare must not spawn the external command"
+        );
+        assert!(prepared.start().await.is_err());
+        assert!(
+            !marker.exists(),
+            "missing finalization cannot execute a command"
+        );
+        assert!(
+            !worktree.exists(),
+            "pristine pre-start resources are discarded"
+        );
+        let state: String =
+            sqlx::query_scalar("SELECT execution_state FROM goal_attempts WHERE goal_id=?")
+                .bind(goal)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(state, "spawn_failed");
+    }
+
+    #[tokio::test]
+    async fn native_external_finalization_precedes_observable_execution() {
+        let (_tmp, pool, goal, permit, prepared, marker, worktree) =
+            native_external_prepared_fixture().await;
+        let session = prepared.run_id.clone();
+        let mut tx = pool.begin().await.unwrap();
+        crate::goal_attempts::finalize_tx(&mut tx, &goal, &permit.claim_id, Some(&session), None)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        assert!(!marker.exists());
+        let work = prepared.start().await.unwrap();
+        let ownership = StartedWorkGuard::new(&work.kill, permit.clone());
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !marker.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            crate::goal_attempts::is_current_worker(&pool, &goal, &permit.claim_id, &session)
+                .await
+                .unwrap()
+        );
+        drop(ownership);
+        let _ = work.join.await;
+        assert!(
+            worktree.exists(),
+            "started execution evidence must survive teardown"
+        );
+    }
+
+    #[tokio::test]
+    async fn prepared_drop_preserves_committed_candidate_even_before_start() {
+        let (_tmp, _pool, _goal, _permit, prepared, marker, worktree) =
+            native_external_prepared_fixture().await;
+        commit_in_worktree(&worktree, "candidate.txt");
+        let cleanup = prepared.cleanup.as_ref().unwrap();
+        let baseline = cleanup.baseline.clone().unwrap();
+        assert_ne!(git_text(&worktree, &["rev-parse", "HEAD"]).await, baseline);
+        drop(prepared);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(worktree.join("candidate.txt").exists());
+        assert!(!marker.exists());
+    }
+
+    #[tokio::test]
+    async fn cancelled_start_after_spawn_kills_group_and_preserves_evidence() {
+        let (_tmp, pool, goal, permit, mut prepared, marker, worktree) =
+            native_external_prepared_fixture().await;
+        let session = prepared.run_id.clone();
+        let mut tx = pool.begin().await.unwrap();
+        crate::goal_attempts::finalize_tx(&mut tx, &goal, &permit.claim_id, Some(&session), None)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let kill_guard = prepared.cleanup.as_ref().unwrap().kill.clone();
+        let later = marker.with_extension("orphan");
+        let child_marker = marker.clone();
+        let child_later = later.clone();
+        prepared.start = Some(Box::new(move || {
+            Box::pin(async move {
+                let mut command = Command::new("/bin/sh");
+                command
+                    .args([
+                        "-c",
+                        "printf started > \"$1\"; sleep 1; printf orphan > \"$2\"",
+                        "test-worker",
+                    ])
+                    .arg(child_marker)
+                    .arg(child_later)
+                    .kill_on_drop(true);
+                #[cfg(unix)]
+                command.process_group(0);
+                let child = command.spawn().unwrap();
+                *kill_guard.lock().unwrap() = GoalKill::ProcessGroup(child.id().unwrap());
+                std::future::pending::<()>().await;
+                drop(child);
+                unreachable!()
+            })
+        }));
+        let start = tokio::spawn(prepared.start());
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !marker.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        start.abort();
+        let _ = start.await;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let state: String =
+                    sqlx::query_scalar("SELECT execution_state FROM goal_attempts WHERE goal_id=?")
+                        .bind(&goal)
+                        .fetch_one(&pool)
+                        .await
+                        .unwrap();
+                if state == "cancelled" {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        assert!(
+            !later.exists(),
+            "owned child group must not continue after cancellation"
+        );
+        assert!(
+            worktree.exists(),
+            "crossed start boundary must preserve worktree"
+        );
+        assert!(SessionManager::new(_tmp.path().to_path_buf())
+            .get_session(&session, false)
+            .await
+            .is_ok());
+    }
+
+    /// Tests the generic start seam with an ordinary filesystem goal, not the
+    /// Git-only coding engines' separate isolation requirement.
+    #[tokio::test]
+    async fn native_nonrepo_start_gate_allows_observable_work_without_git_evidence() {
+        let (tmp, pool, goal, _) = stalled_watchdog_fixture().await;
+        let claim = "nonrepo-claim";
+        sqlx::query("UPDATE cards SET metadata_json=json_set(metadata_json,'$.dispatch_claim_id',?) WHERE id=?")
+            .bind(claim).bind(&goal).execute(&pool).await.unwrap();
+        let mut tx = pool.begin().await.unwrap();
+        crate::goal_attempts::claim_tx(
+            &mut tx,
+            &goal,
+            crate::projects::PERSONAL_PROJECT_ID,
+            &crate::goal_attempts::ClaimInput {
+                claim_id: claim.into(),
+                lifecycle_id: "test".into(),
+                worker_key: "read-only".into(),
+                execution_root: None,
+                input_head: None,
+            },
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        let permit = crate::goal_attempts::StartPermit {
+            pool: pool.clone(),
+            goal_id: goal.clone(),
+            claim_id: claim.into(),
+        };
+        permit
+            .prepare_worker("nonrepo-worker", tmp.path(), None)
+            .await
+            .unwrap();
+        let mut tx = pool.begin().await.unwrap();
+        crate::goal_attempts::finalize_tx(&mut tx, &goal, claim, Some("nonrepo-worker"), None)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let marker = tmp.path().join("nonrepo-result");
+        let result = marker.clone();
+        let prepared = PreparedWork {
+            run_id: "nonrepo-worker".into(),
+            cleanup: Some(PreparedCleanup::new(
+                tmp.path().to_path_buf(),
+                "nonrepo-worker".into(),
+                None,
+                Some(permit),
+            )),
+            start: Some(Box::new(move || {
+                Box::pin(async move {
+                    let status = Command::new("/usr/bin/touch")
+                        .arg(result)
+                        .status()
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    if !status.success() {
+                        return Err("local fixture command failed".into());
+                    }
+                    Ok(DispatchedWork {
+                        run_id: "nonrepo-worker".into(),
+                        process_id: None,
+                        join: tokio::spawn(async { GoalOutcome::Success(None) }),
+                        kill: GoalKill::None,
+                        steer: None,
+                    })
+                })
+            })),
+        };
+        let work = prepared.start().await.unwrap();
+        assert!(marker.exists());
+        assert!(matches!(
+            work.join.await.unwrap(),
+            GoalOutcome::Success(None)
+        ));
+        let head: Option<String> =
+            sqlx::query_scalar("SELECT input_head FROM goal_attempts WHERE goal_id=?")
+                .bind(goal)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(
+            head.is_none(),
+            "nonrepo execution must not manufacture Git evidence"
+        );
     }
 
     async fn insert_pending_reservation(

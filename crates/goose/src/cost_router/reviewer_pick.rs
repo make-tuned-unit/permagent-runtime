@@ -23,9 +23,12 @@
 //! never an approval — see [`reviewer_spend_gate`].
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 
 use super::budget::{BudgetBand, BudgetVerdict};
-use super::knowledge::{lookup as lookup_model, ModelKnowledge};
+use super::knowledge::{
+    lookup as lookup_model, lookup_with_confidence, LookupConfidence, ModelKnowledge,
+};
 use super::recommend::AvailableModel;
 use super::role_map::RoleModel;
 
@@ -73,8 +76,9 @@ pub struct ReviewerPick {
     pub model: String,
     /// Vendor family, or the provider id when the knowledge base has no row.
     pub family: String,
-    /// The author's family, as resolved the same way — recorded so the card can
-    /// show the comparison rather than assert its conclusion.
+    /// Legacy author-family display. The contributor-set API records the sorted,
+    /// comma-joined set here for compatibility. This display is never evidence
+    /// from which contributor exclusions may be reconstructed.
     pub worker_family: String,
     pub source: ReviewerSource,
     /// THE property the gate rests on. False ⇒ the review still runs, but it is
@@ -147,6 +151,118 @@ pub fn family_of(provider: &str, model: &str) -> String {
         Some(k) => k.family.to_ascii_lowercase(),
         None => provider.trim().to_ascii_lowercase(),
     }
+}
+
+/// Complete native contributor history, or history whose completeness/families
+/// cannot be established. Callers must obtain this from protected physical-call
+/// evidence, never model arguments or the latest worker route alone.
+#[derive(Debug, Clone, Copy)]
+pub enum ContributorFamilies<'a> {
+    /// An empty set is valid only with native proof of no model editing
+    /// contributors; absent history must be `Unknown` instead.
+    Known(&'a BTreeSet<String>),
+    Unknown,
+}
+
+/// A model family established by a knowledge row or an explicit KB alias.
+/// Provider-id fallback, opaque runtime labels (including KB `ollama` rows),
+/// and approximate local tag-prefix matches cannot prove the physical family
+/// of an unknown model behind a proxy or alias.
+pub fn known_physical_family_of(provider: &str, model: &str) -> Option<String> {
+    let (row, confidence) = lookup_with_confidence(provider, model)?;
+    let family = row.family.trim().to_ascii_lowercase();
+    if confidence == LookupConfidence::FamilyEstimate || !physical_family_label(&family) {
+        return None;
+    }
+    Some(family)
+}
+
+// These identify runtimes/transports or missing identity, not model producers.
+fn physical_family_label(family: &str) -> bool {
+    !matches!(
+        family,
+        "" | "ollama"
+            | "local"
+            | "openrouter"
+            | "unknown"
+            | "custom"
+            | "proxy"
+            | "openai-compatible"
+            | "openai_compatible"
+            | "vllm"
+            | "llamacpp"
+            | "llama.cpp"
+            | "lmstudio"
+            | "localai"
+    )
+}
+
+/// Choose a reviewer independent of ALL contributors. Unlike the legacy API,
+/// configured conflicts are not a fallback and unknown history fails closed.
+/// This proves family exclusion only. Budget/runtime eligibility, empirical
+/// local-model qualification, and rechecking the actual physical reviewer route
+/// remain caller obligations before dispatch and before accepting a verdict.
+pub fn select_reviewer_for_contributors(
+    contributors: ContributorFamilies<'_>,
+    configured: Option<&RoleModel>,
+    derived: Option<&RoleModel>,
+    available: &[AvailableModel],
+    changed_lines: usize,
+) -> ReviewerSelection {
+    let ContributorFamilies::Known(families) = contributors else {
+        return ReviewerSelection::Unavailable {
+            reason: "complete trusted contributor family history is unavailable; an independent reviewer cannot be selected".into(),
+        };
+    };
+    let families: BTreeSet<String> = families
+        .iter()
+        .map(|family| family.trim().to_ascii_lowercase())
+        .collect();
+    if families.iter().any(|family| !physical_family_label(family)) {
+        return ReviewerSelection::Unavailable {
+            reason: "trusted contributor history contains an unknown family; an independent reviewer cannot be selected".into(),
+        };
+    }
+    let display = families.iter().cloned().collect::<Vec<_>>().join(",");
+    let mut selection = select_reviewer_with_policy(
+        FamilyPolicy {
+            display: display.clone(),
+            history_known: true,
+            allow_configured_conflict: false,
+            eligible: |provider: &str, model: &str| {
+                !model_is_retired(provider, model)
+                    && known_physical_family_of(provider, model)
+                        .is_some_and(|family| !families.contains(&family))
+            },
+        },
+        configured,
+        derived,
+        available,
+        changed_lines,
+    );
+    match &mut selection {
+        ReviewerSelection::Reviewer(pick) => {
+            pick.cross_family = true; // Only the complete structured set proved this.
+            pick.warning = None;
+            pick.why = format!(
+                "{}; known reviewer family {} is outside the complete contributor set [{}]",
+                pick.why, pick.family, pick.worker_family
+            );
+        }
+        ReviewerSelection::Unavailable { reason } => {
+            *reason = format!(
+                "no eligible known reviewer outside the complete contributor set [{display}] is available; the independent review could not run and the goal must remain parked"
+            );
+        }
+    }
+    selection
+}
+
+struct FamilyPolicy<F> {
+    display: String,
+    history_known: bool,
+    allow_configured_conflict: bool,
+    eligible: F,
 }
 
 /// The message recorded when nothing can review the work independently.
@@ -230,16 +346,36 @@ pub fn select_reviewer(
     available: &[AvailableModel],
     changed_lines: usize,
 ) -> ReviewerSelection {
-    // No known author ⇒ no provable diversity. Use a sentinel family that
-    // nothing matches so a candidate is never *claimed* cross-family, and say so.
     let (worker_family, worker_known) = match worker {
         Some((p, m)) => (family_of(p, m), true),
         None => (String::new(), false),
     };
+    select_reviewer_with_policy(
+        FamilyPolicy {
+            display: worker_family.clone(),
+            history_known: worker_known,
+            allow_configured_conflict: true,
+            eligible: |provider: &str, model: &str| {
+                worker_known && family_of(provider, model) != worker_family
+            },
+        },
+        configured,
+        derived,
+        available,
+        changed_lines,
+    )
+}
 
-    let diverse = |provider: &str, model: &str| -> bool {
-        worker_known && family_of(provider, model) != worker_family
-    };
+fn select_reviewer_with_policy(
+    policy: FamilyPolicy<impl Fn(&str, &str) -> bool>,
+    configured: Option<&RoleModel>,
+    derived: Option<&RoleModel>,
+    available: &[AvailableModel],
+    changed_lines: usize,
+) -> ReviewerSelection {
+    let worker_family = policy.display;
+    let worker_known = policy.history_known;
+    let diverse = policy.eligible;
 
     // 1. The operator's explicit mapping wins — even same-family, which is then
     //    recorded (never silently rerouted, and never silently called independent).
@@ -324,7 +460,7 @@ pub fn select_reviewer(
     //    author's family is still a second opinion, and honouring the operator's
     //    mapping beats refusing outright — but it is recorded as same-family.
     //    Retired ids are still skipped: a 404 is not a second opinion.
-    if let Some(rm) = configured {
+    if let Some(rm) = configured.filter(|_| policy.allow_configured_conflict) {
         if !model_is_retired(&rm.provider, &rm.model) {
             return ReviewerSelection::Reviewer(Box::new(pick_from(
                 &rm.provider,
@@ -469,6 +605,179 @@ mod tests {
             provider: provider.to_string(),
             model: model.to_string(),
         }
+    }
+
+    fn contributor_set(families: &[&str]) -> BTreeSet<String> {
+        families
+            .iter()
+            .map(|family| (*family).to_string())
+            .collect()
+    }
+
+    #[test]
+    fn contributor_set_excludes_both_authors_on_all_selection_paths() {
+        let families = contributor_set(&["anthropic", "openai"]);
+        let available: Vec<AvailableModel> = KNOWN_MODELS
+            .iter()
+            .map(|model| AvailableModel::new(model.provider, model.model))
+            .collect();
+        let selection = select_reviewer_for_contributors(
+            ContributorFamilies::Known(&families),
+            Some(&rm("anthropic", "claude-sonnet-5")),
+            Some(&rm("openai", "gpt-5.4-mini")),
+            &available,
+            10,
+        );
+        let pick = selection
+            .pick()
+            .expect("an unrelated capable family exists");
+        assert!(!families.contains(&pick.family));
+        assert_eq!(pick.source, ReviewerSource::BestFit);
+        assert_eq!(pick.worker_family, "anthropic,openai");
+        assert!(pick.cross_family);
+    }
+
+    #[test]
+    fn contributor_set_conflicting_explicit_pin_cannot_be_a_last_resort() {
+        let families = contributor_set(&["openai"]);
+        let selection = select_reviewer_for_contributors(
+            ContributorFamilies::Known(&families),
+            Some(&rm("openai", "gpt-5.4-mini")),
+            None,
+            &[],
+            10,
+        );
+        assert!(matches!(selection, ReviewerSelection::Unavailable { .. }));
+    }
+
+    #[test]
+    fn contributor_set_refuses_unknown_history_even_with_explicit_reviewer() {
+        let selection = select_reviewer_for_contributors(
+            ContributorFamilies::Unknown,
+            Some(&rm("anthropic", "claude-sonnet-5")),
+            None,
+            &[],
+            10,
+        );
+        assert!(matches!(selection, ReviewerSelection::Unavailable { .. }));
+    }
+
+    #[test]
+    fn contributor_set_refuses_proxy_provider_fallback_and_approximate_alias_family() {
+        assert_eq!(
+            known_physical_family_of("openrouter", "mystery-model"),
+            None
+        );
+        assert_eq!(
+            known_physical_family_of("ollama", "qwen3:unproven-custom-tag"),
+            None
+        );
+        let families = contributor_set(&["openai"]);
+        let selection = select_reviewer_for_contributors(
+            ContributorFamilies::Known(&families),
+            Some(&rm("openrouter", "mystery-model")),
+            Some(&rm("ollama", "qwen3:unproven-custom-tag")),
+            &[AvailableModel::new("openrouter", "mystery-model")],
+            10,
+        );
+        assert!(matches!(selection, ReviewerSelection::Unavailable { .. }));
+    }
+
+    #[test]
+    fn contributor_set_no_eligible_available_family_parks() {
+        let available: Vec<AvailableModel> = KNOWN_MODELS
+            .iter()
+            .map(|model| AvailableModel::new(model.provider, model.model))
+            .collect();
+        let families: BTreeSet<String> = KNOWN_MODELS
+            .iter()
+            .map(|model| model.family.to_ascii_lowercase())
+            .collect();
+        assert!(matches!(
+            select_reviewer_for_contributors(
+                ContributorFamilies::Known(&families),
+                None,
+                None,
+                &available,
+                10
+            ),
+            ReviewerSelection::Unavailable { .. }
+        ));
+    }
+
+    #[test]
+    fn contributor_set_current_known_local_below_capability_floor_is_refused() {
+        let families = contributor_set(&["anthropic", "openai"]);
+        let local = lookup_model("qwen38_split", "qwen3.8-27b")
+            .expect("the current local split model has a KB row");
+        assert!(local.is_local);
+        assert!(local.orchestration_strength < REVIEWER_MIN_ORCHESTRATION);
+        assert_eq!(
+            known_physical_family_of(local.provider, local.model),
+            Some("qwen".into())
+        );
+        assert!(matches!(
+            select_reviewer_for_contributors(
+                ContributorFamilies::Known(&families),
+                None,
+                None,
+                &[AvailableModel::new(local.provider, local.model)],
+                10,
+            ),
+            ReviewerSelection::Unavailable { .. }
+        ));
+    }
+
+    #[test]
+    fn contributor_set_opaque_runtime_kb_family_never_proves_independence() {
+        assert!(lookup_model("ollama", "qwen3-coder").is_some());
+        assert_eq!(known_physical_family_of("ollama", "qwen3-coder"), None);
+        let families = contributor_set(&["openai"]);
+        assert!(matches!(
+            select_reviewer_for_contributors(
+                ContributorFamilies::Known(&families),
+                Some(&rm("ollama", "qwen3-coder")),
+                None,
+                &[],
+                10,
+            ),
+            ReviewerSelection::Unavailable { .. }
+        ));
+        let opaque_contributor = contributor_set(&["ollama"]);
+        assert!(matches!(
+            select_reviewer_for_contributors(
+                ContributorFamilies::Known(&opaque_contributor),
+                Some(&rm("openai", "gpt-5.4-mini")),
+                None,
+                &[],
+                10,
+            ),
+            ReviewerSelection::Unavailable { .. }
+        ));
+    }
+
+    #[test]
+    fn contributor_set_known_empty_is_distinct_from_unknown_or_malformed_history() {
+        let families = BTreeSet::new();
+        assert!(select_reviewer_for_contributors(
+            ContributorFamilies::Known(&families),
+            Some(&rm("openai", "gpt-5.4-mini")),
+            None,
+            &[],
+            10,
+        )
+        .pick()
+        .is_some());
+        let malformed = contributor_set(&[""]);
+        assert!(select_reviewer_for_contributors(
+            ContributorFamilies::Known(&malformed),
+            Some(&rm("openai", "gpt-5.4-mini")),
+            None,
+            &[],
+            10,
+        )
+        .pick()
+        .is_none());
     }
 
     /// Two KB rows from DIFFERENT families, so the tests never hard-code a

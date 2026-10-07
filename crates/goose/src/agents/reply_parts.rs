@@ -10,6 +10,7 @@ use tracing::debug;
 use super::super::agents::Agent;
 #[cfg(feature = "code-mode")]
 use crate::agents::platform_extensions::code_execution;
+
 use crate::config::GooseMode;
 use crate::conversation::message::{Message, MessageContent, ToolRequest};
 use crate::conversation::Conversation;
@@ -31,6 +32,54 @@ use crate::session::{
     budget_task_id, goal_id, CostLedgerRow, CostTier, Session, SessionManager, SessionType,
 };
 use rmcp::model::Tool;
+
+/// Code mode's catalog/filesystem disclosures hide orchestrator tools in
+/// favor of an execution bridge. A headless coding coordinator must see the
+/// DAG tools directly, and its role tool gate denies the bridge itself.
+#[cfg(feature = "code-mode")]
+fn use_code_execution_for_role(extension_enabled: bool, headless_coding_coordinator: bool) -> bool {
+    extension_enabled && !headless_coding_coordinator
+}
+
+#[cfg(feature = "code-mode")]
+fn disclose_code_mode_tools(
+    tools: Vec<Tool>,
+    disclosure_style: pctx_code_mode::config::ToolDisclosure,
+) -> Vec<Tool> {
+    tools
+        .into_iter()
+        .filter_map(|mut tool| match disclosure_style {
+            pctx_code_mode::config::ToolDisclosure::Catalog
+            | pctx_code_mode::config::ToolDisclosure::Filesystem => {
+                let owner = crate::agents::extension_manager::get_tool_owner(&tool)?;
+                crate::agents::extension_manager::is_first_class_extension(&owner).then_some(tool)
+            }
+            pctx_code_mode::config::ToolDisclosure::Sidecar => {
+                let output_schema = tool
+                    .output_schema
+                    .as_ref()
+                    .map(|schema| serde_json::json!(schema).to_string())
+                    .unwrap_or("unknown".to_string());
+                let description_extension =
+                    format!("The successful return schema of this tool is:\n{output_schema}");
+                tool.description = Some(
+                    tool.description
+                        .map(|description| format!("{description}\n{description_extension}"))
+                        .unwrap_or(description_extension)
+                        .into(),
+                );
+                Some(tool)
+            }
+        })
+        .collect()
+}
+
+fn finish_model_tool_visibility(tools: &mut Vec<Tool>, headless_coding_coordinator: bool) {
+    tools.retain(is_tool_visible_to_model);
+    if headless_coding_coordinator {
+        tools.retain(|tool| super::agent::headless_coding_coordinator_allows_tool(&tool.name));
+    }
+}
 
 async fn enhance_model_error(error: ProviderError, provider: &Arc<dyn Provider>) -> ProviderError {
     let ProviderError::RequestFailed(ref msg) = error else {
@@ -270,19 +319,38 @@ async fn try_auto_answer_reservation_gate(
         Ok(_) => {
             let mut gate_grant_minted = false;
             if let ProviderAuthorizationFailure::NeedsGate { requested_usd, .. } = failure {
-                let task_id = budget_task_id(&session.extension_data);
+                let worker_binding =
+                    match crate::native_provider_calls::active_worker_binding(&pool, &session.id)
+                        .await
+                    {
+                        Ok(binding) => binding,
+                        Err(error) => {
+                            tracing::warn!(goal_id = %card_id, decision_id,
+                            "cannot resolve worker attempt for approved reservation gate: {error}");
+                            return None;
+                        }
+                    };
+                let task_id = worker_binding
+                    .as_ref()
+                    .map(|binding| binding.task_id.clone())
+                    .or_else(|| budget_task_id(&session.extension_data));
                 let lease_until = (chrono::Utc::now() + chrono::Duration::hours(2)).to_rfc3339();
                 match task_id {
                     Some(task_id) => {
                         match session_manager
-                            .grant_reservation_after_gate_approval(
+                            .grant_reservation_after_gate_approval_with_identity(
                                 invocation_id,
                                 &session.id,
                                 &task_id,
                                 *requested_usd,
                                 &lease_until,
-                                provider,
-                                model,
+                                &crate::session::session_manager::ProviderReservationIdentity {
+                                    goal_attempt_id: worker_binding
+                                        .as_ref()
+                                        .map(|binding| binding.attempt_id.clone()),
+                                    provider: provider.to_string(),
+                                    model: model.to_string(),
+                                },
                             )
                             .await
                         {
@@ -1043,63 +1111,24 @@ impl Agent {
         }
 
         #[cfg(feature = "code-mode")]
-        let code_execution_active = self
-            .extension_manager
-            .is_extension_enabled(code_execution::EXTENSION_NAME)
-            .await;
+        let code_execution_active = use_code_execution_for_role(
+            self.extension_manager
+                .is_extension_enabled(code_execution::EXTENSION_NAME)
+                .await,
+            self.config.headless_coding_coordinator,
+        );
         #[cfg(not(feature = "code-mode"))]
         let code_execution_active = false;
         #[cfg(feature = "code-mode")]
         if code_execution_active {
             let disclosure_style =
                 crate::agents::platform_extensions::code_execution::get_tool_disclosure();
-
-            tools = tools
-                .into_iter()
-                .filter_map(|mut t| match disclosure_style {
-                    pctx_code_mode::config::ToolDisclosure::Catalog
-                    | pctx_code_mode::config::ToolDisclosure::Filesystem => {
-                        // in catalog & filesystem styles, progressive search is handled
-                        // by pctx, so we want to omit all non-first-class extensions
-                        // from the standard tool list
-                        if crate::agents::extension_manager::get_tool_owner(&t).is_some_and(|o| {
-                            crate::agents::extension_manager::is_first_class_extension(&o)
-                        }) {
-                            Some(t)
-                        } else {
-                            None
-                        }
-                    }
-                    pctx_code_mode::config::ToolDisclosure::Sidecar => {
-                        // in sidecar style there is no progressive search, just a way to chain tools
-                        // together with typescript
-                        // add output schema to description since many model providers drop the
-                        // output schema when presenting tools to the model
-                        let output_schema = t
-                            .output_schema
-                            .as_ref()
-                            .map(|s| serde_json::json!(s).to_string())
-                            .unwrap_or("unknown".to_string());
-                        let description_extension = format!(
-                            "The successful return schema of this tool is:\n{output_schema}"
-                        );
-
-                        t.description = Some(
-                            t.description
-                                .map(|t| format!("{t}\n{description_extension}"))
-                                .unwrap_or(description_extension)
-                                .into(),
-                        );
-
-                        Some(t)
-                    }
-                })
-                .collect();
+            tools = disclose_code_mode_tools(tools, disclosure_style);
         }
 
         // Filter out tools not visible to the model per MCP Apps visibility spec.
         // Tools with `_meta.ui.visibility` that doesn't include "model" are app-only.
-        tools.retain(is_tool_visible_to_model);
+        finish_model_tool_visibility(&mut tools, self.config.headless_coding_coordinator);
 
         // Stable tool ordering is important for multi session prompt caching.
         tools.sort_by(|a, b| a.name.cmp(&b.name));
@@ -1295,6 +1324,7 @@ impl Agent {
             .with_frontend_instructions(self.frontend_instructions.lock().await.clone())
             .with_extension_and_tool_counts(extension_count, tool_count)
             .with_code_execution_mode(code_execution_active)
+            .with_headless_coding_coordinator(self.config.headless_coding_coordinator)
             .with_hints(working_dir)
             .with_goose_mode(goose_mode)
             .with_scheduled_job_count(scheduled_job_count)
@@ -1780,8 +1810,25 @@ pub(crate) async fn record_provider_usage(
         ts: chrono::Utc::now().to_rfc3339(),
         session_id: session_id.to_string(),
         parent_session_id: session.parent_session_id.clone(),
-        task_id: budget_task_id(&session.extension_data),
-        goal_id: goal_id(&session.extension_data),
+        task_id: invocation
+            .and_then(|call| {
+                call.worker_binding
+                    .as_ref()
+                    .map(|binding| binding.task_id.clone())
+            })
+            .or_else(|| budget_task_id(&session.extension_data)),
+        goal_id: invocation
+            .and_then(|call| {
+                call.worker_binding
+                    .as_ref()
+                    .map(|binding| binding.goal_id.clone())
+            })
+            .or_else(|| goal_id(&session.extension_data)),
+        goal_attempt_id: invocation.and_then(|call| {
+            call.worker_binding
+                .as_ref()
+                .map(|binding| binding.attempt_id.clone())
+        }),
         subagent_id,
         provider,
         model: Some(model),
@@ -1996,6 +2043,17 @@ pub(crate) async fn reserve_provider_invocation_for_model(
     counted_prompt_tokens: Option<usize>,
     provenance: CallProvenance,
 ) -> std::result::Result<ProviderInvocationContext, ProviderAuthorizationFailure> {
+    let pool = manager
+        .pool_clone()
+        .await
+        .map_err(|e| ProviderAuthorizationFailure::Unknown {
+            reason: format!("cannot resolve native worker attempt: {e}"),
+        })?;
+    let worker_binding = crate::native_provider_calls::active_worker_binding(&pool, &session.id)
+        .await
+        .map_err(|e| ProviderAuthorizationFailure::Unknown {
+            reason: format!("cannot resolve native worker attempt: {e}"),
+        })?;
     // Y7 (harness loop, from Lane A12's Q6 measurement): reserve for ONE
     // physical attempt by default instead of the provider's whole retry
     // envelope. `max_physical_attempts` stays the envelope — it is the
@@ -2033,6 +2091,7 @@ pub(crate) async fn reserve_provider_invocation_for_model(
         provider: provider.to_string(),
         model: model_config.model_name,
         cost_tier,
+        worker_binding: worker_binding.clone(),
         reservation_id: None,
         // Only a paid hold constrains how many physical attempts may be made:
         // `plan_reservation_bound` returns `None` for local/subscription work,
@@ -2066,6 +2125,26 @@ pub(crate) async fn reserve_provider_invocation_for_model(
             counted_prompt_tokens = ?counted_prompt_tokens,
             "reservation skipped: unpaid tier holds no dollars"
         );
+        if let Some(binding) = &worker_binding {
+            let pool =
+                manager
+                    .pool_clone()
+                    .await
+                    .map_err(|e| ProviderAuthorizationFailure::Unknown {
+                        reason: format!("cannot record native provider route: {e}"),
+                    })?;
+            crate::native_provider_calls::record(
+                &pool,
+                &context.invocation_id,
+                binding,
+                &context.provider,
+                &context.model,
+            )
+            .await
+            .map_err(|e| ProviderAuthorizationFailure::Unknown {
+                reason: format!("cannot record native provider route: {e}"),
+            })?;
+        }
         return Ok(context);
     };
     // F2 (harness loop, Round F, from the I1/M11 forensics chain): F8, D1
@@ -2099,16 +2178,26 @@ pub(crate) async fn reserve_provider_invocation_for_model(
         reserved_input_tokens = bound.input_tokens,
         "reservation bound computed"
     );
-    let task_id = budget_task_id(&session.extension_data);
+    let task_id = worker_binding
+        .as_ref()
+        .map(|binding| binding.task_id.clone())
+        .or_else(|| budget_task_id(&session.extension_data));
     let lease_until = (chrono::Utc::now() + chrono::Duration::hours(2)).to_rfc3339();
     let outcome = manager
-        .reserve_bounded_provider_invocation(
+        .reserve_bounded_provider_invocation_with_identity(
             &context.invocation_id,
             &session.id,
             task_id.as_deref(),
             bound,
             &lease_until,
             &crate::cost_router::budget::load_budget_config(),
+            &crate::session::session_manager::ProviderReservationIdentity {
+                goal_attempt_id: worker_binding
+                    .as_ref()
+                    .map(|binding| binding.attempt_id.clone()),
+                provider: context.provider.clone(),
+                model: context.model.clone(),
+            },
         )
         .await
         .map_err(|e| ProviderAuthorizationFailure::Unknown {
@@ -2116,10 +2205,65 @@ pub(crate) async fn reserve_provider_invocation_for_model(
         })?;
 
     match outcome {
-        crate::session::CostReservationOutcome::Granted { reservation_id }
-        | crate::session::CostReservationOutcome::AlreadyReserved { reservation_id } => {
+        crate::session::CostReservationOutcome::Granted { reservation_id } => {
+            if let Some(binding) = &worker_binding {
+                let record_result = async {
+                    let pool = manager.pool_clone().await?;
+                    crate::native_provider_calls::record(
+                        &pool,
+                        &context.invocation_id,
+                        binding,
+                        &context.provider,
+                        &context.model,
+                    )
+                    .await
+                }
+                .await;
+                if let Err(error) = record_result {
+                    // This is a fresh hold and no dispatch context escaped
+                    // this function, so it is provably unsent. Do not leave a
+                    // durable hold solely because route provenance failed.
+                    let _ = manager.release_provider_invocation(&reservation_id).await;
+                    return Err(ProviderAuthorizationFailure::Unknown {
+                        reason: format!("cannot record native provider route: {error}"),
+                    });
+                }
+            }
             context.reservation_id = Some(reservation_id);
             Ok(context)
+        }
+        crate::session::CostReservationOutcome::AlreadyReserved { reservation_id } => {
+            if let Some(binding) = &worker_binding {
+                let record_result = async {
+                    let pool = manager.pool_clone().await?;
+                    crate::native_provider_calls::record(
+                        &pool,
+                        &context.invocation_id,
+                        binding,
+                        &context.provider,
+                        &context.model,
+                    )
+                    .await
+                }
+                .await;
+                if let Err(error) = record_result {
+                    // The existing invocation may already have reached HTTP;
+                    // retain the hold when its durable route cannot be read.
+                    let _ = manager
+                        .mark_provider_invocation_unknown(&reservation_id)
+                        .await;
+                    return Err(ProviderAuthorizationFailure::Unknown {
+                        reason: format!("cannot record native provider route: {error}"),
+                    });
+                }
+            }
+            context.reservation_id = Some(reservation_id);
+            Ok(context)
+        }
+        crate::session::CostReservationOutcome::AlreadyDispatched { .. } => {
+            Err(ProviderAuthorizationFailure::Unknown {
+                reason: "provider invocation may already have reached transport; refusing replay while retaining its hold".into(),
+            })
         }
         crate::session::CostReservationOutcome::AlreadySettled { .. } => {
             Err(ProviderAuthorizationFailure::Unknown {
@@ -2165,6 +2309,9 @@ pub(crate) struct ProviderInvocationContext {
     pub provider: String,
     pub model: String,
     pub cost_tier: CostTier,
+    /// Exact attempt resolved from this provider-calling session before
+    /// authorization; retained unchanged if settlement arrives late.
+    pub worker_binding: Option<crate::goal_attempts::WorkerBinding>,
     pub reservation_id: Option<String>,
     /// Y7: physical provider attempts this invocation's hold pays for, or
     /// `None` when the call took no paid hold. The dispatch seam installs it
@@ -2186,6 +2333,41 @@ pub(crate) struct ProviderInvocationContext {
     /// v60 (node A4): why this call was made, as the dispatching caller knew
     /// it before dispatch. Copied verbatim onto the `cost_ledger` row.
     pub provenance: CallProvenance,
+}
+
+pub(crate) async fn mark_provider_dispatch_possible(
+    manager: &SessionManager,
+    invocation: &ProviderInvocationContext,
+) -> Result<()> {
+    if let Some(binding) = &invocation.worker_binding {
+        let pool = manager.pool_clone().await?;
+        crate::native_provider_calls::mark_dispatch_possible(
+            &pool,
+            &invocation.invocation_id,
+            binding,
+        )
+        .await?;
+    }
+    if let Some(reservation_id) = invocation.reservation_id.as_deref() {
+        anyhow::ensure!(
+            manager
+                .mark_provider_invocation_dispatch_possible(reservation_id)
+                .await?,
+            "paid provider reservation disappeared before dispatch"
+        );
+    }
+    Ok(())
+}
+
+pub(crate) async fn mark_provider_dispatch_not_sent(
+    manager: &SessionManager,
+    invocation: &ProviderInvocationContext,
+) -> Result<()> {
+    if invocation.worker_binding.is_some() {
+        let pool = manager.pool_clone().await?;
+        crate::native_provider_calls::mark_not_sent(&pool, &invocation.invocation_id).await?;
+    }
+    Ok(())
 }
 
 /// v60 (node A4): the provenance the streamed reply loop can honestly claim
@@ -2299,6 +2481,14 @@ impl FastReservationUnknownGuard {
     async fn mark_unknown(&mut self) -> Result<()> {
         if let Some(id) = self.reservation_id.as_deref().filter(|_| self.armed) {
             self.manager.mark_provider_invocation_unknown(id).await?;
+        }
+        self.armed = false;
+        Ok(())
+    }
+
+    async fn release_not_sent(&mut self) -> Result<()> {
+        if let Some(id) = self.reservation_id.as_deref().filter(|_| self.armed) {
+            self.manager.release_provider_invocation(id).await?;
         }
         self.armed = false;
         Ok(())
@@ -2513,10 +2703,19 @@ impl AccountedFastCompletion {
             invocation.reservation_id.clone(),
         );
 
+        if let Some(reservation_id) = invocation.reservation_id.as_deref() {
+            anyhow::ensure!(
+                self.manager
+                    .mark_provider_invocation_dispatch_possible(reservation_id)
+                    .await?,
+                "paid provider reservation disappeared before dispatch"
+            );
+        }
+
         // Physical retries beyond the hold's count require a one-attempt
         // extension grant. Unpaid work keeps the retry policy unchanged.
-        let (response, mut usage) =
-            match crate::cost_router::authorized_attempts::with_reservation_attempts(
+        let (result, attempt_evidence) =
+            crate::cost_router::authorized_attempts::with_reservation_attempts_evidence(
                 Arc::clone(&self.manager),
                 invocation.invocation_id.clone(),
                 invocation.attempts_reserved,
@@ -2524,16 +2723,24 @@ impl AccountedFastCompletion {
                     // permagent-dispatch: seam=complete_fast_attempt_v1 class=wrapped contract=reservation_settlement
                     .complete(&model_config, &self.session.id, system, messages, tools),
             )
-            .await
-            {
-                Ok(result) => result,
-                Err(error) => {
+            .await;
+        let (response, mut usage) = match result {
+            Ok(result) => result,
+            Err(error) => {
+                if crate::cost_router::authorized_attempts::is_proven_not_sent(
+                    &error,
+                    &attempt_evidence,
+                ) {
+                    unknown_guard.release_not_sent().await?;
+                    mark_provider_dispatch_not_sent(&self.manager, &invocation).await?;
+                } else {
                     unknown_guard.mark_unknown().await?;
-                    return Err(anyhow::anyhow!(
-                        "complete_fast physical attempt failed: {error}"
-                    ));
                 }
-            };
+                return Err(anyhow::anyhow!(
+                    "complete_fast physical attempt failed: {error}"
+                ));
+            }
+        };
 
         let has_authoritative_usage = usage.usage.input_tokens.is_some()
             || usage.usage.output_tokens.is_some()
@@ -2745,6 +2952,52 @@ pub fn is_tool_visible_to_model(tool: &Tool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "code-mode")]
+    #[test]
+    fn headless_coordinator_tool_assembly_keeps_dag_with_code_mode_extension_loaded() {
+        use pctx_code_mode::config::ToolDisclosure;
+        let tool = |name: &str, owner: &str| {
+            Tool::new(
+                name.to_string(),
+                format!("{name} schema"),
+                object!({"type": "object", "properties": {}}),
+            )
+            .with_meta(rmcp::model::Meta(
+                serde_json::json!({"goose_extension": owner})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ))
+        };
+        let loaded = vec![
+            tool("orchestrator__decompose_roadmap", "orchestrator"),
+            tool("orchestrator__create_roadmap", "orchestrator"),
+            tool("read", "developer"),
+            tool("edit", "developer"),
+            tool("execute_typescript", "code_execution"),
+        ];
+        for disclosure in [ToolDisclosure::Catalog, ToolDisclosure::Filesystem] {
+            let mut coordinator = loaded.clone();
+            if use_code_execution_for_role(true, true) {
+                coordinator = disclose_code_mode_tools(coordinator, disclosure.clone());
+            }
+            finish_model_tool_visibility(&mut coordinator, true);
+            let names: Vec<_> = coordinator.iter().map(|tool| tool.name.as_ref()).collect();
+            assert!(names.contains(&"orchestrator__decompose_roadmap"));
+            assert!(names.contains(&"orchestrator__create_roadmap"));
+            assert!(names.contains(&"read"));
+            assert!(!names.contains(&"edit"));
+            assert!(!names.contains(&"execute_typescript"));
+
+            assert!(use_code_execution_for_role(true, false));
+            let mut worker = disclose_code_mode_tools(loaded.clone(), disclosure);
+            finish_model_tool_visibility(&mut worker, false);
+            let worker_names: Vec<_> = worker.iter().map(|tool| tool.name.as_ref()).collect();
+            assert!(worker_names.contains(&"execute_typescript"));
+            assert!(!worker_names.contains(&"orchestrator__create_roadmap"));
+        }
+    }
     use crate::config::GooseMode;
     use crate::conversation::message::Message;
     use crate::model::ModelConfig;
@@ -2952,6 +3205,112 @@ mod tests {
             .clone()
             .expect("provider was dispatched");
         assert_eq!(captured.max_tokens, Some(128));
+    }
+
+    /// OpenAI's local pacer rejects inside `stream_split`, but this adapter
+    /// turns that creation error into the first stream frame. Exercise the
+    /// same evidence and settlement decision the agent turn uses, against a
+    /// durable reservation, without a reachable provider endpoint.
+    #[tokio::test]
+    async fn wrapped_openai_not_sent_frame_releases_the_real_reservation() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().to_str().unwrap();
+        let _env = env_lock::lock_env([
+            ("PERMAGENT_PATH_ROOT", Some(root)),
+            ("PERMAGENT_OPENAI_TPM_BUDGET", Some("1")),
+            ("PERMAGENT_OPENAI_MIN_INTERVAL_MS", Some("0")),
+        ]);
+        let manager = Arc::new(SessionManager::new(temp.path().to_path_buf()));
+        let session = manager
+            .create_session(
+                temp.path().to_path_buf(),
+                "wrapped local refusal".into(),
+                SessionType::User,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let task = manager.begin_budget_task(&session.id).await.unwrap();
+        let granted = manager
+            .reserve_provider_invocation(
+                "wrapped-local-refusal",
+                &session.id,
+                Some(&task),
+                0.5,
+                "2099-01-01T00:00:00Z",
+                &crate::cost_router::budget::BudgetConfig::default(),
+            )
+            .await
+            .unwrap();
+        let crate::session::CostReservationOutcome::Granted { reservation_id } = granted else {
+            panic!("{granted:?}");
+        };
+        let provider: Arc<dyn Provider> = Arc::new(crate::providers::openai::OpenAiProvider::new(
+            crate::providers::api_client::ApiClient::new(
+                "http://127.0.0.1:9".to_string(),
+                crate::providers::api_client::AuthMethod::NoAuth,
+            )
+            .unwrap(),
+            ModelConfig::new_or_fail("gpt-5.4-mini"),
+        ));
+        let prompt = SystemPromptParts::all_stable("system".to_string());
+        let messages = [Message::user().with_text("hello")];
+        let (result, evidence) =
+            crate::cost_router::authorized_attempts::with_reservation_attempts_evidence(
+                Arc::clone(&manager),
+                "wrapped-local-refusal".into(),
+                Some(1),
+                Agent::stream_response_from_provider(
+                    provider,
+                    &session.id,
+                    &prompt,
+                    &messages,
+                    &[],
+                    &[],
+                    Some(128),
+                ),
+            )
+            .await;
+        let mut stream = result.expect("the adapter wraps the creation error as a frame");
+        let error = match stream.next().await.expect("one error frame") {
+            Err(error) => error,
+            Ok(_) => panic!("local refusal unexpectedly produced a provider frame"),
+        };
+        assert!(matches!(&error, ProviderError::NotSent(_)), "{error}");
+        assert!(evidence.all_not_sent);
+        assert!(
+            !crate::cost_router::authorized_attempts::is_unbilled_stream_error(
+                &error, &evidence, true, false,
+            )
+        );
+        assert!(
+            !crate::cost_router::authorized_attempts::is_unbilled_stream_error(
+                &error, &evidence, false, true,
+            )
+        );
+        let release = crate::cost_router::authorized_attempts::is_unbilled_stream_error(
+            &error, &evidence, false, false,
+        );
+        crate::cost_router::authorized_attempts::finalize_missing_usage(
+            &manager,
+            &reservation_id,
+            release,
+        )
+        .await
+        .unwrap();
+        let pool = manager.pool_clone().await.unwrap();
+        let state: String = sqlx::query_scalar(
+            "SELECT state FROM cost_reservations WHERE invocation_id = 'wrapped-local-refusal'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let ledger_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM cost_ledger")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(state, "released");
+        assert_eq!(ledger_count, 0);
     }
 
     /// A mock whose provider name is settable, so a test can actually switch

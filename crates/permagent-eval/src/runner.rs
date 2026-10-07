@@ -10,6 +10,7 @@
 //! machine that runs the eval.
 
 use anyhow::{bail, Context, Result};
+use serde::Deserialize;
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -36,6 +37,46 @@ pub struct HarnessRun {
     pub timed_out: bool,
     /// Wall-clock duration of the run.
     pub duration: Duration,
+    /// Child PID for reading its process-specific native timing sidecar.
+    pub pid: Option<u32>,
+}
+
+const NATIVE_TIMING_PHASE: &str = "cli_entry_to_post_drain_v1";
+
+#[derive(Deserialize)]
+struct NativeTimingSidecar {
+    phase: String,
+    run_key: String,
+    pid: u32,
+    root_session_id: String,
+    first_tool_ms: Option<u64>,
+    native_wall_ms: u64,
+    #[serde(default)]
+    other_session_first_tool_ms: std::collections::BTreeMap<String, u64>,
+}
+
+fn read_native_timing(base: &Path, run_key: &str, pid: Option<u32>) -> Option<NativeTimingSidecar> {
+    let pid = pid?;
+    let path = PathBuf::from(format!("{}.{}.json", base.display(), pid));
+    let bytes = fs::read(path).ok()?;
+    let timing: NativeTimingSidecar = serde_json::from_slice(&bytes).ok()?;
+    if timing.phase != NATIVE_TIMING_PHASE
+        || timing.run_key != run_key
+        || timing.pid != pid
+        || timing.root_session_id.is_empty()
+        || timing
+            .first_tool_ms
+            .is_some_and(|first| first > timing.native_wall_ms)
+        || timing
+            .other_session_first_tool_ms
+            .iter()
+            .any(|(id, first)| {
+                id.is_empty() || id == &timing.root_session_id || *first > timing.native_wall_ms
+            })
+    {
+        return None;
+    }
+    Some(timing)
 }
 
 /// Runs the coding harness for one invocation.
@@ -289,6 +330,16 @@ pub fn run_task(task: &Task, tier: &Tier, cfg: &RunConfig, deps: &Deps<'_>) -> R
         "PERMAGENT_RECEIPTS_SIDECAR".to_string(),
         receipts_sidecar_path.to_string_lossy().into_owned(),
     ));
+    let timing_sidecar_base = run_dir.join("native-timing");
+    let timing_run_key = run_dir.file_name().unwrap().to_string_lossy().into_owned();
+    inv.envs.push((
+        "PERMAGENT_EVAL_TIMING_SIDECAR".to_string(),
+        timing_sidecar_base.to_string_lossy().into_owned(),
+    ));
+    inv.envs.push((
+        "PERMAGENT_EVAL_TIMING_RUN_KEY".to_string(),
+        timing_run_key.clone(),
+    ));
     // Lane R18c (A17 Class 3): pin CARGO_TARGET_DIR to this run's own
     // directory — see `cargo_target_dir`'s doc for why. Set on the harness
     // child too (not just the oracle below) so a `shell`/`verify` tool call
@@ -311,6 +362,12 @@ pub fn run_task(task: &Task, tier: &Tier, cfg: &RunConfig, deps: &Deps<'_>) -> R
         Duration::from_secs(effective_harness_timeout_secs),
         &harness_log_path,
     )?;
+    // Snapshot before the oracle gets any access to the workspace/run tree.
+    // A timed-out child may not have completed its drain or final atomic
+    // sidecar write, so its file is diagnostic only, never qualifying timing.
+    let native_timing = (!harness_run.timed_out)
+        .then(|| read_native_timing(&timing_sidecar_base, &timing_run_key, harness_run.pid))
+        .flatten();
     // Best-effort: a missing/unreadable log just yields zeroed signals rather
     // than failing the whole task (the oracle's verdict is authoritative).
     // Lane K10: keep the raw text too — `provider_unavailable::classify_in_run`
@@ -401,6 +458,13 @@ pub fn run_task(task: &Task, tier: &Tier, cfg: &RunConfig, deps: &Deps<'_>) -> R
         reading,
     );
     result.duration_secs = harness_run.duration.as_secs_f64();
+    if let Some(timing) = native_timing {
+        result.first_tool_ms = timing.first_tool_ms;
+        result.native_wall_ms = Some(timing.native_wall_ms);
+        result.native_timing_phase = Some(timing.phase);
+        result.native_timing_root_session_id = Some(timing.root_session_id);
+        result.native_other_session_first_tool_ms = timing.other_session_first_tool_ms;
+    }
     result.harness_exit = harness_run.exit;
     result.harness_timed_out = harness_run.timed_out;
     result.oracle_exit = oracle_run.exit;
@@ -1003,11 +1067,13 @@ impl HarnessRunner for SubprocessHarnessRunner {
         let mut child = cmd
             .spawn()
             .with_context(|| format!("spawning harness `{}`", inv.program))?;
+        let pid = child.id();
         let (exit, timed_out) = wait_with_timeout(&mut child, timeout, SIGTERM_GRACE)?;
         Ok(HarnessRun {
             exit,
             timed_out,
             duration: start.elapsed(),
+            pid: Some(pid),
         })
     }
 }
@@ -1109,6 +1175,7 @@ mod tests {
                 exit: self.exit,
                 timed_out: false,
                 duration: Duration::from_secs_f64(1.5),
+                pid: None,
             })
         }
     }
@@ -1142,6 +1209,7 @@ mod tests {
                 exit: self.exit,
                 timed_out: false,
                 duration: Duration::from_secs_f64(0.5),
+                pid: None,
             })
         }
     }
@@ -1152,6 +1220,7 @@ mod tests {
                 exit: self.exit,
                 timed_out: false,
                 duration: Duration::from_secs_f64(0.5),
+                pid: None,
             })
         }
     }
@@ -2026,6 +2095,7 @@ mod tests {
                 exit,
                 timed_out: false,
                 duration: Duration::from_secs_f64(0.5),
+                pid: None,
             })
         }
     }
@@ -2469,6 +2539,7 @@ mod tests {
                     exit: Some(0),
                     timed_out: false,
                     duration: Duration::from_secs(1),
+                    pid: None,
                 })
             }
         }
@@ -2538,6 +2609,7 @@ mod tests {
                     exit: Some(0),
                     timed_out: false,
                     duration: Duration::from_secs(1),
+                    pid: None,
                 })
             }
         }
@@ -2645,6 +2717,7 @@ mod tests {
                     exit: Some(0),
                     timed_out: false,
                     duration: Duration::from_secs(1),
+                    pid: None,
                 })
             }
         }
@@ -2701,6 +2774,7 @@ mod tests {
                     exit: Some(0),
                     timed_out: false,
                     duration: Duration::from_secs(1),
+                    pid: None,
                 })
             }
         }
@@ -2744,6 +2818,7 @@ mod tests {
                 exit: Some(0),
                 timed_out: false,
                 duration: Duration::from_secs(1),
+                pid: None,
             })
         }
     }
@@ -3257,5 +3332,139 @@ mod tests {
         let r = run_task(&task, &Tier::builtin("local").unwrap(), &cfg, &deps).unwrap();
         assert_eq!(r.selection_correct, None);
         assert!(r.selection_check_failures.is_empty());
+    }
+
+    #[test]
+    fn native_timing_requires_matching_pid_run_key_phase_and_bounded_first_tool() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("native-timing");
+        let pid = 1234;
+        let path = PathBuf::from(format!("{}.{}.json", base.display(), pid));
+        let mut record = serde_json::json!({
+            "phase": NATIVE_TIMING_PHASE,
+            "run_key": "run-one",
+            "pid": pid,
+            "root_session_id": "parent-session",
+            "first_tool_ms": 120,
+            "native_wall_ms": 400
+        });
+        fs::write(&path, record.to_string()).unwrap();
+        let measured = read_native_timing(&base, "run-one", Some(pid)).unwrap();
+        assert_eq!(measured.first_tool_ms, Some(120));
+        assert_eq!(measured.native_wall_ms, 400);
+        assert!(read_native_timing(&base, "run-one", Some(pid + 1)).is_none());
+        assert!(read_native_timing(&base, "another-run", Some(pid)).is_none());
+        record["first_tool_ms"] = serde_json::json!(401);
+        fs::write(&path, record.to_string()).unwrap();
+        assert!(read_native_timing(&base, "run-one", Some(pid)).is_none());
+        record["first_tool_ms"] = serde_json::Value::Null;
+        fs::write(&path, record.to_string()).unwrap();
+        assert_eq!(
+            read_native_timing(&base, "run-one", Some(pid))
+                .unwrap()
+                .first_tool_ms,
+            None
+        );
+    }
+
+    #[test]
+    fn model_log_text_cannot_supply_native_timing() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("native-timing");
+        fs::write(
+            dir.path().join("harness.log"),
+            "native_timing first_tool_ms=1 native_wall_ms=2 root_session_id=spoofed",
+        )
+        .unwrap();
+        assert!(read_native_timing(&base, "run-one", Some(1234)).is_none());
+    }
+
+    struct TimedHarness {
+        timed_out: bool,
+    }
+
+    impl HarnessRunner for TimedHarness {
+        fn run(&self, inv: &Invocation, _t: Duration, log_path: &Path) -> Result<HarnessRun> {
+            fs::write(log_path, "")?;
+            let base = inv.env("PERMAGENT_EVAL_TIMING_SIDECAR").unwrap();
+            let key = inv.env("PERMAGENT_EVAL_TIMING_RUN_KEY").unwrap();
+            let pid = std::process::id();
+            fs::write(
+                format!("{base}.{pid}.json"),
+                serde_json::json!({
+                    "phase": NATIVE_TIMING_PHASE,
+                    "run_key": key,
+                    "pid": pid,
+                    "root_session_id": "parent-session",
+                    "first_tool_ms": 100,
+                    "native_wall_ms": 500
+                })
+                .to_string(),
+            )?;
+            Ok(HarnessRun {
+                exit: Some(0),
+                timed_out: self.timed_out,
+                duration: Duration::from_secs(1),
+                pid: Some(pid),
+            })
+        }
+    }
+
+    struct OverwritingOracle;
+
+    impl OracleRunner for OverwritingOracle {
+        fn run(
+            &self,
+            workdir: &Path,
+            _argv: &[String],
+            _envs: &[(String, String)],
+            _timeout: Duration,
+            _log_path: &Path,
+        ) -> Result<OracleRun> {
+            let path = workdir
+                .parent()
+                .unwrap()
+                .join(format!("native-timing.{}.json", std::process::id()));
+            fs::write(path, "{\"first_tool_ms\":0}")?;
+            Ok(OracleRun {
+                exit: Some(0),
+                timed_out: false,
+                duration: Duration::ZERO,
+            })
+        }
+    }
+
+    #[test]
+    fn native_timing_is_snapshotted_before_oracle_and_not_credited_on_timeout() {
+        let temp = tempfile::tempdir().unwrap();
+        let task = make_task(&temp.path().join("demo"), &[], &[]);
+        let config = RunConfig {
+            permagent_bin: "permagent".into(),
+            runs_root: temp.path().join("runs"),
+            ..Default::default()
+        };
+        let oracle = OverwritingOracle;
+        let cost = UnknownCost;
+        let recipe = FakeRecipe;
+        let passing = TimedHarness { timed_out: false };
+        let deps = Deps {
+            harness: &passing,
+            oracle: &oracle,
+            cost: &cost,
+            recipe: &recipe,
+        };
+        let measured = run_task(&task, &Tier::builtin("local").unwrap(), &config, &deps).unwrap();
+        assert_eq!(measured.first_tool_ms, Some(100));
+        assert_eq!(measured.native_wall_ms, Some(500));
+        assert_eq!(measured.duration_secs, 1.0);
+
+        let timed_out = TimedHarness { timed_out: true };
+        let deps = Deps {
+            harness: &timed_out,
+            ..deps
+        };
+        let missing = run_task(&task, &Tier::builtin("local").unwrap(), &config, &deps).unwrap();
+        assert_eq!(missing.first_tool_ms, None);
+        assert_eq!(missing.native_wall_ms, None);
     }
 }

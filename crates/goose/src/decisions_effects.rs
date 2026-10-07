@@ -1725,6 +1725,9 @@ pub(crate) async fn unpark_budget_resets(
         return Ok(String::new());
     }
     let mut clauses: Vec<String> = Vec::new();
+    if goal_transition::extend_headless_dispatch_budget(metadata, patch)? {
+        clauses.push("its headless dispatch allowance extended".to_string());
+    }
     if wall_clock_blocks_goal(decision, metadata) {
         patch.insert("first_dispatched_at".to_string(), serde_json::Value::Null);
         clauses.push("its wall-clock budget restarted".to_string());
@@ -1886,6 +1889,168 @@ async fn record_answered_effect_failure(pool: &Pool<Sqlite>, decision: &Decision
 /// headless Auto dispatch policy has `PERMAGENT_HEADLESS_AUTOLAND` on. Every
 /// other match arm in this function ignores both new arguments entirely —
 /// they are meaningful only to the `("approve_review", Some("approve"))` arm.
+/// Only the native reviewer caller can supply this in-memory binding after an
+/// actual Approved result. Display metadata and replayed outbox decisions do
+/// not reconstruct it. Approval and Git mutation share the native write fence.
+pub(crate) async fn apply_native_review_approval(
+    pool: &Pool<Sqlite>,
+    decision: &Decision,
+    proof: DecisionProof,
+    binding: &crate::goal_candidates::NativeReviewBinding,
+    auto_land_allowed: bool,
+    calling_session_id: Option<&str>,
+) -> Result<EffectResult, GuardError> {
+    use crate::{goal_candidates, goal_landing};
+    let denied = |e: String| GuardError::Denied(e);
+    let goal = &binding.lineage.candidate.goal_id;
+    if !auto_land_allowed
+        || decision.kind != "approve_review"
+        || decision.answer.as_deref() != Some("approve")
+        || decision.goal_id.as_deref() != Some(goal.as_str())
+    {
+        return Err(denied(
+            "native landing requires the actual approved goal decision".into(),
+        ));
+    }
+    let expected = goal_candidates::revalidate_review_binding(pool, binding)
+        .await
+        .map_err(|e| denied(e.to_string()))?;
+    let root = binding
+        .lineage
+        .canonical_root
+        .to_str()
+        .ok_or_else(|| denied("native canonical root is not UTF8".into()))?;
+    let project = crate::projects::get_project_by_id_or_slug(pool, &binding.lineage.project_id)
+        .await
+        .map_err(|e| GuardError::Db(e.to_string()))?
+        .ok_or_else(|| denied("native landing project disappeared".into()))?;
+    if let Some(configured) = project.root_path.as_deref() {
+        if !goal_landing::paths_match(root, configured) {
+            return Err(denied("project root changed since native dispatch".into()));
+        }
+    }
+    let root_common = goal_landing::git(
+        root,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )
+    .await;
+    let worker = binding
+        .lineage
+        .candidate
+        .worktree
+        .to_str()
+        .ok_or_else(|| denied("native candidate worktree is not UTF8".into()))?;
+    let worker_common = goal_landing::git(
+        worker,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )
+    .await;
+    match (root_common, worker_common) {
+        (Some((true, a)), Some((true, b))) if goal_landing::paths_match(&a, &b) => {}
+        _ => {
+            return Err(denied(
+                "native candidate belongs to a different Git repository".into(),
+            ))
+        }
+    }
+    let guard = goal_landing::acquire_landing_guard(root)
+        .await
+        .map_err(denied)?;
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| GuardError::Db(e.to_string()))?;
+    let actor = proof.acted_by().to_string();
+    let record = goal_transition::advance_goal_checked_in_tx_with_auto_land(
+        &mut tx,
+        goal,
+        GoalAction::Approve,
+        &actor,
+        Some(proof),
+        TransitionEffects {
+            expected_attempt: Some(expected.clone()),
+            review_notes: decision.answer_note.clone(),
+            ..Default::default()
+        },
+        auto_land_allowed,
+        calling_session_id,
+    )
+    .await?;
+    let approved =
+        goal_candidates::refresh_expected_after_transition_tx(&mut tx, &expected, &record)
+            .await
+            .map_err(|e| denied(e.to_string()))?;
+    goal_candidates::revalidate_review_binding_for_landing_tx(&mut tx, binding, &approved)
+        .await
+        .map_err(|e| denied(e.to_string()))?;
+    let request = goal_landing::LandRequest {
+        repo_root: root.to_string(),
+        branch: format!("native/{}", binding.lineage.candidate.attempt_id),
+        head_commit: binding.lineage.candidate.head.clone(),
+    };
+    let outcome = goal_landing::land_under_guard(&request, &guard).await;
+    if !outcome.is_landed() {
+        return commit_native_landing_transaction(tx, &outcome)
+            .await
+            .map(|_| (None, None));
+    }
+    let after = goal_landing::git(root, &["rev-parse", "HEAD"]).await;
+    if !matches!(after, Some((true, ref head)) if head == &request.head_commit) {
+        return Err(denied(
+            "Git contains the candidate but final HEAD differs; recovery/review is required".into(),
+        ));
+    }
+    if let Err(e) =
+        goal_candidates::revalidate_review_binding_for_landing_tx(&mut tx, binding, &approved).await
+    {
+        return Err(denied(format!(
+            "Git reached the candidate but final native fence failed; recovery required: {e}"
+        )));
+    }
+    commit_native_landing_transaction(tx, &outcome).await?;
+    drop(guard);
+    // These display receipts never supply future automatic landing authority.
+    if let Ok(Some(card)) = crate::cards::get_card(pool, goal).await {
+        persist_landing_outcome(pool, goal, &card, &outcome, None).await;
+    }
+    // Existing registered-program handoff follows the actual committed land.
+    let warning = match crate::agents::platform_extensions::program_bridge::handoff_registered_goal(
+        pool, goal,
+    )
+    .await
+    {
+        Ok(_) => None,
+        Err(e) => Some(format!(
+            "native candidate landed; registered continuation needs attention: {e}"
+        )),
+    };
+    Ok((
+        Some(format!(
+            "goal approved: Review → Complete; {}",
+            outcome.describe()
+        )),
+        warning,
+    ))
+}
+
+async fn commit_native_landing_transaction(
+    tx: sqlx::Transaction<'_, Sqlite>,
+    outcome: &crate::goal_landing::LandOutcome,
+) -> Result<(), GuardError> {
+    if !outcome.is_landed() {
+        tx.rollback()
+            .await
+            .map_err(|e| GuardError::Db(e.to_string()))?;
+        return Err(GuardError::Denied(format!(
+            "native review approval was not applied: {}",
+            outcome.describe()
+        )));
+    }
+    tx.commit().await.map_err(|e| GuardError::Db(format!(
+        "Git reached the reviewed candidate but approval commit failed; recovery required, not retry success: {e}"
+    )))
+}
+
 pub async fn apply_decision_effect_with_auto_land(
     pool: &Pool<Sqlite>,
     decision: &Decision,
@@ -1928,6 +2093,17 @@ pub async fn apply_decision_effect_with_auto_land(
             let Some(goal_id) = decision.goal_id.as_deref() else {
                 return Ok((None, None));
             };
+            // A decision/outbox replay has no in-memory native Approved review
+            // capability. It must never recreate one from PASS/Complete display
+            // metadata, including after a strict landing refusal.
+            let native: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM goal_execution_bindings WHERE goal_id=? AND authority='native'"
+            ).bind(goal_id).fetch_one(pool).await.map_err(|e| GuardError::Db(e.to_string()))?;
+            if native != 0 {
+                return Err(GuardError::Denied(
+                    "native goal approval/landing requires a fresh exact Approved review binding; legacy replay is refused".into()
+                ));
+            }
             match goal_state(pool, goal_id).await?.as_deref() {
                 Some("complete") => {
                     // The approval transition may have committed before a
@@ -7105,5 +7281,89 @@ mod tests {
         other.oracle_source = "import sys\nsys.exit(1)\n".to_string();
         let err = write_regression_task_in(&tasks, &other).unwrap_err();
         assert!(format!("{err:?}").contains("already exists"), "{err:?}");
+    }
+}
+
+#[cfg(test)]
+mod native_landing_transaction_tests {
+    use super::*;
+    #[tokio::test]
+    async fn failed_native_git_landing_rolls_back_actual_checked_approval() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = crate::session::SessionManager::new(temp.path().to_path_buf());
+        let pool = manager.pool_clone().await.unwrap();
+        let project = crate::projects::PERSONAL_PROJECT_ID;
+        crate::cards::seed_goal_columns(&pool, project)
+            .await
+            .unwrap();
+        let review = crate::cards::get_goal_column(&pool, project, "review")
+            .await
+            .unwrap()
+            .unwrap();
+        let card = crate::cards::create_card(
+            &pool,
+            crate::cards::CreateCard {
+                project_id: project.into(),
+                title: "Landing rollback".into(),
+                description: None,
+                card_type: Some("goal".into()),
+                column_id: Some(review.id.clone()),
+                created_by: None,
+                metadata_json: Some(serde_json::json!({"dispatch_claim_id":"claim"})),
+            },
+        )
+        .await
+        .unwrap();
+        // This control tests the actual checked transition and production
+        // transaction settlement, not full reviewer/candidate qualification.
+        let decision = crate::decisions::create_decision(
+            &pool,
+            crate::decisions::NewDecision {
+                kind: "approve_review".into(),
+                goal_id: Some(card.id.clone()),
+                project_id: Some(project.into()),
+                headline: Some("Review".into()),
+                detail: Some("Rollback control".into()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let (_, proof) = crate::decisions::answer_decision(
+            &pool,
+            &decision.id,
+            &crate::decisions::DecisionAnswer {
+                answer: "approve".into(),
+                ..Default::default()
+            },
+            crate::decisions::ACTOR_JESSE,
+        )
+        .await
+        .unwrap();
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.unwrap();
+        goal_transition::advance_goal_checked_in_tx(
+            &mut tx,
+            &card.id,
+            GoalAction::Approve,
+            crate::decisions::ACTOR_JESSE,
+            Some(proof),
+            TransitionEffects::default(),
+        )
+        .await
+        .unwrap();
+        assert!(commit_native_landing_transaction(
+            tx,
+            &crate::goal_landing::LandOutcome::Skipped("changed reviewed head".into())
+        )
+        .await
+        .is_err());
+        assert_eq!(
+            crate::cards::get_card(&pool, &card.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .column_id,
+            review.id
+        );
     }
 }

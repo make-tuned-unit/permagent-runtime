@@ -520,6 +520,26 @@ fn task_contract_block(metadata: &serde_json::Value) -> Option<String> {
     ))
 }
 
+// Reviewer input must carry the same complete contract given to the worker.
+// A malformed or oversized stored contract must not turn into an implicit
+// omission at the review gate.
+fn reviewer_task_contract_block(metadata: &serde_json::Value) -> Result<Option<String>, String> {
+    let Some(contract) = metadata.get(TASK_CONTRACT_METADATA_KEY) else {
+        return Ok(None); // Legacy goals have no saved launch contract.
+    };
+    let Some(text) = contract.get("text").and_then(serde_json::Value::as_str) else {
+        return Err("the goal's original task contract has no text".to_string());
+    };
+    if text.trim().is_empty() || text.len() > MAX_TASK_CONTRACT_BYTES {
+        return Err(format!(
+            "the goal's original task contract is empty or exceeds {MAX_TASK_CONTRACT_BYTES} bytes; review cannot proceed on incomplete task data"
+        ));
+    }
+    task_contract_block(metadata)
+        .map(Some)
+        .ok_or_else(|| "the goal's original task contract could not be rendered".to_string())
+}
+
 async fn durable_dispatch_budget_task_id(
     manager: &crate::session::SessionManager,
     metadata: &serde_json::Value,
@@ -4824,6 +4844,16 @@ async fn materialize_roadmap_transaction_with_budget(
             &serde_json::Value::Object(meta),
         )
         .await?;
+        crate::goal_attempts::bind_new_goal_tx(
+            &mut tx,
+            &card_id,
+            project_id,
+            budget_task_id,
+            calling_session_id,
+            proof.get(TASK_CONTRACT_METADATA_KEY),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
         index_to_card_id[idx] = card_id.clone();
         created_ids.push(card_id);
         if fail_after_cards == Some(created_ids.len()) {
@@ -5509,6 +5539,8 @@ async fn get_provider_fn(context: &PlatformExtensionContext) -> Result<Arc<dyn P
 /// the brief's "avoid touching goose-server" guidance.
 #[derive(Clone)]
 pub(crate) struct HeadlessDispatchPolicy {
+    /// Native coordinator identity installed by the headless CLI.
+    pub coordinator_session_id: String,
     /// T1: when `context.extension_manager` cannot resolve a provider (the
     /// headless hook has none), build a fresh one from this session's own
     /// (already-resolved) provider/model pair instead — the same seam
@@ -5702,6 +5734,7 @@ async fn current_headless_dispatch_policy(
         .ok()
         .map(Arc::new);
     Some(HeadlessDispatchPolicy {
+        coordinator_session_id: config.coordinator_session_id.clone(),
         session_for_provider_fallback: session,
         restrict_ranked_selection_to_internal_engine: config
             .restrict_ranked_selection_to_internal_engine,
@@ -8276,6 +8309,39 @@ pub(crate) async fn dispatch_goal_fn(
         ));
     }
 
+    let dispatch_budget = policy.map(|policy| goal_transition::HeadlessDispatchBudget {
+        coordinator_session_id: policy.coordinator_session_id.clone(),
+        automatic_limit: u64::from(headless_max_redispatch_from_env()).saturating_add(1),
+    });
+    if let Some(budget) = dispatch_budget.as_ref() {
+        if let Err(reason) =
+            goal_transition::check_headless_dispatch_budget(&card.metadata_json, budget)
+        {
+            if goal_transition::park_exhausted_headless_dispatch(&pool, card_id, budget, &reason)
+                .await
+                .map_err(String::from)?
+                && decisions::find_open_decision_for_goal(&pool, card_id, "unblock")
+                    .await?
+                    .is_none()
+            {
+                create_decision_with_retry(
+                    &pool,
+                    decisions::NewDecision {
+                        kind: "unblock".into(),
+                        goal_id: Some(card.id.clone()),
+                        project_id: Some(card.project_id.clone()),
+                        headline: Some("Goal has used its automatic dispatch allowance".into()),
+                        detail: Some(reason.clone()),
+                        payload: serde_json::json!({"reason": "stuck"}),
+                        ..Default::default()
+                    },
+                )
+                .await?;
+            }
+            return Err(reason);
+        }
+    }
+
     // Budget precondition (S4): exhausted goals are parked with an
     // unblock decision — never silently retried or re-dispatched.
     if let Some(exhaustion) = goal_transition::check_budget(&pool, &card.metadata_json).await? {
@@ -9083,19 +9149,30 @@ pub(crate) async fn dispatch_goal_fn(
     // fresh off trunk HEAD (see `prior_goal_branch_tip`'s doc comment for
     // why). `None` on a genuine first dispatch or a reaped branch — the
     // trunk-HEAD read below is then unchanged from before this lane.
-    let redispatch_base = prior_goal_branch_tip(&working_dir, &card.metadata_json).await;
-    let baseline_commit = match redispatch_base.as_ref() {
-        Some((_, tip)) => Some(tip.clone()),
-        None => tokio::process::Command::new("git")
-            .arg("-C")
-            .arg(&working_dir)
-            .args(["rev-parse", "HEAD"])
-            .output()
-            .await
-            .ok()
-            .filter(|o| o.status.success())
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-            .filter(|s| !s.is_empty()),
+    let native_baseline = crate::goal_candidates::dispatch_baseline(&pool, card_id, &working_dir)
+        .await
+        .map_err(|e| e.to_string())?;
+    let redispatch_base = if native_baseline.is_some() {
+        None
+    } else {
+        prior_goal_branch_tip(&working_dir, &card.metadata_json).await
+    };
+    let baseline_commit = if let Some((head, _parent)) = native_baseline {
+        head
+    } else {
+        match redispatch_base.as_ref() {
+            Some((_, tip)) => Some(tip.clone()),
+            None => tokio::process::Command::new("git")
+                .arg("-C")
+                .arg(&working_dir)
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .await
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .filter(|s| !s.is_empty()),
+        }
     };
 
     // Author the goal's completion criterion at dispatch, in precedence
@@ -9132,7 +9209,8 @@ pub(crate) async fn dispatch_goal_fn(
         context.session.as_ref().map(|session| session.id.as_str()),
     )
     .await?;
-    let task = goal_engine::GoalTask {
+    let mut task = goal_engine::GoalTask {
+        start_permit: None,
         card_title: card.title.clone(),
         instructions,
         working_dir,
@@ -9450,6 +9528,23 @@ pub(crate) async fn dispatch_goal_fn(
             serde_json::json!(checks_source),
         );
     }
+    task.start_permit = Some(crate::goal_attempts::StartPermit {
+        pool: pool.clone(),
+        goal_id: card_id.to_string(),
+        claim_id: dispatch_claim_id.clone(),
+    });
+    let native_claim = crate::goal_attempts::ClaimInput {
+        claim_id: dispatch_claim_id.clone(),
+        lifecycle_id: daemon_lifecycle_id().to_string(),
+        worker_key: worker_key.clone(),
+        execution_root: Some(
+            std::fs::canonicalize(&task.working_dir)
+                .map_err(|e| e.to_string())?
+                .to_string_lossy()
+                .into_owned(),
+        ),
+        input_head: baseline_commit.clone(),
+    };
     goal_transition::advance_goal_checked(
         &pool,
         card_id,
@@ -9459,19 +9554,15 @@ pub(crate) async fn dispatch_goal_fn(
         TransitionEffects {
             metadata_patch: claim_patch,
             assigned_to: Some(worker_key.clone()),
+            dispatch_budget,
+            attempt_claim: Some(native_claim),
             ..Default::default()
         },
     )
     .await
     .map_err(String::from)?;
 
-    let goal_engine::DispatchedWork {
-        run_id: session_id,
-        process_id,
-        join,
-        kill,
-        steer,
-    } = match engine.spawn(task).await {
+    let prepared = match engine.prepare(task).await {
         Ok(work) => work,
         Err(error) => {
             let release_reason = format!("Worker spawn failed: {error}");
@@ -9488,6 +9579,169 @@ pub(crate) async fn dispatch_goal_fn(
             return Err(error);
         }
     };
+
+    let session_id = prepared.run_id.clone();
+    let process_id = None;
+
+    let mut worker_session_ids: Vec<String> = card
+        .metadata_json
+        .get("worker_session_ids")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    worker_session_ids.push(session_id.clone());
+
+    // #210: the initial execution receipt for THIS attempt — worker, routing
+    // snapshot, session id, owning lifecycle, and a heartbeat seeded at dispatch.
+    // It lands atomically with the dispatch transition below; the completion
+    // tracker then beats it and stamps its terminal state.
+    let receipt = ExecutionReceipt::new(
+        worker_key.clone(),
+        session_id.clone(),
+        capability_snapshot.clone(),
+        daemon_lifecycle_id().to_string(),
+        dispatched_at.clone(),
+        next_attempt,
+    )
+    .with_process_id(process_id);
+
+    let mut patch = serde_json::Map::new();
+    patch.insert("worker_key".to_string(), serde_json::json!(worker_key));
+    // #211: record the capability/routing snapshot alongside the chosen worker,
+    // so a goal preserves what the roster looked like when it was dispatched
+    // (not just the live roster at read time).
+    patch.insert(
+        "capability_snapshot".to_string(),
+        capability_snapshot.clone(),
+    );
+    if let Ok(receipt_json) = serde_json::to_value(&receipt) {
+        patch.insert("execution_receipt".to_string(), receipt_json);
+    }
+    patch.insert(
+        "worker_session_id".to_string(),
+        serde_json::json!(session_id),
+    );
+    patch.insert(
+        "worker_session_ids".to_string(),
+        serde_json::json!(worker_session_ids),
+    );
+    patch.insert(
+        "dispatched_at".to_string(),
+        serde_json::json!(dispatched_at),
+    );
+    if card.metadata_json.get("first_dispatched_at").is_none() {
+        patch.insert(
+            "first_dispatched_at".to_string(),
+            serde_json::json!(dispatched_at),
+        );
+    }
+    patch.insert("attempt_count".to_string(), serde_json::json!(next_attempt));
+    // Tag the dispatch with the current daemon lifecycle so restart-recovery
+    // won't reclaim this goal while its in-process tracker is still alive.
+    patch.insert(
+        "dispatched_lifecycle".to_string(),
+        serde_json::json!(daemon_lifecycle_id()),
+    );
+    if let Some(ref baseline) = baseline_commit {
+        patch.insert("baseline_commit".to_string(), serde_json::json!(baseline));
+    }
+    let have_seeded_checks = seeded_checks.is_some();
+    if let Some(checks) = seeded_checks {
+        tracing::info!(
+            target: "permagentd::brain",
+            "Seeding {} completion checks onto goal '{}': {}",
+            checks_source,
+            card.title,
+            checks
+        );
+        patch.insert("completion_checks".to_string(), checks);
+    }
+    if have_seeded_checks || card.metadata_json.get("completion_checks").is_some() {
+        patch.insert(
+            "completion_checks_source".to_string(),
+            serde_json::json!(checks_source),
+        );
+    }
+    if let Err(error) =
+        goal_transition::finalize_dispatch_claim(&pool, card_id, &dispatch_claim_id, patch).await
+    {
+        let release_result = goal_transition::release_dispatch_claim(
+            &pool,
+            card_id,
+            &dispatch_claim_id,
+            &format!("Failed to finalize worker dispatch: {error}"),
+        )
+        .await;
+        return Err(match release_result {
+            Ok(()) => error.to_string(),
+            Err(release_error) => {
+                format!("{error}; additionally failed to release dispatch claim: {release_error}")
+            }
+        });
+    }
+    let goal_engine::DispatchedWork {
+        run_id: session_id,
+        process_id,
+        join,
+        kill,
+        steer,
+    } = match prepared.start().await {
+        Ok(work) => work,
+        Err(error) => {
+            goal_transition::release_dispatch_claim(&pool, card_id, &dispatch_claim_id, &error)
+                .await
+                .map_err(|e| format!("{error}; release failed: {e}"))?;
+            return Err(error);
+        }
+    };
+    let mut started_guard = goal_engine::StartedWorkGuard::new(
+        &kill,
+        crate::goal_attempts::StartPermit {
+            pool: pool.clone(),
+            goal_id: card_id.to_string(),
+            claim_id: dispatch_claim_id.clone(),
+        },
+    );
+    if let Some(pid) = process_id {
+        if let Err(error) =
+            crate::goal_attempts::record_pid(&pool, card_id, &dispatch_claim_id, pid).await
+        {
+            kill.kill();
+            let _ = join.await;
+            let _ = goal_transition::release_dispatch_claim(
+                &pool,
+                card_id,
+                &dispatch_claim_id,
+                &error.to_string(),
+            )
+            .await;
+            return Err(error.to_string());
+        }
+        let with_pid = receipt.with_process_id(Some(pid));
+        // This is a display projection; native identity was persisted above.
+        if let Ok(value) = serde_json::to_value(with_pid) {
+            if let Err(error) = cards::set_goal_execution_receipt(&pool, card_id, value).await {
+                tracing::warn!("Failed to project native worker PID: {error}");
+            }
+        }
+    }
+    if zero_progress_breaker == ZeroProgressBreaker::Escalate {
+        let mut escalation = serde_json::Map::new();
+        escalation.insert(
+            goal_transition::ZERO_PROGRESS_ESCALATION_USED_METADATA_KEY.to_string(),
+            serde_json::json!(true),
+        );
+        if let Err(error) =
+            cards::merge_card_metadata(&pool, card_id, serde_json::Value::Object(escalation), false)
+                .await
+        {
+            tracing::warn!("Failed to project started worker escalation: {error}");
+        }
+    }
 
     // Lane R41a: the single choke point every real dispatch funnels through
     // — `goal_advance{dispatch}` directly (a pre-existing Ready card, e.g.
@@ -9543,6 +9797,7 @@ pub(crate) async fn dispatch_goal_fn(
     // signals `maybe_forgive_zero_progress_attempt` needs to decide whether
     // this attempt made any progress at all.
     let tracker_session_id = session_id.clone();
+    let tracker_claim_id = dispatch_claim_id.clone();
     // dagK Q2: this attempt's own number, stamped into the `worker_plan`
     // metadata write below alongside `tracker_session_id` — `next_attempt` is
     // `Copy`, so this is a cheap value capture, not a clone of shared state.
@@ -9580,6 +9835,9 @@ pub(crate) async fn dispatch_goal_fn(
                                 format!("Worker task panicked: {}", e),
                             ),
                         };
+                        if !crate::goal_attempts::is_current_worker(&tracker_pool, &tracker_card_id, &tracker_claim_id, &tracker_session_id).await.unwrap_or(false) {
+                            return;
+                        }
                         // The final stdout read happens before the join becomes
                         // ready, but both branches can be ready in this select.
                         // Drain queued events so a fast worker cannot finish
@@ -9590,10 +9848,12 @@ pub(crate) async fn dispatch_goal_fn(
                         break outcome;
                     }
                     _ = ticker.tick() => {
+                        if !crate::goal_attempts::is_current_worker(&tracker_pool, &tracker_card_id, &tracker_claim_id, &tracker_session_id).await.unwrap_or(false) { continue; }
                         beat_receipt(&tracker_pool, &tracker_card_id).await;
                     }
                     event = output_rx.recv(), if !output_rx.is_closed() => {
                         if let Some(event) = event {
+                            if !crate::goal_attempts::is_current_worker(&tracker_pool, &tracker_card_id, &tracker_claim_id, &tracker_session_id).await.unwrap_or(false) { continue; }
                             record_worker_output(&tracker_pool, &tracker_card_id, event).await;
                         }
                     }
@@ -9602,7 +9862,7 @@ pub(crate) async fn dispatch_goal_fn(
         };
         // The worker has exited — drop its kill handle from the registry.
         // (A cancel may already have taken it; remove is then a no-op.)
-        take_goal_worker(&tracker_card_id);
+        take_goal_worker_for_session(&tracker_card_id, &tracker_session_id);
         // R28a: the worker's session just ended, for whichever reason
         // `outcome` names — the one place every dispatch attempt's teardown
         // passes through, before `finalize_receipt`/`handle_goal_completion`
@@ -9622,18 +9882,58 @@ pub(crate) async fn dispatch_goal_fn(
             checkpoint_reason_for_outcome(&outcome),
         )
         .await;
+        let _completion_claim = CompletionInFlight::begin(&tracker_card_id);
+        let native_state = match &outcome {
+            goal_engine::GoalOutcome::Success(_) => {
+                crate::goal_candidates::TerminalState::Succeeded
+            }
+            _ => crate::goal_candidates::TerminalState::Failed,
+        };
+        match crate::goal_candidates::observe_worker_terminal(
+            &tracker_pool,
+            &tracker_card_id,
+            &tracker_claim_id,
+            &tracker_session_id,
+            native_state,
+            &format!("Native worker outcome: {outcome:?}"),
+            receipt_state_for_outcome(&outcome),
+        )
+        .await
+        {
+            Ok(crate::goal_candidates::TerminalObservation::Sealed(_)) => {}
+            Ok(
+                crate::goal_candidates::TerminalObservation::Stale
+                | crate::goal_candidates::TerminalObservation::AlreadySealed(_),
+            ) => return,
+            Err(error) => {
+                tracing::error!("Cannot seal native worker terminal observation: {error}");
+                return;
+            }
+        }
         // #210: stamp the receipt's terminal state (best-effort) before running
         // the completion handler, so the attempt's outcome is recorded even if a
         // downstream handler step fails.
-        let terminal_state = receipt_state_for_outcome(&outcome);
         // Lane Y6: claim the card BEFORE the receipt is stamped terminal, so
         // there is no instant in which the receipt says "done" while nothing
         // says "a handler owns this". `drain_dispatched_goals` reads this mark
         // and keeps waiting instead of parking the card out from under the
         // handler mid-transition (see `CompletionInFlight`). Dropped at the end
         // of this block — including on an early return or a panic.
-        let _completion_claim = CompletionInFlight::begin(&tracker_card_id);
-        finalize_receipt(&tracker_pool, &tracker_card_id, terminal_state).await;
+
+        let expected_attempt = match crate::goal_candidates::terminal_fence(
+            &tracker_pool,
+            &tracker_card_id,
+            &tracker_claim_id,
+            &tracker_session_id,
+        )
+        .await
+        {
+            Ok(value) => value,
+            Err(error) => {
+                tracing::error!("Cannot acquire native completion fence: {error}");
+                return;
+            }
+        };
         let result = match outcome {
             goal_engine::GoalOutcome::Success(evidence) => {
                 // Layer 1: persist deterministic proof-of-work to the goal
@@ -9748,12 +10048,13 @@ pub(crate) async fn dispatch_goal_fn(
                         );
                     }
                 }
-                handle_goal_completion(
+                handle_goal_completion_for_attempt(
                     &tracker_pool,
                     &tracker_card_id,
                     &tracker_project_id,
                     Ok(()),
                     tracker_headless_auto_land,
+                    Some(&expected_attempt),
                 )
                 .await
             }
@@ -9767,12 +10068,13 @@ pub(crate) async fn dispatch_goal_fn(
                     &checkpoint,
                 )
                 .await;
-                handle_goal_completion(
+                handle_goal_completion_for_attempt(
                     &tracker_pool,
                     &tracker_card_id,
                     &tracker_project_id,
                     Err(error),
                     tracker_headless_auto_land,
+                    Some(&expected_attempt),
                 )
                 .await
             }
@@ -9800,22 +10102,25 @@ pub(crate) async fn dispatch_goal_fn(
                 } else {
                     None
                 };
-                handle_goal_timeout(
+                handle_goal_timeout_for_attempt(
                     &tracker_pool,
                     &tracker_card_id,
                     &tracker_project_id,
                     secs,
                     None,
                     coordinator_session_id.as_deref(),
+                    goal_transition::TimeoutPark::AttemptBound,
+                    Some(&expected_attempt),
                 )
                 .await
             }
             goal_engine::GoalOutcome::Blocked { reason } => {
-                handle_goal_blocked(
+                handle_goal_blocked_for_attempt(
                     &tracker_pool,
                     &tracker_card_id,
                     &tracker_project_id,
                     &reason,
+                    Some(&expected_attempt),
                 )
                 .await
             }
@@ -9834,122 +10139,8 @@ pub(crate) async fn dispatch_goal_fn(
     // 'dispatch'): worker metadata, dispatch timestamps, attempt count,
     // baseline_commit, and the column move land in one audited transaction.
     // Per-attempt worker session history for token accounting (S4).
-    let mut worker_session_ids: Vec<String> = card
-        .metadata_json
-        .get("worker_session_ids")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
-    worker_session_ids.push(session_id.clone());
-
-    // #210: the initial execution receipt for THIS attempt — worker, routing
-    // snapshot, session id, owning lifecycle, and a heartbeat seeded at dispatch.
-    // It lands atomically with the dispatch transition below; the completion
-    // tracker then beats it and stamps its terminal state.
-    let receipt = ExecutionReceipt::new(
-        worker_key.clone(),
-        session_id.clone(),
-        capability_snapshot.clone(),
-        daemon_lifecycle_id().to_string(),
-        dispatched_at.clone(),
-        next_attempt,
-    )
-    .with_process_id(process_id);
-
-    let mut patch = serde_json::Map::new();
-    patch.insert("worker_key".to_string(), serde_json::json!(worker_key));
-    // #211: record the capability/routing snapshot alongside the chosen worker,
-    // so a goal preserves what the roster looked like when it was dispatched
-    // (not just the live roster at read time).
-    patch.insert(
-        "capability_snapshot".to_string(),
-        capability_snapshot.clone(),
-    );
-    if let Ok(receipt_json) = serde_json::to_value(&receipt) {
-        patch.insert("execution_receipt".to_string(), receipt_json);
-    }
-    patch.insert(
-        "worker_session_id".to_string(),
-        serde_json::json!(session_id),
-    );
-    patch.insert(
-        "worker_session_ids".to_string(),
-        serde_json::json!(worker_session_ids),
-    );
-    patch.insert(
-        "dispatched_at".to_string(),
-        serde_json::json!(dispatched_at),
-    );
-    if card.metadata_json.get("first_dispatched_at").is_none() {
-        patch.insert(
-            "first_dispatched_at".to_string(),
-            serde_json::json!(dispatched_at),
-        );
-    }
-    patch.insert("attempt_count".to_string(), serde_json::json!(next_attempt));
-    // Tag the dispatch with the current daemon lifecycle so restart-recovery
-    // won't reclaim this goal while its in-process tracker is still alive.
-    patch.insert(
-        "dispatched_lifecycle".to_string(),
-        serde_json::json!(daemon_lifecycle_id()),
-    );
-    if let Some(ref baseline) = baseline_commit {
-        patch.insert("baseline_commit".to_string(), serde_json::json!(baseline));
-    }
-    let have_seeded_checks = seeded_checks.is_some();
-    if let Some(checks) = seeded_checks {
-        tracing::info!(
-            target: "permagentd::brain",
-            "Seeding {} completion checks onto goal '{}': {}",
-            checks_source,
-            card.title,
-            checks
-        );
-        patch.insert("completion_checks".to_string(), checks);
-    }
-    if have_seeded_checks || card.metadata_json.get("completion_checks").is_some() {
-        patch.insert(
-            "completion_checks_source".to_string(),
-            serde_json::json!(checks_source),
-        );
-    }
-    // QA 2026-09-25: spend the breaker's one escalation for this goal.
-    // QA 2026-09-26: here, once the escalated worker has actually started —
-    // not in the claim patch, which a failed spawn releases back to Ready
-    // with every key it wrote, spending the escalation on a run that never
-    // happened.
-    if zero_progress_breaker == ZeroProgressBreaker::Escalate {
-        patch.insert(
-            goal_transition::ZERO_PROGRESS_ESCALATION_USED_METADATA_KEY.to_string(),
-            serde_json::json!(true),
-        );
-    }
-
-    if let Err(error) =
-        goal_transition::finalize_dispatch_claim(&pool, card_id, &dispatch_claim_id, patch).await
-    {
-        if let Some(kill) = take_goal_worker(card_id) {
-            kill.kill();
-        }
-        let release_result = goal_transition::release_dispatch_claim(
-            &pool,
-            card_id,
-            &dispatch_claim_id,
-            &format!("Failed to finalize worker dispatch: {error}"),
-        )
-        .await;
-        return Err(match release_result {
-            Ok(()) => error.to_string(),
-            Err(release_error) => {
-                format!("{error}; additionally failed to release dispatch claim: {release_error}")
-            }
-        });
-    }
     let _ = tracker_start_tx.send(());
+    started_guard.disarm();
 
     tracing::info!(
         target: "permagentd::brain",
@@ -14571,6 +14762,21 @@ impl McpClientTrait for OrchestratorClient {
         arguments: Option<JsonObject>,
         cancel_token: CancellationToken,
     ) -> Result<CallToolResult, Error> {
+        // These tools can execute a model-backed session outside the editor's
+        // exact-session invocation journal. Record that coverage gap before
+        // any target is created/driven; a failed durable marker refuses dispatch.
+        if matches!(name, "start_agent" | "send_message") {
+            let marker = async {
+                let pool = self.context.session_manager.pool_clone().await?;
+                crate::goal_attempts::mark_unreported_delegation(&pool, &ctx.session_id).await
+            }
+            .await;
+            if let Err(error) = marker {
+                return Ok(CallToolResult::error(vec![Content::text(format!(
+                    "Native delegation coverage could not be recorded: {error}"
+                ))]));
+            }
+        }
         let result = match name {
             "list_sessions" => self.handle_list_sessions(arguments).await,
             "view_session" => self.handle_view_session(&ctx.session_id, arguments).await,
@@ -15370,7 +15576,7 @@ fn headless_auto_land_from_env() -> bool {
     }
 }
 
-/// Env override for how many times `drain_dispatched_goals` may re-dispatch
+/// Env override for how many times any automatic headless path may re-dispatch
 /// ONE goal card within a single headless run (harness loop, Lane Y6). Same
 /// naming family and same raw-`std::env::var` idiom as
 /// [`PERMAGENT_HEADLESS_AUTOLAND_ENV`] / [`PERMAGENT_HEADLESS_WORKER_ENV`].
@@ -15378,11 +15584,10 @@ fn headless_auto_land_from_env() -> bool {
 /// `0` disables re-dispatch entirely (the pre-Y6 behavior: a goal requeued to
 /// Ready is never restarted inside the run that requeued it).
 ///
-/// It bounds the RETRY loop only — it is not an attempt cap. Every dispatch it
-/// authorises still goes through `eligible_ready_goals` + the installed
-/// dispatch hook (see [`goal_dispatch_hook_snapshot`]), so `goal_budget`'s attempt/token/wallclock caps,
-/// the atomic Ready→InProgress claim, and every guard on that rail apply
-/// unchanged.
+/// The native Ready→InProgress claim enforces this allowance across direct
+/// coordinator tools, automatic nudges and drain sweeps. Its monotonic per-run
+/// counter is independent of refundable goal attempt counts. Explicit approved
+/// unblock decisions may extend the protected allowance.
 pub const PERMAGENT_HEADLESS_MAX_REDISPATCH_ENV: &str = "PERMAGENT_HEADLESS_MAX_REDISPATCH";
 
 /// Default for [`PERMAGENT_HEADLESS_MAX_REDISPATCH_ENV`]: two re-dispatches
@@ -16972,6 +17177,28 @@ pub fn take_goal_worker(card_id: &str) -> Option<goal_engine::GoalKill> {
         .map(|w| w.kill)
 }
 
+fn take_goal_worker_for_completion(
+    card_id: &str,
+    expected: Option<&crate::goal_candidates::ExpectedAttempt>,
+) -> Option<goal_engine::GoalKill> {
+    match expected {
+        Some(expected) => take_goal_worker_for_session(card_id, &expected.worker_session_id),
+        None => take_goal_worker(card_id),
+    }
+}
+
+fn take_goal_worker_for_session(card_id: &str, session_id: &str) -> Option<goal_engine::GoalKill> {
+    let mut map = GOAL_WORKERS.lock().ok()?;
+    if map
+        .get(card_id)
+        .is_some_and(|worker| worker.session_id == session_id)
+    {
+        map.remove(card_id).map(|worker| worker.kill)
+    } else {
+        None
+    }
+}
+
 /// Clone a goal's steer handle WITHOUT removing the registry entry — steering
 /// must not disarm the cancel path.
 pub fn steer_handle_for(card_id: &str) -> Option<std::sync::Arc<goal_engine::SteerHandle>> {
@@ -17726,9 +17953,51 @@ pub async fn handle_goal_completion(
     result: Result<(), String>,
     headless_auto_land: bool,
 ) -> Result<(), String> {
+    handle_goal_completion_for_attempt(pool, card_id, project_id, result, headless_auto_land, None)
+        .await
+}
+
+async fn handle_goal_completion_for_attempt(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card_id: &str,
+    project_id: &str,
+    result: Result<(), String>,
+    headless_auto_land: bool,
+    expected_attempt: Option<&crate::goal_candidates::ExpectedAttempt>,
+) -> Result<(), String> {
     let card = cards::get_card(pool, card_id)
         .await?
         .ok_or_else(|| format!("Card '{}' not found during completion handling", card_id))?;
+
+    if expected_attempt.is_some() {
+        let unverifiable = match crate::goal_candidates::resolve_candidate(pool, card_id)
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            crate::goal_candidates::LineageResolution::Unverifiable(reason) => Some(reason),
+            crate::goal_candidates::LineageResolution::Verified(lineage) => {
+                match crate::goal_candidates::contributor_evidence(pool, &lineage)
+                    .await
+                    .map_err(|e| e.to_string())?
+                {
+                    crate::goal_candidates::ContributorEvidence::Unknown(reason) => Some(reason),
+                    _ => None,
+                }
+            }
+            crate::goal_candidates::LineageResolution::NoGit => None,
+        };
+        if let Some(reason) = unverifiable {
+            park_refused_goal_for_attempt(
+                pool,
+                &card,
+                &format!("Native candidate provenance is unverifiable: {reason}"),
+                None,
+                expected_attempt,
+            )
+            .await;
+            return Ok(());
+        }
+    }
 
     // Check card is still in InProgress — if not, someone manually intervened; no-op.
     let current_col = cards::get_column(pool, &card.column_id).await?;
@@ -17769,11 +18038,12 @@ pub async fn handle_goal_completion(
             } else {
                 None
             };
-            if let Some(held) = maybe_hold_review(
+            if let Some(held) = maybe_hold_review_for_attempt(
                 pool,
                 &card,
                 headless_auto_land,
                 coordinator_session_id.as_deref(),
+                expected_attempt,
             )
             .await?
             {
@@ -17792,6 +18062,7 @@ pub async fn handle_goal_completion(
                 None,
                 TransitionEffects {
                     metadata_patch: patch,
+                    expected_attempt: expected_attempt.cloned(),
                     ..Default::default()
                 },
             )
@@ -17861,18 +18132,40 @@ pub async fn handle_goal_completion(
             );
         }
         Err(error) => {
+            // A failed runtime can still have left a clean committed candidate.
+            // Preserve the failed attempt's receipt; recovery re-runs native
+            // verification and the existing full-contract review/landing gates.
+            let coordinator = headless_dispatch_policy_config()
+                .map(|config| config.coordinator_session_id.clone());
+            if let SalvageOutcome::Salvaged { note } =
+                Box::pin(maybe_salvage_committed_work_for_attempt(
+                    pool,
+                    &card,
+                    None,
+                    coordinator.as_deref(),
+                    headless_auto_land,
+                    expected_attempt,
+                ))
+                .await
+            {
+                tracing::info!(target: "permagentd::brain", goal_id = %card_id,
+                        worker_error = %error, "Recovered committed candidate after failed worker: {note}");
+                return Ok(());
+            }
             // Budget check (S4): exhaustion emits an unblock decision and
             // parks the goal — never a silent retry.
             if let Some(exhaustion) =
                 goal_transition::check_budget(pool, &card.metadata_json).await?
             {
-                let decision_id = goal_transition::exhaust_and_park(
+                let decision_id = goal_transition::exhaust_and_park_for_attempt(
                     pool,
                     card_id,
                     &card.title,
                     project_id,
                     exhaustion,
                     Some(&error),
+                    None,
+                    expected_attempt,
                 )
                 .await?;
 
@@ -17914,11 +18207,13 @@ pub async fn handle_goal_completion(
                 } else {
                     None
                 };
-                let salvage_note = match maybe_salvage_committed_work(
+                let salvage_note = match maybe_salvage_committed_work_for_attempt(
                     pool,
                     &card,
                     None,
                     coordinator_session_id.as_deref(),
+                    headless_dispatch_policy_config().is_some_and(|config| config.auto_land),
+                    expected_attempt,
                 )
                 .await
                 {
@@ -17955,7 +18250,7 @@ pub async fn handle_goal_completion(
                         "could not record the wall_budget_exhausted receipt: {e}"
                     );
                 }
-                let decision_id = goal_transition::exhaust_and_park(
+                let decision_id = goal_transition::exhaust_and_park_for_attempt(
                     pool,
                     card_id,
                     &card.title,
@@ -17965,6 +18260,8 @@ pub async fn handle_goal_completion(
                         cap_secs: outcome.cap_secs,
                     },
                     Some(&reason),
+                    None,
+                    expected_attempt,
                 )
                 .await?;
 
@@ -17987,12 +18284,13 @@ pub async fn handle_goal_completion(
                     .get("attempt_count")
                     .and_then(|value| value.as_u64())
                     .unwrap_or(0);
-                goal_transition::requeue_goal(
+                goal_transition::requeue_goal_for_attempt(
                     pool,
                     card_id,
                     decisions::ACTOR_SYSTEM,
                     attempt_count,
                     &error,
+                    expected_attempt,
                 )
                 .await
                 .map_err(String::from)?;
@@ -18206,6 +18504,7 @@ async fn auto_land_headless_goal(
             card,
             auto_land_allowed,
             calling_session_id,
+            None,
         )
         .await;
         return;
@@ -18255,6 +18554,7 @@ async fn auto_land_headless_goal(
             card,
             auto_land_allowed,
             calling_session_id,
+            None,
         )
         .await;
         return;
@@ -18422,15 +18722,16 @@ async fn settle_verified_goal_review(
     review: AutoLandReview,
     max_redispatch: u32,
 ) {
-    match review {
+    let native_binding = match review {
         AutoLandReview::NotRequired { reason } => {
             tracing::debug!(
                 target: "permagentd::brain",
                 goal_id = %card.id,
                 "headless Auto: no independent review needed before auto-land: {reason}"
             );
+            None
         }
-        AutoLandReview::Approved => {}
+        AutoLandReview::Approved { binding } => binding,
         AutoLandReview::ChangesRequested {
             reason,
             findings,
@@ -18496,7 +18797,7 @@ async fn settle_verified_goal_review(
             park_refused_auto_land(pool, decision_id, card, auto_land_allowed, &reason).await;
             return;
         }
-    }
+    };
 
     if let Err(e) = cards::set_goal_verdict_and_program_receipts(
         pool,
@@ -18526,6 +18827,7 @@ async fn settle_verified_goal_review(
         card,
         auto_land_allowed,
         calling_session_id,
+        native_binding.as_ref(),
     )
     .await;
 }
@@ -18543,7 +18845,19 @@ async fn finish_headless_auto_land(
     card: &cards::Card,
     auto_land_allowed: bool,
     calling_session_id: Option<&str>,
+    native_binding: Option<&crate::goal_candidates::NativeReviewBinding>,
 ) {
+    // Serialized card PASS/reviewer metadata is display-only. A native code
+    // candidate requires the actual Approved run's in-memory binding.
+    if native_binding.is_none() {
+        match crate::goal_candidates::resolve_candidate(pool, &card.id).await {
+            Ok(crate::goal_candidates::LineageResolution::NoGit) => {}
+            _ => {
+                tracing::warn!(goal_id=%card.id, "automatic approval refused: no native Approved review binding");
+                return;
+            }
+        }
+    }
     let (answered, proof) =
         match decisions::auto_approve_headless_goal_review(pool, decision_id, &card.id).await {
             Ok(pair) => pair,
@@ -18561,16 +18875,31 @@ async fn finish_headless_auto_land(
             }
         };
 
-    match crate::decisions_effects::apply_decision_effect_with_auto_land(
-        pool,
-        &answered,
-        proof,
-        "approve_review",
-        auto_land_allowed,
-        calling_session_id,
-    )
-    .await
-    {
+    let result = match native_binding {
+        Some(binding) => {
+            crate::decisions_effects::apply_native_review_approval(
+                pool,
+                &answered,
+                proof,
+                binding,
+                auto_land_allowed,
+                calling_session_id,
+            )
+            .await
+        }
+        None => {
+            crate::decisions_effects::apply_decision_effect_with_auto_land(
+                pool,
+                &answered,
+                proof,
+                "approve_review",
+                auto_land_allowed,
+                calling_session_id,
+            )
+            .await
+        }
+    };
+    match result {
         Ok((effect, warning)) => {
             tracing::info!(
                 target: "permagentd::brain",
@@ -18655,13 +18984,29 @@ pub(crate) fn auto_land_review_requirement(
     }
 }
 
+fn auto_land_review_requirement_for_goal(
+    facts: &crate::cost_router::recommend::ReviewFacts,
+    metadata: &serde_json::Value,
+) -> AutoLandReviewRequirement {
+    if metadata.get(TASK_CONTRACT_METADATA_KEY).is_some() {
+        AutoLandReviewRequirement::Required {
+            reason: "the goal carries an original task contract that needs independent review"
+                .to_string(),
+        }
+    } else {
+        auto_land_review_requirement(facts)
+    }
+}
+
 /// What [`independent_review_before_auto_land`] decided.
 #[derive(Debug)]
 enum AutoLandReview {
     /// No review is needed (trivial, or nothing measurable to review).
     NotRequired { reason: String },
     /// A cross-family reviewer approved the diff.
-    Approved,
+    Approved {
+        binding: Option<crate::goal_candidates::NativeReviewBinding>,
+    },
     /// Lane R66a: the review requested changes with concrete findings, which
     /// a headless run may send back to the worker once.
     ChangesRequested {
@@ -18842,13 +19187,14 @@ fn write_scope_violation_finding(declared: &[String], violations: &[String]) -> 
 /// with no independent reviewer, and the oracle failed on a surface the plan
 /// missed. Before headless auto-land lands a verified goal, measure the goal's
 /// trunk-relative diff (the same range the reviewer delegate measures,
-/// [`goal_trunk_relative_diff`]) and apply [`auto_land_review_requirement`]:
-/// a trivial change lands as before; any other change is reviewed by the
+/// [`goal_trunk_relative_diff`]) and apply [`auto_land_review_requirement_for_goal`]:
+/// a contract-bearing goal always needs review; other trivial changes land
+/// as before, and other non-trivial changes are reviewed by the
 /// objective cross-family reviewer assignment
 /// ([`review_goal_diff_with_cross_family_reviewer`] → `assign_reviewer`), and
 /// only an approval lets it land. A goal whose diff cannot be measured (no
 /// recorded head, no trunk, or an empty range) has nothing for a reviewer to
-/// read; the landing step itself refuses a goal with nothing to land. The
+/// read; a contract-bearing goal is refused at this gate. The
 /// outcome is recorded on the card as `auto_land_review`.
 async fn independent_review_before_auto_land(
     pool: &sqlx::Pool<sqlx::Sqlite>,
@@ -18861,9 +19207,33 @@ async fn independent_review_before_auto_land(
         .and_then(|v| v.as_str())
         .map(std::path::PathBuf::from)
         .unwrap_or_default();
-    let measured = goal_trunk_relative_diff(pool, card, &session_dir, false).await;
-    let (outcome, mut record) = match measured {
-        None => {
+    let head_validation = validate_auto_land_review_head(&card.metadata_json);
+    let measured = match &head_validation {
+        Ok(head) => Some(
+            goal_trunk_relative_diff(pool, card, &session_dir, false, Some(head.as_str())).await,
+        ),
+        Err(_) => None,
+    };
+    let (outcome, mut record) = match (head_validation, measured) {
+        (Err(reason), _) => auto_land_review_head_failure(&reason),
+        (Ok(_), None) => auto_land_review_head_failure(
+            "the independent review could not bind its diff to the validated candidate SHA",
+        ),
+        (Ok(_), Some(Err(reason))) => auto_land_review_head_failure(&format!(
+            "the independent review could not measure a diff for the validated candidate SHA: {reason}"
+        )),
+        (Ok(_), Some(Ok(None)))
+            if card.metadata_json.get(TASK_CONTRACT_METADATA_KEY).is_some() =>
+        {
+            let reason = "the goal carries an original task contract, but no change against trunk could be measured for its required independent review".to_string();
+            (
+                AutoLandReview::Refused {
+                    reason: reason.clone(),
+                },
+                serde_json::json!({ "required": true, "outcome": "refused", "reason": reason }),
+            )
+        }
+        (Ok(_), Some(Ok(None))) => {
             let reason = "no change against trunk could be measured, so there is nothing for a \
                           reviewer to read"
                 .to_string();
@@ -18874,15 +19244,17 @@ async fn independent_review_before_auto_land(
                 serde_json::json!({ "required": false, "reason": reason }),
             )
         }
-        Some((diff, dir, source)) => {
+        (Ok(reviewed_head), Some(Ok(Some((diff, dir, source))))) => {
             let changes = crate::cost_router::detect_signature_changes(&diff);
-            let call_sites: usize = enumerate_signature_call_sites(&dir, &changes)
-                .await
-                .iter()
-                .map(|e| e.call_sites.len())
-                .sum();
+            let review_head = reviewed_head.as_str();
+            let call_sites: usize =
+                enumerate_signature_call_sites_pinned(&dir, &review_head, &changes)
+                    .await
+                    .iter()
+                    .map(|e| e.call_sites.len())
+                    .sum();
             let facts = crate::cost_router::recommend::ReviewFacts::from_diff(&diff, call_sites);
-            match auto_land_review_requirement(&facts) {
+            match auto_land_review_requirement_for_goal(&facts, &card.metadata_json) {
                 AutoLandReviewRequirement::Skip { reason } => (
                     AutoLandReview::NotRequired {
                         reason: reason.clone(),
@@ -18912,6 +19284,7 @@ async fn independent_review_before_auto_land(
                         card,
                         &dir,
                         diff,
+                        &reviewed_head,
                         &GoalReviewKind::Verified { verification },
                         calling_session_id,
                     )
@@ -18924,7 +19297,7 @@ async fn independent_review_before_auto_land(
                             reviewer_provider,
                             reviewer_model,
                         } => (
-                            AutoLandReview::Approved,
+                            AutoLandReview::Approved { binding: run.native_binding },
                             serde_json::json!({
                                 "required": true,
                                 "reason": reason,
@@ -18997,6 +19370,28 @@ async fn independent_review_before_auto_land(
     );
     record_auto_land_review(pool, &card.id, record).await;
     outcome
+}
+
+fn validate_auto_land_review_head(meta: &serde_json::Value) -> Result<String, String> {
+    let head = recorded_goal_head(meta).ok_or_else(|| {
+        "no pinned candidate commit SHA is recorded for independent review".to_string()
+    })?;
+    super::review_context::validate_full_sha(&head)
+        .map_err(|_| "the recorded candidate is not a valid full Git commit SHA".to_string())?;
+    Ok(head)
+}
+
+fn auto_land_review_head_failure(reason: &str) -> (AutoLandReview, serde_json::Value) {
+    (
+        AutoLandReview::Refused {
+            reason: reason.to_string(),
+        },
+        serde_json::json!({
+            "required": true,
+            "outcome": "refused",
+            "reason": reason,
+        }),
+    )
 }
 
 /// Write `auto_land_review` on the card. Lane R66a: a goal sent back once
@@ -19418,6 +19813,16 @@ pub(crate) async fn park_refused_goal(
     reason: &str,
     cause: Option<decisions::UnblockCause>,
 ) {
+    park_refused_goal_for_attempt(pool, card, reason, cause, None).await
+}
+
+async fn park_refused_goal_for_attempt(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card: &cards::Card,
+    reason: &str,
+    cause: Option<decisions::UnblockCause>,
+    expected_attempt: Option<&crate::goal_candidates::ExpectedAttempt>,
+) {
     // One open unblock per goal, same dedupe every other park path uses.
     match decisions::find_open_decision_for_goal(pool, &card.id, "unblock").await {
         Ok(Some(_)) => {}
@@ -19475,7 +19880,15 @@ pub(crate) async fn park_refused_goal(
         }
     }
 
-    match goal_transition::park_goal(pool, &card.id, decisions::ACTOR_SYSTEM, reason).await {
+    match goal_transition::park_goal_for_attempt(
+        pool,
+        &card.id,
+        decisions::ACTOR_SYSTEM,
+        reason,
+        expected_attempt,
+    )
+    .await
+    {
         Ok(()) => tracing::warn!(
             target: "permagentd::brain",
             goal_id = %card.id,
@@ -19540,9 +19953,62 @@ pub async fn handle_goal_timeout_for(
     calling_session_id: Option<&str>,
     park: goal_transition::TimeoutPark,
 ) -> Result<(), String> {
+    handle_goal_timeout_for_attempt(
+        pool,
+        card_id,
+        project_id,
+        secs,
+        grace_deadline,
+        calling_session_id,
+        park,
+        None,
+    )
+    .await
+}
+
+async fn handle_goal_timeout_for_attempt(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card_id: &str,
+    project_id: &str,
+    secs: u64,
+    grace_deadline: Option<std::time::Instant>,
+    calling_session_id: Option<&str>,
+    park: goal_transition::TimeoutPark,
+    expected_attempt: Option<&crate::goal_candidates::ExpectedAttempt>,
+) -> Result<(), String> {
     let card = cards::get_card(pool, card_id)
         .await?
         .ok_or_else(|| format!("Card '{}' not found during timeout handling", card_id))?;
+
+    if expected_attempt.is_some() {
+        let unverifiable = match crate::goal_candidates::resolve_candidate(pool, card_id)
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            crate::goal_candidates::LineageResolution::Unverifiable(reason) => Some(reason),
+            crate::goal_candidates::LineageResolution::Verified(lineage) => {
+                match crate::goal_candidates::contributor_evidence(pool, &lineage)
+                    .await
+                    .map_err(|e| e.to_string())?
+                {
+                    crate::goal_candidates::ContributorEvidence::Unknown(reason) => Some(reason),
+                    _ => None,
+                }
+            }
+            crate::goal_candidates::LineageResolution::NoGit => None,
+        };
+        if let Some(reason) = unverifiable {
+            park_refused_goal_for_attempt(
+                pool,
+                &card,
+                &format!("Native candidate provenance is unverifiable: {reason}"),
+                None,
+                expected_attempt,
+            )
+            .await;
+            return Ok(());
+        }
+    }
 
     // Only act while the goal is still InProgress (mirrors handle_goal_completion:
     // a manual intervention since dispatch is respected) — Lane R26b widens
@@ -19629,20 +20095,28 @@ pub async fn handle_goal_timeout_for(
     // path by construction. `calling_session_id` is threaded through from
     // the caller instead — still `None` for the rare caller with no
     // coordinator session to give (e.g. a direct test).
-    let salvage_note =
-        match maybe_salvage_committed_work(pool, &card, grace_deadline, calling_session_id).await {
-            SalvageOutcome::Salvaged { note } => {
-                tracing::info!(
-                    target: "permagentd::brain",
-                    "Goal '{}' worker timed out after {}s, but its committed work was salvaged \
-                     instead of parked: {note}",
-                    card.title,
-                    secs
-                );
-                return Ok(());
-            }
-            SalvageOutcome::NotSalvaged { note } => note,
-        };
+    let salvage_note = match maybe_salvage_committed_work_for_attempt(
+        pool,
+        &card,
+        grace_deadline,
+        calling_session_id,
+        headless_dispatch_policy_config().is_some_and(|config| config.auto_land),
+        expected_attempt,
+    )
+    .await
+    {
+        SalvageOutcome::Salvaged { note } => {
+            tracing::info!(
+                target: "permagentd::brain",
+                "Goal '{}' worker timed out after {}s, but its committed work was salvaged \
+                 instead of parked: {note}",
+                card.title,
+                secs
+            );
+            return Ok(());
+        }
+        SalvageOutcome::NotSalvaged { note } => note,
+    };
     // QA 2026-09-25: a quarantined checkpoint left real work uncommitted in
     // the worktree on purpose — say so, and where, so the park reason never
     // reads as "nothing to salvage" while that work is still sitting there.
@@ -19663,13 +20137,15 @@ pub async fn handle_goal_timeout_for(
         cap_secs: secs,
     };
     let last_error = format!("{}; salvage: {salvage_note}", park.error_prefix());
-    let decision_id = goal_transition::exhaust_and_park(
+    let decision_id = goal_transition::exhaust_and_park_for_attempt(
         pool,
         card_id,
         &card.title,
         project_id,
         exhaustion,
         Some(&last_error),
+        None,
+        expected_attempt,
     )
     .await?;
 
@@ -22001,6 +22477,63 @@ pub async fn landed_goals_for_session(
     Ok(out)
 }
 
+/// Final states of goals owned by this coordinator run. Include cards minted
+/// by this session even if dispatch never produced a worker session, plus
+/// descendant worker cards (including resumed or re-dispatched goals). This
+/// deliberately does not inspect project-wide cards from older runs.
+pub async fn goal_states_for_session(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    coordinator_session_id: &str,
+    run_started_at: chrono::DateTime<chrono::Utc>,
+) -> Result<Vec<(String, GoalState)>, String> {
+    let mut ids = std::collections::BTreeSet::new();
+    for card in cards::goal_cards_created_by_session(pool, coordinator_session_id).await? {
+        ids.insert(card.card_id);
+    }
+    for session_id in descendant_session_ids(pool, coordinator_session_id).await? {
+        if let Some((card_id, _)) = goal_card_for_worker_session(pool, &session_id).await? {
+            ids.insert(card_id);
+        }
+    }
+    let mut states = Vec::with_capacity(ids.len());
+    for card_id in ids {
+        let card = cards::get_card(pool, &card_id)
+            .await?
+            .ok_or_else(|| format!("goal card '{card_id}' disappeared during final check"))?;
+        // A resumed CLI reuses the coordinator session ID. A card created or
+        // dispatched on a prior invocation must not decide THIS run's exit.
+        let created_at = chrono::DateTime::parse_from_rfc3339(&card.created_at)
+            .map_err(|e| format!("goal card '{card_id}' has invalid created_at: {e}"))?;
+        let dispatched_at = match card
+            .metadata_json
+            .pointer("/execution_receipt/dispatched_at")
+        {
+            Some(value) => {
+                let stamp = value.as_str().ok_or_else(|| {
+                    format!("goal card '{card_id}' has non-text execution receipt dispatch time")
+                })?;
+                Some(chrono::DateTime::parse_from_rfc3339(stamp).map_err(|e| {
+                    format!(
+                        "goal card '{card_id}' has invalid execution receipt dispatch time: {e}"
+                    )
+                })?)
+            }
+            None if card.metadata_json.get("execution_receipt").is_some() => {
+                return Err(format!(
+                    "goal card '{card_id}' has an execution receipt without dispatch time"
+                ));
+            }
+            None => None,
+        };
+        let stamped_this_run = created_at >= run_started_at
+            || dispatched_at.is_some_and(|stamp| stamp >= run_started_at);
+        if stamped_this_run {
+            states.push((card_id.clone(), goal_state_for_card(pool, &card_id).await?));
+        }
+    }
+    Ok(states)
+}
+
 /// Lane R35a (A32 root cause 1): for each of `coordinator_session_id`'s
 /// dispatched goal cards still non-terminal right after the drain returns, a
 /// short machine-parseable reason — printed by the CLI's drain summary
@@ -22119,6 +22652,16 @@ pub async fn handle_goal_blocked(
     project_id: &str,
     reason: &str,
 ) -> Result<(), String> {
+    handle_goal_blocked_for_attempt(pool, card_id, project_id, reason, None).await
+}
+
+async fn handle_goal_blocked_for_attempt(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card_id: &str,
+    project_id: &str,
+    reason: &str,
+    expected_attempt: Option<&crate::goal_candidates::ExpectedAttempt>,
+) -> Result<(), String> {
     let card = cards::get_card(pool, card_id).await?.ok_or_else(|| {
         format!(
             "Card '{}' not found during credential-block handling",
@@ -22186,9 +22729,15 @@ pub async fn handle_goal_blocked(
         }
     }
 
-    goal_transition::park_goal(pool, card_id, decisions::ACTOR_SYSTEM, reason)
-        .await
-        .map_err(String::from)?;
+    goal_transition::park_goal_for_attempt(
+        pool,
+        card_id,
+        decisions::ACTOR_SYSTEM,
+        reason,
+        expected_attempt,
+    )
+    .await
+    .map_err(String::from)?;
 
     tracing::warn!(
         target: "permagentd::brain",
@@ -23366,6 +23915,19 @@ async fn maybe_credit_and_bypass_hold(
     headless_auto_land: bool,
     calling_session_id: Option<&str>,
 ) -> Result<Option<Option<String>>, String> {
+    // Evidence from another goal cannot establish this native attempt's
+    // authorship or acceptance. The native path needs its own sealed lineage;
+    // legacy sibling-credit projections are advisory, not completion authority.
+    let native: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM goal_execution_bindings WHERE goal_id=? AND authority='native'",
+    )
+    .bind(&card.id)
+    .fetch_one(pool)
+    .await
+    .map_err(|error| error.to_string())?;
+    if native != 0 {
+        return Ok(None);
+    }
     let Some(evidence) = card.metadata_json.get("dispatch_evidence") else {
         return Ok(None);
     };
@@ -25231,6 +25793,43 @@ async fn maybe_salvage_committed_work(
     grace_deadline: Option<std::time::Instant>,
     calling_session_id: Option<&str>,
 ) -> SalvageOutcome {
+    let auto_land = headless_dispatch_policy_config().is_some_and(|config| config.auto_land);
+    maybe_salvage_committed_work_with_policy(
+        pool,
+        card,
+        grace_deadline,
+        calling_session_id,
+        auto_land,
+    )
+    .await
+}
+
+async fn maybe_salvage_committed_work_with_policy(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card: &cards::Card,
+    grace_deadline: Option<std::time::Instant>,
+    calling_session_id: Option<&str>,
+    headless_auto_land: bool,
+) -> SalvageOutcome {
+    maybe_salvage_committed_work_for_attempt(
+        pool,
+        card,
+        grace_deadline,
+        calling_session_id,
+        headless_auto_land,
+        None,
+    )
+    .await
+}
+
+async fn maybe_salvage_committed_work_for_attempt(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card: &cards::Card,
+    grace_deadline: Option<std::time::Instant>,
+    calling_session_id: Option<&str>,
+    headless_auto_land: bool,
+    expected_attempt: Option<&crate::goal_candidates::ExpectedAttempt>,
+) -> SalvageOutcome {
     // R37a: record-only when a test has scoped the capture above; a no-op
     // `try_with` failure (the ordinary, non-test-scoped case) is silently
     // ignored.
@@ -25241,12 +25840,8 @@ async fn maybe_salvage_committed_work(
             .push(calling_session_id.map(str::to_string));
     });
 
-    // Same derivation `handle_goal_completion`'s own callers already use
-    // (`dispatch_goal_fn` passes `policy.is_some_and(|p| p.auto_land)`) —
-    // computed here so every salvage call site gets it for free instead of
-    // threading it through call sites (like `handle_goal_timeout`) that
-    // otherwise have no reason to know about headless dispatch at all.
-    let headless_auto_land = headless_dispatch_policy_config().is_some_and(|c| c.auto_land);
+    // Failed-worker recovery passes its actual dispatch policy; legacy park
+    // callers retain the wrapper's installed-policy derivation.
     let not_salvaged = |note: String| SalvageOutcome::NotSalvaged { note };
 
     // Lane R22f: guards run in this documented order — attempted-once →
@@ -25303,7 +25898,25 @@ async fn maybe_salvage_committed_work(
         }
     }
 
-    let baseline_and_worktree =
+    let native_lineage = if expected_attempt.is_some() {
+        match crate::goal_candidates::resolve_candidate(pool, &card.id).await {
+            Ok(crate::goal_candidates::LineageResolution::Verified(lineage)) => {
+                match crate::goal_candidates::revalidate_candidate(pool, &lineage).await {
+                    Ok(current) if Some(&current) == expected_attempt => Some(lineage),
+                    _ => return not_salvaged("Native salvage claim changed".into()),
+                }
+            }
+            _ => return not_salvaged("Native salvage candidate is unverifiable".into()),
+        }
+    } else {
+        None
+    };
+    let baseline_and_worktree = if let Some(lineage) = &native_lineage {
+        Some((
+            lineage.candidate.trunk_head.clone(),
+            lineage.candidate.worktree.to_string_lossy().into_owned(),
+        ))
+    } else {
         match resolve_goal_baseline_and_worktree(pool, &card.metadata_json).await {
             Ok(v) => v,
             Err(e) => {
@@ -25311,7 +25924,8 @@ async fn maybe_salvage_committed_work(
                 record_salvage_receipt(pool, &card.id, "salvage_skipped_no_worktree", &note).await;
                 return not_salvaged(note);
             }
-        };
+        }
+    };
     let Some((baseline, worktree)) = baseline_and_worktree else {
         let note = "no dispatch baseline recorded — nothing to salvage".to_string();
         record_salvage_receipt(pool, &card.id, "salvage_skipped_no_baseline", &note).await;
@@ -25599,6 +26213,7 @@ async fn maybe_salvage_committed_work(
                     baseline: &baseline,
                     headless_auto_land,
                     calling_session_id,
+                    expected_attempt,
                 },
             )
             .await;
@@ -25618,12 +26233,16 @@ async fn maybe_salvage_committed_work(
         return not_salvaged(note);
     }
 
-    let Some(worker_session_id) = card
-        .metadata_json
-        .get("worker_session_id")
-        .and_then(|v| v.as_str())
-        .map(str::to_string)
-    else {
+    let worker_session_id = native_lineage
+        .as_ref()
+        .map(|lineage| lineage.candidate.worker_session_id.clone())
+        .or_else(|| {
+            card.metadata_json
+                .get("worker_session_id")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        });
+    let Some(worker_session_id) = worker_session_id else {
         let note = "salvage verify passed but the goal has no worker session to attribute it to"
             .to_string();
         record_salvage_receipt(pool, &card.id, "salvage_evidence_write_failed", &note).await;
@@ -25696,12 +26315,13 @@ async fn maybe_salvage_committed_work(
     // generated future type embed itself — an infinite-sized type the
     // compiler refuses. Boxing breaks the cycle; it does not change
     // behavior.
-    if let Err(e) = Box::pin(handle_goal_completion(
+    if let Err(e) = Box::pin(handle_goal_completion_for_attempt(
         pool,
         &card.id,
         &card.project_id,
         Ok(()),
         headless_auto_land,
+        expected_attempt,
     ))
     .await
     {
@@ -25797,6 +26417,7 @@ struct SalvageReviewInput<'a> {
     baseline: &'a str,
     headless_auto_land: bool,
     calling_session_id: Option<&'a str>,
+    expected_attempt: Option<&'a crate::goal_candidates::ExpectedAttempt>,
 }
 
 /// Lane R22c-b/R22c-c: NO_CHECKS (R21c) — and the `error_result` shape that
@@ -25843,13 +26464,21 @@ async fn hand_salvaged_work_to_review_unverified(
         baseline,
         headless_auto_land,
         calling_session_id,
+        expected_attempt,
     } = input;
 
     if !headless_auto_land {
-        return hand_to_review_for_a_human(pool, card, ahead, verify_note).await;
+        return hand_to_review_for_a_human_for_attempt(
+            pool,
+            card,
+            ahead,
+            verify_note,
+            expected_attempt,
+        )
+        .await;
     }
 
-    match dispatch_cross_family_reviewer_for_salvage(
+    let run = dispatch_cross_family_reviewer_for_salvage(
         pool,
         card,
         worktree_path,
@@ -25857,8 +26486,14 @@ async fn hand_salvaged_work_to_review_unverified(
         verify_note,
         calling_session_id,
     )
-    .await
-    {
+    .await;
+    let native_binding = run.native_binding;
+    if expected_attempt.is_some() && native_binding.is_none() {
+        return SalvageOutcome::NotSalvaged {
+            note: "Native salvage has no exact independent review binding".into(),
+        };
+    }
+    match run.outcome {
         ReviewerGateOutcome::Approved {
             checked,
             reviewer_provider,
@@ -25873,6 +26508,7 @@ async fn hand_salvaged_work_to_review_unverified(
                     checked: &checked,
                     reviewer_provider: &reviewer_provider,
                     reviewer_model: &reviewer_model,
+                    native_binding: native_binding.as_ref(),
                 },
                 calling_session_id,
             )
@@ -25915,6 +26551,15 @@ async fn hand_to_review_for_a_human(
     ahead: u64,
     verify_note: &str,
 ) -> SalvageOutcome {
+    hand_to_review_for_a_human_for_attempt(pool, card, ahead, verify_note, None).await
+}
+async fn hand_to_review_for_a_human_for_attempt(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card: &cards::Card,
+    ahead: u64,
+    verify_note: &str,
+    expected_attempt: Option<&crate::goal_candidates::ExpectedAttempt>,
+) -> SalvageOutcome {
     let mut patch = serde_json::Map::new();
     patch.insert(
         "completed_at".to_string(),
@@ -25928,6 +26573,7 @@ async fn hand_to_review_for_a_human(
         None,
         TransitionEffects {
             metadata_patch: patch,
+            expected_attempt: expected_attempt.cloned(),
             ..Default::default()
         },
     )
@@ -26401,6 +27047,209 @@ enum ReviewerCallFailure {
     TimedOut,
 }
 
+#[derive(Clone)]
+struct NativeReviewerPolicy {
+    pool: sqlx::Pool<sqlx::Sqlite>,
+    lineage: crate::goal_candidates::CandidateLineage,
+    families: std::collections::BTreeSet<String>,
+    floor: f64,
+    invocation_ids: std::collections::BTreeSet<String>,
+}
+
+impl NativeReviewerPolicy {
+    async fn check_dispatch(
+        &self,
+        provider: &str,
+        model: &str,
+    ) -> Result<(), crate::providers::errors::ProviderError> {
+        use crate::providers::errors::ProviderError;
+        validate_native_reviewer_route(&self.families, self.floor, provider, model)
+            .map_err(ProviderError::NotSent)?;
+        crate::goal_candidates::revalidate_candidate(&self.pool, &self.lineage)
+            .await
+            .map_err(|error| {
+                ProviderError::NotSent(format!(
+                    "native review candidate changed before physical dispatch: {error}"
+                ))
+            })?;
+        match crate::goal_candidates::contributor_evidence(&self.pool, &self.lineage).await
+            .map_err(|error| ProviderError::NotSent(error.to_string()))? {
+            crate::goal_candidates::ContributorEvidence::Known { families, invocation_ids, .. }
+                if families == self.families && invocation_ids == self.invocation_ids => Ok(()),
+            _ => Err(ProviderError::NotSent("native contributor history changed or became unknown before physical review dispatch".into())),
+        }
+    }
+}
+
+async fn create_native_reviewer_session(
+    manager: &SessionManager,
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    lineage: &crate::goal_candidates::CandidateLineage,
+) -> anyhow::Result<Session> {
+    crate::goal_candidates::revalidate_candidate(pool, lineage).await?;
+    let contract: serde_json::Value = serde_json::from_str(&lineage.contract_json)?;
+    if contract.get("task_id").and_then(serde_json::Value::as_str) != Some(lineage.task_id.as_str())
+    {
+        return Err(anyhow::anyhow!(
+            "native reviewer contract is not bound to the original task"
+        ));
+    }
+    create_frozen_reviewer_child(
+        manager,
+        &lineage.candidate.worker_session_id,
+        &lineage.candidate.worktree,
+        &lineage.task_id,
+        &lineage.candidate.goal_id,
+        contract,
+    )
+    .await
+}
+
+async fn create_frozen_reviewer_child(
+    manager: &SessionManager,
+    parent: &str,
+    worktree: &std::path::Path,
+    task: &str,
+    goal: &str,
+    contract: serde_json::Value,
+) -> anyhow::Result<Session> {
+    // Existing child creation copies only budget_task, not grants or attempts.
+    // Override that inherited value with the protected original task: the
+    // parent may have since begun a different task. Never mint a new budget.
+    let child = manager
+        .create_session_with_parent(
+            Some(parent),
+            worktree.to_path_buf(),
+            format!("Independent native review {goal}"),
+            SessionType::Hidden,
+            GooseMode::Auto,
+        )
+        .await?;
+    let mut data = crate::session::ExtensionData::new();
+    data.set_extension_state(
+        crate::session::BUDGET_TASK_EXTENSION_NAME,
+        crate::session::BUDGET_TASK_EXTENSION_VERSION,
+        serde_json::json!(task),
+    );
+    data.set_extension_state(
+        crate::session::GOAL_ID_EXTENSION_NAME,
+        crate::session::GOAL_ID_EXTENSION_VERSION,
+        serde_json::json!(goal),
+    );
+    data.set_extension_state("budget_task_contract", "v1", contract);
+    manager
+        .update(&child.id)
+        .extension_data(data)
+        .apply()
+        .await?;
+    manager.get_session(&child.id, false).await
+}
+
+fn validate_native_reviewer_route(
+    families: &std::collections::BTreeSet<String>,
+    floor: f64,
+    provider: &str,
+    model: &str,
+) -> Result<(), String> {
+    let family = crate::cost_router::reviewer_pick::known_physical_family_of(provider, model)
+        .ok_or_else(|| {
+            format!("the actual reviewer route {provider}/{model} has no trusted physical family")
+        })?;
+    if families.contains(&family) {
+        return Err(format!(
+            "the actual reviewer route {provider}/{model} shares contributor family {family}"
+        ));
+    }
+    let knowledge = crate::cost_router::knowledge::lookup(provider, model)
+        .ok_or_else(|| "the actual reviewer capability is unknown".to_string())?;
+    if crate::cost_router::reviewer_pick::model_is_retired(provider, model)
+        || knowledge.orchestration_strength + 1e-9
+            < floor - crate::cost_router::recommend::MATERIAL_FLOOR_SHORTFALL
+    {
+        return Err(format!("the actual reviewer route {provider}/{model} does not meet this review's capability floor"));
+    }
+    Ok(())
+}
+
+/// Shared production seam for native review calls and deterministic provider
+/// stubs. Validation happens before any accounted dispatch; this deliberately
+/// uses the selected full model, even when the provider advertises a fast model.
+#[allow(clippy::too_many_arguments)]
+async fn complete_native_reviewer_on_checked_route(
+    manager: std::sync::Arc<SessionManager>,
+    session: Session,
+    provider: std::sync::Arc<dyn crate::providers::base::Provider>,
+    system: &str,
+    messages: &[Message],
+    families: &std::collections::BTreeSet<String>,
+    floor: f64,
+    cfg: &crate::cost_router::budget::BudgetConfig,
+) -> anyhow::Result<(Message, crate::providers::base::ProviderUsage)> {
+    if !provider.supports_native_pretransport_gate() {
+        anyhow::bail!(
+            "native reviewer transport adapter has not been audited for scoped candidate fencing"
+        );
+    }
+    let actual_provider = provider.get_name().to_string();
+    let actual_model = provider.get_model_config().model_name;
+    validate_native_reviewer_route(families, floor, &actual_provider, &actual_model)
+        .map_err(anyhow::Error::msg)?;
+    let actual_role = crate::cost_router::role_map::RoleModel {
+        provider: actual_provider.clone(),
+        model: actual_model.clone(),
+    };
+    let selection = crate::cost_router::reviewer_pick::select_reviewer_for_contributors(
+        crate::cost_router::reviewer_pick::ContributorFamilies::Known(families),
+        Some(&actual_role),
+        None,
+        &[],
+        0,
+    );
+    let pick = selection
+        .pick()
+        .ok_or_else(|| anyhow::anyhow!("the actual reviewer route is not eligible"))?;
+    // This style/routing verdict is not a claim that real exposure is zero.
+    // Run the canonical frozen-task ceiling arithmetic for every tier, including
+    // free/subscription reviewers; paid accounting still reserves its full bound.
+    let task = crate::session::budget_task_id(&session.extension_data)
+        .ok_or_else(|| anyhow::anyhow!("native reviewer has no frozen task identity"))?;
+    if let Some(outcome) = manager
+        .check_provider_task_exposure(&session.id, &task, cfg)
+        .await?
+    {
+        return Err(anyhow::anyhow!(
+            "native review refused by original-task exposure: {outcome:?}"
+        ));
+    }
+    let verdict = crate::cost_router::budget_verdict(0.0, 0.0, cfg);
+    if let crate::cost_router::SpendDecision::Refuse { reason } =
+        crate::cost_router::reviewer_spend_gate(pick, &verdict)
+    {
+        return Err(anyhow::anyhow!(reason));
+    }
+    let (response, usage) = AccountedFastCompletion::complete_accounted_with_purpose(
+        manager,
+        session,
+        provider,
+        system,
+        messages,
+        &[],
+        false,
+        CallPurpose::Verification,
+    )
+    .await?;
+    // A returned different/unknown model cannot attest independent approval.
+    // Accounting has already settled the real usage; never erase that cost.
+    validate_native_reviewer_route(families, floor, &actual_provider, &usage.model)
+        .map_err(anyhow::Error::msg)?;
+    if crate::cost_router::knowledge::lookup(&actual_provider, &actual_model).map(|k| k.model)
+        != crate::cost_router::knowledge::lookup(&actual_provider, &usage.model).map(|k| k.model)
+    {
+        return Err(anyhow::anyhow!("reviewer returned a different model than the checked route; settled usage is retained but cannot independently approve this candidate"));
+    }
+    Ok((response, usage))
+}
+
 /// Build the model config + provider for `(provider_id, model_id)` and run
 /// ONE salvage-reviewer completion against it, classifying any failure for
 /// the caller's retry decision. Shared by the initial reviewer pick and the
@@ -26414,7 +27263,15 @@ async fn call_reviewer_provider(
     session: Session,
     prompt: &str,
     timeout: std::time::Duration,
+    system_prompt: &str,
+    native_policy: Option<&NativeReviewerPolicy>,
 ) -> Result<crate::conversation::message::Message, ReviewerCallFailure> {
+    if let Some(policy) = native_policy {
+        policy
+            .check_dispatch(provider_id, model_id)
+            .await
+            .map_err(|error| ReviewerCallFailure::Other(error.to_string()))?;
+    }
     let model_config = crate::model::ModelConfig::new(model_id)
         .map(|c| c.with_canonical_limits(provider_id))
         .map_err(|e| {
@@ -26436,25 +27293,80 @@ async fn call_reviewer_provider(
             }
         })?;
 
+    if let Some(policy) = native_policy {
+        if provider.get_name() != provider_id || provider.get_model_config().model_name != model_id
+        {
+            return Err(ReviewerCallFailure::Other("reviewer adapter metadata changed the selected route; automatic review cannot attribute it safely".into()));
+        }
+        policy
+            .check_dispatch(provider.get_name(), &provider.get_model_config().model_name)
+            .await
+            .map_err(|error| ReviewerCallFailure::Other(error.to_string()))?;
+    }
     let user_message = Message::user().with_text(prompt);
 
     // 2026-09-25 DAG K cost fix (HARNESS_COST_TRACE.md Q1): the independent
     // reviewer's own call is exactly `CallPurpose::Verification`'s doc
     // comment ("a call whose job is to check other work") — tag it so it
     // stops falling into `unknown`.
-    let completion = tokio::time::timeout(
-        timeout,
-        AccountedFastCompletion::complete_fast_accounted_with_purpose(
-            std::sync::Arc::new(SessionManager::instance()),
-            session,
-            provider,
-            crate::cost_router::REVIEW_SYSTEM_PROMPT,
-            &[user_message],
-            &[],
-            false,
-            CallPurpose::Verification,
-        ),
-    )
+    let completion = tokio::time::timeout(timeout, async {
+        if native_policy.is_some() {
+            // Full selected model; fast accounting substitutes the model
+            // after route validation and can perform another fallback.
+            let policy = native_policy.expect("native branch has policy");
+            let gate_policy = policy.clone();
+            let gate_provider = provider.get_name().to_string();
+            let gate_model = provider.get_model_config().model_name;
+            let gate_session = session.id.clone();
+            let gate: crate::cost_router::authorized_attempts::NativePretransportGate =
+                Arc::new(move || {
+                    let policy = gate_policy.clone();
+                    let provider = gate_provider.clone();
+                    let model = gate_model.clone();
+                    let session = gate_session.clone();
+                    Box::pin(async move {
+                        policy.check_dispatch(&provider, &model).await?;
+                        let cfg = crate::cost_router::budget::load_budget_config();
+                        match SessionManager::instance().check_provider_task_exposure(
+                            &session, &policy.lineage.task_id, &cfg,
+                        ).await {
+                            Ok(None) => Ok(()),
+                            result => Err(crate::providers::errors::ProviderError::NotSent(
+                                format!("native reviewer original-task exposure refused before transport: {result:?}")
+                            )),
+                        }
+                    })
+                });
+            let review_budget = crate::cost_router::budget::load_budget_config();
+            crate::cost_router::authorized_attempts::with_native_pretransport_gate(
+                gate,
+                complete_native_reviewer_on_checked_route(
+                    std::sync::Arc::new(SessionManager::instance()),
+                    session,
+                    provider,
+                    system_prompt,
+                    &[user_message],
+                    &policy.families,
+                    policy.floor,
+                    &review_budget,
+                ),
+            )
+            .await
+        } else {
+            // Legacy advisory callers retain their existing fast behavior.
+            AccountedFastCompletion::complete_fast_accounted_with_purpose(
+                std::sync::Arc::new(SessionManager::instance()),
+                session,
+                provider,
+                system_prompt,
+                &[user_message],
+                &[],
+                false,
+                CallPurpose::Verification,
+            )
+            .await
+        }
+    })
     .await;
 
     match completion {
@@ -26491,6 +27403,8 @@ async fn call_reviewer_provider_checked(
     session: Session,
     prompt: &str,
     timeout: std::time::Duration,
+    system_prompt: &str,
+    native_policy: Option<&NativeReviewerPolicy>,
 ) -> Result<crate::conversation::message::Message, ReviewerCallFailure> {
     if let Some(sid) = session_id {
         if let Some(class) = crate::cost_router::provider_circuit::reason_if_open(sid, provider_id)
@@ -26501,7 +27415,16 @@ async fn call_reviewer_provider_checked(
             )));
         }
     }
-    call_reviewer_provider(provider_id, model_id, session, prompt, timeout).await
+    call_reviewer_provider(
+        provider_id,
+        model_id,
+        session,
+        prompt,
+        timeout,
+        system_prompt,
+        native_policy,
+    )
+    .await
 }
 
 /// What one reviewer-call CYCLE ([`run_reviewer_call_cycle`]) produced:
@@ -26623,8 +27546,34 @@ async fn call_reviewer_provider_with_timeout_retry(
     call_timeout: std::time::Duration,
     budget: &ReviewTimeBudget,
 ) -> ReviewCycleOutcome {
+    call_reviewer_provider_with_timeout_retry_and_system(
+        session_id,
+        provider_id,
+        model_id,
+        session,
+        prompt,
+        call_timeout,
+        budget,
+        crate::cost_router::REVIEW_SYSTEM_PROMPT.to_string(),
+        None,
+    )
+    .await
+}
+
+async fn call_reviewer_provider_with_timeout_retry_and_system(
+    session_id: Option<&str>,
+    provider_id: &str,
+    model_id: &str,
+    session: Session,
+    prompt: &str,
+    call_timeout: std::time::Duration,
+    budget: &ReviewTimeBudget,
+    system_prompt: String,
+    native_policy: Option<&NativeReviewerPolicy>,
+) -> ReviewCycleOutcome {
     run_reviewer_call_cycle(call_timeout, budget, move |attempt_timeout| {
         let session = session.clone();
+        let system_prompt = system_prompt.clone();
         async move {
             call_reviewer_provider_checked(
                 session_id,
@@ -26633,6 +27582,8 @@ async fn call_reviewer_provider_with_timeout_retry(
                 session,
                 prompt,
                 attempt_timeout,
+                &system_prompt,
+                native_policy,
             )
             .await
         }
@@ -26866,6 +27817,7 @@ fn call_sites_from_grep(
 /// Lane R62e: gather [`SalvageReviewContext`] for `diff` from the goal
 /// worktree with `git grep` over tracked files only. Every failure (no
 /// match exits 1, a timeout) degrades to less context, never an error.
+#[cfg(test)]
 async fn gather_salvage_review_context(
     worktree_path: &std::path::Path,
     diff: &str,
@@ -26886,6 +27838,52 @@ async fn gather_salvage_review_context(
         context
             .callee_definitions
             .extend(definition_lines_from_grep(&symbol, &grep));
+    }
+    context
+}
+
+async fn enumerate_signature_call_sites_pinned(
+    worktree_path: &std::path::Path,
+    candidate_sha: &str,
+    changes: &[crate::cost_router::SignatureChange],
+) -> Vec<crate::cost_router::CallSiteEnumeration> {
+    let mut enumerations = Vec::new();
+    for change in changes.iter().take(SALVAGE_REVIEW_CONTEXT_MAX_SYMBOLS) {
+        let lines = super::review_context::search_tracked_lines(
+            worktree_path,
+            candidate_sha,
+            &change.symbol,
+        )
+        .await
+        .unwrap_or_default();
+        enumerations.push(call_sites_from_grep(change, &lines.join("\n")));
+    }
+    enumerations
+}
+
+/// The independent review's repository context is pinned to the exact commit
+/// named in its prompt. Unlike delegate routing's best-effort context probe,
+/// this path never reads mutable working-tree files.
+async fn gather_pinned_goal_review_context(
+    worktree_path: &std::path::Path,
+    candidate_sha: &str,
+    diff: &str,
+) -> SalvageReviewContext {
+    let mut context = SalvageReviewContext::default();
+    let changes = crate::cost_router::detect_signature_changes(diff);
+    context.call_site_enumerations =
+        enumerate_signature_call_sites_pinned(worktree_path, candidate_sha, &changes).await;
+    for symbol in called_symbols_on_added_lines(diff) {
+        if changes.iter().any(|change| change.symbol == symbol) {
+            continue;
+        }
+        let lines =
+            super::review_context::search_tracked_lines(worktree_path, candidate_sha, &symbol)
+                .await
+                .unwrap_or_default();
+        context
+            .callee_definitions
+            .extend(definition_lines_from_grep(&symbol, &lines.join("\n")));
     }
     context
 }
@@ -26933,6 +27931,8 @@ fn build_salvage_review_prompt(
         &salvage_verify_output_lead(verify_note),
         context,
         None,
+        "0123456789abcdef0123456789abcdef01234567",
+        &[],
     )
 }
 
@@ -27099,6 +28099,31 @@ fn verified_goal_review_task_spec(title: &str, criteria: &[String]) -> String {
     spec
 }
 
+fn goal_review_task_spec(
+    title: &str,
+    criteria: &[String],
+    metadata: &serde_json::Value,
+    salvage: bool,
+) -> Result<String, String> {
+    let mut spec = if salvage {
+        format!("{}\n\n{}", title, criteria.join("\n"))
+    } else {
+        verified_goal_review_task_spec(title, criteria)
+    };
+    if let Some(contract) = reviewer_task_contract_block(metadata)? {
+        spec.push_str(&contract);
+    }
+    spec.push_str(
+        "\n\nBehavior evidence rule: if this change alters runtime or user-visible behavior, \
+         CHECKED must name task-relevant behavioral assertions/tests inspected in the supplied \
+         repository context and connect them to the verification evidence for the reviewed \
+         commit. Request missing test/source context during the context stage. If relevant \
+         behavior evidence cannot be established, return UNCERTAIN. This rule does not require \
+         behavioral tests for changes that are strictly cosmetic or documentation-only.",
+    );
+    Ok(spec)
+}
+
 /// Lane R65a: the verification a verified goal's reviewer may be shown — the
 /// worker session's last genuine verify pass with no edit after it
 /// ([`credited_verification_after_last_edit`]), and only while the goal's
@@ -27157,6 +28182,8 @@ fn build_goal_review_prompt(
     verify_output_lead: &str,
     context: &SalvageReviewContext,
     verification: Option<&GoalReviewVerification>,
+    reviewed_head: &str,
+    requested_context: &[String],
 ) -> String {
     let mut verify_output = verify_output_lead.to_string();
     if !context.callee_definitions.is_empty() {
@@ -27181,14 +28208,115 @@ fn build_goal_review_prompt(
             &crate::cost_router::render_call_site_section(&context.call_site_enumerations),
         )
     };
-    match verification {
+    let mut prompt = match verification {
         Some(v) => crate::cost_router::review_gate::with_review_data_section(
             &prompt,
             "VERIFICATION",
             &v.render(),
         ),
         None => prompt,
+    };
+    prompt = crate::cost_router::review_gate::with_review_data_section(
+        &prompt,
+        "REVIEWED_HEAD",
+        reviewed_head,
+    );
+    if !requested_context.is_empty() {
+        prompt = crate::cost_router::review_gate::with_review_data_section(
+            &prompt,
+            "REPOSITORY_CONTEXT",
+            &requested_context.join("\n\n"),
+        );
     }
+    prompt
+}
+
+/// Continue an ordinary review only when its first verdict response explicitly
+/// asks for missing repository context. The default path pays no extra model
+/// call. Context and verdict calls share the caller's provider pick, accounting
+/// purpose, and existing wall-clock budget.
+#[allow(clippy::too_many_arguments)]
+async fn complete_review_after_context_requests(
+    first_message: crate::conversation::message::Message,
+    first_attempts: u32,
+    session_id: Option<&str>,
+    provider_id: &str,
+    model_id: &str,
+    session: Session,
+    worktree: &std::path::Path,
+    reviewed_head: &str,
+    task_spec: &str,
+    diff: &str,
+    verify_output_lead: &str,
+    context: &SalvageReviewContext,
+    verification: Option<&GoalReviewVerification>,
+    call_timeout: std::time::Duration,
+    budget: &ReviewTimeBudget,
+    native_policy: &NativeReviewerPolicy,
+) -> Result<(String, u32, String), String> {
+    let system_prompt = format!(
+        "{}\n\n{}",
+        crate::cost_router::REVIEW_SYSTEM_PROMPT,
+        super::review_context::CONTEXT_REQUEST_SYSTEM_ADDENDUM
+    );
+    let mut build_prompt = |requested_context: &[String]| {
+        build_goal_review_prompt(
+            task_spec,
+            diff,
+            verify_output_lead,
+            context,
+            verification,
+            reviewed_head,
+            requested_context,
+        )
+    };
+    let sid = session_id.map(str::to_string);
+    let provider = provider_id.to_string();
+    let model = model_id.to_string();
+    let (response, extra_attempts, prompt) = super::review_context::run_context_request_protocol(
+        first_message.as_concat_text(),
+        worktree,
+        reviewed_head,
+        &mut build_prompt,
+        |prompt| {
+            let session = session.clone();
+            let sid = sid.clone();
+            let provider = provider.clone();
+            let model = model.clone();
+            let system_prompt = system_prompt.clone();
+            async move {
+                match call_reviewer_provider_with_timeout_retry_and_system(
+                    sid.as_deref(),
+                    &provider,
+                    &model,
+                    session,
+                    &prompt,
+                    call_timeout,
+                    budget,
+                    system_prompt,
+                    Some(native_policy),
+                )
+                .await
+                {
+                    ReviewCycleOutcome::Responded { message, attempts } => {
+                        Ok((message.as_concat_text(), attempts))
+                    }
+                    ReviewCycleOutcome::Errored { reason, .. }
+                    | ReviewCycleOutcome::Other(reason)
+                    | ReviewCycleOutcome::Unavailable(reason) => Err(reason),
+                    ReviewCycleOutcome::BudgetExhausted { remaining_secs } => Err(format!(
+                        "review budget exhausted while reading requested context ({remaining_secs}s remain)"
+                    )),
+                }
+            }
+        },
+    )
+    .await?;
+    Ok((
+        response,
+        first_attempts.saturating_add(extra_attempts),
+        prompt,
+    ))
 }
 
 /// Lane R22c-c: dispatch the SAME cross-family reviewer gate a live
@@ -27211,7 +28339,7 @@ async fn dispatch_cross_family_reviewer_for_salvage(
     baseline: &str,
     verify_note: &str,
     calling_session_id: Option<&str>,
-) -> ReviewerGateOutcome {
+) -> GoalReviewRun {
     // Lane R22g: the diff-size check runs BEFORE any reviewer-selection
     // work — including the worker-session lookup that picks it (`select_
     // reviewer` needs the AUTHOR's family, read off the goal's worker
@@ -27231,6 +28359,21 @@ async fn dispatch_cross_family_reviewer_for_salvage(
     // empty even though real, unlanded work exists. Prefer the trunk-
     // relative range when a trusted trunk can be resolved; fall back to
     // the rolling `baseline..HEAD` otherwise (the pre-R22d range).
+    let reviewed_head = match git_in_worktree(worktree_path, &["rev-parse", "HEAD"]).await {
+        Ok(head) if super::review_context::validate_full_sha(head.trim()).is_ok() => {
+            head.trim().to_string()
+        }
+        Ok(_) => {
+            return GoalReviewRun::single(ReviewerGateOutcome::Refused {
+                reason: "the salvage candidate did not resolve to a full commit SHA".into(),
+            })
+        }
+        Err(error) => {
+            return GoalReviewRun::single(ReviewerGateOutcome::Refused {
+                reason: format!("could not pin the salvage candidate commit: {error}"),
+            })
+        }
+    };
     let diff_range_base = match resolve_trusted_landing_root(pool, card, worktree_path).await {
         Ok(root) => git_in_worktree(std::path::Path::new(&root), &["rev-parse", "HEAD"])
             .await
@@ -27239,7 +28382,7 @@ async fn dispatch_cross_family_reviewer_for_salvage(
     };
     let diff = git_in_worktree(
         worktree_path,
-        &["diff", &format!("{diff_range_base}..HEAD")],
+        &["diff", &format!("{diff_range_base}..{reviewed_head}")],
     )
     .await
     .unwrap_or_default();
@@ -27248,11 +28391,11 @@ async fn dispatch_cross_family_reviewer_for_salvage(
         card,
         worktree_path,
         diff,
+        &reviewed_head,
         &GoalReviewKind::Salvage { verify_note },
         calling_session_id,
     )
     .await
-    .outcome
 }
 
 /// The cross-family reviewer gate on a goal's diff, shared by the salvage path
@@ -27267,10 +28410,15 @@ async fn review_goal_diff_with_cross_family_reviewer(
     card: &cards::Card,
     context_dir: &std::path::Path,
     diff: String,
+    reviewed_head: &str,
     kind: &GoalReviewKind<'_>,
     calling_session_id: Option<&str>,
 ) -> GoalReviewRun {
-    let changed_lines = count_diff_changed_lines(&diff);
+    if let Err(reason) = super::review_context::validate_full_sha(reviewed_head) {
+        return GoalReviewRun::single(ReviewerGateOutcome::Refused {
+            reason: format!("the independent review has no valid pinned candidate SHA: {reason}"),
+        });
+    }
     // Lane R22c-e (G26 MED-2): character count, not `diff.len()` (bytes) —
     // `git diff` output is arbitrary UTF-8, so a byte-length comparison
     // could refuse a diff that is actually under the character window (or,
@@ -27287,39 +28435,109 @@ async fn review_goal_diff_with_cross_family_reviewer(
             ),
         });
     }
-    let diff_for_prompt = diff;
 
-    let Some(worker_session_id) = card
-        .metadata_json
-        .get("worker_session_id")
-        .and_then(|v| v.as_str())
-        .map(str::to_string)
-    else {
-        return GoalReviewRun::single(ReviewerGateOutcome::Refused {
-            reason: "no worker session recorded to attribute the review to".to_string(),
-        });
-    };
-    let manager = SessionManager::instance();
-    let session = match manager.get_session(&worker_session_id, false).await {
-        Ok(s) => s,
-        Err(e) => {
+    // Never attribute a candidate to only the latest worker's configured model.
+    // Native lineage binds the exact original candidate and every editing attempt.
+    let lineage = match crate::goal_candidates::resolve_candidate(pool, &card.id).await {
+        Ok(crate::goal_candidates::LineageResolution::Verified(lineage)) => lineage,
+        Ok(crate::goal_candidates::LineageResolution::NoGit) => {
             return GoalReviewRun::single(ReviewerGateOutcome::Refused {
-                reason: format!(
-                    "the goal's worker session could not be read to pick an independent \
-                     reviewer: {e}"
-                ),
-            });
+                reason: "native independent diff review requires a Git candidate".into(),
+            })
+        }
+        Ok(crate::goal_candidates::LineageResolution::Unverifiable(reason)) => {
+            return GoalReviewRun::single(ReviewerGateOutcome::Refused { reason })
+        }
+        Err(error) => {
+            return GoalReviewRun::single(ReviewerGateOutcome::Refused {
+                reason: error.to_string(),
+            })
         }
     };
-    let worker = match (
-        session.provider_name.as_deref(),
-        session.model_config.as_ref().map(|m| m.model_name.as_str()),
+    if lineage.candidate.head != reviewed_head
+        || !matches!((std::fs::canonicalize(context_dir), std::fs::canonicalize(&lineage.candidate.worktree)), (Ok(input), Ok(bound)) if input == bound)
+    {
+        return GoalReviewRun::single(ReviewerGateOutcome::Refused {
+            reason: "review input does not match the protected original native candidate".into(),
+        });
+    }
+    let native_diff = match git_in_worktree(
+        &lineage.candidate.worktree,
+        &[
+            "diff",
+            &format!(
+                "{}..{}",
+                lineage.candidate.trunk_head, lineage.candidate.head
+            ),
+        ],
+    )
+    .await
+    {
+        Ok(diff) => diff,
+        Err(error) => {
+            return GoalReviewRun::single(ReviewerGateOutcome::Refused {
+                reason: format!("could not read whole native candidate diff: {error}"),
+            })
+        }
+    };
+    if native_diff.chars().count() > REVIEWER_GATE_MAX_DIFF_CHARS {
+        return GoalReviewRun::single(ReviewerGateOutcome::DiffTooLarge {
+            reason: "the whole native candidate exceeds the independent review window".into(),
+        });
+    }
+    let changed_lines = count_diff_changed_lines(&native_diff);
+    let diff_for_prompt = native_diff;
+    let native_contract: serde_json::Value = match serde_json::from_str(&lineage.contract_json) {
+        Ok(contract) => contract,
+        Err(error) => {
+            return GoalReviewRun::single(ReviewerGateOutcome::Refused {
+                reason: format!("native original task contract could not be decoded: {error}"),
+            })
+        }
+    };
+    let mut review_metadata = card.metadata_json.clone();
+    review_metadata[TASK_CONTRACT_METADATA_KEY] = native_contract;
+    let criteria = collect_acceptance_criteria(&review_metadata, &card.description);
+    let task_spec = match goal_review_task_spec(
+        &card.title,
+        &criteria,
+        &review_metadata,
+        matches!(kind, GoalReviewKind::Salvage { .. }),
     ) {
-        (Some(p), Some(m)) if !p.is_empty() && !m.is_empty() => {
-            Some((p.to_string(), m.to_string()))
-        }
-        _ => None,
+        Ok(spec) => spec,
+        Err(reason) => return GoalReviewRun::single(ReviewerGateOutcome::Refused { reason }),
     };
+    let (families, invocation_ids) =
+        match crate::goal_candidates::contributor_evidence(pool, &lineage).await {
+            Ok(crate::goal_candidates::ContributorEvidence::Known {
+                families,
+                invocation_ids,
+                ..
+            }) => (families, invocation_ids),
+            Ok(crate::goal_candidates::ContributorEvidence::Unknown(reason)) => {
+                return GoalReviewRun::single(ReviewerGateOutcome::Refused { reason })
+            }
+            Err(error) => {
+                return GoalReviewRun::single(ReviewerGateOutcome::Refused {
+                    reason: error.to_string(),
+                })
+            }
+        };
+    if let Err(error) = crate::goal_candidates::revalidate_candidate(pool, &lineage).await {
+        return GoalReviewRun::single(ReviewerGateOutcome::Refused {
+            reason: error.to_string(),
+        });
+    }
+    let worker_session_id = lineage.candidate.worker_session_id.clone();
+    let session =
+        match create_native_reviewer_session(&SessionManager::instance(), pool, &lineage).await {
+            Ok(session) => session,
+            Err(error) => {
+                return GoalReviewRun::single(ReviewerGateOutcome::Refused {
+                    reason: error.to_string(),
+                })
+            }
+        };
 
     // Ruling 2026-09-17 (reviewer selection): "it is fine to use it if it is
     // objectively true that its review will be magnitudes better than a cheaper
@@ -27329,22 +28547,38 @@ async fn review_goal_diff_with_cross_family_reviewer(
     // here once and reused for the prompt) and assign the reviewer with the one
     // proportional selection rule, instead of the derived REVIEW entry (which
     // ranks the strongest cross-family verifier first).
-    let review_context = gather_salvage_review_context(context_dir, &diff_for_prompt).await;
+    let review_context =
+        gather_pinned_goal_review_context(context_dir, reviewed_head, &diff_for_prompt).await;
     let enumerated_call_sites: usize = review_context
         .call_site_enumerations
         .iter()
         .map(|e| e.call_sites.len())
         .sum();
     let available = crate::cost_router::discover_available_models_async().await;
-    let assignment = crate::cost_router::recommend::assign_reviewer(
+    let assignment = crate::cost_router::recommend::assign_reviewer_for_contributors(
         crate::cost_router::recommend::ReviewFacts::from_diff(
             &diff_for_prompt,
             enumerated_call_sites,
         ),
-        worker.as_ref().map(|(p, m)| (p.as_str(), m.as_str())),
+        crate::cost_router::recommend::ReviewComplexity::Routine,
+        None,
+        crate::cost_router::reviewer_pick::ContributorFamilies::Known(&families),
         &available,
     );
     let assigned = assignment.pick_role_model();
+    let native_policy = NativeReviewerPolicy {
+        pool: pool.clone(),
+        lineage,
+        families,
+        invocation_ids,
+        floor: assignment.floor.max(
+            if changed_lines > crate::cost_router::reviewer_pick::SMALL_DIFF_LINES {
+                crate::cost_router::reviewer_pick::REVIEWER_STRONG_ORCHESTRATION
+            } else {
+                crate::cost_router::reviewer_pick::REVIEWER_MIN_ORCHESTRATION
+            },
+        ),
+    };
 
     // The operator's explicit REVIEW mapping still wins (`select_reviewer`'s
     // step 1); otherwise the assignment's pick rides the derived slot. With no
@@ -27353,8 +28587,8 @@ async fn review_goal_diff_with_cross_family_reviewer(
     let configured = crate::cost_router::role_model(crate::cost_router::WorkflowRole::Review);
     let reviewer_pool: &[crate::cost_router::AvailableModel] =
         if assigned.is_some() { &available } else { &[] };
-    let selection = crate::cost_router::select_reviewer(
-        worker.as_ref().map(|(p, m)| (p.as_str(), m.as_str())),
+    let selection = crate::cost_router::reviewer_pick::select_reviewer_for_contributors(
+        crate::cost_router::reviewer_pick::ContributorFamilies::Known(&native_policy.families),
         configured.as_ref(),
         assigned.as_ref(),
         reviewer_pool,
@@ -27371,11 +28605,8 @@ async fn review_goal_diff_with_cross_family_reviewer(
         pick.why = assignment.why.clone();
     }
 
-    // No live cost tracker for a completed, abandoned worker session at this
-    // point — 0.0 is the same "nothing spent in this scope yet" a fresh
-    // budget scope reads; a genuinely exhausted Hard/Gate band was already
-    // the reason `check_budget` refused another dispatch attempt upstream
-    // of this call.
+    // This is a static routing/style gate. The strict completion seam checks
+    // real frozen-task cumulative and unresolved exposure for every tier.
     let cfg = crate::cost_router::budget::load_budget_config();
     let verdict = crate::cost_router::budget_verdict(0.0, 0.0, &cfg);
     if let crate::cost_router::SpendDecision::Refuse { reason } =
@@ -27384,17 +28615,11 @@ async fn review_goal_diff_with_cross_family_reviewer(
         return GoalReviewRun::single(ReviewerGateOutcome::Refused { reason });
     }
 
-    let criteria = collect_acceptance_criteria(&card.metadata_json, &card.description);
-    let (task_spec, verify_output_lead, verification) = match kind {
-        GoalReviewKind::Salvage { verify_note } => (
-            format!("{}\n\n{}", card.title, criteria.join("\n")),
-            salvage_verify_output_lead(verify_note),
-            None,
-        ),
+    let (verify_output_lead, verification) = match kind {
+        GoalReviewKind::Salvage { verify_note } => (salvage_verify_output_lead(verify_note), None),
         // Lane R65a: a verified goal's reviewer sees the bound verify run when
         // there is one, and criteria no check covered are not framed as unmet.
         GoalReviewKind::Verified { verification } => (
-            verified_goal_review_task_spec(&card.title, &criteria),
             if verification.is_some() {
                 VERIFIED_GOAL_WITH_EVIDENCE_LEAD.to_string()
             } else {
@@ -27406,12 +28631,19 @@ async fn review_goal_diff_with_cross_family_reviewer(
     // Lane R62e (A61 miss 1): give the reviewer the callee definitions and
     // E7 call sites the diff alone does not show (gathered above, before the
     // reviewer assignment that also reads them).
-    let prompt = build_goal_review_prompt(
+    let mut prompt = build_goal_review_prompt(
         &task_spec,
         &diff_for_prompt,
         &verify_output_lead,
         &review_context,
         verification,
+        reviewed_head,
+        &[],
+    );
+    let goal_review_system_prompt = format!(
+        "{}\n\n{}",
+        crate::cost_router::REVIEW_SYSTEM_PROMPT,
+        super::review_context::CONTEXT_REQUEST_SYSTEM_ADDENDUM
     );
 
     // Lane R28b (A27 Miss 3): the first attempt is always the selected
@@ -27438,7 +28670,7 @@ async fn review_goal_diff_with_cross_family_reviewer(
     // see `reviewer_gate_total_budget`'s doc comment for why and how it
     // combines with the goal's own remaining wall-clock budget.
     let budget = ReviewTimeBudget::new(reviewer_gate_total_budget(kind, &card.metadata_json));
-    let first: ReviewAttempt = match call_reviewer_provider_with_timeout_retry(
+    let first: ReviewAttempt = match call_reviewer_provider_with_timeout_retry_and_system(
         calling_session_id,
         &pick.provider,
         &pick.model,
@@ -27446,19 +28678,54 @@ async fn review_goal_diff_with_cross_family_reviewer(
         &prompt,
         call_timeout,
         &budget,
+        goal_review_system_prompt.clone(),
+        Some(&native_policy),
     )
     .await
     {
-        ReviewCycleOutcome::Responded { message, attempts } => ReviewAttempt {
-            round: review_round_from_response(
-                &message.as_concat_text(),
-                changed_lines,
-                &review_context.call_site_enumerations,
-            ),
-            provider: pick.provider.clone(),
-            model: pick.model.clone(),
-            attempts,
-        },
+        ReviewCycleOutcome::Responded { message, attempts } => {
+            let (response, attempts, reviewed_prompt) =
+                match complete_review_after_context_requests(
+                    message,
+                    attempts,
+                    calling_session_id,
+                    &pick.provider,
+                    &pick.model,
+                    session.clone(),
+                    context_dir,
+                    reviewed_head,
+                    &task_spec,
+                    &diff_for_prompt,
+                    &verify_output_lead,
+                    &review_context,
+                    verification,
+                    call_timeout,
+                    &budget,
+                    &native_policy,
+                )
+                .await
+                {
+                    Ok(done) => done,
+                    Err(reason) => {
+                        return GoalReviewRun::single(ReviewerGateOutcome::Refused {
+                            reason: format!(
+                                "bounded reviewer context could not be completed: {reason}"
+                            ),
+                        })
+                    }
+                };
+            prompt = reviewed_prompt;
+            ReviewAttempt {
+                round: review_round_from_response(
+                    &response,
+                    changed_lines,
+                    &review_context.call_site_enumerations,
+                ),
+                provider: pick.provider.clone(),
+                model: pick.model.clone(),
+                attempts,
+            }
+        }
         ReviewCycleOutcome::Errored {
             reason,
             elapsed_secs,
@@ -27495,56 +28762,90 @@ async fn review_goal_diff_with_cross_family_reviewer(
             )
             .await
             {
-                Some((fb_provider, fb_model)) => match call_reviewer_provider_with_timeout_retry(
-                    calling_session_id,
-                    &fb_provider,
-                    &fb_model,
-                    session.clone(),
-                    &prompt,
-                    call_timeout,
-                    &budget,
-                )
-                .await
-                {
-                    ReviewCycleOutcome::Responded { message, attempts } => ReviewAttempt {
-                        round: review_round_from_response(
-                            &message.as_concat_text(),
-                            changed_lines,
-                            &review_context.call_site_enumerations,
-                        ),
-                        provider: fb_provider,
-                        model: fb_model,
-                        attempts,
-                    },
-                    ReviewCycleOutcome::Errored {
-                        reason,
-                        elapsed_secs,
-                    } => ReviewAttempt {
-                        round: ReviewRound::Errored {
+                Some((fb_provider, fb_model)) => {
+                    match call_reviewer_provider_with_timeout_retry_and_system(
+                        calling_session_id,
+                        &fb_provider,
+                        &fb_model,
+                        session.clone(),
+                        &prompt,
+                        call_timeout,
+                        &budget,
+                        goal_review_system_prompt.clone(),
+                        Some(&native_policy),
+                    )
+                    .await
+                    {
+                        ReviewCycleOutcome::Responded { message, attempts } => {
+                            let (response, attempts, reviewed_prompt) = match complete_review_after_context_requests(
+                            message,
+                            attempts,
+                            calling_session_id,
+                            &fb_provider,
+                            &fb_model,
+                            session.clone(),
+                            context_dir,
+                            reviewed_head,
+                            &task_spec,
+                            &diff_for_prompt,
+                            &verify_output_lead,
+                            &review_context,
+                            verification,
+                            call_timeout,
+                            &budget,
+                            &native_policy,
+                        )
+                        .await
+                        {
+                            Ok(done) => done,
+                            Err(reason) => {
+                                return GoalReviewRun::single(ReviewerGateOutcome::Refused {
+                                    reason: format!("bounded reviewer context could not be completed: {reason}"),
+                                })
+                            }
+                        };
+                            prompt = reviewed_prompt;
+                            ReviewAttempt {
+                                round: review_round_from_response(
+                                    &response,
+                                    changed_lines,
+                                    &review_context.call_site_enumerations,
+                                ),
+                                provider: fb_provider,
+                                model: fb_model,
+                                attempts,
+                            }
+                        }
+                        ReviewCycleOutcome::Errored {
                             reason,
                             elapsed_secs,
+                        } => ReviewAttempt {
+                            round: ReviewRound::Errored {
+                                reason,
+                                elapsed_secs,
+                            },
+                            provider: fb_provider,
+                            model: fb_model,
+                            attempts: 2,
                         },
-                        provider: fb_provider,
-                        model: fb_model,
-                        attempts: 2,
-                    },
-                    ReviewCycleOutcome::BudgetExhausted { remaining_secs } => ReviewAttempt {
-                        round: review_budget_exhausted_round(remaining_secs),
-                        provider: fb_provider,
-                        model: fb_model,
-                        attempts: 0,
-                    },
-                    ReviewCycleOutcome::Unavailable(second_reason)
-                    | ReviewCycleOutcome::Other(second_reason) => {
-                        open_provider_circuit(calling_session_id, &fb_provider, &second_reason);
-                        return GoalReviewRun::single(ReviewerGateOutcome::Unreachable {
-                            reason: format!(
-                                "{first_reason}; retried on the session's own tier model \
+                        ReviewCycleOutcome::BudgetExhausted { remaining_secs } => ReviewAttempt {
+                            round: review_budget_exhausted_round(remaining_secs),
+                            provider: fb_provider,
+                            model: fb_model,
+                            attempts: 0,
+                        },
+                        ReviewCycleOutcome::Unavailable(second_reason)
+                        | ReviewCycleOutcome::Other(second_reason) => {
+                            open_provider_circuit(calling_session_id, &fb_provider, &second_reason);
+                            return GoalReviewRun::single(ReviewerGateOutcome::Unreachable {
+                                reason: format!(
+                                    "{first_reason}; retried on the session's own tier model \
                                  {fb_provider}/{fb_model}, which also failed: {second_reason}"
-                            ),
-                        });
+                                ),
+                            });
+                        }
                     }
-                },
+                }
                 None => {
                     return GoalReviewRun::single(ReviewerGateOutcome::Unreachable {
                         reason: first_reason,
@@ -27555,23 +28856,60 @@ async fn review_goal_diff_with_cross_family_reviewer(
     };
 
     let escalate_uncertain = matches!(kind, GoalReviewKind::Verified { .. });
-    let worker_ref = worker.as_ref().map(|(p, m)| (p.as_str(), m.as_str()));
-    finish_goal_review_with_escalation(first, escalate_uncertain, |provider, model| {
-        escalated_goal_review(
-            &assignment,
-            (provider, model),
-            worker_ref,
-            &available,
-            changed_lines,
-            session.clone(),
-            &prompt,
-            &review_context.call_site_enumerations,
-            calling_session_id,
-            call_timeout,
-            &budget,
+    let mut run =
+        finish_goal_review_with_escalation(first, escalate_uncertain, |provider, model| {
+            escalated_goal_review(
+                &assignment,
+                (provider, model),
+                &native_policy,
+                &available,
+                changed_lines,
+                session.clone(),
+                &prompt,
+                &review_context.call_site_enumerations,
+                calling_session_id,
+                call_timeout,
+                &budget,
+            )
+        })
+        .await;
+    // An actual answered review carries an opaque native fence, never a
+    // model-writable card PASS. Recheck without replacing the approved scope.
+    if !run.reviews.is_empty() {
+        let expected = match crate::goal_candidates::revalidate_candidate(
+            pool,
+            &native_policy.lineage,
         )
-    })
-    .await
+        .await
+        {
+            Ok(expected) => expected,
+            Err(error) => {
+                return GoalReviewRun::single(ReviewerGateOutcome::Refused {
+                    reason: error.to_string(),
+                })
+            }
+        };
+        match crate::goal_candidates::contributor_evidence(pool, &native_policy.lineage).await {
+            Ok(crate::goal_candidates::ContributorEvidence::Known {
+                families,
+                invocation_ids,
+                ..
+            }) if families == native_policy.families
+                && invocation_ids == native_policy.invocation_ids => {}
+            _ => {
+                return GoalReviewRun::single(ReviewerGateOutcome::Refused {
+                    reason: "native contributor history changed during independent review".into(),
+                })
+            }
+        }
+        run.native_binding = Some(crate::goal_candidates::NativeReviewBinding {
+            lineage: native_policy.lineage,
+            families: native_policy.families,
+            invocation_ids: native_policy.invocation_ids,
+            expected,
+        });
+    }
+    run
 }
 
 /// Lane R68a: the round recorded when [`ReviewTimeBudget`] ran out before a
@@ -27602,7 +28940,7 @@ fn review_budget_exhausted_round(remaining_secs: u64) -> ReviewRound {
 async fn escalated_goal_review(
     assignment: &crate::cost_router::recommend::ReviewerAssignment,
     answered: (String, String),
-    worker_ref: Option<(&str, &str)>,
+    native_policy: &NativeReviewerPolicy,
     available: &[crate::cost_router::AvailableModel],
     changed_lines: usize,
     session: Session,
@@ -27615,10 +28953,10 @@ async fn escalated_goal_review(
     let (answered_provider, answered_model) = answered;
     // Ruling 2026-09-17: the one escalation goes to the next reviewer
     // the same objective ranking puts above the one that was unsure.
-    let escalation = crate::cost_router::recommend::escalate_reviewer_after_uncertain(
+    let escalation = crate::cost_router::recommend::escalate_reviewer_for_contributors(
         assignment,
         (answered_provider.as_str(), answered_model.as_str()),
-        worker_ref,
+        crate::cost_router::reviewer_pick::ContributorFamilies::Known(&native_policy.families),
         available,
     );
     let mut record = serde_json::json!({
@@ -27628,8 +28966,8 @@ async fn escalated_goal_review(
     let Some(escalated) = escalation.pick_role_model() else {
         return (Err(escalation.why.clone()), record);
     };
-    let selection = crate::cost_router::select_reviewer(
-        worker_ref,
+    let selection = crate::cost_router::reviewer_pick::select_reviewer_for_contributors(
+        crate::cost_router::reviewer_pick::ContributorFamilies::Known(&native_policy.families),
         None,
         Some(&escalated),
         available,
@@ -27653,6 +28991,10 @@ async fn escalated_goal_review(
         }
     };
     pick.why = escalation.why.clone();
+    let escalated_policy = NativeReviewerPolicy {
+        floor: native_policy.floor.max(escalation.floor),
+        ..native_policy.clone()
+    };
     if let Some(obj) = record.as_object_mut() {
         obj.insert(
             "to".to_string(),
@@ -27673,7 +29015,7 @@ async fn escalated_goal_review(
     // `ReviewRound::Errored` (round 2, recorded in `reviews`) rather than an
     // immediate `Err` that would short-circuit past `finish_goal_review_
     // with_escalation`'s own bookkeeping for this round.
-    match call_reviewer_provider_with_timeout_retry(
+    match call_reviewer_provider_with_timeout_retry_and_system(
         calling_session_id,
         &pick.provider,
         &pick.model,
@@ -27681,6 +29023,8 @@ async fn escalated_goal_review(
         prompt,
         call_timeout,
         budget,
+        crate::cost_router::REVIEW_SYSTEM_PROMPT.to_string(),
+        Some(&escalated_policy),
     )
     .await
     {
@@ -27899,6 +29243,7 @@ struct GoalReviewRun {
     /// Lane R66a: the concrete findings when the deciding round requested
     /// changes; empty for every other outcome.
     findings: Vec<String>,
+    native_binding: Option<crate::goal_candidates::NativeReviewBinding>,
 }
 
 impl GoalReviewRun {
@@ -27909,6 +29254,7 @@ impl GoalReviewRun {
             reviews: Vec::new(),
             escalation: None,
             findings: Vec::new(),
+            native_binding: None,
         }
     }
 }
@@ -28055,6 +29401,7 @@ where
             reviews,
             escalation: None,
             findings,
+            native_binding: None,
         };
     }
     let first_reviewer = first.reviewer();
@@ -28157,6 +29504,7 @@ where
         reviews,
         escalation: Some(escalation),
         findings,
+        native_binding: None,
     }
 }
 
@@ -28323,7 +29671,18 @@ pub(crate) async fn assign_delegate_reviewer(
     };
     let mut measured: Option<(String, std::path::PathBuf, ReviewDiffSource)> = None;
     if let (Some(pool), Some((card, is_worker))) = (pool, goal.as_ref()) {
-        measured = goal_trunk_relative_diff(pool, card, &session.working_dir, *is_worker).await;
+        measured = match goal_trunk_relative_diff(
+            pool,
+            card,
+            &session.working_dir,
+            *is_worker,
+            None,
+        )
+        .await
+        {
+            Ok(diff) => diff,
+            Err(_) => None,
+        };
     }
     if measured.is_none() {
         if let Some(diff) = git_in_worktree(&session.working_dir, &["diff", "HEAD"])
@@ -28467,13 +29826,16 @@ fn recorded_goal_head(meta: &serde_json::Value) -> Option<String> {
 /// - a recorded head that is not on trunk: `merge-base <trunk> <head>..<head>`;
 /// - a recorded head already on trunk (landed): `baseline_commit..<head>`.
 ///
-/// `None` when nothing non-empty can be read.
+/// `Ok(None)` only when a valid pinned range was measured and is empty. Errors
+/// mean the range could not be established and must not be treated as a
+/// successful no-change result by an auto-land gate.
 async fn goal_trunk_relative_diff(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     card: &cards::Card,
     session_dir: &std::path::Path,
     is_worker: bool,
-) -> Option<(String, std::path::PathBuf, ReviewDiffSource)> {
+    reviewed_head: Option<&str>,
+) -> Result<Option<(String, std::path::PathBuf, ReviewDiffSource)>, String> {
     let meta = &card.metadata_json;
     let nonempty = |s: &String| !s.trim().is_empty();
     let worktree: Option<std::path::PathBuf> = if is_worker {
@@ -28544,13 +29906,41 @@ async fn goal_trunk_relative_diff(
                     .ok()
                     .filter(nonempty)
                 {
-                    return Some((diff, wt.clone(), ReviewDiffSource::GoalWorktreeForkPoint));
+                    return Ok(Some((
+                        diff,
+                        wt.clone(),
+                        ReviewDiffSource::GoalWorktreeForkPoint,
+                    )));
                 }
             }
         }
     }
 
-    let head = recorded_goal_head(meta)?;
+    let head = reviewed_head
+        .map(str::to_string)
+        .or_else(|| recorded_goal_head(meta))
+        .ok_or_else(|| "no recorded candidate head is available".to_string())?;
+    super::review_context::validate_full_sha(&head)
+        .map_err(|_| "recorded candidate head is not a full Git object ID".to_string())?;
+    if let Some(pinned_head) = reviewed_head {
+        if recorded_goal_head(meta).as_deref() != Some(pinned_head) {
+            return Err("recorded candidate head changed before diff measurement".to_string());
+        }
+    }
+    let resolved_head = git_in_worktree(
+        &git_dir,
+        &[
+            "rev-parse",
+            "--verify",
+            "--end-of-options",
+            &format!("{head}^{{commit}}"),
+        ],
+    )
+    .await
+    .map_err(|e| format!("could not resolve pinned candidate commit: {e}"))?;
+    if resolved_head.trim() != head {
+        return Err("pinned candidate SHA did not resolve to its exact commit".to_string());
+    }
     let landed = match &trunk_tip {
         Some(tip) => git_in_worktree(&git_dir, &["merge-base", "--is-ancestor", &head, tip])
             .await
@@ -28558,7 +29948,10 @@ async fn goal_trunk_relative_diff(
         None => false,
     };
     let (base, source) = if landed {
-        (baseline?, ReviewDiffSource::GoalLandedRange)
+        (
+            baseline.ok_or_else(|| "no baseline exists for the landed candidate".to_string())?,
+            ReviewDiffSource::GoalLandedRange,
+        )
     } else {
         let fork_point = match &trunk_tip {
             Some(tip) => git_in_worktree(&git_dir, &["merge-base", tip, &head])
@@ -28567,13 +29960,21 @@ async fn goal_trunk_relative_diff(
                 .filter(nonempty),
             None => None,
         };
-        (fork_point.or(baseline)?, ReviewDiffSource::GoalForkPoint)
+        (
+            fork_point
+                .or(baseline)
+                .ok_or_else(|| "no trunk fork point or baseline is available".to_string())?,
+            ReviewDiffSource::GoalForkPoint,
+        )
     };
     let diff = git_in_worktree(&git_dir, &["diff", &format!("{base}..{head}")])
         .await
-        .ok()
-        .filter(nonempty)?;
-    Some((diff, git_dir, source))
+        .map_err(|e| format!("could not measure pinned candidate diff: {e}"))?;
+    if diff.trim().is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some((diff, git_dir, source)))
+    }
 }
 
 /// Lane R22c-e (clippy `too_many_arguments`): bundles the three reviewer-
@@ -28583,6 +29984,7 @@ struct SalvageReviewerApproval<'a> {
     checked: &'a str,
     reviewer_provider: &'a str,
     reviewer_model: &'a str,
+    native_binding: Option<&'a crate::goal_candidates::NativeReviewBinding>,
 }
 
 /// Lane R22c-c: the reviewer approved — land through the SAME
@@ -28606,7 +30008,25 @@ async fn land_salvage_approved_by_reviewer(
         checked,
         reviewer_provider,
         reviewer_model,
+        native_binding,
     } = approval;
+    let Some(native_binding) = native_binding else {
+        return SalvageOutcome::NotSalvaged {
+            note: "automatic salvage landing requires an actual native Approved review binding"
+                .into(),
+        };
+    };
+    let expected_attempt =
+        match crate::goal_candidates::revalidate_review_binding(pool, native_binding).await {
+            Ok(expected) => expected,
+            Err(error) => {
+                return SalvageOutcome::NotSalvaged {
+                    note: format!(
+                        "Native review binding changed before salvage transition: {error}"
+                    ),
+                }
+            }
+        };
     // Lane R22f: the identity that will need to match `goal_transition::
     // check_proof`'s Tier-1 `ACTOR_AUTO_LAUNCH` comparison at land time —
     // resolved ONCE, here, and reused for BOTH the decision payload below
@@ -28644,33 +30064,52 @@ async fn land_salvage_approved_by_reviewer(
             "recorded_at": chrono::Utc::now().to_rfc3339(),
         }),
     );
-    if let Err(e) = goal_transition::advance_goal_checked(
-        pool,
-        &card.id,
-        GoalAction::Review,
-        decisions::ACTOR_SYSTEM,
-        None,
-        TransitionEffects {
-            metadata_patch: patch,
-            ..Default::default()
-        },
-    )
-    .await
-    {
-        let e = String::from(e);
-        let note = format!(
-            "the independent reviewer approved {ahead} commit(s), but the goal could not be \
-             moved to Review to land it: {e}"
-        );
-        record_salvage_receipt(
-            pool,
+    let transition = async {
+        let mut tx = pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(|e| goal_transition::GuardError::Db(e.to_string()))?;
+        let record = goal_transition::advance_goal_checked_in_tx(
+            &mut tx,
             &card.id,
-            "salvage_skipped_review_transition_failed",
-            &note,
+            GoalAction::Review,
+            decisions::ACTOR_SYSTEM,
+            None,
+            TransitionEffects {
+                metadata_patch: patch,
+                expected_attempt: Some(expected_attempt.clone()),
+                ..Default::default()
+            },
         )
-        .await;
-        return SalvageOutcome::NotSalvaged { note };
+        .await?;
+        let mut renewed = native_binding.clone();
+        renewed.expected = crate::goal_candidates::refresh_expected_after_transition_tx(
+            &mut tx,
+            &expected_attempt,
+            &record,
+        )
+        .await
+        .map_err(|e| goal_transition::GuardError::Denied(e.to_string()))?;
+        tx.commit()
+            .await
+            .map_err(|e| goal_transition::GuardError::Db(e.to_string()))?;
+        Ok::<_, goal_transition::GuardError>(renewed)
     }
+    .await;
+    let renewed_binding = match transition {
+        Ok(binding) => binding,
+        Err(e) => {
+            let note = format!("independent reviewer approved {ahead} commit(s), but native Review transition was refused: {e}");
+            record_salvage_receipt(
+                pool,
+                &card.id,
+                "salvage_skipped_review_transition_failed",
+                &note,
+            )
+            .await;
+            return SalvageOutcome::NotSalvaged { note };
+        }
+    };
 
     // D1: the title travels as the inbox's `goal_title`.
     let headline = "Goal was reviewed and approved (no automated checks ran)".to_string();
@@ -28740,12 +30179,13 @@ async fn land_salvage_approved_by_reviewer(
     let refreshed = cards::get_card(pool, &card.id).await.ok().flatten();
     let had_worktree_to_land = refreshed.is_some();
     if let Some(refreshed) = refreshed {
-        auto_land_headless_goal(
+        finish_headless_auto_land(
             pool,
             &decision.id,
             &refreshed,
             true,
             minting_session_id.as_deref(),
+            Some(&renewed_binding),
         )
         .await;
     }
@@ -29185,6 +30625,16 @@ async fn maybe_hold_review(
     headless_auto_land: bool,
     calling_session_id: Option<&str>,
 ) -> Result<Option<String>, String> {
+    maybe_hold_review_for_attempt(pool, card, headless_auto_land, calling_session_id, None).await
+}
+
+async fn maybe_hold_review_for_attempt(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    card: &cards::Card,
+    headless_auto_land: bool,
+    calling_session_id: Option<&str>,
+    expected_attempt: Option<&crate::goal_candidates::ExpectedAttempt>,
+) -> Result<Option<String>, String> {
     let meta = card.metadata_json.as_object().cloned().unwrap_or_default();
     let role = meta
         .get("workflow_role")
@@ -29429,8 +30879,8 @@ async fn maybe_hold_review(
         {
             // The goal is not done (see the reply below), so this park is no
             // landing refusal: no cause, and the inbox reads it from `plan`.
-            park_refused_goal(pool, card, &plan, None).await;
-            if let Some(kill) = take_goal_worker(&card.id) {
+            park_refused_goal_for_attempt(pool, card, &plan, None, expected_attempt).await;
+            if let Some(kill) = take_goal_worker_for_completion(&card.id, expected_attempt) {
                 kill.kill();
             }
             return Ok(Some(format!(
@@ -29569,11 +31019,13 @@ async fn maybe_hold_review(
                 // G25/M21: fold `NotSalvaged`'s `note` into the park reason
                 // instead of discarding it — see `handle_goal_completion`'s
                 // sibling fix for why.
-                let salvage_note = match maybe_salvage_committed_work(
+                let salvage_note = match maybe_salvage_committed_work_for_attempt(
                     pool,
                     card,
                     None,
                     calling_session_id,
+                    headless_dispatch_policy_config().is_some_and(|config| config.auto_land),
+                    expected_attempt,
                 )
                 .await
                 {
@@ -29610,7 +31062,7 @@ async fn maybe_hold_review(
                         "could not record the wall_budget_exhausted receipt: {e}"
                     );
                 }
-                let decision_id = crate::goal_transition::exhaust_and_park(
+                let decision_id = crate::goal_transition::exhaust_and_park_for_attempt(
                     pool,
                     &card.id,
                     &card.title,
@@ -29620,9 +31072,11 @@ async fn maybe_hold_review(
                         cap_secs: refusal.cap_secs,
                     },
                     Some(&reason),
+                    None,
+                    expected_attempt,
                 )
                 .await?;
-                if let Some(kill) = take_goal_worker(&card.id) {
+                if let Some(kill) = take_goal_worker_for_completion(&card.id, expected_attempt) {
                     kill.kill();
                 }
                 tracing::warn!(
@@ -29662,16 +31116,17 @@ async fn maybe_hold_review(
             // which dispatch_brief carries into the next worker's prompt; the
             // structured HoldState above is the durable hold receipt.
             let attempt = current_attempt_count(&card.metadata_json);
-            crate::goal_transition::requeue_goal(
+            crate::goal_transition::requeue_goal_for_attempt(
                 pool,
                 &card.id,
                 crate::decisions::ACTOR_SYSTEM,
                 attempt,
                 &inject_plan,
+                expected_attempt,
             )
             .await
             .map_err(String::from)?;
-            if let Some(kill) = take_goal_worker(&card.id) {
+            if let Some(kill) = take_goal_worker_for_completion(&card.id, expected_attempt) {
                 kill.kill();
             }
             Ok(Some(format!(
@@ -29730,20 +31185,28 @@ async fn maybe_hold_review(
             // work already committed one honest chance to verify, review and
             // land before parking it unread — see
             // `maybe_salvage_committed_work`'s own doc comment.
-            let salvage_note =
-                match maybe_salvage_committed_work(pool, card, None, calling_session_id).await {
-                    SalvageOutcome::Salvaged { note } => {
-                        tracing::info!(
-                            target: "permagentd::brain",
-                            goal_id = %card.id,
-                            "Goal '{}' held twice ({reason}), but its committed work was salvaged \
-                             instead of parked: {note}",
-                            card.title
-                        );
-                        return Ok(Some(note));
-                    }
-                    SalvageOutcome::NotSalvaged { note } => note,
-                };
+            let salvage_note = match maybe_salvage_committed_work_for_attempt(
+                pool,
+                card,
+                None,
+                calling_session_id,
+                headless_dispatch_policy_config().is_some_and(|config| config.auto_land),
+                expected_attempt,
+            )
+            .await
+            {
+                SalvageOutcome::Salvaged { note } => {
+                    tracing::info!(
+                        target: "permagentd::brain",
+                        goal_id = %card.id,
+                        "Goal '{}' held twice ({reason}), but its committed work was salvaged \
+                         instead of parked: {note}",
+                        card.title
+                    );
+                    return Ok(Some(note));
+                }
+                SalvageOutcome::NotSalvaged { note } => note,
+            };
             let reason = format!("{reason}; salvage: {salvage_note}");
             persist_card_meta(pool, &card.id, |m| {
                 crate::cost_router::RoutingSnapshot::from_signals(&signals, Some(&reason))
@@ -29784,15 +31247,16 @@ async fn maybe_hold_review(
                     record_decision_create_failure(pool, &card.id, "unblock", &error).await;
                 }
             }
-            crate::goal_transition::park_goal(
+            crate::goal_transition::park_goal_for_attempt(
                 pool,
                 &card.id,
                 crate::decisions::ACTOR_SYSTEM,
                 &reason,
+                expected_attempt,
             )
             .await
             .map_err(String::from)?;
-            if let Some(kill) = take_goal_worker(&card.id) {
+            if let Some(kill) = take_goal_worker_for_completion(&card.id, expected_attempt) {
                 kill.kill();
             }
             Ok(Some(format!(
@@ -30449,6 +31913,9 @@ pub fn classify_restart_charge(meta: &serde_json::Value) -> RestartCharge {
 pub enum ResumeDisposition {
     /// Dispatched in THIS lifecycle — a live tracker owns it; not an orphan.
     OwnedByLiveTracker,
+    /// Native terminal execution was inspected; candidate may be unverifiable.
+    /// No review, repair, task reset or successful completion was asserted.
+    NativeAttemptInspected,
     /// Owned by a live process OTHER than this one: a terminal harness run
     /// with a live lease, or a lifecycle whose worker receipt is still being
     /// heartbeated. Left untouched. `recheck` is set when only the receipt
@@ -30477,6 +31944,7 @@ pub struct ReconcileReport {
     /// In-flight goal cards found, including those a live tracker owns.
     pub examined: usize,
     pub owned_by_live_tracker: usize,
+    pub native_attempts_inspected: usize,
     /// In-flight goals owned by a live process elsewhere, left untouched.
     pub owned_by_live_foreign_process: usize,
     pub reattached: usize,
@@ -30508,6 +31976,7 @@ impl ReconcileReport {
     fn record(&mut self, disposition: ResumeDisposition) {
         match disposition {
             ResumeDisposition::OwnedByLiveTracker => self.owned_by_live_tracker += 1,
+            ResumeDisposition::NativeAttemptInspected => self.native_attempts_inspected += 1,
             ResumeDisposition::OwnedByLiveForeignProcess { .. } => {
                 self.owned_by_live_foreign_process += 1
             }
@@ -30523,6 +31992,7 @@ impl ReconcileReport {
     /// tracker in this same process already owns.
     pub fn reconciled(&self) -> usize {
         self.reattached
+            + self.native_attempts_inspected
             + self.resumed_to_review
             + self.requeued_no_charge
             + self.requeued_charged
@@ -30543,7 +32013,7 @@ impl ReconcileReport {
     /// zero: a report that omits its empty rows cannot be told from a report
     /// that never looked (the `job_health` rule).
     pub fn detail(&self) -> String {
-        format!(
+        let legacy_detail = format!(
             "Boot reconciliation of in-flight goals (daemon lifecycle {}):\n\
              - examined: {} in-flight goal(s); {} already owned by a live tracker in this process\n\
              - {} left untouched: owned by a live process elsewhere (terminal harness lease or fresh worker receipt)\n\
@@ -30573,7 +32043,8 @@ impl ReconcileReport {
             self.pending_dispatch_deferred,
             self.pending_dispatch_unscanned,
             self.pending_dispatch_errors,
-        )
+        );
+        format!("{legacy_detail}\n- {} native terminal attempts inspected (candidate may be unverifiable; no automatic recovery) (no review or dispatch)", self.native_attempts_inspected)
     }
 
     fn severity(&self) -> crate::briefings::Severity {
@@ -31193,6 +32664,28 @@ async fn resume_single_goal(
     let card = cards::get_card(pool, card_id)
         .await?
         .ok_or_else(|| format!("Card {} not found during resume", card_id))?;
+
+    match crate::goal_recovery::observe_lost_native_worker(pool, manager.as_ref(), card_id)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        crate::goal_recovery::NativeInspection::LegacyUnverified => {}
+        crate::goal_recovery::NativeInspection::StillOwned(reason) => {
+            tracing::info!(target:"permagentd::brain",goal_id=%card_id,"Native recovery remains owned: {reason}");
+            return Ok(ResumeDisposition::OwnedByLiveForeignProcess { recheck: false });
+        }
+        crate::goal_recovery::NativeInspection::Candidate(resolution) => {
+            tracing::info!(target:"permagentd::brain",goal_id=%card_id,candidate_verified=matches!(resolution,crate::goal_candidates::LineageResolution::Verified(_)),
+                "Native terminal execution retained for inspection; no automatic review or redispatch");
+            return Ok(ResumeDisposition::NativeAttemptInspected);
+        }
+        crate::goal_recovery::NativeInspection::Unverifiable(reason) => {
+            return Err(format!("Native recovery remains unverified: {reason}"));
+        }
+        crate::goal_recovery::NativeInspection::Lost(_) => {
+            return Err("Native loss observation did not produce a sealed outcome".into());
+        }
+    }
 
     let meta = card.metadata_json.as_object();
 
@@ -36058,6 +37551,57 @@ mod tests {
     /// `developer::verify`'s real Rust/`cargo test` detection, which this
     /// EDIT-ONLY lane cannot compile or run.
     #[tokio::test]
+    async fn failed_worker_committed_candidate_enters_review_without_rewriting_failure() {
+        let pool = test_pool().await;
+        let (card, _directory, _head) =
+            r20b_setup_goal_with_committed_work(&pool, "failed-worker-candidate", None).await;
+        let session_id = card.metadata_json["worker_session_id"].as_str().unwrap();
+        let mut receipt = ExecutionReceipt::new(
+            "permagent",
+            session_id,
+            serde_json::json!({}),
+            "fixture-lifecycle",
+            chrono::Utc::now().to_rfc3339(),
+            1,
+        );
+        receipt.finalize(ReceiptState::Failed, chrono::Utc::now().to_rfc3339());
+        persist_card_meta(&pool, &card.id, |metadata| {
+            metadata.insert(
+                "execution_receipt".into(),
+                serde_json::to_value(&receipt).unwrap(),
+            );
+        })
+        .await
+        .unwrap();
+        handle_goal_completion(
+            &pool,
+            &card.id,
+            &card.project_id,
+            Err("Subagent runtime failed".into()),
+            false,
+        )
+        .await
+        .unwrap();
+        let recovered = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let column = cards::get_column(&pool, &recovered.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(column.state_binding.as_deref(), Some("review"));
+        assert!(recovered.metadata_json.get("salvaged_on_park").is_some());
+        assert_eq!(
+            recovered.metadata_json["execution_receipt"]["state"],
+            "failed"
+        );
+        assert!(
+            decisions::find_open_decision_for_goal(&pool, &card.id, "approve_review")
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
     async fn salvage_lands_a_committed_goal_on_a_wall_budget_park() {
         let pool = test_pool().await;
         let (card, _dir, _head) =
@@ -37055,6 +38599,7 @@ mod tests {
                           new risk",
                 reviewer_provider: "test-reviewer-provider",
                 reviewer_model: "test-reviewer-model",
+                native_binding: None,
             },
             Some("coord-session-1"),
         )
@@ -37191,6 +38736,7 @@ mod tests {
                           new risk",
                 reviewer_provider: "test-reviewer-provider",
                 reviewer_model: "test-reviewer-model",
+                native_binding: None,
             },
             Some("coord-session-1"),
         )
@@ -38294,7 +39840,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             None,
         )
         .await;
-        match outcome {
+        match outcome.outcome {
             ReviewerGateOutcome::DiffTooLarge { reason } => {
                 assert!(
                     reason.contains("character"),
@@ -39860,6 +41406,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         // production, since the CLI installer always attaches one) — same
         // failure, not a panic.
         let empty_policy = HeadlessDispatchPolicy {
+            coordinator_session_id: "test-coordinator".to_string(),
             session_for_provider_fallback: None,
             restrict_ranked_selection_to_internal_engine: true,
             auto_land: false,
@@ -39879,6 +41426,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             ..crate::session::Session::default()
         };
         let policy = HeadlessDispatchPolicy {
+            coordinator_session_id: "test-coordinator".to_string(),
             session_for_provider_fallback: Some(Arc::new(session)),
             restrict_ranked_selection_to_internal_engine: true,
             auto_land: false,
@@ -39911,6 +41459,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             ..crate::session::Session::default()
         };
         HeadlessDispatchPolicy {
+            coordinator_session_id: "test-coordinator".to_string(),
             session_for_provider_fallback: Some(Arc::new(session)),
             restrict_ranked_selection_to_internal_engine: true,
             auto_land: false,
@@ -40275,6 +41824,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         };
         let probe_cache = ProbeCache::new();
         let policy = HeadlessDispatchPolicy {
+            coordinator_session_id: "test-coordinator".to_string(),
             session_for_provider_fallback: Some(Arc::new(session)),
             restrict_ranked_selection_to_internal_engine: true,
             auto_land: false,
@@ -40363,6 +41913,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         };
         let probe_cache = ProbeCache::new();
         let policy = HeadlessDispatchPolicy {
+            coordinator_session_id: "test-coordinator".to_string(),
             session_for_provider_fallback: Some(Arc::new(fallback_session)),
             restrict_ranked_selection_to_internal_engine: true,
             auto_land: false,
@@ -40476,6 +42027,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         };
         let probe_cache = ProbeCache::new();
         let policy = HeadlessDispatchPolicy {
+            coordinator_session_id: "test-coordinator".to_string(),
             session_for_provider_fallback: Some(Arc::new(fallback_session)),
             restrict_ranked_selection_to_internal_engine: true,
             auto_land: false,
@@ -41999,6 +43551,112 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         );
     }
 
+    #[tokio::test]
+    async fn final_goal_states_are_run_scoped_and_include_unstarted_cards() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let pool = sm.pool_clone().await.unwrap();
+        let coordinator = sm
+            .create_session(
+                tmp.path().to_path_buf(),
+                "coordinator".to_string(),
+                SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let run_started_at = chrono::Utc::now() - chrono::Duration::seconds(1);
+        assert!(
+            goal_states_for_session(&pool, &coordinator.id, run_started_at)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        let child = sm
+            .create_session_with_parent(
+                Some(&coordinator.id),
+                tmp.path().to_path_buf(),
+                "Goal worker".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let mine = setup_goal_in_state(&pool, "failed", 1).await;
+        attach_worker_session_to_card(&pool, &mine.id, &child.id).await;
+        let unstarted = setup_goal_in_state(&pool, "ready", 1).await;
+        sqlx::query(
+            "UPDATE cards SET metadata_json = json_set(coalesce(metadata_json, '{}'), \
+             '$.created_by_session_id', ?) WHERE id = ?",
+        )
+        .bind(&coordinator.id)
+        .bind(&unstarted.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let historical = setup_goal_in_state(&pool, "failed", 1).await;
+        sqlx::query(
+            "UPDATE cards SET created_at = '2020-01-01T00:00:00.000Z', \
+             metadata_json = json_set(coalesce(metadata_json, '{}'), \
+             '$.created_by_session_id', ?) WHERE id = ?",
+        )
+        .bind(&coordinator.id)
+        .bind(&historical.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let redispatched = setup_goal_in_state(&pool, "failed", 1).await;
+        let receipt = ExecutionReceipt::new(
+            "worker",
+            child.id.clone(),
+            serde_json::Value::Null,
+            "lifecycle",
+            chrono::Utc::now().to_rfc3339(),
+            2,
+        );
+        sqlx::query(
+            "UPDATE cards SET created_at = '2020-01-01T00:00:00.000Z', \
+             metadata_json = ? WHERE id = ?",
+        )
+        .bind(
+            serde_json::json!({
+                "created_by_session_id": &coordinator.id,
+                "execution_receipt": receipt,
+            })
+            .to_string(),
+        )
+        .bind(&redispatched.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let other = setup_goal_in_state(&pool, "complete", 1).await;
+        let states = goal_states_for_session(&pool, &coordinator.id, run_started_at)
+            .await
+            .unwrap();
+        assert_eq!(states.len(), 3);
+        assert!(states.contains(&(mine.id, GoalState::Failed)));
+        assert!(states.contains(&(unstarted.id, GoalState::Ready)));
+        assert!(states.contains(&(redispatched.id, GoalState::Failed)));
+        assert!(!states.iter().any(|(id, _)| id == &historical.id));
+        assert!(!states.iter().any(|(id, _)| id == &other.id));
+
+        sqlx::query(
+            "UPDATE cards SET metadata_json = json_set(metadata_json, \
+             '$.execution_receipt', json('{}')) WHERE id = ?",
+        )
+        .bind(&historical.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let error = goal_states_for_session(&pool, &coordinator.id, run_started_at)
+            .await
+            .unwrap_err();
+        assert!(error.contains("without dispatch time"), "{error}");
+    }
+
     /// Harness loop, Lane V (V2): `landed_goals_for_session` is the CLI's own
     /// source for its "landed `<id>` → `<sha>`" summary lines — reads back
     /// the head commit `goal_landing::land` fast-forwarded, for every
@@ -43380,6 +45038,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         };
         let probe_cache = ProbeCache::new();
         let policy = HeadlessDispatchPolicy {
+            coordinator_session_id: "test-coordinator".to_string(),
             session_for_provider_fallback: Some(Arc::new(session)),
             restrict_ranked_selection_to_internal_engine: true,
             auto_land: false,
@@ -46490,6 +48149,54 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         );
     }
 
+    #[tokio::test]
+    async fn contract_bearing_trivial_goal_cannot_auto_land_without_its_required_review() {
+        let (repo, head) = n4_repo_with_goal_branch("contract-trivial-run", |root| {
+            n4_replace_in(
+                root,
+                "src/shipping/quote.ts",
+                "domestic: 200,",
+                "domestic: 210,",
+            );
+        });
+        let pool = test_pool().await;
+        sqlx::query("UPDATE projects SET root_path = ? WHERE id = ?")
+            .bind(repo.path().to_string_lossy().as_ref())
+            .bind(crate::projects::PERSONAL_PROJECT_ID)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let card = setup_goal_in_state(&pool, "review", 1).await;
+        cards::merge_card_metadata(
+            &pool,
+            &card.id,
+            serde_json::json!({
+                TASK_CONTRACT_METADATA_KEY: {"text": "Preserve every user-visible shipping rule."},
+                "acceptance_criteria": ["npm run build exits with code 0", "npm run test exits with code 0"]
+            }),
+            false,
+        )
+        .await
+        .unwrap();
+        v1_stamp_dispatch_evidence(&pool, &card.id, "contract-trivial-run", &head).await;
+        stamp_successful_verify(&pool, &card.id).await;
+        let decision = v2_review_decision(&pool, &card.id, Some("coord-session-1")).await;
+        let card = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+
+        auto_land_headless_goal(&pool, &decision.id, &card, true, Some("coord-session-1")).await;
+
+        assert_ne!(git_v1(repo.path(), &["rev-parse", "HEAD"]), head);
+        let updated = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        let review = &updated.metadata_json[AUTO_LAND_REVIEW_METADATA_KEY];
+        assert_eq!(review["required"], true, "{review}");
+        assert_eq!(review["outcome"], "refused", "{review}");
+        let col = cards::get_column(&pool, &updated.column_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(col.state_binding.as_deref(), Some("failed"));
+    }
+
     #[test]
     fn n4_auto_land_review_requirement_follows_the_mandate_and_review_complexity() {
         use crate::cost_router::recommend::ReviewFacts;
@@ -46897,7 +48604,7 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
             &card,
             true,
             Some("coord-session-1"),
-            AutoLandReview::Approved,
+            AutoLandReview::Approved { binding: None },
             DEFAULT_HEADLESS_MAX_REDISPATCH,
         )
         .await;
@@ -55606,6 +57313,445 @@ src/admin/manualQuote.ts:5:  return quoteShipping(weightKg, zone);";
         }
     }
 
+    #[tokio::test]
+    async fn native_reviewer_child_keeps_original_task_without_inheriting_editor_attempt() {
+        let tmp = tempfile::tempdir().unwrap();
+        let manager = SessionManager::new(tmp.path().to_path_buf());
+        let parent = manager
+            .create_session(
+                tmp.path().to_path_buf(),
+                "editor".into(),
+                SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let mut data = crate::session::ExtensionData::new();
+        data.set_extension_state(
+            crate::session::BUDGET_TASK_EXTENSION_NAME,
+            "v1",
+            serde_json::json!("newer-parent-task"),
+        );
+        data.set_extension_state("worker_attempt", "v1", serde_json::json!("parent-attempt"));
+        data.set_extension_state("provider_grants", "v1", serde_json::json!("parent-grant"));
+        manager
+            .update(&parent.id)
+            .extension_data(data)
+            .apply()
+            .await
+            .unwrap();
+        let child = create_frozen_reviewer_child(
+            &manager,
+            &parent.id,
+            tmp.path(),
+            "original-task",
+            "native-goal",
+            serde_json::json!({"task_id":"original-task","text":"original brief"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(child.parent_session_id.as_deref(), Some(parent.id.as_str()));
+        assert_eq!(
+            crate::session::budget_task_id(&child.extension_data).as_deref(),
+            Some("original-task")
+        );
+        assert_eq!(
+            crate::session::goal_id(&child.extension_data).as_deref(),
+            Some("native-goal")
+        );
+        assert_eq!(
+            crate::session::session_manager::budget_task_contract(&child.extension_data).unwrap()
+                ["text"],
+            "original brief"
+        );
+        assert!(child
+            .extension_data
+            .get_extension_state("worker_attempt", "v1")
+            .is_none());
+        assert!(child
+            .extension_data
+            .get_extension_state("provider_grants", "v1")
+            .is_none());
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE cards(id TEXT PRIMARY KEY)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO cards(id) VALUES ('native-goal')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        crate::goal_attempts::apply_schema(&pool).await.unwrap();
+        sqlx::query("INSERT INTO goal_execution_bindings(goal_id,project_id,task_id,authority) VALUES ('native-goal','p','original-task','native')").execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO goal_attempts(attempt_id,goal_id,ordinal,claim_id,lifecycle_id,worker_key,worker_session_id,execution_state) VALUES ('parent-attempt','native-goal',1,'claim','life','worker',?,'started')")
+            .bind(&parent.id).execute(&pool).await.unwrap();
+        assert!(crate::goal_attempts::worker_binding(&pool, &parent.id)
+            .await
+            .unwrap()
+            .is_some());
+        assert!(
+            crate::goal_attempts::worker_binding(&pool, &child.id)
+                .await
+                .unwrap()
+                .is_none(),
+            "review child must never inherit editor physical-call attribution"
+        );
+    }
+
+    #[tokio::test]
+    async fn automatic_review_display_pass_without_native_binding_cannot_approve_or_land() {
+        let (repo, head) = v1_repo_with_finished_goal_branch("no-native-review-binding");
+        let before = git_v1(repo.path(), &["rev-parse", "HEAD"]);
+        let pool = test_pool().await;
+        let card = setup_goal_in_state(&pool, "review", 1).await;
+        v1_stamp_dispatch_evidence(&pool, &card.id, "no-native-review-binding", &head).await;
+        stamp_successful_verify(&pool, &card.id).await;
+        record_auto_land_review(
+            &pool,
+            &card.id,
+            serde_json::json!({"outcome":"approved", "reviewer":"minimax/MiniMax-M2.5"}),
+        )
+        .await;
+        sqlx::query("INSERT INTO goal_execution_bindings(goal_id,project_id,authority) VALUES(?,?,'native')")
+            .bind(&card.id).bind(&card.project_id).execute(&pool).await.unwrap();
+        let decision = v2_review_decision(&pool, &card.id, Some("coord-session-1")).await;
+        let card = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
+        finish_headless_auto_land(
+            &pool,
+            &decision.id,
+            &card,
+            true,
+            Some("coord-session-1"),
+            None,
+        )
+        .await;
+        assert_eq!(git_v1(repo.path(), &["rev-parse", "HEAD"]), before);
+        assert_eq!(r66a_state(&pool, &card.id).await, "review");
+        assert!(
+            decisions::find_open_decision_for_goal(&pool, &card.id, "approve_review")
+                .await
+                .unwrap()
+                .is_some()
+        );
+        let (answered, proof) = decisions::answer_decision(
+            &pool,
+            &decision.id,
+            &decisions::DecisionAnswer {
+                answer: "approve".into(),
+                ..Default::default()
+            },
+            decisions::ACTOR_JESSE,
+        )
+        .await
+        .unwrap();
+        let error = crate::decisions_effects::apply_decision_effect_with_auto_land(
+            &pool,
+            &answered,
+            proof,
+            "approve_review",
+            true,
+            Some("coord-session-1"),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("legacy replay is refused"));
+        assert_eq!(git_v1(repo.path(), &["rev-parse", "HEAD"]), before);
+        assert_eq!(r66a_state(&pool, &card.id).await, "review");
+    }
+
+    struct NativeReviewRouteStub {
+        provider: &'static str,
+        model_config: crate::model::ModelConfig,
+        observed_models: Arc<std::sync::Mutex<Vec<String>>>,
+        tier: crate::session::CostTier,
+        audited: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for NativeReviewRouteStub {
+        fn supports_native_pretransport_gate(&self) -> bool {
+            self.audited
+        }
+        fn get_name(&self) -> &str {
+            self.provider
+        }
+        fn cost_tier(&self) -> crate::session::CostTier {
+            self.tier
+        }
+        fn get_model_config(&self) -> crate::model::ModelConfig {
+            self.model_config.clone()
+        }
+        async fn stream(
+            &self,
+            config: &crate::model::ModelConfig,
+            _session_id: &str,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<crate::providers::base::MessageStream, crate::providers::errors::ProviderError>
+        {
+            self.observed_models
+                .lock()
+                .unwrap()
+                .push(config.model_name.clone());
+            let usage = crate::providers::base::ProviderUsage::new(
+                config.model_name.clone(),
+                crate::providers::base::Usage {
+                    input_tokens: Some(10),
+                    output_tokens: Some(1),
+                    total_tokens: Some(11),
+                    ..Default::default()
+                },
+            );
+            Ok(crate::providers::base::stream_from_single_message(
+                Message::assistant().with_text("VERDICT: PASS\nCHECKED: fixture"),
+                usage,
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn native_reviewer_actual_dispatch_refuses_contributor_fallback_and_keeps_selected_full_model(
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let manager = Arc::new(SessionManager::new(tmp.path().to_path_buf()));
+        let session = manager
+            .create_session(
+                tmp.path().to_path_buf(),
+                "native-review-route".into(),
+                SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        manager
+            .begin_budget_task_with_contract(&session.id, &Message::user().with_text("candidate"))
+            .await
+            .unwrap();
+        let session = manager.get_session(&session.id, false).await.unwrap();
+        let cfg = crate::cost_router::budget::BudgetConfig::default();
+        let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let provider: Arc<dyn Provider> = Arc::new(NativeReviewRouteStub {
+            provider: "openai",
+            model_config: crate::model::ModelConfig::new("gpt-5.4-mini")
+                .unwrap()
+                .with_fast("unmapped-fast-proxy", "openai")
+                .unwrap(),
+            observed_models: observed.clone(),
+            tier: crate::session::CostTier::LocalFree,
+            audited: true,
+        });
+        let contributors =
+            std::collections::BTreeSet::from(["openai".to_string(), "minimax".to_string()]);
+        assert!(complete_native_reviewer_on_checked_route(
+            manager.clone(),
+            session.clone(),
+            provider.clone(),
+            "review",
+            &[Message::user().with_text("candidate")],
+            &contributors,
+            0.60,
+            &cfg,
+        )
+        .await
+        .is_err());
+        assert!(
+            observed.lock().unwrap().is_empty(),
+            "excluded fallback must never reach physical provider dispatch"
+        );
+        let contributors =
+            std::collections::BTreeSet::from(["anthropic".to_string(), "minimax".to_string()]);
+        let unaudited: Arc<dyn Provider> = Arc::new(NativeReviewRouteStub {
+            provider: "openai",
+            model_config: crate::model::ModelConfig::new("gpt-5.4-mini").unwrap(),
+            observed_models: observed.clone(),
+            tier: crate::session::CostTier::LocalFree,
+            audited: false,
+        });
+        assert!(complete_native_reviewer_on_checked_route(
+            manager.clone(),
+            session.clone(),
+            unaudited,
+            "review",
+            &[Message::user().with_text("candidate")],
+            &contributors,
+            0.60,
+            &cfg,
+        )
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("not been audited"));
+        assert!(observed.lock().unwrap().is_empty());
+        let (_, usage) = complete_native_reviewer_on_checked_route(
+            manager,
+            session,
+            provider,
+            "review",
+            &[Message::user().with_text("candidate")],
+            &contributors,
+            0.60,
+            &cfg,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            observed.lock().unwrap().as_slice(),
+            &["gpt-5.4-mini"],
+            "strict native review must not substitute the provider fast model"
+        );
+        assert_eq!(usage.model, "gpt-5.4-mini");
+    }
+
+    #[tokio::test]
+    async fn native_reviewer_original_task_exposure_blocks_every_tier_without_reset_or_hold_mutation(
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let manager = Arc::new(SessionManager::new(tmp.path().to_path_buf()));
+        let parent = manager
+            .create_session(
+                tmp.path().to_path_buf(),
+                "coordinator".into(),
+                SessionType::Hidden,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let original = manager
+            .begin_budget_task_with_contract(
+                &parent.id,
+                &Message::user().with_text("original brief"),
+            )
+            .await
+            .unwrap();
+        let contract = crate::session::session_manager::budget_task_contract(
+            &manager
+                .get_session(&parent.id, false)
+                .await
+                .unwrap()
+                .extension_data,
+        )
+        .unwrap()
+        .clone();
+        let pool = manager.pool_clone().await.unwrap();
+        let ts = chrono::Utc::now().to_rfc3339();
+        sqlx::query("INSERT INTO cost_ledger(call_id,ts,session_id,task_id,cost_usd) VALUES ('original-cost',?,?,?,0.10)")
+            .bind(&ts).bind(&parent.id).bind(&original).execute(&pool).await.unwrap();
+        for state in ["pending", "unknown"] {
+            sqlx::query("INSERT INTO cost_reservations(reservation_id,invocation_id,session_id,task_id,amount_usd,state,lease_until,created_at,updated_at) VALUES (?,?,?,?,0.10,?,?,?,?)")
+                .bind(format!("hold-{state}")).bind(format!("call-{state}")).bind(&parent.id).bind(&original).bind(state)
+                .bind((chrono::Utc::now()+chrono::Duration::minutes(5)).to_rfc3339()).bind(&ts).bind(&ts).execute(&pool).await.unwrap();
+        }
+        let before: Vec<(String, String, f64)> = sqlx::query_as(
+            "SELECT reservation_id,state,amount_usd FROM cost_reservations ORDER BY reservation_id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        let later = manager
+            .begin_budget_task_with_contract(
+                &parent.id,
+                &Message::user().with_text("newer unrelated task"),
+            )
+            .await
+            .unwrap();
+        assert_ne!(original, later);
+        let reviewer = create_frozen_reviewer_child(
+            &manager,
+            &parent.id,
+            tmp.path(),
+            &original,
+            "goal",
+            contract,
+        )
+        .await
+        .unwrap();
+        let cfg = crate::cost_router::budget::BudgetConfig {
+            task: crate::cost_router::budget::BudgetCeilings {
+                soft: 0.20,
+                gate: 0.25,
+                hard: 0.25,
+            },
+            session: crate::cost_router::budget::BudgetCeilings {
+                soft: 5.0,
+                gate: 10.0,
+                hard: 20.0,
+            },
+        };
+        let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let families = std::collections::BTreeSet::from(["anthropic".into()]);
+        for tier in [
+            crate::session::CostTier::LocalFree,
+            crate::session::CostTier::Subscription,
+            crate::session::CostTier::PaidApi,
+        ] {
+            let provider: Arc<dyn Provider> = Arc::new(NativeReviewRouteStub {
+                provider: "openai",
+                model_config: crate::model::ModelConfig::new("gpt-5.4-mini").unwrap(),
+                observed_models: observed.clone(),
+                tier,
+                audited: true,
+            });
+            let error = complete_native_reviewer_on_checked_route(
+                manager.clone(),
+                reviewer.clone(),
+                provider,
+                "review",
+                &[Message::user().with_text("candidate")],
+                &families,
+                0.60,
+                &cfg,
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                error.to_string().contains("original-task exposure"),
+                "{error}"
+            );
+        }
+        assert!(observed.lock().unwrap().is_empty());
+        let after: Vec<(String, String, f64)> = sqlx::query_as(
+            "SELECT reservation_id,state,amount_usd FROM cost_reservations ORDER BY reservation_id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            before, after,
+            "no UNKNOWN/pending liability may be released or replaced by cap refusal"
+        );
+        let calls: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM cost_ledger")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            calls, 1,
+            "refused review must not append an actual-cost row"
+        );
+    }
+
+    #[test]
+    fn native_reviewer_actual_route_refuses_opaque_family_and_below_complexity_floor() {
+        let contributors = std::collections::BTreeSet::from(["anthropic".to_string()]);
+        assert!(validate_native_reviewer_route(
+            &contributors,
+            0.60,
+            "openrouter",
+            "unknown-proxy-model"
+        )
+        .is_err());
+        assert!(
+            validate_native_reviewer_route(&contributors, 0.75, "openai", "gpt-5.4-mini").is_err()
+        );
+        assert!(
+            validate_native_reviewer_route(&contributors, 0.60, "openai", "gpt-5.4-mini").is_ok()
+        );
+    }
+
     /// Build a real `OrchestratorClient` wired to an in-memory session, a
     /// `LocalFree` mock provider reachable through a genuine
     /// `ExtensionManager` (so `get_provider()`/`current_session_mode()`'s
@@ -60464,6 +62610,142 @@ mod r65a_tests {
     }
 
     #[test]
+    fn reviewer_prompt_receives_full_contract_despite_generic_build_and_test_criteria() {
+        let contract = "Count each CTA visibility once per session; report above_fold or below_fold from the initial viewport; keep event_id stable across retries.\nExact enum: [above_fold, below_fold].";
+        let metadata = serde_json::json!({
+            TASK_CONTRACT_METADATA_KEY: {"text": contract},
+        });
+        let criteria = vec![
+            "npm run build exits with code 0".to_string(),
+            "npm run test exits with code 0".to_string(),
+        ];
+        for salvage in [false, true] {
+            let spec =
+                goal_review_task_spec("Instrument the CTA", &criteria, &metadata, salvage).unwrap();
+            let prompt = build_goal_review_prompt(
+                &spec,
+                "diff --git a/a b/a\n+x",
+                "Verification passed",
+                &SalvageReviewContext::default(),
+                None,
+                "0123456789abcdef0123456789abcdef01234567",
+                &[],
+            );
+            assert!(prompt.contains("npm run build exits with code 0"));
+            assert!(prompt.contains("npm run test exits with code 0"));
+            assert!(prompt.contains(
+                "BEGIN_REVIEWED_HEAD\n0123456789abcdef0123456789abcdef01234567\nEND_REVIEWED_HEAD"
+            ));
+            assert!(
+                prompt.contains(&serde_json::to_string(contract).unwrap()),
+                "the complete JSON-quoted contract must reach the reviewer: {prompt}"
+            );
+            assert!(prompt.contains("Behavior evidence rule"));
+        }
+    }
+
+    #[tokio::test]
+    async fn context_followups_rebuild_the_real_prompt_with_full_contract_and_pinned_sha() {
+        let root = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .current_dir(root.path())
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            String::from_utf8(output.stdout).unwrap().trim().to_string()
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.email", "review-test@example.com"]);
+        git(&["config", "user.name", "Review Test"]);
+        git(&["config", "commit.gpgsign", "false"]);
+        std::fs::create_dir_all(root.path().join("src")).unwrap();
+        std::fs::write(root.path().join("src/behavior.rs"), "input = parsed\n").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "candidate"]);
+        let head = git(&["rev-parse", "HEAD"]);
+        let contract = "Preserve the exact public input contract across retries.";
+        let metadata = serde_json::json!({TASK_CONTRACT_METADATA_KEY: {"text": contract}});
+        let task_spec =
+            goal_review_task_spec("Review input parsing", &[], &metadata, false).unwrap();
+        let request = r#"CONTEXT_REQUEST: {"status":"need_context","requests":[{"kind":"read","criterion":"input parsing behavior","path":"src/behavior.rs","start_line":1,"end_line":1}]}"#;
+        let prompts = std::sync::Mutex::new(Vec::new());
+        let calls = AtomicUsize::new(0);
+        let repeat_request = request.to_string();
+        let result = super::super::review_context::run_context_request_protocol(
+            request.into(),
+            root.path(),
+            &head,
+            |items| {
+                build_goal_review_prompt(
+                    &task_spec,
+                    "diff --git a/src/behavior.rs b/src/behavior.rs\n+input = parsed",
+                    "Verification passed",
+                    &SalvageReviewContext::default(),
+                    None,
+                    &head,
+                    items,
+                )
+            },
+            |prompt| {
+                let call = calls.fetch_add(1, Ordering::SeqCst);
+                prompts.lock().unwrap().push(prompt);
+                let response = if call == 0 {
+                    repeat_request.clone()
+                } else {
+                    "VERDICT: APPROVE\nCHECKED: input parsing".into()
+                };
+                async move { Ok((response, 1)) }
+            },
+        )
+        .await
+        .unwrap();
+        assert!(result.0.contains("VERDICT: APPROVE"));
+        let expected_contract = serde_json::to_string(contract).unwrap();
+        let prompts = prompts.lock().unwrap();
+        assert_eq!(prompts.len(), 2);
+        for prompt in prompts.iter() {
+            assert!(prompt.contains(&expected_contract));
+            assert!(prompt.contains(&format!("BEGIN_REVIEWED_HEAD\n{head}\nEND_REVIEWED_HEAD")));
+        }
+        assert!(prompts[0].contains("input = parsed"));
+        assert!(prompts[1].contains("input = parsed"));
+    }
+
+    #[test]
+    fn reviewer_refuses_an_unrepresentable_contract_instead_of_omitting_it() {
+        for contract in [
+            serde_json::json!({"text": ""}),
+            serde_json::json!({"text": "x".repeat(MAX_TASK_CONTRACT_BYTES + 1)}),
+            serde_json::json!({"source": "headless_launch"}),
+        ] {
+            let metadata = serde_json::json!({TASK_CONTRACT_METADATA_KEY: contract});
+            assert!(goal_review_task_spec("Goal", &[], &metadata, false).is_err());
+        }
+    }
+
+    #[test]
+    fn non_contract_goal_with_missing_or_invalid_review_head_is_refused() {
+        for metadata in [
+            serde_json::json!({"goal_kind": "ordinary", "dispatch_evidence": {}}),
+            serde_json::json!({
+                "goal_kind": "ordinary",
+                "dispatch_evidence": {"head_commit": "abcd1234"}
+            }),
+        ] {
+            assert!(metadata.get(TASK_CONTRACT_METADATA_KEY).is_none());
+            let (outcome, record) = match validate_auto_land_review_head(&metadata) {
+                Ok(_) => panic!("missing or partial candidate SHA must fail closed"),
+                Err(reason) => auto_land_review_head_failure(&reason),
+            };
+            assert!(matches!(outcome, AutoLandReview::Refused { .. }));
+            assert_eq!(record["required"], true);
+            assert_eq!(record["outcome"], "refused");
+        }
+    }
+
+    #[test]
     fn r65a_verified_goal_review_prompt_carries_the_bound_verification_section() {
         let verification = GoalReviewVerification {
             command: "node --test src".to_string(),
@@ -60488,6 +62770,8 @@ mod r65a_tests {
             VERIFIED_GOAL_WITH_EVIDENCE_LEAD,
             &context,
             Some(&verification),
+            "0123456789abcdef0123456789abcdef01234567",
+            &["PATH src/discover.ts LINES 1-2\n1: filter=known".to_string()],
         );
         let section = prompt
             .find("BEGIN_VERIFICATION\nhead: 0b8a39d7c1e4f2a6\ncommand: node --test src")
@@ -60498,6 +62782,10 @@ mod r65a_tests {
             .expect("the closing instruction stays last");
         assert!(section < end && end < closing, "{prompt}");
         assert!(prompt.contains("# pass 4\n# fail 0"));
+        assert!(prompt.contains(
+            "BEGIN_REVIEWED_HEAD\n0123456789abcdef0123456789abcdef01234567\nEND_REVIEWED_HEAD"
+        ));
+        assert!(prompt.contains("BEGIN_REPOSITORY_CONTEXT\nPATH src/discover.ts LINES 1-2"));
         assert!(prompt.contains("BEGIN_VERIFY_OUTPUT\nthe goal's worker recorded a passing verify"));
         assert!(
             prompt.contains("BEGIN_CALL_SITES"),
@@ -60516,6 +62804,8 @@ mod r65a_tests {
             VERIFIED_GOAL_VERIFY_OUTPUT_LEAD,
             &SalvageReviewContext::default(),
             None,
+            "0123456789abcdef0123456789abcdef01234567",
+            &[],
         );
         assert!(!without.contains("BEGIN_VERIFICATION"));
     }

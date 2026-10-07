@@ -136,8 +136,8 @@ pub use mesh::{
     gate as mesh_gate, MeshGateInputs, MeshIneligible, MeshRoute, MeshWorkload, PoolHealth,
 };
 pub use metered::{
-    finish_metered_call, reserve_metered_call, unreserved_local_call, MeteredCallContext,
-    MeteredCallError, MeteredCallFinish, MeteredCallKind, MeteredCallRequest,
+    finish_metered_call, reserve_metered_call, MeteredCallContext, MeteredCallError,
+    MeteredCallFinish, MeteredCallKind, MeteredCallRequest,
 };
 pub use packs::{
     configured_pack_pin, configured_review_pack_pin, load_packs, pack_pin,

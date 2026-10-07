@@ -49,7 +49,10 @@ pub mod finance_statements;
 pub mod financier_close;
 pub mod forecaster;
 pub mod gateway;
+pub mod goal_attempts;
+pub mod goal_candidates;
 pub mod goal_landing;
+pub(crate) mod goal_recovery;
 pub mod goal_refinement;
 pub mod goal_state;
 pub mod goal_transition;
@@ -75,6 +78,7 @@ pub mod meeting_writeup;
 pub mod mesh;
 pub mod model;
 pub mod model_review;
+pub(crate) mod native_provider_calls;
 pub mod oauth;
 #[cfg(feature = "otel")]
 pub mod otel;

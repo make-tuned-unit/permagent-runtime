@@ -8,6 +8,7 @@
 use crate::cost::CostReading;
 use crate::harness_log::LogSignals;
 use crate::oracle::OracleOutcome;
+use std::collections::BTreeMap;
 
 /// The outcome of running one task under one tier.
 #[derive(Debug, Clone)]
@@ -20,6 +21,15 @@ pub struct TaskResult {
     pub cost: CostReading,
     /// Wall-clock seconds the harness run took.
     pub duration_secs: f64,
+    /// Native CLI-main-entry-to-post-drain timing, separate from external
+    /// spawn-to-exit `duration_secs` (which includes OS startup and cleanup).
+    /// First-tool is absent when no approved
+    /// tool ran; all fields are absent without a valid structured sidecar.
+    pub first_tool_ms: Option<u64>,
+    pub native_wall_ms: Option<u64>,
+    pub native_timing_phase: Option<String>,
+    pub native_timing_root_session_id: Option<String>,
+    pub native_other_session_first_tool_ms: BTreeMap<String, u64>,
     /// The harness process exit code (`None` = killed / timed out / spawn error).
     pub harness_exit: Option<i32>,
     /// Whether the harness run hit its wall-clock ceiling.
@@ -133,6 +143,11 @@ impl TaskResult {
             solved: oracle.solved(),
             cost,
             duration_secs: 0.0,
+            first_tool_ms: None,
+            native_wall_ms: None,
+            native_timing_phase: None,
+            native_timing_root_session_id: None,
+            native_other_session_first_tool_ms: BTreeMap::new(),
             harness_exit: None,
             harness_timed_out: false,
             oracle,

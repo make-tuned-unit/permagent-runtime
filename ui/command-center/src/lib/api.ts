@@ -2174,8 +2174,8 @@ export const api = {
       method: 'POST', body: JSON.stringify(payload),
     }),
 
-  /** After a coding harness launched from a growth Action exits: try git/content
-   *  verification; an unverified exit leaves the action unchanged. */
+  /** A coding harness exited. Without a linked native goal and landed change,
+   *  this callback leaves an untracked Grow action unchanged. */
   completeGrowthActionFromHarness: (projectId: string, actionId: string) =>
     apiFetch<{
       implemented: boolean;

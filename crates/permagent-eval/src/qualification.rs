@@ -385,6 +385,20 @@ pub struct TaskQualificationEvidence {
     /// of the following is `None`/empty rather than a defaulted value when
     /// its producing lane's line was not found in this task's harness log.
     pub harness_overhead: Option<HarnessOverhead>,
+    /// Native monotonic time from CLI entry to the first authorized client
+    /// tool dispatch in this run's top-level session. Not inferred from model
+    /// text or the external harness process duration.
+    #[serde(default)]
+    pub first_tool_ms: Option<u64>,
+    /// Same native CLI-entry clock and phase as `first_tool_ms`.
+    #[serde(default)]
+    pub native_wall_ms: Option<u64>,
+    #[serde(default)]
+    pub native_timing_phase: Option<String>,
+    #[serde(default)]
+    pub native_timing_root_session_id: Option<String>,
+    #[serde(default)]
+    pub native_other_session_first_tool_ms: BTreeMap<String, u64>,
     pub landed_goals: Vec<LandedGoal>,
     pub drain_summary: Option<String>,
     pub create_roadmap_dispatched: Option<usize>,
@@ -577,6 +591,11 @@ pub fn build_run_qualification_record(
             headless_autoland: r.headless_autoland.clone(),
             headless_drain_secs: r.headless_drain_secs.clone(),
             harness_overhead: r.signals.harness_overhead,
+            first_tool_ms: r.first_tool_ms,
+            native_wall_ms: r.native_wall_ms,
+            native_timing_phase: r.native_timing_phase.clone(),
+            native_timing_root_session_id: r.native_timing_root_session_id.clone(),
+            native_other_session_first_tool_ms: r.native_other_session_first_tool_ms.clone(),
             landed_goals: r.signals.landed_goals.clone(),
             drain_summary: r.signals.drain_summary.clone(),
             create_roadmap_dispatched: r.signals.create_roadmap_dispatched,
@@ -763,9 +782,10 @@ fn area_evidence(
                 no_evidence: false,
             }
         }
-        // X-lat's gate is "reported on every run; first number retained as
-        // baseline" — a reporting bar, not a numeric threshold, so
-        // gate_passed and evidence_complete coincide.
+        // A populated timing line proves observability, not acceptable speed.
+        // The published latency contract also requires a paired first-tool
+        // and wall-time comparison; historical records have no first-tool
+        // measurement and therefore cannot be promoted by this gate.
         "latency" => {
             if attempted.is_empty() {
                 return unrated(vec!["tasks: no attempted task in this run".to_string()]);
@@ -781,13 +801,13 @@ fn area_evidence(
                     attempted.len()
                 )]);
             }
-            AreaEvidence {
-                gate_passed: true,
-                evidence_complete: true,
-                unresolved_p1: false,
-                missing_fields: Vec::new(),
-                no_evidence: false,
+            if attempted.iter().any(|t| {
+                t.harness_overhead
+                    .is_some_and(|h| h.p50_ms > 250 || h.p95_ms > 1_000)
+            }) {
+                return measured(false, false);
             }
+            latency_evidence(record, comparisons)
         }
         // Preserve the auto-land evidence prerequisite, but require every
         // attempted held-out task (including any other mode) to be solved.
@@ -1113,6 +1133,174 @@ fn pass_rate(record: &RunQualificationRecord) -> Option<f64> {
         .then(|| record.tasks.iter().filter(|t| task_solved(t)).count() as f64 / attempted as f64)
 }
 
+/// Comparisons must describe the same work and effective run limits. A shared
+/// task name alone is insufficient: the old r71 token reference used another
+/// fixture revision. Unknown limits cannot establish a controlled comparison.
+fn comparison_compatible(
+    current: &RunQualificationRecord,
+    reference: &RunQualificationRecord,
+) -> std::result::Result<(), &'static str> {
+    if current
+        .fixture_revision
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .is_none()
+        || current.fixture_revision != reference.fixture_revision
+    {
+        return Err("fixture_revision");
+    }
+    if current.provider.is_empty()
+        || current.model.is_empty()
+        || current.provider != reference.provider
+        || current.model != reference.model
+    {
+        return Err("provider/model");
+    }
+    if current.pinned_packs != reference.pinned_packs {
+        return Err("pinned_packs");
+    }
+    let current_tasks: BTreeMap<_, _> = current.tasks.iter().map(|t| (&t.task_id, t)).collect();
+    let reference_tasks: BTreeMap<_, _> = reference.tasks.iter().map(|t| (&t.task_id, t)).collect();
+    if current_tasks.len() != current.tasks.len()
+        || reference_tasks.len() != reference.tasks.len()
+        || !current_tasks.keys().eq(reference_tasks.keys())
+    {
+        return Err("task IDs");
+    }
+    for (id, task) in current_tasks {
+        let other = reference_tasks[id];
+        if task.not_run != other.not_run {
+            return Err("attempted task IDs");
+        }
+        if task.harness_timeout_secs.is_none()
+            || task
+                .headless_drain_secs
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .is_none()
+            || task
+                .headless_autoland
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .is_none()
+            || task.harness_timeout_secs != other.harness_timeout_secs
+            || task.headless_drain_secs != other.headless_drain_secs
+            || task.headless_autoland != other.headless_autoland
+        {
+            return Err("task run limits");
+        }
+    }
+    Ok(())
+}
+
+fn median(mut values: Vec<f64>) -> Option<f64> {
+    if values.is_empty() || values.iter().any(|v| !v.is_finite() || *v < 0.0) {
+        return None;
+    }
+    values.sort_by(f64::total_cmp);
+    let middle = values.len() / 2;
+    Some(if values.len() % 2 == 0 {
+        (values[middle - 1] + values[middle]) / 2.0
+    } else {
+        values[middle]
+    })
+}
+
+fn latency_medians(record: &RunQualificationRecord) -> Option<(f64, f64, f64)> {
+    let attempted: Vec<_> = record.tasks.iter().filter(|t| !t.not_run).collect();
+    if attempted.iter().any(|t| {
+        t.native_timing_phase.as_deref() != Some("cli_entry_to_post_drain_v1")
+            || t.native_timing_root_session_id
+                .as_deref()
+                .is_none_or(str::is_empty)
+            || t.first_tool_ms
+                .zip(t.native_wall_ms)
+                .is_none_or(|(first, wall)| first > wall)
+    }) {
+        return None;
+    }
+    let first_tools = attempted
+        .iter()
+        .map(|t| t.first_tool_ms.map(|n| n as f64))
+        .collect::<Option<Vec<_>>>()?;
+    let walls = attempted
+        .iter()
+        .map(|t| t.native_wall_ms.map(|n| n as f64))
+        .collect::<Option<Vec<_>>>()?;
+    let external_walls = attempted.iter().map(|t| t.seconds).collect();
+    Some((
+        median(first_tools)?,
+        median(walls)?,
+        median(external_walls)?,
+    ))
+}
+
+fn latency_evidence(
+    record: &RunQualificationRecord,
+    comparisons: &TokenComparisons<'_>,
+) -> AreaEvidence {
+    let Some((first_tool, wall, external_wall)) = latency_medians(record) else {
+        return unrated(vec![
+            "first_tool_ms, native_wall_ms, and external spawn-to-exit wall in matching phases for every attempted task".into(),
+        ]);
+    };
+    let candidates = comparisons
+        .baseline
+        .into_iter()
+        .chain(comparisons.references.iter());
+    let mut compatible = Vec::new();
+    let mut missing = Vec::new();
+    for reference in candidates {
+        if let Err(field) = comparison_compatible(record, reference) {
+            missing.push(format!(
+                "latency comparison {}: incompatible {field}",
+                reference.run_id
+            ));
+            continue;
+        }
+        if let Some((reference_first_tool, reference_wall, reference_external_wall)) =
+            latency_medians(reference)
+        {
+            compatible.push((
+                reference,
+                reference_first_tool,
+                reference_wall,
+                reference_external_wall,
+            ));
+        } else {
+            missing.push(format!(
+                "latency comparison {}: matching native first-tool/wall timing missing",
+                reference.run_id
+            ));
+        }
+    }
+    if compatible.is_empty() {
+        missing.push("compatible non-inferior paired latency reference".into());
+        return unrated(missing);
+    }
+    let Some(candidate_rate) = pass_rate(record) else {
+        return unrated(vec!["candidate pass rate".into()]);
+    };
+    if compatible
+        .iter()
+        .any(|(reference, _, _, _)| pass_rate(reference).is_some_and(|rate| candidate_rate < rate))
+    {
+        return measured(false, false);
+    }
+    // Choose one real paired reference by native wall. First-tool, native
+    // wall, and external spawn-to-exit wall all come from that same run.
+    let (_, best_first_tool, best_wall, best_external_wall) = compatible
+        .into_iter()
+        .min_by(|a, b| a.2.total_cmp(&b.2))
+        .unwrap();
+    measured(
+        first_tool <= best_first_tool * 1.10
+            && wall <= best_wall * 1.10
+            && external_wall <= best_external_wall * 1.10,
+        false,
+    )
+}
+
 fn token_evidence(
     record: &RunQualificationRecord,
     comparisons: &TokenComparisons<'_>,
@@ -1133,9 +1321,22 @@ fn token_evidence(
     }
     let mut missing = Vec::new();
     if let Some(current) = valid_token_median(record) {
+        for reference in comparisons
+            .baseline
+            .into_iter()
+            .chain(comparisons.references.iter())
+        {
+            if let Err(field) = comparison_compatible(record, reference) {
+                missing.push(format!(
+                    "token comparison {}: incompatible {field}",
+                    reference.run_id
+                ));
+            }
+        }
         let best_reference = comparisons
             .references
             .iter()
+            .filter(|r| comparison_compatible(record, r).is_ok())
             .filter_map(|r| valid_token_median(r).map(|median| (r, median)))
             .min_by(|a, b| a.1.total_cmp(&b.1));
         let candidates = [
@@ -1143,6 +1344,13 @@ fn token_evidence(
             best_reference.map(|(r, _)| (r, 1.1)),
         ];
         for (reference, factor) in candidates.into_iter().flatten() {
+            if let Err(field) = comparison_compatible(record, reference) {
+                missing.push(format!(
+                    "token comparison {}: incompatible {field}",
+                    reference.run_id
+                ));
+                continue;
+            }
             if let Some((baseline, (rate, reference_rate))) =
                 valid_token_median(reference).zip(pass_rate(record).zip(pass_rate(reference)))
             {
@@ -1303,6 +1511,7 @@ mod tests {
         r.duration_secs = 5.0;
         r.headless_autoland = Some("1".to_string());
         r.headless_drain_secs = Some("840".to_string());
+        r.harness_timeout_secs = Some(900);
         r
     }
 
@@ -1428,6 +1637,10 @@ mod tests {
     fn build_run_qualification_record_carries_the_resolved_harness_timeout() {
         let mut solved = passing_task("t1");
         solved.harness_timeout_secs = Some(900);
+        solved.first_tool_ms = Some(120);
+        solved.native_wall_ms = Some(5_000);
+        solved.native_timing_phase = Some("cli_entry_to_post_drain_v1".into());
+        solved.native_timing_root_session_id = Some("parent-session".into());
         let mut not_run = crate::metrics::TaskResult::new(
             "t2",
             "classic",
@@ -1447,6 +1660,12 @@ mod tests {
             &[solved, not_run],
         );
         assert_eq!(record.tasks[0].harness_timeout_secs, Some(900));
+        assert_eq!(record.tasks[0].first_tool_ms, Some(120));
+        assert_eq!(record.tasks[0].native_wall_ms, Some(5_000));
+        assert_eq!(
+            record.tasks[0].native_timing_root_session_id.as_deref(),
+            Some("parent-session")
+        );
         assert_eq!(record.tasks[1].harness_timeout_secs, None);
 
         // Serde default: a qual.json written before this lane (no field at
@@ -2291,6 +2510,157 @@ mod tests {
     }
 
     #[test]
+    fn latency_needs_bounded_overhead_and_measured_paired_first_tool_time() {
+        let mut current = receipt_record();
+        let mut reference = current.clone();
+        reference.run_id = "latency-reference".into();
+        let references = [reference.clone()];
+        let comparisons = TokenComparisons {
+            baseline: None,
+            references: &references,
+        };
+
+        let missing = area_evidence("latency", &current, &BTreeSet::new(), &comparisons);
+        assert!(!missing.evidence_complete);
+        assert!(missing
+            .missing_fields
+            .iter()
+            .any(|field| field.contains("first_tool_ms")));
+
+        current.tasks[0].first_tool_ms = Some(100);
+        reference.tasks[0].first_tool_ms = Some(100);
+        for task in [&mut current.tasks[0], &mut reference.tasks[0]] {
+            task.native_wall_ms = Some(5_000);
+            task.native_timing_phase = Some("cli_entry_to_post_drain_v1".into());
+            task.native_timing_root_session_id = Some("root-session".into());
+        }
+        let references = [reference.clone()];
+        let comparisons = TokenComparisons {
+            baseline: None,
+            references: &references,
+        };
+        assert!(area_evidence("latency", &current, &BTreeSet::new(), &comparisons).gate_passed);
+
+        current.tasks[0].native_timing_phase = Some("turn_only_v0".into());
+        let wrong_phase = area_evidence("latency", &current, &BTreeSet::new(), &comparisons);
+        assert!(!wrong_phase.evidence_complete);
+        current.tasks[0].native_timing_phase = Some("cli_entry_to_post_drain_v1".into());
+
+        current.tasks[0].harness_overhead.as_mut().unwrap().p50_ms = 251;
+        let slow = area_evidence("latency", &current, &BTreeSet::new(), &comparisons);
+        assert!(slow.evidence_complete);
+        assert!(!slow.gate_passed);
+        current.tasks[0].harness_overhead.as_mut().unwrap().p50_ms = 50;
+        current.tasks[0].harness_overhead.as_mut().unwrap().p95_ms = 1_001;
+        let slow_tail = area_evidence("latency", &current, &BTreeSet::new(), &comparisons);
+        assert!(slow_tail.evidence_complete);
+        assert!(!slow_tail.gate_passed);
+        current.tasks[0].harness_overhead.as_mut().unwrap().p95_ms = 100;
+        current.tasks[0].native_wall_ms = Some(5_501);
+        let slow_paired = area_evidence("latency", &current, &BTreeSet::new(), &comparisons);
+        assert!(slow_paired.evidence_complete);
+        assert!(!slow_paired.gate_passed);
+
+        current.tasks[0].native_wall_ms = Some(5_000);
+        current.tasks[0].seconds = 5.51;
+        let slow_cleanup = area_evidence("latency", &current, &BTreeSet::new(), &comparisons);
+        assert!(slow_cleanup.evidence_complete);
+        assert!(!slow_cleanup.gate_passed);
+        current.tasks[0].seconds = 5.0;
+        let mut failed = current.tasks[0].clone();
+        failed.task_id = "second-task".into();
+        failed.result = "fail".into();
+        current.tasks.push(failed);
+        let mut passed = reference.tasks[0].clone();
+        passed.task_id = "second-task".into();
+        reference.tasks.push(passed);
+        let references = [reference.clone()];
+        let comparisons = TokenComparisons {
+            baseline: None,
+            references: &references,
+        };
+        let quality_regression = area_evidence("latency", &current, &BTreeSet::new(), &comparisons);
+        assert!(quality_regression.evidence_complete);
+        assert!(!quality_regression.gate_passed);
+
+        reference.tasks[1].not_run = true;
+        let references = [reference];
+        let comparisons = TokenComparisons {
+            baseline: None,
+            references: &references,
+        };
+        let different_subset = area_evidence("latency", &current, &BTreeSet::new(), &comparisons);
+        assert!(!different_subset.evidence_complete);
+        assert!(different_subset
+            .missing_fields
+            .iter()
+            .any(|field| field.contains("attempted task IDs")));
+    }
+
+    #[test]
+    fn token_reference_with_same_ids_but_different_fixture_is_unrated() {
+        let current = receipt_record();
+        let mut reference = current.clone();
+        reference.run_id = "different-fixture".into();
+        reference.fixture_revision = Some("changed-fixture".into());
+        reference.input_tokens_per_solved_median = Some(1_000.0);
+        let references = [reference];
+        let comparisons = TokenComparisons {
+            baseline: None,
+            references: &references,
+        };
+        let evidence = token_evidence(&current, &comparisons);
+        assert!(!evidence.gate_passed);
+        assert!(!evidence.evidence_complete);
+        assert!(evidence
+            .missing_fields
+            .iter()
+            .any(|field| field.contains("fixture_revision")));
+
+        let mut compatible = references[0].clone();
+        compatible.fixture_revision = current.fixture_revision.clone();
+        let references = [compatible];
+        let comparisons = TokenComparisons {
+            baseline: None,
+            references: &references,
+        };
+        assert!(token_evidence(&current, &comparisons).gate_passed);
+
+        let mut different_limit = references[0].clone();
+        different_limit.tasks[0].headless_drain_secs = Some("120".into());
+        let references = [different_limit];
+        let comparisons = TokenComparisons {
+            baseline: None,
+            references: &references,
+        };
+        let evidence = token_evidence(&current, &comparisons);
+        assert!(!evidence.evidence_complete);
+        assert!(evidence
+            .missing_fields
+            .iter()
+            .any(|field| field.contains("task run limits")));
+
+        let mut current_two = current.clone();
+        let mut second = current_two.tasks[0].clone();
+        second.task_id = "another-task".into();
+        current_two.tasks.push(second);
+        let mut reference_two = current_two.clone();
+        reference_two.tasks[1].not_run = true;
+        reference_two.input_tokens_per_solved_median = Some(1_000.0);
+        let references = [reference_two];
+        let comparisons = TokenComparisons {
+            baseline: None,
+            references: &references,
+        };
+        let evidence = token_evidence(&current_two, &comparisons);
+        assert!(!evidence.evidence_complete);
+        assert!(evidence
+            .missing_fields
+            .iter()
+            .any(|field| field.contains("attempted task IDs")));
+    }
+
+    #[test]
     fn token_verdict_keeps_the_ab_honesty_guard() {
         use crate::ab::{AbReport, ArmConfig, KNOBS};
         use crate::tier::Tier;
@@ -2366,6 +2736,11 @@ mod tests {
         }
         let task = record.get_mut("tasks").unwrap()[0].as_object_mut().unwrap();
         for field in [
+            "first_tool_ms",
+            "native_wall_ms",
+            "native_timing_phase",
+            "native_timing_root_session_id",
+            "native_other_session_first_tool_ms",
             "dag_enforcement",
             "verification_integrity",
             "safety_and_trust",
@@ -2527,6 +2902,11 @@ mod tests {
     #[test]
     fn all_nine_areas_can_reach_excellent_together() {
         let mut record = receipt_record();
+        // Explicit measured synthetic timing with one native clock origin.
+        record.tasks[0].first_tool_ms = Some(100);
+        record.tasks[0].native_wall_ms = Some(5_000);
+        record.tasks[0].native_timing_phase = Some("cli_entry_to_post_drain_v1".into());
+        record.tasks[0].native_timing_root_session_id = Some("root-session".into());
         record.capability_verdict = Some(passing_capability());
         record.token_verdict = Some(TokenVerdict {
             knob: "test-knob".to_string(),
@@ -2535,8 +2915,28 @@ mod tests {
             median_input_token_improvement: Some(0.2),
             non_inferior_pass_rate: true,
         });
+        let reference = record.clone();
+        let records: Vec<_> = (0..3)
+            .map(|i| {
+                let mut copy = record.clone();
+                copy.run_id = format!("r{i}");
+                copy
+            })
+            .collect();
+        let comparisons = TokenComparisons {
+            baseline: Some(&reference),
+            references: &[],
+        };
+        let input = qualification_input_with_token_comparisons(
+            &records,
+            "contract-v1",
+            Vec::new(),
+            vec!["held-1".to_string()],
+            &comparisons,
+        );
+        let report = qualify(&input).unwrap();
         for area in NINE_AREAS {
-            assert_eq!(rating(area, &record), AreaRating::Excellent, "{area}");
+            assert_eq!(report.areas[area].rating, AreaRating::Excellent, "{area}");
         }
     }
 }

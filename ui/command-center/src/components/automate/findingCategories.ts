@@ -41,6 +41,8 @@ export interface FindingLike {
   availability_reason?: string;
   protection?: string;
   profiles?: Array<{ status: string; bytes: number }>;
+  contained_in?: string | null;
+  blocked_reason?: string | null;
 }
 
 /** Unknown and legacy labels never supply deletion authority. */
@@ -69,7 +71,7 @@ export function bulkEligible<T extends FindingLike>(
   const excluded: T[] = [];
   for (const f of findings) {
     if (f.action_taken) continue;
-    if (f.available === false || !f.category || !KNOWN_CATEGORIES.has(f.category)) {
+    if (f.contained_in || f.blocked_reason || f.available === false || !f.category || !KNOWN_CATEGORIES.has(f.category)) {
       excluded.push(f);
       continue;
     }

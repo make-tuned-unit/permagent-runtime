@@ -45,6 +45,7 @@ pub mod oauth_device_flow;
 pub mod ollama;
 pub mod openai;
 pub mod openai_compatible;
+mod openai_pacing;
 pub mod openrouter;
 pub mod pi_acp;
 pub mod provider_registry;

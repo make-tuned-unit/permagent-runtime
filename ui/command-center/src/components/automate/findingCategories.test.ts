@@ -159,3 +159,19 @@ describe('acceptance 7: September 15 ledger accounting', () => {
     expect(bulkEligible(blocked, true, true).excluded).toHaveLength(22);
   });
 });
+
+describe('contained and blocked findings stay out of the selection', () => {
+  it('does not select a nested path or an ancestor of an in-use path', () => {
+    const rows = [
+      finding({ id: 'safe', category: 'safe_to_remove', size_bytes: 10 }),
+      finding({ id: 'nested', category: 'safe_to_remove', contained_in: 'safe', size_bytes: 4 }),
+      finding({ id: 'parent', category: 'safe_to_remove', blocked_reason: 'Contains an in-use or protected item', size_bytes: 20 }),
+      finding({ id: 'live', category: 'in_use', contained_in: 'parent', size_bytes: 20 }),
+      finding({ id: 'review', category: 'review_before_removing', size_bytes: 3 }),
+    ];
+    const { eligible, optional, excluded } = bulkEligible(rows, false, false);
+    expect(eligible.map(f => f.id)).toEqual(['safe']);
+    expect(optional.map(f => f.id)).toEqual(['review']);
+    expect(excluded.map(f => f.id).sort()).toEqual(['live', 'nested', 'parent']);
+  });
+});

@@ -525,6 +525,11 @@ impl ProviderDef for OpenAiProvider {
 
 #[async_trait]
 impl Provider for OpenAiProvider {
+    // Request/retry operations are direct awaits; no spawned request transport.
+    fn supports_native_pretransport_gate(&self) -> bool {
+        true
+    }
+
     fn get_name(&self) -> &str {
         &self.name
     }
@@ -651,9 +656,10 @@ impl OpenAiProvider {
 
             let mut log = RequestLog::start(model_config, &payload)?;
 
-            let response = self
+            let (response, pacing_ticket) = self
                 .with_retry(|| async {
                     let payload_clone = payload.clone();
+                    let ticket = super::openai_pacing::admit(&self.name, &payload_clone).await?;
                     let resp = self
                         .api_client
                         .response_post(
@@ -666,7 +672,7 @@ impl OpenAiProvider {
                             &payload_clone,
                         )
                         .await?;
-                    handle_status_openai_compat(resp).await
+                    Ok((handle_status_openai_compat(resp).await?, ticket))
                 })
                 .await
                 .inspect_err(|e| {
@@ -676,7 +682,7 @@ impl OpenAiProvider {
             if self.supports_streaming {
                 let stream = response.bytes_stream().map_err(io::Error::other);
 
-                Ok(Box::pin(try_stream! {
+                let stream: MessageStream = Box::pin(try_stream! {
                     let stream_reader = StreamReader::new(stream);
                     let framed = FramedRead::new(stream_reader, LinesCodec::new()).map_err(anyhow::Error::from);
 
@@ -687,7 +693,11 @@ impl OpenAiProvider {
                         log.write(&message, usage.as_ref().map(|f| f.usage).as_ref())?;
                         yield (message, usage);
                     }
-                }))
+                });
+                Ok(super::openai_pacing::reconcile_stream(
+                    pacing_ticket,
+                    stream,
+                ))
             } else {
                 let json: serde_json::Value = response.json().await.map_err(|e| {
                     ProviderError::RequestFailed(format!("Failed to parse JSON: {}", e))
@@ -714,7 +724,10 @@ impl OpenAiProvider {
                     Some(&usage_data),
                 )?;
 
-                Ok(super::base::stream_from_single_message(message, usage))
+                Ok(super::openai_pacing::reconcile_stream(
+                    pacing_ticket,
+                    super::base::stream_from_single_message(message, usage),
+                ))
             }
         } else {
             let payload = create_request_split(
@@ -728,13 +741,14 @@ impl OpenAiProvider {
             let payload = self.sanitize_request_for_compat(payload);
             let mut log = RequestLog::start(model_config, &payload)?;
 
-            let response = self
+            let (response, pacing_ticket) = self
                 .with_retry(|| async {
+                    let ticket = super::openai_pacing::admit(&self.name, &payload).await?;
                     let resp = self
                         .api_client
                         .response_post(Some(session_id), &self.base_path, &payload)
                         .await?;
-                    handle_status_openai_compat(resp).await
+                    Ok((handle_status_openai_compat(resp).await?, ticket))
                 })
                 .await
                 .inspect_err(|e| {
@@ -742,7 +756,10 @@ impl OpenAiProvider {
                 })?;
 
             if self.supports_streaming {
-                stream_openai_compat(response, log)
+                Ok(super::openai_pacing::reconcile_stream(
+                    pacing_ticket,
+                    stream_openai_compat(response, log)?,
+                ))
             } else {
                 let json: serde_json::Value = response.json().await.map_err(|e| {
                     ProviderError::RequestFailed(format!("Failed to parse JSON: {}", e))
@@ -761,7 +778,10 @@ impl OpenAiProvider {
                     Some(&usage_data),
                 )?;
 
-                Ok(super::base::stream_from_single_message(message, usage))
+                Ok(super::openai_pacing::reconcile_stream(
+                    pacing_ticket,
+                    super::base::stream_from_single_message(message, usage),
+                ))
             }
         }
     }
@@ -853,6 +873,64 @@ mod tests {
             custom_models: None,
             skip_canonical_filtering: false,
             cost_tier: CostTier::PaidApi,
+        }
+    }
+
+    #[tokio::test]
+    async fn openai_physical_posts_and_transport_retries_obey_shared_pacing() {
+        use std::sync::{Arc, Mutex};
+        use std::time::{Duration, Instant};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let _env = env_lock::lock_env([
+            ("PERMAGENT_OPENAI_TPM_BUDGET", Some("1000000")),
+            ("PERMAGENT_OPENAI_MIN_INTERVAL_MS", Some("100")),
+        ]);
+        // Real adapter -> retry closure -> local HTTP server, for both APIs.
+        // A provider-named zero retry delay must not bypass physical pacing.
+        for responses in [false, true] {
+            let server = MockServer::start().await;
+            let received = Arc::new(Mutex::new(Vec::new()));
+            let stamps = received.clone();
+            Mock::given(wiremock::matchers::method("POST"))
+                .respond_with(move |_: &wiremock::Request| {
+                    let mut stamps = stamps.lock().unwrap();
+                    stamps.push(Instant::now());
+                    if stamps.len() == 1 {
+                        return ResponseTemplate::new(429).insert_header("retry-after", "0")
+                            .set_body_json(json!({"error":{"message":"rate limit"}}));
+                    }
+                    let body = if responses {
+                        json!({"id":"resp_test","object":"response","created_at":1,"status":"completed","model":"gpt-5.4-mini","output":[{"type":"message","id":"msg_test","role":"assistant","status":"completed","content":[{"type":"output_text","text":"ok","annotations":[]}]}],"usage":{"input_tokens":10,"output_tokens":1,"total_tokens":11}})
+                    } else {
+                        json!({"id":"chat_test","object":"chat.completion","created":1,"model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":1,"total_tokens":11}})
+                    };
+                    ResponseTemplate::new(200).set_body_json(body)
+                }).mount(&server).await;
+            let mut provider = make_provider("openai");
+            provider.api_client = ApiClient::new(server.uri(), AuthMethod::NoAuth).unwrap();
+            provider.supports_streaming = false;
+            provider.model =
+                ModelConfig::new_or_fail(if responses { "gpt-5.4-mini" } else { "gpt-4o" });
+            provider.model.max_tokens = Some(8192);
+            let mut stream = provider
+                .stream(
+                    &provider.model,
+                    "pacing-test",
+                    "system",
+                    &[Message::user().with_text("hello")],
+                    &[],
+                )
+                .await
+                .unwrap();
+            while let Some(chunk) = stream.next().await {
+                chunk.unwrap();
+            }
+            let stamps = received.lock().unwrap();
+            assert_eq!(stamps.len(), 2);
+            assert!(
+                stamps[1].duration_since(stamps[0]) >= Duration::from_millis(90),
+                "physical retry bypassed the configured100ms spacing"
+            );
         }
     }
 

@@ -1717,6 +1717,7 @@ async fn handle_run_command(
         result
     } else if let Some(contents) = input_config.contents {
         let session_start = std::time::Instant::now();
+        let run_started_at = chrono::Utc::now();
         let session_type = if recipe.is_some() { "recipe" } else { "run" };
 
         tracing::info!(
@@ -1745,8 +1746,6 @@ async fn handle_run_command(
                  for the parked reason"
             ));
         }
-        let succeeded = result.is_ok();
-
         // Harness loop, Lane T / T3: wait (bounded) for any goals this run
         // dispatched to reach a terminal state before the process exits — a
         // no-op with no DB query when the session never dispatched anything.
@@ -1761,9 +1760,16 @@ async fn handle_run_command(
         let drain_cap_secs: u64 = Config::global()
             .get_param("PERMAGENT_HEADLESS_DRAIN_SECS")
             .unwrap_or(DEFAULT_HEADLESS_DRAIN_SECS);
-        session
+        let drain_result = session
             .drain_dispatched_goals(std::time::Duration::from_secs(drain_cap_secs))
             .await;
+        let goal_result = session.headless_goal_result(run_started_at).await;
+        result = final_headless_result(result, drain_result, goal_result);
+        let succeeded = result.is_ok();
+        if let Err(error) = permagent::session::run_timing::finish_to_sidecar(session.session_id())
+        {
+            tracing::debug!(%error, "failed to write eval run timing sidecar");
+        }
         session.print_harness_receipts();
         session
             .finish_harness_lease(if succeeded { "completed" } else { "failed" })
@@ -1774,6 +1780,37 @@ async fn handle_run_command(
         Err(anyhow::anyhow!(
             "no text provided for prompt in headless mode"
         ))
+    }
+}
+
+/// Preserve the turn's failure, then the drain's, then the final goal-state
+/// failure. All three are evaluated before the lease and process exit are
+/// classified; no dispatched goal is required for a normal text run.
+fn final_headless_result(turn: Result<()>, drain: Result<()>, goals: Result<()>) -> Result<()> {
+    turn.and(drain).and(goals)
+}
+
+#[cfg(test)]
+mod headless_verdict_tests {
+    use super::final_headless_result;
+
+    #[test]
+    fn final_verdict_keeps_no_goal_success_and_fails_on_each_later_stage() {
+        assert!(final_headless_result(Ok(()), Ok(()), Ok(())).is_ok());
+        for (turn, drain, goals) in [
+            (Err(anyhow::anyhow!("turn")), Ok(()), Ok(())),
+            (Ok(()), Err(anyhow::anyhow!("drain")), Ok(())),
+            (Ok(()), Ok(()), Err(anyhow::anyhow!("goal"))),
+        ] {
+            assert!(final_headless_result(turn, drain, goals).is_err());
+        }
+        let error = final_headless_result(
+            Err(anyhow::anyhow!("turn")),
+            Err(anyhow::anyhow!("drain")),
+            Err(anyhow::anyhow!("goal")),
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), "turn");
     }
 }
 

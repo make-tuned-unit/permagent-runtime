@@ -37,6 +37,7 @@ pub struct MeteredCallContext {
     parent_session_id: Option<String>,
     task_id: Option<String>,
     goal_id: Option<String>,
+    goal_attempt_id: Option<String>,
     is_headless: bool,
     estimated_input_tokens: u64,
     input_usd_per_mtok: f64,
@@ -143,16 +144,37 @@ pub async fn reserve_metered_call(
     validate_request(&request)?;
     let requested_usd =
         input_cost_usd(request.input_token_upper_bound, request.input_usd_per_mtok)?;
-    let task_id = checked_task_id(Arc::clone(&manager), session).await?;
+    let pool = manager
+        .pool_clone()
+        .await
+        .map_err(MeteredCallError::Storage)?;
+    let binding = crate::native_provider_calls::active_worker_binding(&pool, &session.id)
+        .await
+        .map_err(MeteredCallError::Storage)?;
+    if binding.is_some() && request.model.as_deref().map_or(true, str::is_empty) {
+        return Err(MeteredCallError::BudgetUnknown {
+            reason: "native metered provider call has no exact model identity".to_string(),
+        });
+    }
+    let task_id = if let Some(binding) = &binding {
+        binding.task_id.clone()
+    } else {
+        checked_task_id(Arc::clone(&manager), session).await?
+    };
     let lease_until = (chrono::Utc::now() + chrono::Duration::hours(2)).to_rfc3339();
     let outcome = manager
-        .reserve_provider_invocation(
+        .reserve_provider_invocation_with_identity(
             &request.call_id,
             &session.id,
             Some(&task_id),
             requested_usd,
             &lease_until,
             &load_budget_config(),
+            &crate::session::session_manager::ProviderReservationIdentity {
+                goal_attempt_id: binding.as_ref().map(|binding| binding.attempt_id.clone()),
+                provider: request.backend.clone(),
+                model: request.model.clone().unwrap_or_default(),
+            },
         )
         .await
         .map_err(MeteredCallError::Storage)?;
@@ -160,6 +182,7 @@ pub async fn reserve_metered_call(
     let reservation_id = match outcome {
         CostReservationOutcome::Granted { reservation_id } => reservation_id,
         CostReservationOutcome::AlreadyReserved { .. }
+        | CostReservationOutcome::AlreadyDispatched { .. }
         | CostReservationOutcome::AlreadySettled { .. } => {
             return Err(MeteredCallError::InvocationNotFresh {
                 call_id: request.call_id,
@@ -202,6 +225,32 @@ pub async fn reserve_metered_call(
         }
     };
 
+    if let Some(binding) = &binding {
+        let pool = manager
+            .pool_clone()
+            .await
+            .map_err(MeteredCallError::Storage)?;
+        crate::native_provider_calls::record(
+            &pool,
+            &request.call_id,
+            binding,
+            &request.backend,
+            request.model.as_deref().unwrap_or_default(),
+        )
+        .await
+        .map_err(MeteredCallError::Storage)?;
+    }
+
+    if !manager
+        .mark_provider_invocation_dispatch_possible(&reservation_id)
+        .await
+        .map_err(MeteredCallError::Storage)?
+    {
+        return Err(MeteredCallError::BudgetUnknown {
+            reason: "metered provider reservation disappeared before dispatch".to_string(),
+        });
+    }
+
     Ok(MeteredCallContext {
         call_id: request.call_id,
         kind: request.kind,
@@ -210,7 +259,11 @@ pub async fn reserve_metered_call(
         session_id: session.id.clone(),
         parent_session_id: session.parent_session_id.clone(),
         task_id: Some(task_id),
-        goal_id: goal_id(&session.extension_data),
+        goal_id: binding
+            .as_ref()
+            .map(|binding| binding.goal_id.clone())
+            .or_else(|| goal_id(&session.extension_data)),
+        goal_attempt_id: binding.map(|binding| binding.attempt_id),
         is_headless: !session.session_type.is_interactive(),
         estimated_input_tokens: request.estimated_input_tokens,
         input_usd_per_mtok: request.input_usd_per_mtok,
@@ -218,13 +271,106 @@ pub async fn reserve_metered_call(
     })
 }
 
-pub fn unreserved_local_call(
+#[cfg(test)]
+async fn unreserved_local_call(
+    manager: Arc<SessionManager>,
     session: &Session,
     call_id: String,
     kind: MeteredCallKind,
     backend: String,
     model: Option<String>,
     estimated_input_tokens: u64,
+) -> MeteredCallContext {
+    let binding = match manager.pool_clone().await {
+        Ok(pool) => crate::native_provider_calls::active_worker_binding(&pool, &session.id)
+            .await
+            .ok()
+            .flatten(),
+        Err(_) => None,
+    };
+    local_call_context(
+        session,
+        call_id,
+        kind,
+        backend,
+        model,
+        estimated_input_tokens,
+        binding,
+    )
+}
+
+/// Record native LocalFree routes before transport. This deliberately returns
+/// an error if route provenance cannot be durably written; a local model call
+/// must not proceed on posthoc accounting alone.
+pub(crate) async fn record_local_provider_call(
+    manager: Arc<SessionManager>,
+    session: &Session,
+    provider: &str,
+    model: &str,
+    estimated_input_tokens: u64,
+) -> Result<MeteredCallContext, MeteredCallError> {
+    let call_id = uuid::Uuid::now_v7().to_string();
+    let pool = manager
+        .pool_clone()
+        .await
+        .map_err(MeteredCallError::Storage)?;
+    let binding = crate::native_provider_calls::active_worker_binding(&pool, &session.id)
+        .await
+        .map_err(MeteredCallError::Storage)?;
+    if let Some(binding) = &binding {
+        crate::native_provider_calls::record(&pool, &call_id, binding, provider, model)
+            .await
+            .map_err(MeteredCallError::Storage)?;
+    }
+    Ok(local_call_context(
+        session,
+        call_id,
+        MeteredCallKind::Decision,
+        provider.to_string(),
+        Some(model.to_string()),
+        estimated_input_tokens,
+        binding,
+    ))
+}
+
+pub(crate) async fn mark_metered_call_dispatch_possible(
+    manager: Arc<SessionManager>,
+    call: &MeteredCallContext,
+) -> Result<(), MeteredCallError> {
+    let Some(expected_attempt_id) = call.goal_attempt_id.as_deref() else {
+        return Ok(());
+    };
+    let pool = manager
+        .pool_clone()
+        .await
+        .map_err(MeteredCallError::Storage)?;
+    let binding = crate::native_provider_calls::active_worker_binding(&pool, &call.session_id)
+        .await
+        .map_err(MeteredCallError::Storage)?
+        .ok_or_else(|| MeteredCallError::BudgetUnknown {
+            reason: "native worker binding disappeared before decision dispatch".to_string(),
+        })?;
+    if binding.attempt_id != expected_attempt_id
+        || Some(binding.goal_id.as_str()) != call.goal_id.as_deref()
+        || Some(binding.task_id.as_str()) != call.task_id.as_deref()
+    {
+        return Err(MeteredCallError::BudgetUnknown {
+            reason: "native worker binding changed before decision dispatch".to_string(),
+        });
+    }
+    crate::native_provider_calls::mark_dispatch_possible(&pool, &call.call_id, &binding)
+        .await
+        .map_err(MeteredCallError::Storage)
+}
+
+fn local_call_context(
+    session: &Session,
+    call_id: String,
+    kind: MeteredCallKind,
+    backend: String,
+    model: Option<String>,
+    estimated_input_tokens: u64,
+    binding: Option<crate::goal_attempts::WorkerBinding>,
 ) -> MeteredCallContext {
     MeteredCallContext {
         call_id,
@@ -233,8 +379,15 @@ pub fn unreserved_local_call(
         model,
         session_id: session.id.clone(),
         parent_session_id: session.parent_session_id.clone(),
-        task_id: budget_task_id(&session.extension_data),
-        goal_id: goal_id(&session.extension_data),
+        task_id: binding
+            .as_ref()
+            .map(|binding| binding.task_id.clone())
+            .or_else(|| budget_task_id(&session.extension_data)),
+        goal_id: binding
+            .as_ref()
+            .map(|binding| binding.goal_id.clone())
+            .or_else(|| goal_id(&session.extension_data)),
+        goal_attempt_id: binding.map(|binding| binding.attempt_id),
         is_headless: !session.session_type.is_interactive(),
         estimated_input_tokens,
         input_usd_per_mtok: 0.0,
@@ -272,6 +425,7 @@ fn ledger_row_for(
         parent_session_id: call.parent_session_id.clone(),
         task_id: call.task_id.clone(),
         goal_id: call.goal_id.clone(),
+        goal_attempt_id: call.goal_attempt_id.clone(),
         subagent_id: None,
         provider: Some(call.backend.clone()),
         model: call.model.clone(),
@@ -301,6 +455,15 @@ pub async fn finish_metered_call(
     let _ = call.kind;
     match finish {
         MeteredCallFinish::NotSent => {
+            if call.goal_attempt_id.is_some() {
+                let pool = manager
+                    .pool_clone()
+                    .await
+                    .map_err(MeteredCallError::Storage)?;
+                crate::native_provider_calls::mark_not_sent(&pool, &call.call_id)
+                    .await
+                    .map_err(MeteredCallError::Storage)?;
+            }
             if let MeteredHold::Reserved { reservation_id } = &call.hold {
                 manager
                     .release_provider_invocation(reservation_id)
@@ -392,6 +555,7 @@ mod tests {
             parent_session_id: session.parent_session_id.clone(),
             task_id,
             goal_id: None,
+            goal_attempt_id: None,
             subagent_id: None,
             provider: Some("seed".to_string()),
             model: Some("seed-model".to_string()),
@@ -526,13 +690,15 @@ mod tests {
             .await
             .unwrap();
         let local = unreserved_local_call(
+            Arc::clone(&manager),
             &session,
             "local-1".to_string(),
             MeteredCallKind::Decision,
             "local-judge".to_string(),
             Some("offline".to_string()),
             33,
-        );
+        )
+        .await;
         finish_metered_call(
             Arc::clone(&manager),
             &local,
@@ -564,10 +730,29 @@ mod tests {
             .await
             .unwrap();
 
+        let pool = manager.pool_clone().await.unwrap();
+        let before: (String, f64, String) = sqlx::query_as(
+            "SELECT state,amount_usd,dispatch_state FROM cost_reservations WHERE invocation_id='dup-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
         let err = reserve_metered_call(Arc::clone(&manager), &bound, request("dup-1", 100, 80))
             .await
             .unwrap_err();
         assert!(matches!(err, MeteredCallError::InvocationNotFresh { .. }));
+        let after: (String, f64, String) = sqlx::query_as(
+            "SELECT state,amount_usd,dispatch_state FROM cost_reservations WHERE invocation_id='dup-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            after, before,
+            "duplicate dispatch refusal must retain the existing hold"
+        );
+        assert_eq!(after.0, "pending");
+        assert_eq!(after.2, "started_possible");
 
         finish_metered_call(
             Arc::clone(&manager),

@@ -41,28 +41,25 @@ async fn scan_handler(
         std::path::PathBuf::from(home).join(".permagent/automation/findings")
     };
 
-    // Convert ScanFinding to the same shape findings.rs expects
-    let findings_file = serde_json::json!({
-        "run_id": result.run_id,
-        "findings": result.findings,
-    });
-    let json = serde_json::to_string_pretty(&findings_file).map_err(|e| {
+    // Same validated ledger the automation UI reads. An unverified dump made
+    // the run look like the findings could not be saved even when the rows
+    // were on disk.
+    let home = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/tmp".into()));
+    storage_health::scanner::persist_structured_findings(
+        &result.findings,
+        &result.run_id,
+        &findings_dir,
+        &home,
+        &storage_health::inuse::action::ActionProbe,
+    )
+    .map_err(|e| {
         tracing::error!(
-            "Failed to serialize scan findings for run {}: {}",
+            "Failed to persist scan findings for run {}: {}",
             result.run_id,
             e
         );
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
-    super::findings::atomic_write_json(&findings_dir, &format!("{}.json", result.run_id), &json)
-        .map_err(|e| {
-            tracing::error!(
-                "Failed to persist scan findings for run {}: {}",
-                result.run_id,
-                e
-            );
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
 
     let categories = result
         .categories

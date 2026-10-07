@@ -403,6 +403,23 @@ fn wants_headless_goal_drain(coding_harness: bool, cap: std::time::Duration) -> 
     coding_harness && !cap.is_zero()
 }
 
+/// The reply stream reports provider failures as a typed terminal event even
+/// when reading the stream itself returned `Ok(())`. Only headless callers
+/// turn that event into a process failure; interactive sessions keep their
+/// existing per-turn recovery behavior.
+fn headless_response_result(response: Result<()>, terminal_result: &str) -> Result<()> {
+    response?;
+    match terminal_result {
+        "succeeded" => Ok(()),
+        "failed" | "timeout" | "cancelled" | "denied" | "unknown" => Err(anyhow::anyhow!(
+            "headless agent turn ended with {terminal_result} outcome"
+        )),
+        other => Err(anyhow::anyhow!(
+            "headless agent turn ended with unrecognized {other} outcome"
+        )),
+    }
+}
+
 impl CliSession {
     #[allow(clippy::too_many_arguments)]
     pub async fn new(
@@ -750,7 +767,11 @@ impl CliSession {
                 .set_phase(permagent::harness_lease::LeasePhase::Idle)
                 .await;
         }
-        response
+        if interactive {
+            response
+        } else {
+            headless_response_result(response, result)
+        }
     }
 
     /// Start an interactive session, optionally with an initial message
@@ -1726,18 +1747,16 @@ impl CliSession {
     /// remaining poll wait) through the same `handle_goal_timeout` path a
     /// cap expiry would have used, so a kill mid-drain still cannot leave a
     /// goal silently `InProgress`.
-    pub async fn drain_dispatched_goals(&self, cap: std::time::Duration) {
+    pub async fn drain_dispatched_goals(&self, cap: std::time::Duration) -> Result<()> {
         if !wants_headless_goal_drain(self.coding_harness, cap) {
-            return;
+            return Ok(());
         }
         if let Some(lease) = self.harness_lease.as_ref() {
             lease
                 .set_phase(permagent::harness_lease::LeasePhase::Draining)
                 .await;
         }
-        let Ok(pool) = self.agent.config.session_manager.pool_clone().await else {
-            return;
-        };
+        let pool = self.agent.config.session_manager.pool_clone().await?;
         // Harness loop, Lane V2: say plainly whether this run could land its
         // own dispatched work before the process exits — the user's ruling
         // (HARNESS_LOOP_LOG.md "JESSE RULING (2026-09-08 23:55): Tier-1
@@ -1792,6 +1811,7 @@ impl CliSession {
                 .await
             }
         };
+        let mut drain_error = None;
         match result {
             Ok(summary) if summary.dispatched_anything() => {
                 output::render_notice(&format!(
@@ -1867,7 +1887,8 @@ impl CliSession {
             }
             Ok(_) => {}
             Err(e) => {
-                tracing::warn!("post-run goal drain failed (non-fatal): {e}");
+                tracing::warn!("post-run goal drain failed: {e}");
+                drain_error = Some(e);
             }
         }
 
@@ -1893,8 +1914,47 @@ impl CliSession {
             }
             Ok(_) => {}
             Err(e) => {
-                tracing::warn!("run-end salvage sweep failed (non-fatal): {e}");
+                tracing::warn!("run-end salvage sweep failed: {e}");
+                if drain_error.is_none() {
+                    drain_error = Some(e);
+                }
             }
+        }
+        match drain_error {
+            Some(error) => Err(anyhow::anyhow!("headless goal drain failed: {error}")),
+            None => Ok(()),
+        }
+    }
+
+    /// Check final run-scoped goal states after the drain and salvage sweep.
+    /// An ordinary headless text run with no goals remains successful.
+    pub async fn headless_goal_result(
+        &self,
+        run_started_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<()> {
+        if !self.coding_harness {
+            return Ok(());
+        }
+        let pool = self.agent.config.session_manager.pool_clone().await?;
+        let states = permagent::agents::platform_extensions::orchestrator::goal_states_for_session(
+            &pool,
+            &self.session_id,
+            run_started_at,
+        )
+        .await
+        .map_err(anyhow::Error::msg)?;
+        let unfinished: Vec<String> = states
+            .into_iter()
+            .filter(|(_, state)| *state != permagent::goal_state::GoalState::Complete)
+            .map(|(id, state)| format!("{id}={}", state.binding()))
+            .collect();
+        if unfinished.is_empty() {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!(
+                "headless run has unfinished goals: {}",
+                unfinished.join(", ")
+            ))
         }
     }
 
@@ -3403,9 +3463,33 @@ fn format_elapsed_time(duration: std::time::Duration) -> String {
 mod tests {
     use super::*;
     use permagent::agents::extension::Envs;
+    use permagent::agents::AgentRuntimeOutcome;
     use permagent::config::ExtensionConfig;
     use std::time::Duration;
     use test_case::test_case;
+
+    #[test]
+    fn typed_agent_outcome_controls_headless_result() {
+        for (outcome, expected_success) in [
+            (AgentRuntimeOutcome::Succeeded, true),
+            (AgentRuntimeOutcome::Failed, false),
+            (AgentRuntimeOutcome::Cancelled, false),
+        ] {
+            let telemetry = spend_announce::HarnessRunTelemetry::default();
+            telemetry.record_agent_outcome(outcome);
+            let observed = telemetry.terminal_result();
+            let terminal = spend_announce::classify_terminal_result(&Ok(()), observed.as_deref());
+            assert_eq!(
+                headless_response_result(Ok(()), terminal).is_ok(),
+                expected_success,
+                "{outcome:?} must determine the headless command and lease verdict"
+            );
+        }
+        assert!(headless_response_result(Ok(()), "unknown").is_err());
+        assert!(
+            headless_response_result(Err(anyhow::anyhow!("stream error")), "succeeded").is_err()
+        );
+    }
 
     #[test]
     fn cost_routing_receipt_is_printed_only_after_the_goal_drain() {

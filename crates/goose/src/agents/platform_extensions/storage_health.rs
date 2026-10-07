@@ -60,15 +60,25 @@ impl StorageHealthClient {
 
     async fn handle_scan(
         &self,
+        session_id: &str,
         _arguments: Option<JsonObject>,
     ) -> std::result::Result<CallToolResult, String> {
         let result = crate::storage_health::run_scan().await;
+        let home =
+            std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/tmp".into()));
+        let findings_dir = home.join(".permagent/automation/findings");
+        let persisted = crate::storage_health::scanner::persist_structured_findings(
+            &result.findings,
+            session_id,
+            &findings_dir,
+            &home,
+            &crate::storage_health::inuse::action::ActionProbe,
+        );
 
-        // Format the findings as JSON for the agent to narrate
-        let findings_json =
-            serde_json::to_string_pretty(&result.findings).unwrap_or_else(|_| "[]".to_string());
-
-        // Build a summary for the agent
+        // The model narrates this summary. The structured rows are already in
+        // the run ledger (or, if that write failed, in the sentinel payload
+        // below). Do not ask the model to copy them — a prose summary with a
+        // truncated copy is what used to discard the selectable list.
         let mut summary_lines = vec![format!(
             "Storage scan complete: {} findings totaling {} across {} categories.\n",
             result.findings.len(),
@@ -97,11 +107,34 @@ impl StorageHealthClient {
         summary_lines.push(String::new());
         summary_lines.push(removal_breakdown(&result.findings));
 
-        summary_lines.push(format!("\nrun_id: {}", result.run_id));
-        summary_lines.push(format!(
-            "\nFindings JSON (emit this in <findings>...</findings> tags):\n{}",
-            findings_json
-        ));
+        summary_lines.push(format!("\nscan_run_id: {}", result.run_id));
+        match persisted {
+            Ok(saved) => {
+                let mut line = format!(
+                    "\nStructured findings saved for this run ({saved_count} items, {contained} included in another saved item, {blocked} blocked because they contain or share an in-use or protected path, {rejected} not individually savable). \
+                     Write the user-facing summary only. Do not emit <findings> tags. \
+                     Do not invent cleanup items from these totals — the saved ledger is the complete list the UI can select.",
+                    saved_count = saved.saved,
+                    contained = saved.contained,
+                    blocked = saved.blocked,
+                    rejected = saved.rejected.len(),
+                );
+                if saved.saved == 0 && !saved.rejected.is_empty() {
+                    line.push_str(
+                        " No selectable findings were saved. Report the rejection reasons. This is not an empty scan and there are no Trash targets.",
+                    );
+                }
+                summary_lines.push(line);
+            }
+            Err(error) => {
+                let findings_json =
+                    serde_json::to_string(&result.findings).unwrap_or_else(|_| "[]".into());
+                summary_lines.push(format!(
+                    "\nStructured findings were not saved ({error}). The UI still needs the scanner rows, not a summary.\n{}",
+                    crate::storage_health::scanner::embed_scan_findings_payload(&findings_json),
+                ));
+            }
+        }
 
         Ok(CallToolResult::success(vec![Content::text(
             summary_lines.join("\n"),
@@ -191,13 +224,14 @@ impl StorageHealthClient {
              - managed_by_macos — an Apple cache macOS maintains itself\n\
              - review_before_removing — unverified\n\n\
              After calling this tool:\n\
-             1. Read the returned findings JSON\n\
+             1. Read the removal-category summary. The structured findings are \
+                saved by the tool for this run; they are not in your prose\n\
              2. Write a brief user-facing narrative summary. Count ONLY \
                 safe_to_remove items in the headline total, and quote the \
                 consequence verbatim for anything in_use\n\
-             3. Emit the findings JSON UNCHANGED in <findings>{...}</findings> tags \
-                for the UI — the category and consequence fields are what stop a \
-                bulk action from trashing something live"
+             3. Do NOT emit <findings> tags and do NOT turn the summary totals \
+                into findings. The saved ledger is what the UI selects from. \
+                A path that is in use or managed by macOS stays blocked"
                 .to_string(),
             schema::<ScanStorageParams>(),
         )]
@@ -227,7 +261,7 @@ impl McpClientTrait for StorageHealthClient {
         _cancel_token: CancellationToken,
     ) -> std::result::Result<CallToolResult, Error> {
         let result = match name {
-            "scan_storage_health" => self.handle_scan(arguments).await,
+            "scan_storage_health" => self.handle_scan(&_ctx.session_id, arguments).await,
             _ => Err(format!("Unknown tool: {}", name)),
         };
 

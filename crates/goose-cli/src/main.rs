@@ -3,6 +3,8 @@ use permagent_cli::cli::cli;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Eval-only monotonic clock, anchored before CLI configuration/startup.
+    permagent::session::run_timing::begin_from_env();
     // Y16c (harness loop, G19 HIGH): stamp process start (unix seconds) as
     // early as possible so a headless goal's wallclock cap
     // (`headless_wallclock_cap_patch`, crates/goose — which cannot see this

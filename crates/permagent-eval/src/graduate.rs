@@ -643,6 +643,11 @@ fn task_result_from_qual_evidence(t: &TaskQualificationEvidence) -> Result<TaskR
             worker_offset_usd: t.worker_offset_usd,
         },
         duration_secs: t.seconds,
+        first_tool_ms: t.first_tool_ms,
+        native_wall_ms: t.native_wall_ms,
+        native_timing_phase: t.native_timing_phase.clone(),
+        native_timing_root_session_id: t.native_timing_root_session_id.clone(),
+        native_other_session_first_tool_ms: t.native_other_session_first_tool_ms.clone(),
         harness_exit: None,
         harness_timed_out: false,
         oracle,
@@ -783,6 +788,22 @@ pub fn build_run_evidence_from_qual_json(
     snapshot_date_flag: Option<&str>,
     role_smoke_default: Option<&str>,
 ) -> Result<RunEvidence> {
+    if let Some(reason) = crate::evidence_validity::capability_sample_error(
+        record.provider_unavailable,
+        record.tasks.iter().map(|task| {
+            (
+                task.provider_error.is_some(),
+                task.errored || task.result == "errored",
+                task.oracle_timed_out == Some(true),
+            )
+        }),
+    ) {
+        bail!(
+            "{}: invalid capability sample ({reason}); retain operational cost/failure evidence, \
+             but do not update model graduation from this run",
+            path.display()
+        );
+    }
     let results: Vec<TaskResult> = record
         .tasks
         .iter()
@@ -1955,6 +1976,11 @@ mod tests {
             cache_write_tokens: None,
             tool_calls: 0,
             seconds,
+            first_tool_ms: None,
+            native_wall_ms: None,
+            native_timing_phase: None,
+            native_timing_root_session_id: None,
+            native_other_session_first_tool_ms: std::collections::BTreeMap::new(),
             seed_commit: None,
             headless_autoland: None,
             headless_drain_secs: None,
@@ -2001,6 +2027,43 @@ mod tests {
             input_tokens_per_solved_median: None,
             token_verdict: None,
             provider_unavailable: false,
+        }
+    }
+
+    #[test]
+    fn confounded_qual_json_cannot_update_a_capability_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let report_path = tmp.path().join("run.json");
+        let directory_path = tmp.path().join("directory.json");
+        let original = "{\"schema_version\":1,\"cards\":[]}";
+        std::fs::write(&directory_path, original).unwrap();
+        for kind in 0..4 {
+            let mut record = qual_record("invalid-run", "test", "model", 0.05);
+            match kind {
+                0 => record.provider_unavailable = true,
+                1 => record.tasks[0].provider_error = Some("quota".into()),
+                2 => record.tasks[0].result = "errored".into(),
+                _ => record.tasks[0].oracle_timed_out = Some(true),
+            }
+            std::fs::write(
+                qual_json_sidecar_path(&report_path),
+                serde_json::to_vec(&vec![record]).unwrap(),
+            )
+            .unwrap();
+            let result = graduate_runs_into_directory(&GraduateRequest {
+                runs: std::slice::from_ref(&report_path),
+                provider: None,
+                model: None,
+                role: WorkflowRole::Orchestrate,
+                snapshot_date: Some("2026-09-27"),
+                directory_path: &directory_path,
+                dry_run: false,
+            });
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("invalid capability sample"));
+            assert_eq!(std::fs::read_to_string(&directory_path).unwrap(), original);
         }
     }
 

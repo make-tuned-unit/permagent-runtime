@@ -544,6 +544,9 @@ pub struct CostLedgerRow {
     pub parent_session_id: Option<String>,
     pub task_id: Option<String>,
     pub goal_id: Option<String>,
+    /// Native execution attempt resolved from this exact provider-calling
+    /// session before dispatch. `None` is honest for legacy/unverified calls.
+    pub goal_attempt_id: Option<String>,
     pub subagent_id: Option<String>,
     pub provider: Option<String>,
     pub model: Option<String>,
@@ -573,6 +576,15 @@ pub struct CostLedgerRow {
     pub outcome: CallOutcome,
 }
 
+/// Immutable scope captured when a native worker call is authorized. The
+/// reservation keeps these exact values through retries and late settlement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProviderReservationIdentity {
+    pub goal_attempt_id: Option<String>,
+    pub provider: String,
+    pub model: String,
+}
+
 /// Result of atomically acquiring a provider-spend lease. Only `Granted`
 /// permits a paid invocation to start; all other variants are deterministic
 /// outcomes, not transport errors.
@@ -585,6 +597,11 @@ pub enum CostReservationOutcome {
         reservation_id: String,
     },
     AlreadySettled {
+        reservation_id: String,
+    },
+    /// Exact invocation identity may already have reached transport. Refuse
+    /// replay while retaining the existing pending monetary hold unchanged.
+    AlreadyDispatched {
         reservation_id: String,
     },
     NeedsGate {
@@ -1172,6 +1189,28 @@ impl SessionManager {
             .await
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn grant_reservation_after_gate_approval_with_identity(
+        &self,
+        invocation_id: &str,
+        session_id: &str,
+        task_id: &str,
+        amount_usd: f64,
+        lease_until: &str,
+        identity: &ProviderReservationIdentity,
+    ) -> Result<CostReservationOutcome> {
+        self.storage
+            .grant_reservation_after_gate_approval_with_identity(
+                invocation_id,
+                session_id,
+                task_id,
+                amount_usd,
+                lease_until,
+                identity,
+            )
+            .await
+    }
+
     pub async fn get_session(&self, id: &str, include_messages: bool) -> Result<Session> {
         self.storage.get_session(id, include_messages).await
     }
@@ -1366,6 +1405,78 @@ impl SessionManager {
                 lease_until,
                 config,
                 ReservationRequest::Initial(None),
+                None,
+            )
+            .await
+    }
+
+    /// Check the frozen task/session exposure before a decision that is not
+    /// itself taking a monetary hold (for example a reviewer under LocalFree
+    /// or subscription billing). This uses the same ceiling calculation as a
+    /// paid reservation with a zero increment, and never creates/releases a
+    /// hold or mutates the budget task.
+    pub(crate) async fn check_provider_task_exposure(
+        &self,
+        session_id: &str,
+        task_id: &str,
+        config: &crate::cost_router::budget::BudgetConfig,
+    ) -> Result<Option<CostReservationOutcome>> {
+        if session_id.trim().is_empty() || task_id.trim().is_empty() {
+            return Ok(Some(CostReservationOutcome::Unknown {
+                reason: "task exposure requires exact session and task identities".to_string(),
+            }));
+        }
+        let Some((task, session)) = reservation_ceilings(config) else {
+            return Ok(Some(CostReservationOutcome::Unknown {
+                reason: "budget ceiling is unavailable or invalid".to_string(),
+            }));
+        };
+        let pool = self.pool_clone().await?;
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+        let extension_data: Option<String> =
+            sqlx::query_scalar("SELECT extension_data FROM sessions WHERE id = ?")
+                .bind(session_id)
+                .fetch_optional(&mut *tx)
+                .await?
+                .flatten();
+        let durable_task_matches = extension_data
+            .as_deref()
+            .and_then(|json| serde_json::from_str::<ExtensionData>(json).ok())
+            .and_then(|data| budget_task_id(&data))
+            .as_deref()
+            == Some(task_id);
+        if !durable_task_matches {
+            tx.commit().await?;
+            return Ok(Some(CostReservationOutcome::Unknown {
+                reason: "task exposure identity is not bound to this session".to_string(),
+            }));
+        }
+        let outcome =
+            reservation_ceiling_verdict(&mut tx, task_id, session_id, 0.0, task, session).await?;
+        tx.commit().await?;
+        Ok(outcome)
+    }
+
+    pub(crate) async fn reserve_provider_invocation_with_identity(
+        &self,
+        invocation_id: &str,
+        session_id: &str,
+        task_id: Option<&str>,
+        amount_usd: f64,
+        lease_until: &str,
+        config: &crate::cost_router::budget::BudgetConfig,
+        identity: &ProviderReservationIdentity,
+    ) -> Result<CostReservationOutcome> {
+        self.storage
+            .reserve_provider_invocation_inner(
+                invocation_id,
+                session_id,
+                task_id,
+                amount_usd,
+                lease_until,
+                config,
+                ReservationRequest::Initial(None),
+                Some(identity),
             )
             .await
     }
@@ -1390,6 +1501,35 @@ impl SessionManager {
                 lease_until,
                 config,
                 ReservationRequest::Initial(Some(bound.max_physical_attempts)),
+                None,
+            )
+            .await
+    }
+
+    /// Reserve an accounted invocation with its exact native attempt and
+    /// actual effective provider/model route. Existing rows must have the
+    /// same identity; metadata never gets rewritten on replay or extension.
+    pub(crate) async fn reserve_bounded_provider_invocation_with_identity(
+        &self,
+        invocation_id: &str,
+        session_id: &str,
+        task_id: Option<&str>,
+        bound: crate::cost_router::reservation::ReservationBound,
+        lease_until: &str,
+        config: &crate::cost_router::budget::BudgetConfig,
+        identity: &ProviderReservationIdentity,
+    ) -> Result<CostReservationOutcome> {
+        anyhow::ensure!(bound.max_physical_attempts > 0, "invalid reserved attempts");
+        self.storage
+            .reserve_provider_invocation_inner(
+                invocation_id,
+                session_id,
+                task_id,
+                bound.amount_usd,
+                lease_until,
+                config,
+                ReservationRequest::Initial(Some(bound.max_physical_attempts)),
+                Some(identity),
             )
             .await
     }
@@ -1429,6 +1569,7 @@ impl SessionManager {
                 &lease,
                 &evidence.config,
                 ReservationRequest::Extend(additional_attempts),
+                None,
             )
             .await
     }
@@ -1474,6 +1615,7 @@ impl SessionManager {
                 lease_until,
                 provider,
                 model,
+                None,
             )
             .await
     }
@@ -1705,6 +1847,15 @@ impl SessionManager {
     pub async fn mark_provider_invocation_unknown(&self, reservation_id: &str) -> Result<bool> {
         self.storage
             .mark_provider_invocation_unknown(reservation_id)
+            .await
+    }
+
+    pub(crate) async fn mark_provider_invocation_dispatch_possible(
+        &self,
+        reservation_id: &str,
+    ) -> Result<bool> {
+        self.storage
+            .mark_provider_invocation_dispatch_possible(reservation_id)
             .await
     }
 
@@ -2525,6 +2676,7 @@ impl SessionStorage {
                     // reason, so an upgraded database gets the table on its
                     // first boot.
                     spectral_schema::apply_harness_process_leases_schema(&self.pool).await?;
+                    crate::goal_attempts::apply_schema(&self.pool).await?;
                     // v38: first-party analytics events (#23). New table +
                     // index, additive and idempotent.
                     if version < 38 {
@@ -3386,13 +3538,30 @@ impl SessionStorage {
         let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
         let result = sqlx::query(
             "UPDATE cost_reservations
-             SET state = 'released', updated_at = datetime('now')
+             SET state = 'released', dispatch_state = 'not_sent', updated_at = datetime('now')
              WHERE reservation_id = ? AND state = 'pending'",
         )
         .bind(reservation_id)
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    async fn mark_provider_invocation_dispatch_possible(
+        &self,
+        reservation_id: &str,
+    ) -> Result<bool> {
+        let pool = self.pool().await?;
+        let result = sqlx::query(
+            "UPDATE cost_reservations
+             SET dispatch_state = 'started_possible', updated_at = datetime('now')
+             WHERE reservation_id = ? AND state = 'pending'
+               AND dispatch_state IN ('not_started', 'started_possible')",
+        )
+        .bind(reservation_id)
+        .execute(pool)
+        .await?;
         Ok(result.rows_affected() == 1)
     }
 
@@ -3518,6 +3687,7 @@ impl SessionStorage {
         lease_until: &str,
         config: &crate::cost_router::budget::BudgetConfig,
         request: ReservationRequest,
+        identity: Option<&ProviderReservationIdentity>,
     ) -> Result<CostReservationOutcome> {
         if invocation_id.trim().is_empty() {
             return Err(anyhow::anyhow!("provider invocation id must not be empty"));
@@ -3574,12 +3744,15 @@ impl SessionStorage {
         }
 
         let reservation_id = format!("invocation:{invocation_id}");
-        if let Some((existing_id, existing_session, existing_task, state, amount, json, lease)) =
+        if let Some((existing_id, existing_session, existing_task, state, amount, json, lease,
+                     existing_attempt, existing_provider, existing_model, dispatch_state)) =
             sqlx::query_as::<
                 _,
-                (String, String, Option<String>, String, f64, Option<String>, String),
+                (String, String, Option<String>, String, f64, Option<String>, String,
+                 Option<String>, Option<String>, Option<String>, String),
             >(
-                "SELECT reservation_id, session_id, task_id, state, amount_usd, extension_json, lease_until
+                "SELECT reservation_id, session_id, task_id, state, amount_usd, extension_json, lease_until,
+                        goal_attempt_id, provider, model, dispatch_state
                  FROM cost_reservations WHERE invocation_id = ?",
             )
             .bind(invocation_id)
@@ -3590,6 +3763,14 @@ impl SessionStorage {
                 return Err(anyhow::anyhow!(
                     "provider invocation id is already bound to another budget scope"
                 ));
+            }
+            if let Some(identity) = identity {
+                anyhow::ensure!(
+                    existing_attempt == identity.goal_attempt_id
+                        && existing_provider.as_deref() == Some(identity.provider.as_str())
+                        && existing_model.as_deref() == Some(identity.model.as_str()),
+                    "provider invocation id is already bound to another native attempt or route"
+                );
             }
             if let ReservationRequest::Extend(additional) = request {
                 anyhow::ensure!(state == "pending" && lease > now, "reservation is not live");
@@ -3615,6 +3796,12 @@ impl SessionStorage {
                 evidence.attempts = to_attempts;
                 extension = Some(evidence);
             } else {
+                if identity.is_some() && state == "pending" && dispatch_state != "not_started" {
+                    tx.commit().await?;
+                    return Ok(CostReservationOutcome::AlreadyDispatched {
+                        reservation_id: existing_id,
+                    });
+                }
                 tx.commit().await?;
                 return Ok(match state.as_str() {
                     "pending" => CostReservationOutcome::AlreadyReserved {
@@ -3648,15 +3835,43 @@ impl SessionStorage {
                 reason: format!("session '{session_id}' does not exist"),
             });
         }
-        let extension_data_json: String =
-            sqlx::query_scalar("SELECT extension_data FROM sessions WHERE id = ?")
-                .bind(session_id)
-                .fetch_one(&mut *tx)
-                .await?;
-        let durable_task_id = serde_json::from_str::<ExtensionData>(&extension_data_json)
-            .ok()
-            .and_then(|data| budget_task_id(&data));
-        if durable_task_id.as_deref() != Some(task_id) {
+        let native_identity_valid = if let Some(attempt_id) =
+            identity.and_then(|identity| identity.goal_attempt_id.as_deref())
+        {
+            let count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM goal_attempts a
+                         JOIN goal_execution_bindings b ON b.goal_id = a.goal_id
+                         WHERE a.attempt_id = ? AND a.worker_session_id = ?
+                           AND a.execution_state = 'started' AND b.authority = 'native'
+                           AND b.task_id = ?",
+            )
+            .bind(attempt_id)
+            .bind(session_id)
+            .bind(task_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            count == 1
+        } else {
+            false
+        };
+        let durable_task_matches = if identity
+            .and_then(|identity| identity.goal_attempt_id.as_ref())
+            .is_some()
+        {
+            native_identity_valid
+        } else {
+            let extension_data_json: String =
+                sqlx::query_scalar("SELECT extension_data FROM sessions WHERE id = ?")
+                    .bind(session_id)
+                    .fetch_one(&mut *tx)
+                    .await?;
+            serde_json::from_str::<ExtensionData>(&extension_data_json)
+                .ok()
+                .and_then(|data| budget_task_id(&data))
+                .as_deref()
+                == Some(task_id)
+        };
+        if !durable_task_matches {
             tx.commit().await?;
             return Ok(CostReservationOutcome::Unknown {
                 reason: "provider reservation task identity is not bound to this session"
@@ -3699,8 +3914,9 @@ impl SessionStorage {
         sqlx::query(
             "INSERT INTO cost_reservations
                 (reservation_id, invocation_id, session_id, task_id, amount_usd,
-                 state, lease_until, created_at, updated_at, extension_json)
-             VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)",
+                 state, lease_until, created_at, updated_at, extension_json,
+                 goal_attempt_id, provider, model, dispatch_state)
+             VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, 'not_started')",
         )
         .bind(&reservation_id)
         .bind(invocation_id)
@@ -3711,6 +3927,9 @@ impl SessionStorage {
         .bind(&now)
         .bind(&now)
         .bind(extension.as_ref().map(serde_json::to_string).transpose()?)
+        .bind(identity.and_then(|i| i.goal_attempt_id.as_deref()))
+        .bind(identity.map(|i| i.provider.as_str()))
+        .bind(identity.map(|i| i.model.as_str()))
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -3718,6 +3937,29 @@ impl SessionStorage {
     }
 
     /// See [`SessionManager::grant_reservation_after_gate_approval`].
+    #[allow(clippy::too_many_arguments)]
+    async fn grant_reservation_after_gate_approval_with_identity(
+        &self,
+        invocation_id: &str,
+        session_id: &str,
+        task_id: &str,
+        amount_usd: f64,
+        lease_until: &str,
+        identity: &ProviderReservationIdentity,
+    ) -> Result<CostReservationOutcome> {
+        self.grant_reservation_after_gate_approval(
+            invocation_id,
+            session_id,
+            task_id,
+            amount_usd,
+            lease_until,
+            &identity.provider,
+            &identity.model,
+            Some(identity),
+        )
+        .await
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn grant_reservation_after_gate_approval(
         &self,
@@ -3728,6 +3970,7 @@ impl SessionStorage {
         lease_until: &str,
         provider: &str,
         model: &str,
+        identity: Option<&ProviderReservationIdentity>,
     ) -> Result<CostReservationOutcome> {
         if invocation_id.trim().is_empty() {
             return Err(anyhow::anyhow!("provider invocation id must not be empty"));
@@ -3757,19 +4000,52 @@ impl SessionStorage {
 
         // Idempotent, same shape as `reserve_provider_invocation`'s own
         // early lookup: never insert twice for one invocation_id.
-        if let Some((existing_id, existing_session, existing_task, state)) =
-            sqlx::query_as::<_, (String, String, Option<String>, String)>(
-                "SELECT reservation_id, session_id, task_id, state
+        if let Some((
+            existing_id,
+            existing_session,
+            existing_task,
+            state,
+            existing_attempt,
+            existing_provider,
+            existing_model,
+            dispatch_state,
+        )) = sqlx::query_as::<
+            _,
+            (
+                String,
+                String,
+                Option<String>,
+                String,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                String,
+            ),
+        >(
+            "SELECT reservation_id, session_id, task_id, state,
+                        goal_attempt_id, provider, model, dispatch_state
                  FROM cost_reservations WHERE invocation_id = ?",
-            )
-            .bind(invocation_id)
-            .fetch_optional(&mut *tx)
-            .await?
+        )
+        .bind(invocation_id)
+        .fetch_optional(&mut *tx)
+        .await?
         {
             if existing_session != session_id || existing_task.as_deref() != Some(task_id) {
                 return Err(anyhow::anyhow!(
                     "provider invocation id is already bound to another budget scope"
                 ));
+            }
+            if let Some(identity) = identity {
+                anyhow::ensure!(
+                    existing_attempt == identity.goal_attempt_id
+                        && existing_provider.as_deref() == Some(identity.provider.as_str())
+                        && existing_model.as_deref() == Some(identity.model.as_str()),
+                    "provider invocation id is already bound to another native attempt or route"
+                );
+                anyhow::ensure!(
+                    state != "pending" || dispatch_state == "not_started",
+                    "native provider invocation may already have been dispatched; refusing replay"
+                );
             }
             tx.commit().await?;
             return Ok(match state.as_str() {
@@ -3802,14 +4078,49 @@ impl SessionStorage {
             });
         }
 
+        if let Some(identity) = identity {
+            let native_attempt = if let Some(attempt_id) = identity.goal_attempt_id.as_deref() {
+                let count: i64 = sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM goal_attempts a
+                     JOIN goal_execution_bindings b ON b.goal_id = a.goal_id
+                     WHERE a.attempt_id = ? AND a.worker_session_id = ?
+                       AND a.execution_state = 'started' AND b.authority = 'native'
+                       AND b.task_id = ?",
+                )
+                .bind(attempt_id)
+                .bind(session_id)
+                .bind(task_id)
+                .fetch_one(&mut *tx)
+                .await?;
+                count == 1
+            } else {
+                let extension_data: String =
+                    sqlx::query_scalar("SELECT extension_data FROM sessions WHERE id = ?")
+                        .bind(session_id)
+                        .fetch_one(&mut *tx)
+                        .await?;
+                serde_json::from_str::<ExtensionData>(&extension_data)
+                    .ok()
+                    .and_then(|data| budget_task_id(&data))
+                    .as_deref()
+                    == Some(task_id)
+            };
+            if !native_attempt {
+                tx.commit().await?;
+                return Ok(CostReservationOutcome::Unknown {
+                    reason: "gate reservation task identity is not bound to this session".into(),
+                });
+            }
+        }
+
         let reservation_id = format!("invocation:{invocation_id}");
         let now = chrono::Utc::now().to_rfc3339();
         sqlx::query(
             "INSERT INTO cost_reservations
                 (reservation_id, invocation_id, session_id, task_id, amount_usd,
                  state, lease_until, created_at, updated_at, granted_via_gate,
-                 provider, model)
-             VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, 1, ?, ?)",
+                 provider, model, goal_attempt_id, dispatch_state)
+             VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, 1, ?, ?, ?, 'not_started')",
         )
         .bind(&reservation_id)
         .bind(invocation_id)
@@ -3821,6 +4132,7 @@ impl SessionStorage {
         .bind(&now)
         .bind(provider)
         .bind(model)
+        .bind(identity.and_then(|i| i.goal_attempt_id.as_deref()))
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -4028,8 +4340,24 @@ impl SessionStorage {
                 reserved_usd,
                 reservation_session,
                 reservation_task,
-            )) = sqlx::query_as::<_, (String, String, f64, String, Option<String>)>(
-                "SELECT invocation_id, state, amount_usd, session_id, task_id
+                reservation_attempt,
+                reservation_provider,
+                reservation_model,
+            )) = sqlx::query_as::<
+                _,
+                (
+                    String,
+                    String,
+                    f64,
+                    String,
+                    Option<String>,
+                    Option<String>,
+                    Option<String>,
+                    Option<String>,
+                ),
+            >(
+                "SELECT invocation_id, state, amount_usd, session_id, task_id, goal_attempt_id,
+                        provider, model
                      FROM cost_reservations
                      WHERE reservation_id = ?",
             )
@@ -4048,9 +4376,16 @@ impl SessionStorage {
             }
             if reservation_session != row.session_id
                 || reservation_task.as_deref() != row.task_id.as_deref()
+                || reservation_attempt.as_deref() != row.goal_attempt_id.as_deref()
+                || reservation_provider
+                    .as_deref()
+                    .is_some_and(|provider| row.provider.as_deref() != Some(provider))
+                || reservation_model
+                    .as_deref()
+                    .is_some_and(|model| row.model.as_deref() != Some(model))
             {
                 return Err(anyhow::anyhow!(
-                    "provider reservation does not match ledger scope"
+                    "provider reservation does not match ledger scope or native attempt"
                 ));
             }
             if !row.cost_usd.is_finite() || row.cost_usd < 0.0 || !reserved_usd.is_finite() {
@@ -4113,7 +4448,7 @@ impl SessionStorage {
                 cache_write_tokens, input_cost, output_cost, cache_read_cost,
                 cache_write_cost, cost_usd, is_estimated, late_settlement,
                 call_purpose, trigger_ref, retry_of_call_id, pre_call_evidence,
-                tool_call_count, completion_kind
+                tool_call_count, completion_kind, goal_attempt_id
             ) VALUES (
                 ?, ?, ?, ?, ?, ?,
                 ?, (SELECT COUNT(*) FROM cost_ledger WHERE session_id = ?), ?, ?, ?, ?,
@@ -4121,7 +4456,7 @@ impl SessionStorage {
                 ?, ?, ?, ?,
                 ?, ?, ?, ?,
                 ?, ?, ?, ?,
-                ?, ?
+                ?, ?, ?
             ) ON CONFLICT(call_id) DO NOTHING",
         )
         .bind(&row.call_id)
@@ -4162,6 +4497,7 @@ impl SessionStorage {
         )
         .bind(row.outcome.tool_call_count)
         .bind(row.outcome.completion_kind.as_str())
+        .bind(&row.goal_attempt_id)
         .execute(&mut *tx)
         .await?
         .rows_affected()
@@ -4169,9 +4505,9 @@ impl SessionStorage {
 
         if !inserted {
             if let (Some(reservation_id), Some(from_state)) = (reservation_id, &reservation_state) {
-                let Some((existing_session, existing_task, existing_cost)) =
-                    sqlx::query_as::<_, (String, Option<String>, f64)>(
-                        "SELECT session_id, task_id, cost_usd FROM cost_ledger WHERE call_id = ?",
+                let Some((existing_session, existing_task, existing_cost, existing_attempt)) =
+                    sqlx::query_as::<_, (String, Option<String>, f64, Option<String>)>(
+                        "SELECT session_id, task_id, cost_usd, goal_attempt_id FROM cost_ledger WHERE call_id = ?",
                     )
                     .bind(&row.call_id)
                     .fetch_optional(&mut *tx)
@@ -4183,6 +4519,7 @@ impl SessionStorage {
                 };
                 if existing_session != row.session_id
                     || existing_task.as_deref() != row.task_id.as_deref()
+                    || existing_attempt.as_deref() != row.goal_attempt_id.as_deref()
                     || existing_cost != row.cost_usd
                 {
                     return Err(anyhow::anyhow!(
@@ -4967,6 +5304,7 @@ mod tests {
             parent_session_id: None,
             task_id: Some(task_id.to_string()),
             goal_id: None,
+            goal_attempt_id: None,
             subagent_id: None,
             provider: Some("test-provider".to_string()),
             model: Some("test-model".to_string()),
@@ -4986,6 +5324,143 @@ mod tests {
             provenance: Default::default(),
             outcome: Default::default(),
         }
+    }
+
+    async fn native_started_worker(
+        sm: &SessionManager,
+        root: &Path,
+    ) -> (Session, String, crate::goal_attempts::WorkerBinding) {
+        let root = std::fs::canonicalize(root).unwrap();
+        let coordinator = sm
+            .create_session(
+                root.to_path_buf(),
+                "native test coordinator".to_string(),
+                SessionType::User,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        let task_id = sm
+            .begin_budget_task_with_contract(
+                &coordinator.id,
+                &Message::user().with_text("Complete the native accounting fixture"),
+            )
+            .await
+            .unwrap();
+        let pool = sm.pool_clone().await.unwrap();
+        let claim_id = format!("test-claim-{}", uuid::Uuid::now_v7());
+        let card = crate::cards::create_card(
+            &pool,
+            crate::cards::CreateCard {
+                project_id: crate::projects::PERSONAL_PROJECT_ID.to_string(),
+                title: "native accounting fixture".to_string(),
+                description: None,
+                card_type: Some("goal".to_string()),
+                column_id: None,
+                created_by: None,
+                metadata_json: Some(serde_json::json!({"dispatch_claim_id": claim_id})),
+            },
+        )
+        .await
+        .unwrap();
+        let claim_id = card
+            .metadata_json
+            .get("dispatch_claim_id")
+            .and_then(serde_json::Value::as_str)
+            .unwrap()
+            .to_string();
+        let doing: String = sqlx::query_scalar(
+            "SELECT id FROM board_columns WHERE project_id = ? AND state_binding = 'in_progress'",
+        )
+        .bind(&card.project_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        sqlx::query("UPDATE cards SET column_id = ? WHERE id = ?")
+            .bind(doing)
+            .bind(&card.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.unwrap();
+        crate::goal_attempts::bind_new_goal_tx(
+            &mut tx,
+            &card.id,
+            &card.project_id,
+            Some(&task_id),
+            Some(&coordinator.id),
+            None,
+        )
+        .await
+        .unwrap();
+        crate::goal_attempts::claim_tx(
+            &mut tx,
+            &card.id,
+            &card.project_id,
+            &crate::goal_attempts::ClaimInput {
+                claim_id: claim_id.clone(),
+                lifecycle_id: format!("lifecycle-{claim_id}"),
+                worker_key: "test-worker".to_string(),
+                execution_root: Some(root.to_string_lossy().into_owned()),
+                input_head: None,
+            },
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        let worker = sm
+            .create_session_with_parent(
+                Some(&coordinator.id),
+                root.to_path_buf(),
+                "native test worker".to_string(),
+                SessionType::SubAgent,
+                GooseMode::Auto,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            budget_task_id(&worker.extension_data).as_deref(),
+            Some(task_id.as_str())
+        );
+        let mut data = worker.extension_data.clone();
+        data.set_extension_state(
+            crate::session::GOAL_ID_EXTENSION_NAME,
+            crate::session::GOAL_ID_EXTENSION_VERSION,
+            serde_json::json!(card.id),
+        );
+        sm.update(&worker.id)
+            .extension_data(data)
+            .apply()
+            .await
+            .unwrap();
+        let worker = sm.get_session(&worker.id, false).await.unwrap();
+        let permit = crate::goal_attempts::StartPermit {
+            pool: pool.clone(),
+            goal_id: card.id,
+            claim_id: claim_id.clone(),
+        };
+        permit
+            .prepare_worker(&worker.id, &root, Some(&task_id))
+            .await
+            .unwrap();
+        let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.unwrap();
+        crate::goal_attempts::finalize_tx(
+            &mut tx,
+            &permit.goal_id,
+            &claim_id,
+            Some(&worker.id),
+            None,
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        permit.start().await.unwrap();
+        let binding = crate::goal_attempts::worker_binding(&pool, &worker.id)
+            .await
+            .unwrap()
+            .unwrap();
+        (worker, task_id, binding)
     }
 
     fn persisted_harness_snapshot(status: HarnessRunStatus) -> HarnessRunSnapshot {
@@ -6263,6 +6738,7 @@ mod tests {
             parent_session_id: None,
             task_id: Some("task-1".to_string()),
             goal_id: None,
+            goal_attempt_id: None,
             subagent_id: None,
             provider: Some("anthropic".to_string()),
             model: Some("claude-3.5-sonnet".to_string()),
@@ -6292,6 +6768,7 @@ mod tests {
             parent_session_id: None,
             task_id: None,
             goal_id: None,
+            goal_attempt_id: None,
             subagent_id: None,
             provider: Some("ollama".to_string()),
             model: Some("llama3".to_string()),
@@ -6385,6 +6862,7 @@ mod tests {
             parent_session_id: None,
             task_id: None,
             goal_id: None,
+            goal_attempt_id: None,
             subagent_id: None,
             provider: Some("local".to_string()),
             model: Some("test-model".to_string()),
@@ -6540,6 +7018,7 @@ mod tests {
             parent_session_id: None,
             task_id: Some(task_id.to_string()),
             goal_id: None,
+            goal_attempt_id: None,
             subagent_id: None,
             provider: Some("test".to_string()),
             model: Some("test-model".to_string()),
@@ -6667,6 +7146,7 @@ mod tests {
             parent_session_id: Some(parent.id.clone()),
             task_id: Some(task_id.clone()),
             goal_id: None,
+            goal_attempt_id: None,
             subagent_id: Some(child.id.clone()),
             provider: Some("test".to_string()),
             model: Some("test-model".to_string()),
@@ -6826,6 +7306,7 @@ mod tests {
                 parent_session_id: parent_id.map(|s| s.to_string()),
                 task_id: None,
                 goal_id: None,
+                goal_attempt_id: None,
                 subagent_id: None,
                 provider: Some("anthropic".to_string()),
                 model: Some("claude-sonnet-4".to_string()),
@@ -8737,26 +9218,22 @@ mod tests {
     async fn yf1_late_settlement_of_retained_unknown_hold_is_exactly_once() {
         let temp_dir = TempDir::new().unwrap();
         let sm = SessionManager::new(temp_dir.path().to_path_buf());
-        let session = sm
-            .create_session(
-                temp_dir.path().to_path_buf(),
-                "late settlement".to_string(),
-                SessionType::SubAgent,
-                GooseMode::Auto,
-            )
-            .await
-            .unwrap();
-        let task_id = sm.begin_budget_task(&session.id).await.unwrap();
+        let (session, task_id, binding) = native_started_worker(&sm, temp_dir.path()).await;
         let loose = reservation_config(5.0, 5.0, 5.0, 5.0);
 
         let reservation_id = match sm
-            .reserve_provider_invocation(
+            .reserve_provider_invocation_with_identity(
                 "yf1-late-call",
                 &session.id,
                 Some(&task_id),
                 0.50,
                 "2099-01-01T00:00:00Z",
                 &loose,
+                &ProviderReservationIdentity {
+                    goal_attempt_id: Some(binding.attempt_id.clone()),
+                    provider: "test-provider".to_string(),
+                    model: "test-model".to_string(),
+                },
             )
             .await
             .unwrap()
@@ -8775,13 +9252,18 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
-        sm.reserve_provider_invocation(
+        sm.reserve_provider_invocation_with_identity(
             "yf1-late-trigger",
             &session.id,
             Some(&task_id),
             0.01,
             "2099-01-01T00:00:00Z",
             &loose,
+            &ProviderReservationIdentity {
+                goal_attempt_id: Some(binding.attempt_id.clone()),
+                provider: "test-provider".to_string(),
+                model: "test-model".to_string(),
+            },
         )
         .await
         .unwrap();
@@ -8796,9 +9278,20 @@ mod tests {
             "setup: the hold must stay retained before late usage arrives"
         );
 
-        // The provider call actually completes now, well after the hold became
-        // unknown.
-        let row = reservation_row(&session.id, &task_id, "yf1-late-call", 0.50);
+        sqlx::query(
+            "UPDATE goal_attempts SET execution_state = 'failed', ended_at = datetime('now')
+             WHERE attempt_id = ?",
+        )
+        .bind(&binding.attempt_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // The provider call completes after the authentic journal row was
+        // terminalized. Settlement must not re-resolve only active workers.
+        let mut row = reservation_row(&session.id, &task_id, "yf1-late-call", 0.50);
+        row.goal_id = Some(binding.goal_id.clone());
+        row.goal_attempt_id = Some(binding.attempt_id.clone());
         let inserted = sm
             .settle_provider_invocation(&reservation_id, &row, None, None, None, None, 15, 10, 5)
             .await
@@ -8832,7 +9325,14 @@ mod tests {
         .fetch_one(&pool)
         .await
         .unwrap();
+        let stored_attempt: Option<String> = sqlx::query_scalar(
+            "SELECT goal_attempt_id FROM cost_ledger WHERE call_id = 'yf1-late-call'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
         assert_eq!(settled_state, "settled");
+        assert_eq!(stored_attempt.as_deref(), Some(binding.attempt_id.as_str()));
         assert_eq!(ledger_rows, 1, "late settlement must not duplicate spend");
         assert!((cost_usd - 0.50).abs() < 1e-12);
 
@@ -8854,6 +9354,125 @@ mod tests {
             .unwrap(),
             CostReservationOutcome::Refused { .. } | CostReservationOutcome::NeedsGate { .. }
         ));
+    }
+
+    #[tokio::test]
+    async fn native_local_and_paid_routes_survive_crash_before_usage_settlement() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
+        let (session, task_id, binding) = native_started_worker(&sm, temp_dir.path()).await;
+        let pool = sm.pool_clone().await.unwrap();
+
+        // The local decision backend persists its route before dispatch. A
+        // crash after transport begins but before posthoc usage must still
+        // leave enough evidence to include the local model family.
+        let local = crate::cost_router::metered::record_local_provider_call(
+            Arc::clone(&sm),
+            &session,
+            "ollama",
+            "qwen2.5:7b",
+            32,
+        )
+        .await
+        .unwrap();
+        crate::cost_router::metered::mark_metered_call_dispatch_possible(Arc::clone(&sm), &local)
+            .await
+            .unwrap();
+
+        // In the same native attempt, a paid route is journaled separately
+        // from its monetary hold. Neither has a ledger row yet, simulating a
+        // process stop before usage settlement.
+        let config = reservation_config(5.0, 10.0, 25.0, 50.0);
+        let paid_call = "native-mixed-paid";
+        let reservation_id = match sm
+            .reserve_provider_invocation_with_identity(
+                paid_call,
+                &session.id,
+                Some(&task_id),
+                0.25,
+                "2099-01-01T00:00:00Z",
+                &config,
+                &ProviderReservationIdentity {
+                    goal_attempt_id: Some(binding.attempt_id.clone()),
+                    provider: "anthropic".to_string(),
+                    model: "claude-test".to_string(),
+                },
+            )
+            .await
+            .unwrap()
+        {
+            CostReservationOutcome::Granted { reservation_id } => reservation_id,
+            other => panic!("paid native route was not granted: {other:?}"),
+        };
+        crate::native_provider_calls::record(
+            &pool,
+            paid_call,
+            &binding,
+            "anthropic",
+            "claude-test",
+        )
+        .await
+        .unwrap();
+        crate::native_provider_calls::mark_dispatch_possible(&pool, paid_call, &binding)
+            .await
+            .unwrap();
+        sm.mark_provider_invocation_dispatch_possible(&reservation_id)
+            .await
+            .unwrap();
+
+        let routes: Vec<(String, String, String, String)> = sqlx::query_as(
+            "SELECT provider,model,coverage_version,dispatch_state
+             FROM goal_attempt_provider_calls WHERE goal_attempt_id=? ORDER BY provider",
+        )
+        .bind(&binding.attempt_id)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(routes.len(), 2);
+        assert!(routes.iter().any(|row| {
+            row.0 == "ollama"
+                && row.1 == "qwen2.5:7b"
+                && row.2 == crate::native_provider_calls::COVERAGE_VERSION
+                && row.3 == "started_possible"
+        }));
+        assert!(routes.iter().any(|row| {
+            row.0 == "anthropic"
+                && row.1 == "claude-test"
+                && row.2 == crate::native_provider_calls::COVERAGE_VERSION
+                && row.3 == "started_possible"
+        }));
+        let ledger_rows: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM cost_ledger WHERE session_id=? AND goal_attempt_id=?",
+        )
+        .bind(&session.id)
+        .bind(&binding.attempt_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            ledger_rows, 0,
+            "the fixture represents a crash before settlement"
+        );
+
+        // A terminal native worker cannot fall through as an ordinary
+        // session and dispatch a new local decision after cancellation.
+        sqlx::query(
+            "UPDATE goal_attempts SET execution_state='failed',ended_at=datetime('now')
+             WHERE attempt_id=?",
+        )
+        .bind(&binding.attempt_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert!(crate::cost_router::metered::record_local_provider_call(
+            Arc::clone(&sm),
+            &session,
+            "ollama",
+            "qwen2.5:7b",
+            32,
+        )
+        .await
+        .is_err());
     }
 
     /// B6.2: compaction and continuation keep the same durable task identity,
@@ -8976,6 +9595,7 @@ mod tests {
             parent_session_id: None,
             task_id: Some(task_id.clone()),
             goal_id: None,
+            goal_attempt_id: None,
             subagent_id: None,
             provider: Some("b6-local".to_string()),
             model: Some("b6-local-model".to_string()),
@@ -9094,6 +9714,7 @@ mod tests {
             parent_session_id: parent_session_id.map(ToOwned::to_owned),
             task_id: Some(task_id.clone()),
             goal_id: None,
+            goal_attempt_id: None,
             subagent_id: None,
             provider: Some(format!("{call_id}-provider")),
             model: Some("b6-fake".to_string()),
@@ -9796,6 +10417,7 @@ mod call_provenance_tests {
             parent_session_id: None,
             task_id: None,
             goal_id: None,
+            goal_attempt_id: None,
             subagent_id: None,
             provider: Some("ollama".to_string()),
             model: Some("local-model".to_string()),

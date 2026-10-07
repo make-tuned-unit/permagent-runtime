@@ -3986,12 +3986,14 @@ async fn execute_job_inner(
             .map(|m| m.as_concat_text())
             .collect::<Vec<_>>()
             .join("\n");
+        let tool_texts = scan_storage_tool_texts(&conversation);
         let saved = std::env::var("HOME")
             .map_err(anyhow::Error::from)
             .and_then(|home| {
                 let home = std::path::PathBuf::from(home);
-                crate::storage_health::scanner::persist_report(
+                crate::storage_health::scanner::save_declared_storage_report(
                     &full_output,
+                    &tool_texts,
                     &session.id,
                     &home.join(".permagent/automation/findings"),
                     &home,
@@ -4150,6 +4152,81 @@ async fn execute_job_inner(
     }
 
     Ok(session.id)
+}
+
+/// Tool text from this run's storage scan. The live tool name is unprefixed
+/// (`platform_extensions`: `storage_health` has `unprefixed_tools: true`).
+/// The prefixed form `storage_health__scan_storage_health` is what
+/// `extension_manager::public_tools` emits when that flag is off. Other
+/// prefixes, and responses that do not belong to that call, are ignored.
+/// The scanner embeds rows here only when it could not write the ledger.
+/// Assistant prose is not included.
+fn scan_storage_tool_texts(conversation: &Conversation) -> Vec<String> {
+    crate::storage_health::scanner::matched_scan_tool_texts(conversation)
+        .into_iter()
+        .map(|item| item.text)
+        .collect()
+}
+
+#[cfg(test)]
+mod scan_tool_text_tests {
+    use super::scan_storage_tool_texts;
+    use crate::conversation::message::Message;
+    use crate::conversation::Conversation;
+    use rmcp::model::{CallToolRequestParams, CallToolResult, Content};
+
+    fn conversation(name: &str, request_id: &str, response_id: &str, text: &str) -> Conversation {
+        Conversation::new_unvalidated(vec![
+            Message::assistant()
+                .with_tool_request(request_id, Ok(CallToolRequestParams::new(name.to_string()))),
+            Message::user().with_tool_response(
+                response_id,
+                Ok(CallToolResult::success(vec![Content::text(text)])),
+            ),
+        ])
+    }
+
+    #[test]
+    fn fallback_reads_only_real_scan_tool_results() {
+        let payload = "scan-rows";
+        assert_eq!(
+            scan_storage_tool_texts(&conversation(
+                "scan_storage_health",
+                "call-1",
+                "call-1",
+                payload,
+            )),
+            vec![payload.to_string()]
+        );
+        assert_eq!(
+            scan_storage_tool_texts(&conversation(
+                "storage_health__scan_storage_health",
+                "call-1",
+                "call-1",
+                payload,
+            )),
+            vec![payload.to_string()]
+        );
+        for spoof in [
+            "evil__scan_storage_health",
+            "developer__scan_storage_health",
+            "shell",
+            "storage_health__other",
+        ] {
+            assert!(
+                scan_storage_tool_texts(&conversation(spoof, "call-1", "call-1", payload))
+                    .is_empty(),
+                "{spoof}"
+            );
+        }
+        assert!(scan_storage_tool_texts(&conversation(
+            "scan_storage_health",
+            "call-1",
+            "someone-else",
+            payload,
+        ))
+        .is_empty());
+    }
 }
 
 fn failed_outcome_message(session_id: &str) -> String {

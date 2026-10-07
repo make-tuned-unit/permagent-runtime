@@ -2332,6 +2332,9 @@ impl ExtensionManager {
                 owned_ctx.session_id,
                 owned_ctx.working_dir,
             );
+            if owned_ctx.tool_call_request_id.is_some() {
+                crate::session::run_timing::record_approved_dispatch(&owned_ctx.session_id);
+            }
             client
                 .call_tool(&owned_ctx, &actual_tool_name, arguments, cancellation_token)
                 .await
@@ -2687,6 +2690,9 @@ mod tests {
     }
 
     struct MockClient {}
+    static TIMING_CALL_GATE: std::sync::OnceLock<
+        tokio::sync::Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+    > = std::sync::OnceLock::new();
 
     fn cached_stdio_config(description: &str) -> ExtensionConfig {
         ExtensionConfig::Stdio {
@@ -2785,6 +2791,13 @@ mod tests {
             _arguments: Option<JsonObject>,
             _cancellation_token: CancellationToken,
         ) -> Result<CallToolResult, Error> {
+            if _ctx.session_id.starts_with("timing-block-test") {
+                if let Some(gate) = TIMING_CALL_GATE.get() {
+                    if let Some(receiver) = gate.lock().await.take() {
+                        let _ = receiver.await;
+                    }
+                }
+            }
             if _ctx.session_id == "arg-validation-test" {
                 ARG_VALIDATION_CALLS.fetch_add(1, Ordering::SeqCst);
             }
@@ -3239,6 +3252,8 @@ mod tests {
         use super::super::tool_execution::ToolCallContext;
 
         let temp_dir = tempfile::tempdir().unwrap();
+        crate::session::run_timing::activate_for_test();
+        let timing_session = format!("scope-test-{}", temp_dir.path().display());
         let extension_manager =
             ExtensionManager::new_without_provider(temp_dir.path().to_path_buf());
 
@@ -3253,7 +3268,7 @@ mod tests {
             .await;
 
         let ctx = ToolCallContext::new(
-            "test-session-id".to_string(),
+            timing_session.clone(),
             None,
             Some("test-req-id".to_string()),
         );
@@ -3271,6 +3286,10 @@ mod tests {
         } else {
             panic!("Expected ErrorData with ErrorCode::RESOURCE_NOT_FOUND");
         }
+        assert_eq!(
+            crate::session::run_timing::first_for_test(&timing_session),
+            None
+        );
 
         // Try to call an available tool - should succeed
         let available_tool_call =
@@ -3281,7 +3300,56 @@ mod tests {
             .dispatch_tool_call(&ctx, available_tool_call, CancellationToken::default())
             .await;
 
-        assert!(result.is_ok());
+        let pending = result.expect("available tool should resolve");
+        assert_eq!(
+            crate::session::run_timing::first_for_test(&timing_session),
+            None
+        );
+        pending.result.await.unwrap();
+        assert!(crate::session::run_timing::first_for_test(&timing_session).is_some());
+    }
+
+    #[tokio::test]
+    async fn native_first_tool_is_recorded_before_client_result() {
+        use super::super::tool_execution::ToolCallContext;
+
+        crate::session::run_timing::activate_for_test();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let session_id = format!("timing-block-test-{}", temp_dir.path().display());
+        let manager = ExtensionManager::new_without_provider(temp_dir.path().to_path_buf());
+        manager
+            .add_mock_extension("test_client".into(), Arc::new(MockClient {}))
+            .await;
+        let (release, receiver) = tokio::sync::oneshot::channel();
+        *TIMING_CALL_GATE
+            .get_or_init(|| tokio::sync::Mutex::new(None))
+            .lock()
+            .await = Some(receiver);
+        let ctx = ToolCallContext::new(session_id.clone(), None, Some("timing-request".into()));
+        let pending = manager
+            .dispatch_tool_call(
+                &ctx,
+                CallToolRequestParams::new("test_client__available_tool".to_string())
+                    .with_arguments(object!({})),
+                CancellationToken::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            crate::session::run_timing::first_for_test(&session_id),
+            None
+        );
+        let task = tokio::spawn(pending.result);
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while crate::session::run_timing::first_for_test(&session_id).is_none() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("approved dispatch should be timed");
+        assert!(!task.is_finished(), "client result is still blocked");
+        release.send(()).unwrap();
+        task.await.unwrap().unwrap();
     }
 
     /// F2: a refused call must name what IS allowed, not just that the call

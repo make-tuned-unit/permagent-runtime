@@ -66,43 +66,242 @@ fn main() {
 /// because the release recipe builds from a worktree, so the DMG's
 /// `/api/version` could disagree with the code inside it.
 fn watch_git_head() {
-    let dot_git = std::path::Path::new("../../.git");
-    let git_dir = if dot_git.is_file() {
-        // Linked worktree: follow the pointer. This gitdir has its own HEAD,
-        // which is what a checkout in this worktree rewrites.
-        match std::fs::read_to_string(dot_git) {
-            Ok(text) => text
-                .lines()
-                .find_map(|l| l.strip_prefix("gitdir:"))
-                .map(|p| std::path::PathBuf::from(p.trim())),
-            Err(_) => None,
-        }
-    } else if dot_git.is_dir() {
-        Some(dot_git.to_path_buf())
-    } else {
-        None
-    };
+    let manifest_dir = std::path::PathBuf::from(
+        std::env::var_os("CARGO_MANIFEST_DIR").unwrap_or_else(|| ".".into()),
+    );
+    let dot_git = manifest_dir.join("../../.git");
+    for path in git_watch_paths(&dot_git) {
+        println!("cargo:rerun-if-changed={}", path.display());
+    }
+}
 
-    let Some(git_dir) = git_dir else {
+fn git_watch_paths(dot_git: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let Some((git_dir, common_dir)) = git_dirs(dot_git) else {
         // No git metadata (a source tarball, a vendored build). Nothing to
         // watch; the SHA falls back to "unknown" as it always has.
-        return;
+        return Vec::new();
     };
 
-    println!("cargo:rerun-if-changed={}", git_dir.join("HEAD").display());
+    let head = git_dir.join("HEAD");
+    if !head.is_file() {
+        return Vec::new();
+    }
+    let mut paths = vec![head.clone()];
 
-    // In a worktree the refs live in the shared common dir, named by
-    // `commondir` (usually `../..` relative to the gitdir).
-    let common = std::fs::read_to_string(git_dir.join("commondir"))
-        .ok()
-        .map(|c| git_dir.join(c.trim()))
-        .unwrap_or_else(|| git_dir.clone());
-    println!("cargo:rerun-if-changed={}", common.join("refs").display());
-    // A packed ref moves without any file under refs/ changing.
-    println!(
-        "cargo:rerun-if-changed={}",
-        common.join("packed-refs").display()
-    );
+    // HEAD changes on checkout even when detached. On a branch, the ref itself
+    // changes on commit; in linked worktrees it lives in the shared common dir.
+    // Watch only that ref, rather than the entire shared refs tree, so another
+    // worktree's branch update does not rebuild this package.
+    if let Some(reference) = head_ref(&head) {
+        let reference_path = common_dir.join(&reference);
+        if reference_path.is_file() {
+            // A loose branch ref is precise: other branches cannot trigger it.
+            paths.push(reference_path);
+        } else {
+            // A packed branch has no loose ref file. Watch packed-refs only
+            // when it contains this branch. Updates to other packed refs can
+            // still rerun this build script because Git stores them together.
+            let packed_refs = common_dir.join("packed-refs");
+            if packed_refs.is_file() && packed_refs_contains(&packed_refs, &reference) {
+                paths.push(packed_refs);
+            }
+
+            // The loose ref may be created after this build. Cargo treats a
+            // nonexistent rerun path as perpetually dirty. Prefer the
+            // per-worktree HEAD reflog when enabled; otherwise watch the
+            // nearest existing parent directory to detect ref creation.
+            let head_reflog = git_dir.join("logs/HEAD");
+            if head_reflog.is_file() {
+                paths.push(head_reflog);
+            } else if let Some(parent) = nearest_existing_parent(&reference_path) {
+                paths.push(parent);
+            }
+        }
+    }
+
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+/// Resolve a checkout's private gitdir and shared common gitdir. `.git` can be
+/// a directory in a primary checkout or a `gitdir:` pointer in a worktree.
+fn git_dirs(dot_git: &std::path::Path) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    let git_dir = if dot_git.is_file() {
+        let text = std::fs::read_to_string(dot_git).ok()?;
+        let target = text.lines().find_map(|line| line.strip_prefix("gitdir:"))?;
+        resolve_from(dot_git.parent()?, target.trim())
+    } else if dot_git.is_dir() {
+        dot_git.to_path_buf()
+    } else {
+        return None;
+    };
+
+    let common_dir = match std::fs::read_to_string(git_dir.join("commondir")) {
+        Ok(text) => resolve_from(&git_dir, text.trim()),
+        Err(_) => git_dir.clone(),
+    };
+    Some((git_dir, common_dir))
+}
+
+fn resolve_from(base: &std::path::Path, path: &str) -> std::path::PathBuf {
+    let path = std::path::Path::new(path);
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        base.join(path)
+    }
+}
+
+fn nearest_existing_parent(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    let mut parent = path.parent()?;
+    loop {
+        if parent.is_dir() {
+            return Some(parent.to_path_buf());
+        }
+        parent = parent.parent()?;
+    }
+}
+
+/// Return a safe symbolic HEAD target. Detached HEADs are tracked through the
+/// per-worktree HEAD file alone. Reject malformed or escaping ref paths.
+fn head_ref(head: &std::path::Path) -> Option<std::path::PathBuf> {
+    let text = std::fs::read_to_string(head).ok()?;
+    let reference = text.trim().strip_prefix("ref: ")?;
+    let path = std::path::Path::new(reference);
+    let mut components = path.components();
+    if components.next()? != std::path::Component::Normal(std::ffi::OsStr::new("refs")) {
+        return None;
+    }
+    let remaining: Vec<_> = components.collect();
+    if remaining.is_empty()
+        || remaining
+            .iter()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return None;
+    }
+    Some(path.to_path_buf())
+}
+
+fn packed_refs_contains(packed_refs: &std::path::Path, reference: &std::path::Path) -> bool {
+    let Ok(contents) = std::fs::read_to_string(packed_refs) else {
+        return false;
+    };
+    let Some(reference) = reference.to_str() else {
+        return false;
+    };
+    contents.lines().any(|line| {
+        let mut fields = line.split_whitespace();
+        fields.next().is_some_and(|object_id| {
+            matches!(object_id.len(), 40 | 64)
+                && object_id.bytes().all(|byte| byte.is_ascii_hexdigit())
+                && fields.next() == Some(reference)
+        })
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Scratch(std::path::PathBuf);
+
+    impl Scratch {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "goose-build-git-watch-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn linked_worktree_watcher_resolves_only_its_common_branch_ref() {
+        let scratch = Scratch::new();
+        let root = &scratch.0;
+        let worktree = root.join("worktree");
+        let git_dir = root.join("common/worktrees/wt");
+        let common_dir = root.join("common");
+        std::fs::create_dir_all(&worktree).unwrap();
+        std::fs::create_dir_all(&git_dir).unwrap();
+        std::fs::create_dir_all(common_dir.join("refs/heads")).unwrap();
+        std::fs::write(worktree.join(".git"), "gitdir: ../common/worktrees/wt\n").unwrap();
+        std::fs::write(git_dir.join("commondir"), "../..\n").unwrap();
+        std::fs::write(git_dir.join("HEAD"), "ref: refs/heads/task-branch\n").unwrap();
+        std::fs::write(
+            common_dir.join("packed-refs"),
+            "# pack-refs with: peeled fully-peeled\n0123456789012345678901234567890123456789 refs/heads/task-branch\n",
+        )
+        .unwrap();
+
+        let (resolved_git_dir, resolved_common_dir) = git_dirs(&worktree.join(".git")).unwrap();
+        assert_eq!(
+            resolved_git_dir.canonicalize().unwrap(),
+            git_dir.canonicalize().unwrap()
+        );
+        assert_eq!(
+            resolved_common_dir.canonicalize().unwrap(),
+            common_dir.canonicalize().unwrap()
+        );
+        let reference = head_ref(&resolved_git_dir.join("HEAD")).unwrap();
+        assert_eq!(
+            reference,
+            std::path::PathBuf::from("refs/heads/task-branch")
+        );
+        assert!(packed_refs_contains(
+            &resolved_common_dir.join("packed-refs"),
+            &reference
+        ));
+
+        let watched = git_watch_paths(&worktree.join(".git"));
+        assert!(watched.contains(&resolved_git_dir.join("HEAD")));
+        assert!(watched.contains(&resolved_common_dir.join("packed-refs")));
+        assert!(watched.contains(&resolved_common_dir.join("refs/heads")));
+        assert!(watched.iter().all(|path| path.exists()));
+        assert!(!watched.contains(&resolved_common_dir.join(&reference)));
+
+        // A private HEAD reflog replaces the broader directory fallback.
+        std::fs::create_dir_all(resolved_git_dir.join("logs")).unwrap();
+        std::fs::write(resolved_git_dir.join("logs/HEAD"), "reflog\n").unwrap();
+        let watched = git_watch_paths(&worktree.join(".git"));
+        assert!(watched.contains(&resolved_git_dir.join("logs/HEAD")));
+        assert!(!watched.contains(&resolved_common_dir.join("refs/heads")));
+
+        // Once the current branch is loose, watch its exact ref and stop
+        // watching shared packed refs or the broader parent directory.
+        let loose_ref = resolved_common_dir.join(&reference);
+        std::fs::write(&loose_ref, "fedcba9876543210fedcba9876543210fedcba98\n").unwrap();
+        let watched = git_watch_paths(&worktree.join(".git"));
+        assert!(watched.contains(&loose_ref));
+        assert!(!watched.contains(&resolved_common_dir.join("packed-refs")));
+        assert!(!watched.contains(&resolved_common_dir.join("refs/heads")));
+
+        // A detached checkout needs only its private HEAD file.
+        std::fs::write(
+            git_dir.join("HEAD"),
+            "0123456789012345678901234567890123456789\n",
+        )
+        .unwrap();
+        let watched = git_watch_paths(&worktree.join(".git"));
+        assert_eq!(watched.len(), 1);
+        assert_eq!(
+            watched[0].canonicalize().unwrap(),
+            git_dir.join("HEAD").canonicalize().unwrap()
+        );
+    }
 }
 
 fn git(args: &[&str]) -> String {

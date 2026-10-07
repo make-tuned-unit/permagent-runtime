@@ -335,6 +335,9 @@ impl SupervisedCliEngine {
 #[async_trait]
 impl GoalEngine for SupervisedCliEngine {
     async fn spawn(&self, task: GoalTask) -> Result<DispatchedWork, String> {
+        self.prepare(task).await?.start().await
+    }
+    async fn prepare(&self, task: GoalTask) -> Result<super::goal_engine::PreparedWork, String> {
         let baseline = task.baseline_commit.clone().ok_or_else(|| {
             "Supervised-CLI dispatch requires a git baseline commit, but the project root is not \
              a git repository"
@@ -342,7 +345,31 @@ impl GoalEngine for SupervisedCliEngine {
         })?;
 
         let session_id = format!("{SUPERVISED_SESSION_PREFIX}{}", uuid::Uuid::new_v4());
+        let mut prepared = super::goal_engine::PreparedWork {
+            run_id: session_id.clone(),
+            start: None,
+            cleanup: Some(super::goal_engine::PreparedCleanup::new(
+                task.working_dir.clone(),
+                session_id.clone(),
+                None,
+                task.start_permit.clone(),
+            )),
+        };
+        if let Some(cleanup) = prepared.cleanup.as_mut() {
+            cleanup.worktree = Some(
+                task.working_dir
+                    .parent()
+                    .unwrap_or(&task.working_dir)
+                    .join(super::goal_engine::GOAL_WORKTREES_DIR)
+                    .join(&session_id),
+            );
+            cleanup.baseline = Some(baseline.clone());
+        }
         let worktree = create_goal_worktree(&task.working_dir, &baseline, &session_id).await?;
+        if let Some(cleanup) = prepared.cleanup.as_mut() {
+            cleanup.worktree = Some(worktree.clone());
+            cleanup.baseline = Some(baseline.clone());
+        }
 
         // #523 work-base hooks + #522 push block, exactly as the external
         // engine installs them — evidence and the Permagent-owned push depend
@@ -355,46 +382,59 @@ impl GoalEngine for SupervisedCliEngine {
         let prompt_file = write_prompt_file(&session_id, &prompt).await?;
         let shell_command = compose_supervised_command(&self.bin, Some(&prompt_file), &git_env)?;
 
-        let rx = register_completion_hook(&session_id);
+        if let Some(permit) = &task.start_permit {
+            permit
+                .prepare_worker(&session_id, &worktree, task.budget_task_id.as_deref())
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        let project_slug = self.project_slug.clone();
+        let bin = self.bin.clone();
+        prepared.start = Some(Box::new(move || {
+            Box::pin(async move {
+                let rx = register_completion_hook(&session_id);
+                // S2 (#428): register with the supervision registry BEFORE the launch
+                // event goes out (attach must never race an unknown session). The
+                // session id doubles as the goal's run_id/worker_session_id.
+                super::terminal_supervision::register_session(
+                    &session_id,
+                    super::terminal_supervision::SupervisedSessionKind::DispatchedGoal,
+                    &project_slug,
+                    &worktree.to_string_lossy(),
+                );
 
-        // S2 (#428): register with the supervision registry BEFORE the launch
-        // event goes out (attach must never race an unknown session). The
-        // session id doubles as the goal's run_id/worker_session_id.
-        super::terminal_supervision::register_session(
-            &session_id,
-            super::terminal_supervision::SupervisedSessionKind::DispatchedGoal,
-            &self.project_slug,
-            &worktree.to_string_lossy(),
-        );
+                let label = format!("{} · {} (supervised)", project_slug, bin);
+                let reason = format!(
+                    "Supervised {} session for goal \"{}\" — gates will surface here",
+                    bin, task.card_title
+                );
+                crate::events::emit(crate::events::project_launch(
+                    &worktree.to_string_lossy(),
+                    &label,
+                    Some(&shell_command),
+                    &project_slug,
+                    &reason,
+                    Some(&session_id),
+                ));
 
-        let label = format!("{} · {} (supervised)", self.project_slug, self.bin);
-        let reason = format!(
-            "Supervised {} session for goal \"{}\" — gates will surface here",
-            self.bin, task.card_title
-        );
-        crate::events::emit(crate::events::project_launch(
-            &worktree.to_string_lossy(),
-            &label,
-            Some(&shell_command),
-            &self.project_slug,
-            &reason,
-            Some(&session_id),
-        ));
+                let timeout = task.timeout;
+                let join_session_id = session_id.clone();
+                let join = tokio::spawn(async move {
+                    await_supervised_completion(join_session_id, rx, worktree, baseline, timeout)
+                        .await
+                });
 
-        let timeout = task.timeout;
-        let join_session_id = session_id.clone();
-        let join = tokio::spawn(async move {
-            await_supervised_completion(join_session_id, rx, worktree, baseline, timeout).await
-        });
-
-        Ok(DispatchedWork {
-            run_id: session_id,
-            process_id: None,
-            join,
-            kill: GoalKill::None,
-            // Supervised sessions are steered by the human IN the terminal.
-            steer: None,
-        })
+                Ok(DispatchedWork {
+                    run_id: session_id,
+                    process_id: None,
+                    join,
+                    kill: GoalKill::None,
+                    // Supervised sessions are steered by the human IN the terminal.
+                    steer: None,
+                })
+            })
+        }));
+        Ok(prepared)
     }
 }
 
@@ -713,6 +753,7 @@ mod tests {
 
     fn task(working_dir: PathBuf, baseline: Option<String>, timeout: Duration) -> GoalTask {
         GoalTask {
+            start_permit: None,
             card_title: "Fix flaky test".to_string(),
             instructions: "Goal: fix it".to_string(),
             working_dir,

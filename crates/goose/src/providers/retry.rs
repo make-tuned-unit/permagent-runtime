@@ -363,6 +363,12 @@ impl<P: Provider> ProviderRetry for P {
 
         loop {
             crate::cost_router::authorized_attempts::record_transport_attempt();
+            if let Err(error) =
+                crate::cost_router::authorized_attempts::check_native_pretransport_gate().await
+            {
+                crate::cost_router::authorized_attempts::record_transport_failure(&error);
+                return Err(error);
+            }
             return match operation().await {
                 Ok(result) => {
                     crate::cost_router::authorized_attempts::record_transport_success();
@@ -1038,6 +1044,50 @@ mod tests {
             })
             .await;
         }
+    }
+
+    #[tokio::test]
+    async fn native_pretransport_policy_is_rechecked_before_each_physical_retry() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let gate_calls = Arc::new(AtomicUsize::new(0));
+        let operation_calls = Arc::new(AtomicUsize::new(0));
+        let gate_counter = Arc::clone(&gate_calls);
+        let provider = PaidTestProvider;
+        let operation_counter = Arc::clone(&operation_calls);
+        let gate: crate::cost_router::authorized_attempts::NativePretransportGate =
+            Arc::new(move || {
+                let n = gate_counter.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async move {
+                    if n == 1 {
+                        Err(ProviderError::NotSent(
+                            "candidate changed before retry transport".into(),
+                        ))
+                    } else {
+                        Ok(())
+                    }
+                })
+            });
+        let error = crate::cost_router::authorized_attempts::with_native_pretransport_gate(
+            gate,
+            provider.with_retry_config(
+                move || {
+                    let operation_counter = Arc::clone(&operation_counter);
+                    async move {
+                        operation_counter.fetch_add(1, Ordering::SeqCst);
+                        Err::<(), ProviderError>(ProviderError::ServerError("503".into()))
+                    }
+                },
+                RetryConfig::new(3, 0, 1.0, 0).with_rate_limit_floor_ms(0),
+            ),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(error, ProviderError::NotSent(_)));
+        assert_eq!(gate_calls.load(Ordering::SeqCst), 2);
+        assert_eq!(operation_calls.load(Ordering::SeqCst), 1);
     }
 
     /// Y7 (harness loop, from Lane A12's Q6): the reservation is an

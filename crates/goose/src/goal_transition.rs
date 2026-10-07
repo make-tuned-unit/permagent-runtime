@@ -40,6 +40,7 @@ pub const DEFAULT_ATTEMPT_CAP: u64 = 3;
 /// raw metadata PATCH, which the orchestrator's own card tools can reach
 /// (S5: the orchestrator must not be able to loosen its own approval gate).
 pub const PROTECTED_GOAL_METADATA_KEYS: &[&str] = &[
+    HEADLESS_DISPATCH_BUDGET_KEY,
     "goal_state",
     "needs_human_attention",
     "attempt_count",
@@ -252,6 +253,102 @@ pub struct TransitionEffects {
     pub review_notes: Option<String>,
     pub metadata_patch: serde_json::Map<String, serde_json::Value>,
     pub assigned_to: Option<String>,
+    /// Native headless coordinator policy, never a tool argument.
+    pub dispatch_budget: Option<HeadlessDispatchBudget>,
+    pub attempt_claim: Option<crate::goal_attempts::ClaimInput>,
+    pub expected_attempt: Option<crate::goal_candidates::ExpectedAttempt>,
+}
+
+pub const HEADLESS_DISPATCH_BUDGET_KEY: &str = "headless_dispatch_budget";
+
+#[derive(Debug)]
+pub struct HeadlessDispatchBudget {
+    pub coordinator_session_id: String,
+    pub automatic_limit: u64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct HeadlessDispatchUsage {
+    coordinator_session_id: String,
+    dispatch_count: u64,
+    automatic_limit: u64,
+    approved_extra_dispatches: u64,
+}
+
+fn scoped_dispatch_usage(
+    metadata: &serde_json::Value,
+    budget: &HeadlessDispatchBudget,
+) -> Result<HeadlessDispatchUsage, String> {
+    if budget.coordinator_session_id.is_empty() || budget.automatic_limit == 0 {
+        return Err("Headless dispatch policy has no coordinator or initial allowance".into());
+    }
+    let prior = metadata
+        .get(HEADLESS_DISPATCH_BUDGET_KEY)
+        .map(|value| serde_json::from_value::<HeadlessDispatchUsage>(value.clone()))
+        .transpose()
+        .map_err(|_| "Headless dispatch budget evidence is unreadable")?;
+    let mut usage = match prior {
+        Some(usage) if usage.coordinator_session_id == budget.coordinator_session_id => usage,
+        _ => HeadlessDispatchUsage {
+            coordinator_session_id: budget.coordinator_session_id.clone(),
+            dispatch_count: 0,
+            automatic_limit: budget.automatic_limit,
+            approved_extra_dispatches: 0,
+        },
+    };
+    usage.automatic_limit = usage.automatic_limit.min(budget.automatic_limit);
+    Ok(usage)
+}
+
+/// Cheap preflight; the checked transition repeats it under BEGIN IMMEDIATE.
+pub fn check_headless_dispatch_budget(
+    metadata: &serde_json::Value,
+    budget: &HeadlessDispatchBudget,
+) -> Result<(), String> {
+    let usage = scoped_dispatch_usage(metadata, budget)?;
+    let limit = usage
+        .automatic_limit
+        .saturating_add(usage.approved_extra_dispatches);
+    if usage.dispatch_count >= limit {
+        return Err(format!("Headless dispatch allowance exhausted: {} of {} attempts claimed; an explicit approved unblock is required", usage.dispatch_count, limit));
+    }
+    Ok(())
+}
+
+fn claim_headless_dispatch_budget(
+    metadata: &mut serde_json::Map<String, serde_json::Value>,
+    budget: &HeadlessDispatchBudget,
+) -> Result<(), GuardError> {
+    let value = serde_json::Value::Object(metadata.clone());
+    check_headless_dispatch_budget(&value, budget).map_err(GuardError::Invalid)?;
+    let mut usage = scoped_dispatch_usage(&value, budget).map_err(GuardError::Invalid)?;
+    usage.dispatch_count = usage.dispatch_count.saturating_add(1);
+    metadata.insert(
+        HEADLESS_DISPATCH_BUDGET_KEY.into(),
+        serde_json::to_value(usage).map_err(|e| GuardError::Invalid(e.to_string()))?,
+    );
+    Ok(())
+}
+
+/// Called only from the verified user's unblock decision effect.
+pub(crate) fn extend_headless_dispatch_budget(
+    metadata: &serde_json::Value,
+    patch: &mut serde_json::Map<String, serde_json::Value>,
+) -> Result<bool, GuardError> {
+    let Some(value) = metadata.get(HEADLESS_DISPATCH_BUDGET_KEY) else {
+        return Ok(false);
+    };
+    let mut usage: HeadlessDispatchUsage = serde_json::from_value(value.clone()).map_err(|_| {
+        GuardError::Invalid("Headless dispatch budget evidence is unreadable".into())
+    })?;
+    usage.approved_extra_dispatches = usage
+        .approved_extra_dispatches
+        .saturating_add(DEFAULT_ATTEMPT_CAP);
+    patch.insert(
+        HEADLESS_DISPATCH_BUDGET_KEY.into(),
+        serde_json::to_value(usage).map_err(|e| GuardError::Invalid(e.to_string()))?,
+    );
+    Ok(true)
 }
 
 struct GoalRow {
@@ -527,6 +624,9 @@ pub async fn advance_goal_checked_with_auto_land(
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(db_err)?;
 
     let goal = read_goal_tx(&mut tx, card_id).await?;
+    crate::goal_candidates::check_expected_tx(&mut tx, card_id, effects.expected_attempt.as_ref())
+        .await
+        .map_err(|e| GuardError::Denied(e.to_string()))?;
     if goal.card_type != "goal" {
         return Err(GuardError::Invalid(format!(
             "Card '{}' is type '{}', not 'goal'",
@@ -584,9 +684,25 @@ pub async fn advance_goal_checked_with_auto_land(
         None
     };
 
+    if let Some(input) = effects.attempt_claim.as_ref() {
+        if action != GoalAction::Dispatch {
+            return Err(GuardError::Invalid(
+                "Attempt claim requires Dispatch".into(),
+            ));
+        }
+        crate::goal_attempts::claim_tx(&mut tx, card_id, &goal.project_id, input)
+            .await
+            .map_err(|e| GuardError::Db(e.to_string()))?;
+    }
+
     // Build new metadata.
     let mut meta = goal.metadata;
     apply_patch(&mut meta, &effects.metadata_patch);
+    if action == GoalAction::Dispatch {
+        if let Some(budget) = effects.dispatch_budget.as_ref() {
+            claim_headless_dispatch_budget(&mut meta, budget)?;
+        }
+    }
     if let Some(ref notes) = effects.review_notes {
         meta.insert(
             "review_notes".to_string(),
@@ -697,7 +813,26 @@ pub(crate) async fn advance_goal_checked_in_tx(
     proof: Option<DecisionProof>,
     effects: TransitionEffects,
 ) -> Result<GoalTransitionRecord, GuardError> {
+    advance_goal_checked_in_tx_with_auto_land(
+        tx, card_id, action, actor, proof, effects, false, None,
+    )
+    .await
+}
+
+pub(crate) async fn advance_goal_checked_in_tx_with_auto_land(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    card_id: &str,
+    action: GoalAction,
+    actor: &str,
+    proof: Option<DecisionProof>,
+    effects: TransitionEffects,
+    auto_land_allowed: bool,
+    calling_session_id: Option<&str>,
+) -> Result<GoalTransitionRecord, GuardError> {
     let goal = read_goal_tx(tx, card_id).await?;
+    crate::goal_candidates::check_expected_tx(tx, card_id, effects.expected_attempt.as_ref())
+        .await
+        .map_err(|e| GuardError::Denied(e.to_string()))?;
     if goal.card_type != "goal" {
         return Err(GuardError::Invalid(format!(
             "Card '{}' is type '{}', not 'goal'",
@@ -725,14 +860,36 @@ pub(crate) async fn advance_goal_checked_in_tx(
         .await
         .map_err(db_err)?
         .unwrap_or(2);
-    check_proof(tier, proof.as_ref(), card_id, action, false, None)?;
+    check_proof(
+        tier,
+        proof.as_ref(),
+        card_id,
+        action,
+        auto_land_allowed,
+        calling_session_id,
+    )?;
 
     let (decision_id, audit_actor) = match proof.as_ref() {
         Some(p) => (p.decision_id().to_string(), p.acted_by().to_string()),
         None => ("none".to_string(), actor.to_string()),
     };
+    if let Some(input) = effects.attempt_claim.as_ref() {
+        if action != GoalAction::Dispatch {
+            return Err(GuardError::Invalid(
+                "Attempt claim requires Dispatch".into(),
+            ));
+        }
+        crate::goal_attempts::claim_tx(tx, card_id, &goal.project_id, input)
+            .await
+            .map_err(|e| GuardError::Db(e.to_string()))?;
+    }
     let mut meta = goal.metadata;
     apply_patch(&mut meta, &effects.metadata_patch);
+    if action == GoalAction::Dispatch {
+        if let Some(budget) = effects.dispatch_budget.as_ref() {
+            claim_headless_dispatch_budget(&mut meta, budget)?;
+        }
+    }
     if let Some(ref notes) = effects.review_notes {
         meta.insert(
             "review_notes".to_string(),
@@ -822,17 +979,113 @@ pub async fn park_goal_with_meta(
     reason: &str,
     extra_meta: &[(&str, serde_json::Value)],
 ) -> Result<(), GuardError> {
+    park_goal_with_meta_filtered(pool, card_id, actor, reason, extra_meta, None, None)
+        .await
+        .map(|_| ())
+}
+
+pub(crate) async fn park_goal_for_attempt(
+    pool: &Pool<Sqlite>,
+    card_id: &str,
+    actor: &str,
+    reason: &str,
+    expected: Option<&crate::goal_candidates::ExpectedAttempt>,
+) -> Result<(), GuardError> {
+    park_goal_with_meta_filtered(pool, card_id, actor, reason, &[], None, expected)
+        .await
+        .map(|_| ())
+}
+
+/// Park only a still-Ready, still-exhausted native authorization. A racing
+/// authorized dispatch/unblock must not be cancelled by a stale preflight.
+pub(crate) async fn park_exhausted_headless_dispatch(
+    pool: &Pool<Sqlite>,
+    card_id: &str,
+    budget: &HeadlessDispatchBudget,
+    reason: &str,
+) -> Result<bool, GuardError> {
+    park_goal_with_meta_filtered(
+        pool,
+        card_id,
+        decisions::ACTOR_SYSTEM,
+        reason,
+        &[],
+        Some(budget),
+        None,
+    )
+    .await
+}
+
+async fn park_goal_with_meta_filtered(
+    pool: &Pool<Sqlite>,
+    card_id: &str,
+    actor: &str,
+    reason: &str,
+    extra_meta: &[(&str, serde_json::Value)],
+    exhausted_budget: Option<&HeadlessDispatchBudget>,
+    expected_attempt: Option<&crate::goal_candidates::ExpectedAttempt>,
+) -> Result<bool, GuardError> {
     // BEGIN IMMEDIATE: this guard reads the goal row / audit-chain head before
     // upgrading to a write; taking the write lock up front avoids the un-retryable
     // BUSY lock-upgrade a concurrent writer would trigger (see advance_goal_checked).
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(db_err)?;
 
-    let goal = read_goal_tx(&mut tx, card_id).await?;
+    let project_id = park_goal_with_meta_filtered_tx(
+        &mut tx,
+        card_id,
+        actor,
+        reason,
+        extra_meta,
+        exhausted_budget,
+        expected_attempt,
+    )
+    .await?;
+    tx.commit().await.map_err(db_err)?;
+    if let Some((project_id, journal_actor)) = project_id {
+        crate::events::emit(crate::events::goal_state_changed(
+            card_id,
+            Some(&project_id),
+            None,
+            "failed",
+            &journal_actor,
+        ));
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+async fn park_goal_with_meta_filtered_tx(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    card_id: &str,
+    actor: &str,
+    reason: &str,
+    extra_meta: &[(&str, serde_json::Value)],
+    exhausted_budget: Option<&HeadlessDispatchBudget>,
+    expected_attempt: Option<&crate::goal_candidates::ExpectedAttempt>,
+) -> Result<Option<(String, String)>, GuardError> {
+    crate::goal_candidates::check_expected_tx(tx, card_id, expected_attempt)
+        .await
+        .map_err(|e| GuardError::Denied(e.to_string()))?;
+    let goal = read_goal_tx(tx, card_id).await?;
     if goal.card_type != "goal" {
         return Err(GuardError::Invalid(format!(
             "Card '{}' is not a goal",
             card_id
         )));
+    }
+
+    if let Some(budget) = exhausted_budget {
+        let binding = state_binding_of_column_tx(tx, &goal.column_id).await?;
+        if binding.as_deref() != Some("ready")
+            || check_headless_dispatch_budget(
+                &serde_json::Value::Object(goal.metadata.clone()),
+                budget,
+            )
+            .is_ok()
+        {
+            return Ok(None);
+        }
     }
 
     let journal_actor = journal_actor(actor, &goal.metadata);
@@ -869,33 +1122,23 @@ pub async fn park_goal_with_meta(
     let meta_str = serde_json::to_string(&serde_json::Value::Object(meta))
         .map_err(|e| GuardError::Db(e.to_string()))?;
 
-    let failed_col = goal_column_id_tx(&mut tx, &goal.project_id, "failed").await?;
-    let position = next_position_tx(&mut tx, &failed_col).await?;
+    let failed_col = goal_column_id_tx(tx, &goal.project_id, "failed").await?;
+    let position = next_position_tx(tx, &failed_col).await?;
 
     sqlx::query("UPDATE cards SET metadata_json = ?, column_id = ?, position = ? WHERE id = ?")
         .bind(&meta_str)
         .bind(&failed_col)
         .bind(position)
         .bind(card_id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(db_err)?;
 
-    decisions::append_audit_tx(&mut tx, "none", Some(card_id), actor, 0, "park", None)
+    decisions::append_audit_tx(tx, "none", Some(card_id), actor, 0, "park", None)
         .await
         .map_err(GuardError::Db)?;
 
-    tx.commit().await.map_err(db_err)?;
-
-    crate::events::emit(crate::events::goal_state_changed(
-        card_id,
-        Some(&goal.project_id),
-        None,
-        "failed",
-        &journal_actor,
-    ));
-
-    Ok(())
+    Ok(Some((goal.project_id, journal_actor)))
 }
 
 /// F1c (harness loop, Lane F1 2026-09-10, wired by I1 as a gate fix):
@@ -1009,6 +1252,18 @@ pub async fn requeue_goal(
     requeue_goal_with_meta(pool, card_id, actor, new_attempt_count, reason, &[], false).await
 }
 
+pub(crate) async fn requeue_goal_for_attempt(
+    pool: &Pool<Sqlite>,
+    card_id: &str,
+    actor: &str,
+    count: u64,
+    reason: &str,
+    expected: Option<&crate::goal_candidates::ExpectedAttempt>,
+) -> Result<(), GuardError> {
+    requeue_goal_with_meta_for_attempt(pool, card_id, actor, count, reason, &[], false, expected)
+        .await
+}
+
 /// [`requeue_goal`], additionally merging `extra_meta` into the card's metadata
 /// inside the SAME transaction.
 ///
@@ -1050,11 +1305,37 @@ pub async fn requeue_goal_with_meta(
     extra_meta: &[(&str, serde_json::Value)],
     dispatched_session_alive: bool,
 ) -> Result<(), GuardError> {
+    requeue_goal_with_meta_for_attempt(
+        pool,
+        card_id,
+        actor,
+        new_attempt_count,
+        reason,
+        extra_meta,
+        dispatched_session_alive,
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn requeue_goal_with_meta_for_attempt(
+    pool: &Pool<Sqlite>,
+    card_id: &str,
+    actor: &str,
+    new_attempt_count: u64,
+    reason: &str,
+    extra_meta: &[(&str, serde_json::Value)],
+    dispatched_session_alive: bool,
+    expected_attempt: Option<&crate::goal_candidates::ExpectedAttempt>,
+) -> Result<(), GuardError> {
     // BEGIN IMMEDIATE: this guard reads the goal row / audit-chain head before
     // upgrading to a write; taking the write lock up front avoids the un-retryable
     // BUSY lock-upgrade a concurrent writer would trigger (see advance_goal_checked).
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(db_err)?;
 
+    crate::goal_candidates::check_expected_tx(&mut tx, card_id, expected_attempt)
+        .await
+        .map_err(|e| GuardError::Denied(e.to_string()))?;
     let goal = read_goal_tx(&mut tx, card_id).await?;
     if goal.card_type != "goal" {
         return Err(GuardError::Invalid(format!(
@@ -1368,6 +1649,20 @@ pub async fn finalize_dispatch_claim(
         )));
     }
 
+    crate::goal_attempts::finalize_tx(
+        &mut tx,
+        card_id,
+        claim_id,
+        metadata_patch
+            .get("worker_session_id")
+            .and_then(|v| v.as_str()),
+        metadata_patch
+            .get("execution_receipt")
+            .and_then(|v| v.get("process_id"))
+            .and_then(|v| v.as_i64()),
+    )
+    .await
+    .map_err(|e| GuardError::Db(e.to_string()))?;
     let mut meta = goal.metadata;
     apply_patch(&mut meta, &metadata_patch);
     let meta_str = serde_json::to_string(&serde_json::Value::Object(meta))
@@ -1404,6 +1699,9 @@ pub async fn release_dispatch_claim(
         )));
     }
 
+    crate::goal_attempts::release_tx(&mut tx, card_id, claim_id, reason)
+        .await
+        .map_err(|e| GuardError::Db(e.to_string()))?;
     let journal_actor = journal_actor(decisions::ACTOR_SYSTEM, &goal.metadata);
     let mut meta = goal.metadata;
     meta.insert(
@@ -2000,6 +2298,112 @@ pub async fn exhaust_and_park_with_cause(
     last_error: Option<&str>,
     cause: Option<decisions::UnblockCause>,
 ) -> Result<String, String> {
+    exhaust_and_park_for_attempt(
+        pool,
+        card_id,
+        _goal_title,
+        project_id,
+        exhaustion,
+        last_error,
+        cause,
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn exhaust_and_park_for_attempt(
+    pool: &Pool<Sqlite>,
+    card_id: &str,
+    _goal_title: &str,
+    project_id: &str,
+    exhaustion: BudgetExhaustion,
+    last_error: Option<&str>,
+    cause: Option<decisions::UnblockCause>,
+    expected_attempt: Option<&crate::goal_candidates::ExpectedAttempt>,
+) -> Result<String, String> {
+    if let Some(expected) = expected_attempt {
+        let mut tx = pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(|e| e.to_string())?;
+        crate::goal_candidates::check_expected_tx(&mut tx, card_id, Some(expected))
+            .await
+            .map_err(|e| e.to_string())?;
+        let goal = read_goal_tx(&mut tx, card_id).await.map_err(String::from)?;
+        let (spent, cap) = exhaustion.spent_and_cap();
+        let payload = serde_json::to_value(decisions::UnblockPayload {
+            reason: exhaustion.reason(),
+            spent: Some(spent),
+            cap: Some(cap),
+            cause: cause.or_else(|| infer_exhaustion_cause(&exhaustion, last_error)),
+            salvage: salvage_facts_for_park(&serde_json::Value::Object(goal.metadata), last_error),
+        })
+        .map_err(|e| e.to_string())?;
+        let existing:Option<String>=sqlx::query_scalar("SELECT id FROM decisions WHERE goal_id=? AND kind='unblock' AND status='open' ORDER BY created_at DESC LIMIT 1")
+            .bind(card_id).fetch_optional(&mut *tx).await.map_err(|e|e.to_string())?;
+        let reason = format!(
+            "{}{}",
+            exhaustion.describe(),
+            last_error
+                .map(|e| format!("; last error: {e}"))
+                .unwrap_or_default()
+        );
+        let meta = match &exhaustion {
+            BudgetExhaustion::AttemptCap { spent, .. } => {
+                vec![("attempt_count", serde_json::json!(*spent))]
+            }
+            _ => Vec::new(),
+        };
+        park_goal_with_meta_filtered_tx(
+            &mut tx,
+            card_id,
+            decisions::ACTOR_SYSTEM,
+            &reason,
+            &meta,
+            None,
+            Some(expected),
+        )
+        .await
+        .map_err(String::from)?;
+        let created = if let Some(id) = existing {
+            (id, None)
+        } else {
+            let (id, tier) = decisions::create_validated_decision_tx(
+                &mut tx,
+                decisions::NewDecision {
+                    kind: "unblock".into(),
+                    goal_id: Some(card_id.into()),
+                    project_id: Some(project_id.into()),
+                    headline: Some(
+                        stopped_by_run_headline(last_error)
+                            .unwrap_or_else(|| exhaustion_headline(&exhaustion))
+                            .into(),
+                    ),
+                    detail: Some(format!(
+                        "Goal {card_id} parked: {}. Last error: {}",
+                        exhaustion.describe(),
+                        last_error.unwrap_or("(none recorded)")
+                    )),
+                    payload,
+                    ..Default::default()
+                },
+            )
+            .await?;
+            (id, Some(tier))
+        };
+        tx.commit().await.map_err(|e| e.to_string())?;
+        if let Some(tier) = created.1 {
+            crate::events::emit(crate::events::decision_created(&created.0, "unblock", tier));
+        }
+        crate::events::emit(crate::events::goal_state_changed(
+            card_id,
+            Some(project_id),
+            None,
+            "failed",
+            decisions::ACTOR_SYSTEM,
+        ));
+        return Ok(created.0);
+    }
     // Dedupe: one open unblock decision per goal.
     let decision_id = match decisions::find_open_decision_for_goal(pool, card_id, "unblock").await?
     {
@@ -2057,7 +2461,7 @@ pub async fn exhaust_and_park_with_cause(
         _ => Vec::new(),
     };
 
-    park_goal_with_meta(
+    park_goal_with_meta_filtered(
         pool,
         card_id,
         decisions::ACTOR_SYSTEM,
@@ -2069,6 +2473,8 @@ pub async fn exhaust_and_park_with_cause(
                 .unwrap_or_default()
         ),
         &attempt_meta,
+        None,
+        expected_attempt,
     )
     .await
     .map_err(String::from)?;
@@ -3436,6 +3842,156 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, GuardError::Invalid(_)));
+    }
+
+    #[tokio::test]
+    async fn headless_dispatch_budget_is_atomic_and_not_refunded() {
+        let pool = test_pool().await;
+        let goal = goal_in_state(&pool, "ready", 0).await;
+        let claim = || {
+            advance_goal_checked(
+                &pool,
+                &goal.id,
+                GoalAction::Dispatch,
+                "system",
+                None,
+                TransitionEffects {
+                    metadata_patch: serde_json::Map::from_iter([(
+                        "attempt_count".into(),
+                        serde_json::json!(1),
+                    )]),
+                    dispatch_budget: Some(HeadlessDispatchBudget {
+                        coordinator_session_id: "coordinator".into(),
+                        automatic_limit: 1,
+                    }),
+                    ..Default::default()
+                },
+            )
+        };
+        let (first, second) = tokio::join!(claim(), claim());
+        assert_eq!(usize::from(first.is_ok()) + usize::from(second.is_ok()), 1);
+        // The old goal-attempt counter can be refunded; the native dispatch
+        // authorization is consumed by the actual transaction regardless.
+        maybe_forgive_zero_progress_attempt(&pool, &goal.id, true)
+            .await
+            .unwrap();
+        requeue_goal(&pool, &goal.id, "system", 0, "zero progress refunded")
+            .await
+            .unwrap();
+        let metadata = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .metadata_json;
+        assert_eq!(metadata[HEADLESS_DISPATCH_BUDGET_KEY]["dispatch_count"], 1);
+        assert_eq!(metadata["attempt_count"], 0);
+        let failure = claim().await.unwrap_err();
+        assert!(failure.to_string().contains("allowance exhausted"));
+        assert!(crate::cards::merge_card_metadata(
+            &pool,
+            &goal.id,
+            serde_json::json!({HEADLESS_DISPATCH_BUDGET_KEY: null}),
+            false,
+        )
+        .await
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn stale_exhausted_dispatch_park_preserves_authorized_dispatch_and_unblock() {
+        let pool = test_pool().await;
+        let goal = goal_in_state(&pool, "ready", 0).await;
+        let budget = HeadlessDispatchBudget {
+            coordinator_session_id: "coordinator".into(),
+            automatic_limit: 1,
+        };
+        let mut metadata = goal.metadata_json.as_object().unwrap().clone();
+        claim_headless_dispatch_budget(&mut metadata, &budget).unwrap();
+        sqlx::query("UPDATE cards SET metadata_json = ? WHERE id = ?")
+            .bind(serde_json::Value::Object(metadata).to_string())
+            .bind(&goal.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let exhausted = crate::cards::get_card(&pool, &goal.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .metadata_json;
+        assert!(check_headless_dispatch_budget(&exhausted, &budget).is_err());
+        // The approved unblock committed between the preflight and park.
+        let mut patch = serde_json::Map::new();
+        extend_headless_dispatch_budget(&exhausted, &mut patch).unwrap();
+        let mut refreshed = exhausted.as_object().unwrap().clone();
+        apply_patch(&mut refreshed, &patch);
+        sqlx::query("UPDATE cards SET metadata_json = ? WHERE id = ?")
+            .bind(serde_json::Value::Object(refreshed).to_string())
+            .bind(&goal.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(
+            !park_exhausted_headless_dispatch(&pool, &goal.id, &budget, "stale cap")
+                .await
+                .unwrap()
+        );
+        assert_eq!(state_of(&pool, &goal.id).await, "ready");
+        // Its authorized dispatch committed before another stale park.
+        advance_goal_checked(
+            &pool,
+            &goal.id,
+            GoalAction::Dispatch,
+            "system",
+            None,
+            TransitionEffects {
+                dispatch_budget: Some(budget),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let stale_budget = HeadlessDispatchBudget {
+            coordinator_session_id: "coordinator".into(),
+            automatic_limit: 1,
+        };
+        assert!(
+            !park_exhausted_headless_dispatch(&pool, &goal.id, &stale_budget, "stale cap")
+                .await
+                .unwrap()
+        );
+        assert_eq!(state_of(&pool, &goal.id).await, "in_progress");
+    }
+
+    #[test]
+    fn headless_dispatch_budget_is_run_scoped_and_extends_only_explicitly() {
+        let budget = HeadlessDispatchBudget {
+            coordinator_session_id: "coordinator".into(),
+            automatic_limit: 1,
+        };
+        let mut meta = serde_json::Map::new();
+        claim_headless_dispatch_budget(&mut meta, &budget).unwrap();
+        let snapshot = serde_json::Value::Object(meta.clone());
+        assert!(check_headless_dispatch_budget(&snapshot, &budget).is_err());
+        let mut patch = serde_json::Map::new();
+        assert!(extend_headless_dispatch_budget(&snapshot, &mut patch).unwrap());
+        apply_patch(&mut meta, &patch);
+        claim_headless_dispatch_budget(&mut meta, &budget).unwrap();
+        assert_eq!(meta[HEADLESS_DISPATCH_BUDGET_KEY]["dispatch_count"], 2);
+        let other = HeadlessDispatchBudget {
+            coordinator_session_id: "other-coordinator".into(),
+            automatic_limit: 1,
+        };
+        claim_headless_dispatch_budget(&mut meta, &other).unwrap();
+        assert_eq!(meta[HEADLESS_DISPATCH_BUDGET_KEY]["dispatch_count"], 1);
+        assert_eq!(
+            meta[HEADLESS_DISPATCH_BUDGET_KEY]["approved_extra_dispatches"],
+            0
+        );
+        assert!(check_headless_dispatch_budget(
+            &serde_json::json!({HEADLESS_DISPATCH_BUDGET_KEY: {}}),
+            &budget
+        )
+        .is_err());
     }
 
     #[tokio::test]

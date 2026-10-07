@@ -299,6 +299,11 @@ pub fn render_json(reports: &[TierReport]) -> serde_json::Value {
                         "worker_local_tokens": r.cost.worker_local_tokens,
                         "worker_offset_usd": r.cost.worker_offset_usd,
                         "duration_secs": r.duration_secs,
+                        "first_tool_ms": r.first_tool_ms,
+                        "native_wall_ms": r.native_wall_ms,
+                        "native_timing_phase": r.native_timing_phase,
+                        "native_timing_root_session_id": r.native_timing_root_session_id,
+                        "native_other_session_first_tool_ms": r.native_other_session_first_tool_ms,
                         "harness_exit": r.harness_exit,
                         "harness_timed_out": r.harness_timed_out,
                         // Lane K7: distinguishes an oracle that could not

@@ -84,6 +84,7 @@ struct SystemPromptContext {
     max_extensions: usize,
     max_tools: usize,
     code_execution_mode: bool,
+    headless_coding_coordinator: bool,
 }
 
 pub struct SystemPromptBuilder<'a, M> {
@@ -95,6 +96,7 @@ pub struct SystemPromptBuilder<'a, M> {
     subagents_enabled: bool,
     hints: Option<String>,
     code_execution_mode: bool,
+    headless_coding_coordinator: bool,
     goose_mode: Option<GooseMode>,
     /// Live scheduled-job count for the self-knowledge brief (Queryable). Fetched
     /// async at the call site (the scheduler is not reachable in `build()`).
@@ -146,6 +148,13 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
 
     pub fn with_code_execution_mode(mut self, enabled: bool) -> Self {
         self.code_execution_mode = enabled;
+        self
+    }
+
+    /// Omit desktop navigation guidance for the headless coding coordinator.
+    /// The persona, capability guardrails, extensions and recipe stay intact.
+    pub fn with_headless_coding_coordinator(mut self, enabled: bool) -> Self {
+        self.headless_coding_coordinator = enabled;
         self
     }
 
@@ -333,6 +342,7 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
             max_extensions: MAX_EXTENSIONS,
             max_tools: MAX_TOOLS,
             code_execution_mode: self.code_execution_mode,
+            headless_coding_coordinator: self.headless_coding_coordinator,
         };
 
         let base_prompt = if let Some(override_prompt) = &self.manager.system_prompt_override {
@@ -662,6 +672,7 @@ impl PromptManager {
             subagents_enabled: false,
             hints: None,
             code_execution_mode: false,
+            headless_coding_coordinator: false,
             goose_mode: None,
             scheduled_job_count: None,
             dispatchable_workers: Vec::new(),
@@ -693,6 +704,30 @@ mod tests {
             opening_greeting: greeting.to_string(),
             ..Default::default()
         }))
+    }
+
+    #[test]
+    fn headless_coding_prompt_keeps_contract_guardrails_and_root_but_omits_desktop_guidance() {
+        let mut manager = PromptManager::new();
+        manager.add_system_prompt_extra("recipe".into(), "EXACT CODING PROTOCOL".into());
+        manager.add_system_prompt_extra("repo_map".into(), "ROOT ORIENTATION".into());
+        let full = manager.builder().build();
+        let coordinator = manager
+            .builder()
+            .with_headless_coding_coordinator(true)
+            .build();
+        assert!(full.contains("# Vision"));
+        assert!(full.contains("# Projects"));
+        assert!(!coordinator.contains("# Vision"));
+        assert!(!coordinator.contains("# Projects"));
+        for required in [
+            "# Who You Are",
+            "Guardrails",
+            "ROOT ORIENTATION",
+            "EXACT CODING PROTOCOL",
+        ] {
+            assert!(coordinator.contains(required), "missing {required}");
+        }
     }
 
     /// `Agent::prompt_manager` is private to this module, so the CLI's only
