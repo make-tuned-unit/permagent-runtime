@@ -3,12 +3,14 @@ import { useFrame, useThree } from '@react-three/fiber';
 import { Euler, PerspectiveCamera, Vector3 } from 'three';
 import { attemptWalk } from './walkCollision';
 import { ROSTER, getAgentPosition } from '../agents';
+import { HABITAT_PLACES } from './habitatLayout';
 import { crossedGatePlane, inExedra } from './meshPortal';
 import { getForumMotion } from './ForumInhabitants';
 import { FORUM_WALK_FOV } from './vistaCamera';
 
-export function ForumWalk({ onInspect, onExit, start, onEnterMesh, onExitMesh, onMeshPrompt, inMesh = false, onEvidence }: {
+export function ForumWalk({ onInspect, onExit, start, onEnterMesh, onExitMesh, onMeshPrompt, onInteractionPrompt, inMesh = false, onEvidence }: {
   onEvidence?: () => void;
+  onInteractionPrompt?: (prompt: string | null) => void;
   start:[number,number,number];
   onInspect:(id:string)=>void;
   onExit:()=>void;
@@ -24,6 +26,7 @@ export function ForumWalk({ onInspect, onExit, start, onEnterMesh, onExitMesh, o
   const feet = useRef(new Vector3(...start));
   const previous = useRef(new Vector3(...start));
   const nearGate = useRef(false);
+  const lastPrompt = useRef<string | null>(null);
   // Set while this component releases pointer lock on purpose, so the
   // pointerlockchange handler does not read it as "the user pressed Esc" and
   // drop out of walk mode — the Sovereign stays on foot inside the Agora.
@@ -70,7 +73,8 @@ export function ForumWalk({ onInspect, onExit, start, onEnterMesh, onExitMesh, o
       if (['KeyW','KeyA','KeyS','KeyD','ArrowUp','ArrowDown','ArrowLeft','ArrowRight','ShiftLeft','ShiftRight'].includes(e.code)) { e.preventDefault();keys.current.add(e.code); }
       if (e.code==='Escape') { e.preventDefault(); if (inMesh) onExitMesh?.(); else onExit(); }
       if (e.code==='KeyE' && !e.repeat) {
-        if(onEvidence && Math.hypot(feet.current.x+7,feet.current.z+7)<2.5){releasing.current=true;document.exitPointerLock?.();onEvidence();return;}
+        const archive=HABITAT_PLACES.find(place=>place.id==='gallery');
+        if(onEvidence && archive && Math.hypot(feet.current.x-archive.position[0],feet.current.z-archive.position[2])<2.8){releasing.current=true;document.exitPointerLock?.();onEvidence();return;}
         // Standing in the exedra (round the side of the ring rather than
         // through it): E is the way in, same key as meeting an agent.
         if (nearGate.current && !inMesh && onEnterMesh) { enterMesh(); return; }
@@ -138,6 +142,15 @@ export function ForumWalk({ onInspect, onExit, start, onEnterMesh, onExitMesh, o
     previous.current.copy(feet.current);
     if (crossing==='outward' && !inMesh && onEnterMesh) { releasing.current=true; document.exitPointerLock?.(); onEnterMesh(); }
     else if (crossing==='inward' && inMesh && onExitMesh) { onExitMesh(); }
+    const archive=HABITAT_PLACES.find(place=>place.id==='gallery');
+    let prompt: string | null = null;
+    if(!inMesh && onEvidence && archive && Math.hypot(feet.current.x-archive.position[0],feet.current.z-archive.position[2])<2.8) prompt='E · Inspect Garden archive';
+    else if(!inMesh){
+      let nearest: string | null = null, distance=3;
+      for(const agent of ROSTER){const p=getForumMotion(agent.id) ?? getAgentPosition(agent.id);if(!p)continue;const d=Math.hypot(p.x-feet.current.x,p.z-feet.current.z);if(d<distance){distance=d;nearest=agent.name;}}
+      if(nearest) prompt=`E · Meet ${nearest}`;
+    }
+    if(prompt!==lastPrompt.current){lastPrompt.current=prompt;onInteractionPrompt?.(prompt);}
     const near = !inMesh && inExedra(feet.current);
     if (near !== nearGate.current) { nearGate.current = near; onMeshPrompt?.(near); }
   });

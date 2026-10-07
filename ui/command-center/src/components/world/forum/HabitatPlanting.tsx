@@ -5,6 +5,10 @@ import { HABITAT_BEDS, habitatHeight } from './habitatLayout';
 import { DetailBuilder, finishDetails, material } from './habitatGeometry';
 import { GardenAssetBoundary } from './GardenAssetBoundary';
 
+/** Readable forms kept explicit so a future placement edit cannot silently
+ * collapse the garden into one repeated crown silhouette. */
+export const HABITAT_PLANT_FORMS = ['canopy tree', 'broadleaf shrub', 'fern groundcover', 'climbing vine', 'flowering accent'] as const;
+
 /** Solid leaves fill out the atlas foliage at table distance. Static instances
  * share one folded leaf, so density does not add thousands of draw calls. */
 export function HabitatPlanting() {
@@ -52,6 +56,10 @@ function GardenPlanting({texture}:{texture?:Texture}) {
       const a=i*2.39996,r=Math.sqrt((i+.3)/n)*.83;
       clump(bed.x+Math.cos(a)*bed.rx*r,habitatHeight(bed.z)+.42,bed.z+Math.sin(a)*bed.rz*r,(bed.groundcover?.8:.70)+random()*.45,i%3===0);
     }
+    // Four deliberately clustered flowering accents hold the arrival frame at
+    // eye level. They share the merged detail materials, so this adds no draw
+    // submission per flower and keeps the route through the arbor open.
+    for(const [x,z] of [[-5.9,4.9],[-.7,4.9],[-6.1,2.0],[-.5,2.0]] as [number,number][]) clump(x,2.72,z,.82,true);
     for(const side of [-1,1]) for(let i=0;i<24;i++)clump(side*(14.4+random()*.5),habitatHeight(12-i*1.55)+.10,12-i*1.55,.8+random()*.45,i%4===0);
     // A hanging garden canopy over the commons, keeping the face-to-face view clear.
     for(let i=0;i<58;i++){
@@ -72,7 +80,7 @@ function GardenPlanting({texture}:{texture?:Texture}) {
     }
     const mesh = new InstancedMesh(geometry,leaf,matrices.length);mesh.name='Layered living garden';mesh.castShadow=true;mesh.receiveShadow=true;
     matrices.forEach((o,i)=>{mesh.setMatrixAt(i,o.matrix);mesh.setColorAt(i,colors[i]);});mesh.computeBoundingSphere();
-    const group = new Group();group.add(mesh,details.finish('Garden stems and blossoms'));group.traverse(o=>{if(o instanceof Mesh)o.castShadow=false;});
+    const group = new Group();group.name='Five-form planted habitat';group.userData.readableForms=[...HABITAT_PLANT_FORMS];group.add(mesh,details.finish('Garden stems, vines and flowering accents'));group.traverse(o=>{if(o instanceof Mesh)o.castShadow=false;});
     return {group,geometry,map,materials:[leaf,stem,petal,pollen]};
   },[texture]);
   useEffect(()=>()=>{finishDetails(built.group);built.materials.forEach(m=>m.dispose());built.map?.dispose();},[built]);

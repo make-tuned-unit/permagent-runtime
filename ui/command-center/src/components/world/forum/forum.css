@@ -349,6 +349,7 @@
   padding:7px 14px}
 .forum-mesh-plaque[data-state="connected"] { color:#CFE2FF; border-color:#5599FF; }
 .forum-crosshair { pointer-events:none; position:absolute; top:50%; left:50%; color:var(--forum-accent); font:20px var(--forum-mono); transform:translate(-50%,-50%); text-shadow:0 0 4px #000; }
+.forum-interaction-prompt { pointer-events:none; position:absolute; top:58%; left:50%; transform:translateX(-50%); color:var(--forum-text); background:var(--forum-bg); border:1px solid var(--forum-border); border-left:2px solid var(--forum-accent); border-radius:var(--forum-radius); padding:8px 12px; font:11px var(--forum-mono); letter-spacing:.08em; white-space:nowrap; }
 @media(max-width:800px) { .forum-controls { font-size:8px; line-height:1.6; } .forum-districts { max-width:calc(100% - 32px); max-height:calc(100% - 300px); } }
 
 /* ── HUD presence ─────────────────────────────────────────────────────

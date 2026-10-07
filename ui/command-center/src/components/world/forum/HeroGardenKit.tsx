@@ -1,7 +1,7 @@
 import { Suspense, useEffect, useMemo, useRef } from 'react';
 import { Html, useGLTF } from '@react-three/drei';
 import { useFrame } from '@react-three/fiber';
-import { BufferGeometry, CylinderGeometry, Group, Mesh, MeshBasicMaterial, MeshStandardMaterial, Object3D, SphereGeometry } from 'three';
+import { BufferGeometry, CylinderGeometry, Group, Material, Mesh, MeshBasicMaterial, MeshPhysicalMaterial, MeshStandardMaterial, Object3D, SphereGeometry } from 'three';
 import { useCommandCenter } from '../../../lib/store';
 import { registerForumActorCollisions } from './walkCollision';
 import { extendForumLoader } from './forumGltf';
@@ -68,8 +68,8 @@ export function HeroGardenDecor(){
 function HeroRobot({id,index,state,live,selected,hovered,name,conversation,following,directing,onSelect,onHover}:{id:string;index:number;state:keyof typeof STATE;live:boolean;selected:boolean;hovered:boolean;name:string;conversation:boolean;following:string|null;directing:string|null;onSelect:(id:string)=>void;onHover:(id:string|null)=>void}){
   const {scene}=useGLTF(KIT_URL,false,false,extendForumLoader),root=useRef<Group>(null),station=stationFor(id);
   const owned=useMemo(()=>{
-    const object=cloneAsset(scene,'robot'),materials:MeshStandardMaterial[]=[],geometries:BufferGeometry[]=[],wardrobe=createAgentWardrobe(id);
-    object.traverse(o=>{if(o instanceof Mesh){const sourceMaterials=Array.isArray(o.material)?o.material:[o.material];o.castShadow=sourceMaterials.some(m=>m.name.startsWith('Ceramic'));const copy=(m:MeshStandardMaterial)=>{const c=m.clone();if(c.name.startsWith('Ceramic')){c.color.set(id==='strix'?'#a6b0ac':id==='forecaster'?'#d3dfe0':id==='picker'?'#e2d4b5':'#eee5d0');c.roughness=.35;}materials.push(c);return c;};o.material=Array.isArray(o.material)?o.material.map(m=>copy(m as MeshStandardMaterial)):copy(o.material as MeshStandardMaterial);}});
+    const object=cloneAsset(scene,'robot'),materials:Material[]=[],geometries:BufferGeometry[]=[],wardrobe=createAgentWardrobe(id);
+    object.traverse(o=>{if(o instanceof Mesh){const sourceMaterials=Array.isArray(o.material)?o.material:[o.material];o.castShadow=sourceMaterials.some(m=>m.name.startsWith('Ceramic'));const copy=(m:MeshStandardMaterial)=>{const c=new MeshPhysicalMaterial({name:m.name,color:m.color,map:m.map,normalMap:m.normalMap,roughnessMap:m.roughnessMap,metalnessMap:m.metalnessMap,roughness:m.roughness,metalness:m.metalness,transparent:m.transparent,opacity:m.opacity,alphaTest:m.alphaTest,side:m.side,depthWrite:m.depthWrite,depthTest:m.depthTest});if(c.name.startsWith('Ceramic')){c.color.set(id==='strix'?'#a6b0ac':id==='forecaster'?'#d3dfe0':id==='picker'?'#e2d4b5':'#eee5d0');c.roughness=.28;c.clearcoat=.34;c.clearcoatRoughness=.22;c.ior=1.46;}else if(c.name.startsWith('Faceplate')){c.color.set('#07141a');c.roughness=.24;c.clearcoat=.18;c.clearcoatRoughness=.3;}c.needsUpdate=true;materials.push(c);return c;};o.material=Array.isArray(o.material)?o.material.map(m=>copy(m as MeshStandardMaterial)):copy(o.material as MeshStandardMaterial);}});
     const head=heroNode(object,'Head');object.add(wardrobe.body);head?.add(wardrobe.headwear);
     if(head){const mouthGeometry=replaceFixedHeroMouth(head);if(mouthGeometry)geometries.push(mouthGeometry);}
     const mouth=new Mesh(new SphereGeometry(1,24,12),new MeshBasicMaterial({color:'#b3e4d5'}));mouth.name='Voice-synchronized mouth';mouth.position.set(0,-.085,.307);mouth.scale.set(.055,.004,.013);head?.add(mouth);
@@ -97,7 +97,7 @@ function HeroRobot({id,index,state,live,selected,hovered,name,conversation,follo
   const speech=useRef({opening:0,bins:new Uint8Array(32)});
   const workReturnAt=useRef(0);
   useEffect(()=>()=>{owned.materials.forEach(m=>m.dispose());owned.geometries.forEach(g=>g.dispose());owned.wardrobe.materials.forEach(m=>m.dispose());finishDetails(owned.wardrobe.body);finishDetails(owned.wardrobe.headwear);finishDetails(owned.seatedBody);owned.seatMaterials.forEach(m=>m.dispose());owned.mouth.geometry.dispose();(owned.mouth.material as MeshBasicMaterial).dispose();},[owned]);
-  useEffect(()=>{owned.materials.forEach(m=>{if(m.name.startsWith('Eyes')){const eyeColor=id==='henry'?'#a0dbb9':station.color;m.color.set(eyeColor);m.emissive.set(eyeColor);m.emissiveIntensity=live&&state==='working'?.8:.6;}});
+  useEffect(()=>{owned.materials.forEach(m=>{if(m instanceof MeshStandardMaterial&&m.name.startsWith('Eyes')){const eyeColor=id==='henry'?'#a0dbb9':station.color;m.color.set(eyeColor);m.emissive.set(eyeColor);m.emissiveIntensity=live&&state==='working'?.8:.6;}});
     const userBusy=following===id||directing===id||(conversation&&id==='henry');
     if(!userBusy&&state==='working'&&live&&canHabitatWorkReturn(id))commandHabitatAgent(id,[...station.position],'Returning to workstation',true,'work');
   },[owned,state,live,id,station,conversation,following,directing]);
@@ -139,7 +139,7 @@ function HeroRobot({id,index,state,live,selected,hovered,name,conversation,follo
       }
       const ease=1-Math.exp(-dt*12);limb.rotation.x+=(target-limb.rotation.x)*ease;limb.rotation.z+=(spread-limb.rotation.z)*ease;
     });
-    if(owned.head){let target=0;if((selected||hovered)&&!pose.walking)target=Math.max(-.6,Math.min(.6,Math.atan2(camera.position.x-pose.x,camera.position.z-pose.z)-pose.heading));else if(!reduced&&!working)target=Math.sin(t*.3+index)*.10;owned.head.rotation.y+=(target-owned.head.rotation.y)*(1-Math.exp(-dt*4));owned.head.rotation.x=working?.14:0;}
+    if(owned.head){let targetYaw=0,targetPitch=working?.14:0;if((selected||hovered)&&!pose.walking){targetYaw=Math.max(-.6,Math.min(.6,Math.atan2(camera.position.x-pose.x,camera.position.z-pose.z)-pose.heading));const horizontal=Math.hypot(camera.position.x-pose.x,camera.position.z-pose.z);targetPitch=Math.max(-.28,Math.min(.24,Math.atan2(camera.position.y-(pose.y+1.55),horizontal)));}else if(!reduced&&!working)targetYaw=Math.sin(t*.3+index)*.10;owned.head.rotation.y+=(targetYaw-owned.head.rotation.y)*(1-Math.exp(-dt*4));owned.head.rotation.x+=(targetPitch-owned.head.rotation.x)*(1-Math.exp(-dt*4));}
     if(reduced)owned.eyes.forEach(eye=>eye.scale.y=1);
     if(!reduced){if(pose.walking)host.position.y+=Math.abs(wave)*.022;else host.position.y+=Math.sin(t*1.0+index)*.006;const blink=Math.sin(t*.72+index*1.37)>.999?.12:1;owned.eyes.forEach(eye=>eye.scale.y=blink);}
   });

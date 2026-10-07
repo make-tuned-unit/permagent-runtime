@@ -261,6 +261,10 @@ export function HabitatArchitecture(){
     const tableY=COMMONS_SURFACE_Y;
     for(const [x,z] of [[-3.7,3.4],[-2.5,2.8]]){b.add(new LatheGeometry([[0,0],[.060,0],[.080,.02],[.086,.15],[.082,.17],[.071,.17],[.067,.035],[0,.035]].map(p=>new Vector2(...p as [number,number])),32),[x,tableY,z],[1,1,1],edge);b.cylinder([x,tableY+.139,z],.068,.004,wood);b.ring([x+.105,tableY+.105,z],.062,.014,bronze,[0,0,0]);}
     b.box([-3.2,tableY+.0225,3.7],[.5,.045,.34],wood,[0,.2,0]);b.box([-3.2,tableY+.051,3.7],[.46,.012,.30],cloth,[0,.2,0]);
+    // Field notebook edge, page block and a small brass pencil make the table
+    // read as a used work surface in both arrival directions.
+    b.box([-3.2,tableY+.062,3.7],[.40,.012,.25],edge,[0,.2,0]);
+    b.cylinder([-3.02,tableY+.083,3.70],.012,.31,bronze,.012,[0,0,Math.PI/2]);
     // Low path lights establish depth instead of a field of bright pin lights.
     for(const x of [-5.2,8.1])for(const z of [-13,-7,1,9]){const y=habitatHeight(z);b.cylinder([x,y+.23,z],.09,.46,bronze);b.cylinder([x,y+.47,z],.065,.05,glow);}
     const group=b.finish('Authored habitat architecture');

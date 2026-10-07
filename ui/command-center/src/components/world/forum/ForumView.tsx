@@ -7,7 +7,7 @@ import { HABITAT_ARRIVAL, HABITAT_PLACES, HABITAT_START, ORCHESTRATOR_TABLE_SEAT
 import { nextAgentFocus } from './agentFocus';
 import { GardenAssetBoundary } from './GardenAssetBoundary';
 import { HeroGardenDecor, HeroGardenAgents } from './HeroGardenKit';
-import { EvidenceLesson } from './EvidenceLesson';
+import { HabitatLearning } from './HabitatLearning';
 import { applyForumSurfaceMaterials } from './ForumSurfaceMaterials';
 import { Suspense, useEffect, useMemo, useState, useCallback, useRef, type CSSProperties, type RefObject } from 'react';
 import { Canvas, useFrame } from '@react-three/fiber';
@@ -258,6 +258,7 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
   useEffect(() => { const change = () => setPageVisible(!document.hidden); document.addEventListener('visibilitychange', change); return () => document.removeEventListener('visibilitychange', change); }, []);
   const worldRef = useRef<HTMLElement>(null);
   const [walking,setWalking] = useState(false);
+  const [interactionPrompt,setInteractionPrompt] = useState<string|null>(null);
   const onScreen = useOnScreen(worldRef);
   // `visible` is the host's own claim; `onScreen` is what the layout actually
   // gives this instance. Both must hold before the world renders or takes keys.
@@ -460,7 +461,7 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
               }}
             /></Suspense>
           : walking
-          ? <ForumWalk start={walkStartOverride ?? walkStart} onExit={exitWalk} onInspect={inspectAgent} inMesh={agoraOpen} onEnterMesh={enterMesh} onExitMesh={leaveMesh} onMeshPrompt={setMeshPrompt} onEvidence={compact ? ()=>{setWalking(false);setDeskOpen(true);setTab('evidence');} : undefined} />
+          ? <ForumWalk start={walkStartOverride ?? walkStart} onExit={exitWalk} onInspect={inspectAgent} inMesh={agoraOpen} onEnterMesh={enterMesh} onExitMesh={leaveMesh} onMeshPrompt={setMeshPrompt} onInteractionPrompt={setInteractionPrompt} onEvidence={compact ? ()=>{setInteractionPrompt(null);setWalking(false);setDeskOpen(true);setTab('evidence');} : undefined} />
           : !agoraOpen && (compact ? <HabitatNavigation conversation={conversation} district={district} focusAgent={focusAgent} overview={overview} follow={follow} /> : <ForumNavigation district={district} focusAgent={focusAgent} />)}
         <ForumPostProcessing appearance={appearance} gentle={compact} />
         <PerfSampler />
@@ -526,6 +527,7 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
         onConversation={sitWithOrchestrator} onInspect={()=>{setDeskOpen(true);setTab('meet');}} onBrief={()=>{setDeskOpen(true);setKind('Job');setTab('task');}} />}
       {conversation && <OrchestratorConversation name={configuredName || 'Your orchestrator'} onLeave={leaveTable} />}
       {walking && <div className="forum-crosshair" aria-hidden="true">+</div>}
+      {walking && interactionPrompt && !agoraOpen && <div className="forum-interaction-prompt" role="status">{interactionPrompt}</div>}
       {/* The bottom-right corner keeps the Agora return, skiff, and walk
           controls in one column so they never cover one another. */}
       {/* The floating chat pill owns this corner too; QA 2026-09-20 caught it
@@ -566,7 +568,7 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
       <select id="forum-agent" value={selected} onChange={e => selectAndFocusAgent(e.target.value, { markUnsaved: true })}>{ROSTER.map(a => <option key={a.id} value={a.id}>{a.isHenry ? `${configuredName || 'Your agent'} · Sovereign orchestrator` : a.name}</option>)}</select>
       <nav className="forum-tabs" aria-label="Agent desk">{(compact ? ['meet','learn','evidence','task','conversation'] : ['meet','learn','task','conversation']).map(t => <Button colors={colors} flashSuccess={false} key={t} aria-pressed={tab===t} onClick={() => setTab(t)}>{t==='meet' ? 'Meet' : t==='learn' ? 'Learn' : t==='evidence' ? 'Evidence' : t==='task' ? (compact ? 'Brief' : 'Give a brief') : (compact ? 'Chat' : 'Conversation')}</Button>)}</nav>
       {tab==='meet' && <section>{compact && agent.isHenry && <Button colors={colors} variant="primary" flashSuccess={false} onClick={sitWithOrchestrator}>Sit with {configuredName || 'Your orchestrator'} ↗</Button>}<div className="forum-agent-portrait" style={{borderColor:agent.trimColor}}><img key={agent.id} src={`${import.meta.env.BASE_URL}world/forum-characters/${agent.id}.png`} alt={profile.signature} onError={e=>{e.currentTarget.style.visibility='hidden';}} /><div><span className="eyebrow">{profile.archetype}</span><h3>{agent.name}</h3></div></div>{deskOpen && agent.isHenry && <div className="forum-passport-detail"><ForumPassport /></div>}<p role="status">Reported status: {selectedState ? selectedState.hudState : 'not yet available'}</p><p>{profiles[selected] ?? `${agent.name} is part of the existing World roster. Its dedicated panel in the main World describes its capabilities and operating limits.`}</p><div className="forum-character"><b>Working style</b><p>{profile.manner}</p><p className="forum-voice">“{profile.voice}”</p><Button colors={colors} flashSuccess={false} onClick={()=>{setBrief(profile.question);setKind('Query');setTab('task');setSaved(false);}}>Try a question for this role ↗</Button></div><div className="note"><b>What does its presence mean?</b><p>{agent.wire==='daemon' ? 'This agent has a daemon event source. Its presence alone does not confirm a connection or a running job.' : agent.wire==='sim' ? 'Ambient presence. Idle movement is simulated; it is not evidence of a running job.' : 'Static presence. This character has no live activity emitter.'}</p></div><Button colors={colors} flashSuccess={false} variant="primary" className="forum-primary" onClick={() => setTab('learn')}>How agents work ↗</Button></section>}
-      {tab==='evidence' && <EvidenceLesson />}
+      {tab==='evidence' && <HabitatLearning />}
       {tab==='learn' && <section><div className="lesson-count">FIELD GUIDE / 0{lesson+1}</div><h3>{lessons[lesson][0]}</h3><p>{lessons[lesson][1]}</p><div className="lesson-steps">{lessons.map((l,i) => <Button colors={colors} flashSuccess={false} key={l[0]} aria-label={l[0]} aria-pressed={lesson===i} onClick={() => setLesson(i)}>{i+1}</Button>)}</div><div className="note"><b>Try asking {agent.name}</b><p>{lessons[lesson][2]}</p></div><Button colors={colors} flashSuccess={false} variant="primary" className="forum-primary" onClick={() => { setBrief(lessons[lesson][2]); setKind('Query'); setSaved(false); setTab('task'); }}>Use this question ↗</Button></section>}
       {tab==='task' && <section><h3>A clear brief is a good beginning.</h3><p>Prepare a query or job for {agent.name}. Send a question, job or capability request to your orchestrator through the shared conversation. Execution and approvals use the existing runtime; exporting alone does not dispatch work.</p><label className="field-label" htmlFor="forum-kind">Type</label><select id="forum-kind" value={kind} onChange={e => { setKind(e.target.value); setSaved(false); }}><option>Query</option><option>Job</option><option>Capability</option></select><label className="field-label" htmlFor="forum-brief">What would you like to achieve?</label><textarea id="forum-brief" value={brief} placeholder="Describe the outcome and context…" onChange={e => { setBrief(e.target.value); setSaved(false); }} /><label className="field-label" htmlFor="forum-criteria">What would count as done?</label><textarea id="forum-criteria" className="short" value={criteria} placeholder="An artifact, a cited answer, a passing check…" onChange={e => { setCriteria(e.target.value); setSaved(false); }} /><Button colors={colors} flashSuccess={false} variant="primary" className="forum-primary" disabled={!brief.trim()} onClick={async()=>{
         setQueryError('');
