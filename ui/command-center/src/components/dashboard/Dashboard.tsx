@@ -356,7 +356,10 @@ export function Dashboard() {
   // it at its configured `h` just slices the card — QA 2026-10-07: the
   // weather forecast row was cut off at h:2. Such a card is drawn at its full
   // content height; scrolling cards keep the cap.
-  const growsToFit = (type: string) => registry[type]?.manifest?.layout === 'compact';
+  // 'decisions' (Needs You) is the same kind of card: a short stack of lines with
+  // no scroller. With six lines its natural height passes the h:4 cap and the
+  // clip cut off "Review →" (QA Q11), so it is drawn at its content's height.
+  const growsToFit = (type: string) => registry[type]?.manifest?.layout === 'compact' || type === 'decisions';
   visibleCards.forEach(c => configuredHeights.current.set(c.id, growsToFit(c.type) ? Math.max(c.size.h, 12) : c.size.h));
 
   return (
