@@ -221,3 +221,25 @@ describe('shipped-content convention (repo)', () => {
     }
   });
 });
+
+describe('stripCommentsAndTests', () => {
+  it('blanks comments but keeps line numbers and string contents', async () => {
+    const { stripCommentsAndTests } = await import('../../../scripts/shipped-content-check.mjs');
+    const src = 'let a = "http://x"; // qwen\n/* qwen\n qwen */ let b = 1;\nlet c = r#"qwen"#;\nlet d = \'"\'; // qwen\n';
+    const out = stripCommentsAndTests('x.rs', src);
+    expect(out.split('\n').length).toBe(src.split('\n').length);
+    expect(out).toContain('"http://x"');
+    expect(out).toContain('let b = 1;');
+    expect(out.match(/qwen/g)?.length ?? 0).toBe(1); // only the raw string
+  });
+
+  it('drops a trailing cfg(test) mod and flags test paths', async () => {
+    const { stripCommentsAndTests, isTestPath } = await import('../../../scripts/shipped-content-check.mjs');
+    const out = stripCommentsAndTests('x.rs', 'fn f() {}\n#[cfg(test)]\nmod tests {\n  const M: &str = "qwen";\n}\n');
+    expect(out).not.toContain('qwen');
+    expect(out).toContain('fn f()');
+    expect(isTestPath('a/b.test.tsx')).toBe(true);
+    expect(isTestPath('crates/x/tests/y.rs')).toBe(true);
+    expect(isTestPath('crates/x/src/y.rs')).toBe(false);
+  });
+});

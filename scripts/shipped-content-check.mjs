@@ -12,9 +12,11 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const IDENTITY_DIAGNOSTIC =
   'Rulings are cited by date ("ruling 2026-07-03"); fixtures use neutral names; prompts say "the user".';
 
-const POLICY_TOP_KEYS = new Set(['version', 'scope', 'rules', 'exceptions']);
+const POLICY_TOP_KEYS = new Set(['version', 'scope', 'rules', 'exceptions', 'fileExceptions']);
 const SCOPE_KEYS = new Set(['roots', 'extensions', 'skipDirectories', 'skipFiles']);
-const RULE_KEYS = new Set(['id', 'kind', 'include', 'exclude', 'match', 'message']);
+const RULE_KEYS = new Set(['id', 'kind', 'include', 'exclude', 'match', 'message', 'scope']);
+const RULE_SCOPES = new Set(['code', 'all']);
+const FILE_EXCEPTION_KEYS = new Set(['id', 'ruleId', 'paths', 'reasonCode', 'reason', 'reviewBy']);
 const EXCEPTION_KEYS = new Set([
   'id',
   'ruleId',
@@ -42,6 +44,7 @@ const REASON_CODES = new Set([
   'illustrativeExample',
   'historicalComment',
   'runtimeEvidence',
+  'catalogData',
 ]);
 const ALLOWED_REGEX_FLAGS = new Set(['i', 'm', 's', 'u']);
 
@@ -204,6 +207,9 @@ export function validatePolicy(policy, opts = {}) {
     if (typeof rule.message !== 'string' || rule.message.length === 0) {
       throw new PolicyError(`rule "${rule.id}": message must be non-empty`);
     }
+    if (rule.scope !== undefined && !RULE_SCOPES.has(rule.scope)) {
+      throw new PolicyError(`rule "${rule.id}": scope must be "code" or "all"`);
+    }
     assertNoUnknownKeys(rule.match, MATCHER_KEYS, `rule "${rule.id}".match`);
     validateRuleMatch(rule);
   }
@@ -255,6 +261,30 @@ export function validatePolicy(policy, opts = {}) {
     const today = opts.today ?? new Date().toISOString().slice(0, 10);
     if (ex.reviewBy < today) {
       throw new StalenessError(`exception "${ex.id}": reviewBy ${ex.reviewBy} has expired`);
+    }
+  }
+
+  const fileExceptionIds = new Set();
+  for (const fx of policy.fileExceptions ?? []) {
+    assertNoUnknownKeys(fx, FILE_EXCEPTION_KEYS, 'fileException');
+    if (typeof fx.id !== 'string' || fx.id.length === 0 || fileExceptionIds.has(fx.id)) {
+      throw new PolicyError('fileException.id must be a unique non-empty string');
+    }
+    fileExceptionIds.add(fx.id);
+    if (!ruleIds.has(fx.ruleId)) {
+      throw new PolicyError(`fileException "${fx.id}": unknown ruleId "${fx.ruleId}"`);
+    }
+    validateStringArray(fx.paths, `fileException "${fx.id}".paths`);
+    if (!REASON_CODES.has(fx.reasonCode)) {
+      throw new PolicyError(`fileException "${fx.id}": invalid reasonCode`);
+    }
+    if (typeof fx.reason !== 'string' || fx.reason.length === 0) {
+      throw new PolicyError(`fileException "${fx.id}": reason must be non-empty`);
+    }
+    validateIsoDate(fx.reviewBy, `fileException "${fx.id}"`);
+    const todayFx = opts.today ?? new Date().toISOString().slice(0, 10);
+    if (fx.reviewBy < todayFx) {
+      throw new StalenessError(`fileException "${fx.id}": reviewBy ${fx.reviewBy} has expired`);
     }
   }
 
@@ -343,6 +373,76 @@ function verifyExceptionAnchors(exceptions, repoRoot) {
       );
     }
   }
+}
+
+
+/** True for files whose whole content is test code (skipped by `scope: "code"` rules). */
+export function isTestPath(relPath) {
+  return (
+    /\.(test|spec)\.[a-z]+$/.test(relPath) ||
+    /(^|\/)(tests|__tests__)\//.test(relPath) ||
+    /(^|\/)[a-z0-9_]*_tests?\.rs$/.test(relPath)
+  );
+}
+
+/**
+ * Blank out comments (and, for Rust, a trailing `#[cfg(test)] mod` tail) while keeping every
+ * line number and column intact. String literals are respected so `"http://x"` is not a comment.
+ */
+export function stripCommentsAndTests(relPath, text) {
+  const isRust = relPath.endsWith('.rs');
+  const cStyle = isRust || /\.(ts|tsx|js|mjs|cjs|jsx)$/.test(relPath);
+  let src = text;
+  if (isRust) {
+    const m = /^[ \t]*#\[cfg\(test\)\]\s*\n?\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+\w+\s*\{/m.exec(src);
+    if (m) src = src.slice(0, m.index).replace(/[^\n]/g, (c) => c) + src.slice(m.index).replace(/[^\n]/g, ' ');
+  }
+  if (!cStyle) return src;
+  const out = src.split('');
+  const n = src.length;
+  const blank = (a, b) => {
+    for (let k = a; k < b; k += 1) if (out[k] !== '\n') out[k] = ' ';
+  };
+  let i = 0;
+  while (i < n) {
+    const c = src[i];
+    const d = src[i + 1];
+    if (c === '/' && d === '/') {
+      let j = src.indexOf('\n', i);
+      if (j === -1) j = n;
+      blank(i, j);
+      i = j;
+    } else if (c === '/' && d === '*') {
+      let depth = 1;
+      let j = i + 2;
+      while (j < n && depth > 0) {
+        if (src[j] === '/' && src[j + 1] === '*' && isRust) { depth += 1; j += 2; }
+        else if (src[j] === '*' && src[j + 1] === '/') { depth -= 1; j += 2; }
+        else j += 1;
+      }
+      blank(i, j);
+      i = j;
+    } else if (isRust && c === 'r' && /^r#*"/.test(src.slice(i, i + 40)) && !/[A-Za-z0-9_]/.test(src[i - 1] ?? '')) {
+      const hashes = /^r(#*)"/.exec(src.slice(i, i + 40))[1];
+      const close = `"${hashes}`;
+      const j = src.indexOf(close, i + 2 + hashes.length);
+      i = j === -1 ? n : j + close.length;
+    } else if (c === '"' || (!isRust && (c === "'" || c === '`'))) {
+      let j = i + 1;
+      while (j < n && src[j] !== c) {
+        if (src[j] === '\\') j += 1;
+        j += 1;
+      }
+      i = j + 1;
+    } else if (isRust && c === "'") {
+      // char literal ('x', '\n', '"') vs lifetime ('a)
+      const m = /^'(?:\\.[^']*|[^\\'])'/.exec(src.slice(i, i + 12));
+      i += m ? m[0].length : 1;
+    } else {
+      i += 1;
+    }
+  }
+  return out.join('');
 }
 
 function pathMatchesInclude(relPath, includeGlobs, excludeGlobs = []) {
@@ -475,6 +575,20 @@ function exceptionSlotKey(ex) {
   return `${ex.ruleId}|${ex.path}|${ex.line}|${ex.matchedText}`;
 }
 
+function applyFileExceptions(findings, fileExceptions) {
+  const used = new Map(fileExceptions.map((fx) => [fx.id, 0]));
+  const remaining = findings.filter((f) => {
+    const fx = fileExceptions.find((x) => x.ruleId === f.ruleId && x.paths.some((g) => matchesGlob(f.path, g)));
+    if (!fx) return true;
+    used.set(fx.id, used.get(fx.id) + 1);
+    return false;
+  });
+  for (const [id, n] of used) {
+    if (n === 0) throw new StalenessError(`fileException "${id}" suppressed nothing`);
+  }
+  return remaining;
+}
+
 function applyExceptions(findings, exceptions) {
   const bySlot = new Map();
   for (const ex of exceptions) {
@@ -553,12 +667,19 @@ export function runShippedContentCheck(options) {
     } catch (e) {
       throw new PolicyError(`scan: cannot read ${rel}: ${e.message}`);
     }
+    let codeText;
     for (const rule of policy.rules) {
       if (!pathMatchesInclude(rel, rule.include, rule.exclude)) continue;
+      let scanText = text;
+      if (rule.scope === 'code') {
+        if (isTestPath(rel)) continue;
+        codeText ??= stripCommentsAndTests(rel, text);
+        scanText = codeText;
+      }
       if (rule.kind === 'operationalLiteral') {
-        findings.push(...scanOperationalLiteral(rule, rel, text));
+        findings.push(...scanOperationalLiteral(rule, rel, scanText));
       } else if (rule.kind === 'unsupportedClaim') {
-        findings.push(...scanUnsupportedClaim(rule, rel, text));
+        findings.push(...scanUnsupportedClaim(rule, rel, scanText));
       }
     }
   }
@@ -567,6 +688,7 @@ export function runShippedContentCheck(options) {
     a.path.localeCompare(b.path) || a.line - b.line || a.ruleId.localeCompare(b.ruleId),
   );
 
+  findings = applyFileExceptions(findings, policy.fileExceptions ?? []);
   findings = applyExceptions(findings, policy.exceptions);
 
   const lines = findings.map(findingLine);
