@@ -5,6 +5,7 @@ import { useTheme } from '../../styles/useTheme';
 import { TITLEBAR_HEIGHT } from '../../lib/windowChrome';
 import { Button } from '../common/Button';
 import { api } from '../../lib/api';
+import { getDaemonTokenError } from '../../lib/daemonAuth';
 
 interface Props {
   /** Called once the daemon answers a config read. `wizardDone` mirrors
@@ -18,7 +19,7 @@ interface Props {
 const MAX_ATTEMPTS = 10;
 const RETRY_DELAY_MS = 1000;
 
-type Status = 'connecting' | 'retrying' | 'failed';
+type Status = 'connecting' | 'retrying' | 'failed' | 'unpaired';
 
 /**
  * The daemon-connecting boot state — shown between the logo splash and the
@@ -61,7 +62,14 @@ export function BootScreen({ onReady }: Props) {
           if (cancelled) return;
           onReady((config as { config?: { wizard_complete?: boolean } })?.config?.wizard_complete === true);
           return;
-        } catch {
+        } catch (e) {
+          // No credential (or a dead pairing link): retrying cannot help, and
+          // ten seconds of "still connecting" for a browser that was never
+          // paired is a lie. Say it now (QA 2026-10-07 Q1/Q24).
+          if ((e as { status?: number })?.status === 401 && getDaemonTokenError()) {
+            if (!cancelled) setStatus('unpaired');
+            return;
+          }
           if (n < MAX_ATTEMPTS) await new Promise(r => setTimeout(r, RETRY_DELAY_MS));
         }
       }
@@ -71,7 +79,16 @@ export function BootScreen({ onReady }: Props) {
     return () => { cancelled = true; };
   }, [onReady, retryKey]);
 
-  const copy = status === 'failed'
+  const copy = status === 'unpaired'
+    ? {
+        title: /pairing link/i.test(getDaemonTokenError() ?? '')
+          ? 'This pairing link is invalid or has expired'
+          : "This browser isn't paired",
+        sub: /pairing link/i.test(getDaemonTokenError() ?? '')
+          ? 'Pairing links work once. Create a new one in Settings → Devices and open it in this browser.'
+          : 'Open Permagent on your hub and pair this device from Settings → Devices.',
+      }
+    : status === 'failed'
     ? {
         title: 'Could not reach the daemon',
         sub: 'It may still be starting, or it failed to launch. Check that Permagent is running, then try again.',
@@ -86,7 +103,7 @@ export function BootScreen({ onReady }: Props) {
   // No reduce-motion routing needed here: Mobius freezes every state under
   // the setting at the source (see the `motionDisabled` gate in Mobius.tsx),
   // so 'calibrating'/'sleeping' are safe to use directly.
-  const mobiusState: MobiusState = status === 'failed' ? 'sleeping' : 'calibrating';
+  const mobiusState: MobiusState = status === 'failed' || status === 'unpaired' ? 'sleeping' : 'calibrating';
 
   return (
     <div
@@ -99,7 +116,7 @@ export function BootScreen({ onReady }: Props) {
         transition: fade,
       }}
     >
-      <Mobius size={120} state={mobiusState} glow={status === 'failed' ? 0 : 1} />
+      <Mobius size={120} state={mobiusState} glow={status === 'failed' || status === 'unpaired' ? 0 : 1} />
       <div style={{ marginTop: space.huge, textAlign: 'center', maxWidth: 320 }}>
         <p style={{
           fontFamily: font.display, fontSize: textSize.body, fontWeight: 600,
@@ -115,7 +132,7 @@ export function BootScreen({ onReady }: Props) {
             {copy.sub}
           </p>
         )}
-        {status === 'failed' && (
+        {(status === 'failed' || status === 'unpaired') && (
           <div style={{ marginTop: space.xxl, display: 'flex', justifyContent: 'center' }}>
             <Button colors={colors} variant="primary" onClick={() => setRetryKey(k => k + 1)}>
               Retry
