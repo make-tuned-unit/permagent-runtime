@@ -3,7 +3,7 @@
   "scope": {
     "roots": [
       "crates/*/src",
-      "crates/goose/assets",
+      "crates/goose/tests/fixtures",
       "ui/command-center/src",
       "ui/command-center/public",
       "ui/desktop/src-tauri"
