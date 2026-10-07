@@ -43,6 +43,7 @@ objc2-event-kit = { version = "0.3", default-features = false, features = [
     "EKCalendarItem",
     "EKEvent",
     "EKEventStore",
+    "EKParticipant",
 ] }
 # AppKit window/view geometry, for the traffic-light re-inset in chrome.rs.
 # Every feature here is already enabled by tao 0.35 on the same 0.3.2 crate, so

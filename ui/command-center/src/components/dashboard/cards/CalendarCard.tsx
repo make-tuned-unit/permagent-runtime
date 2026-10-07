@@ -1,0 +1,338 @@
+/**
+ * The Home Calendar card: a real calendar (Day · Week · Month) with a live
+ * "Next up" strip above it.
+ *
+ * Data comes from `useCalendarEvents` — the desktop shell's EventKit bridge
+ * when access is granted, the daemon route otherwise, an honest "connects in
+ * the desktop app" when neither — and the access controls are the existing
+ * `CalendarAccessPanel`, so the grant path the earlier fix built is unchanged.
+ *
+ * Size: the card measures itself. Narrower than `COMPACT_BELOW_PX` (the
+ * smallest size preset) it is just "Next up" plus today's list; from the
+ * medium preset up it is the whole calendar. See `CALENDAR_SIZE_PRESETS` in
+ * registry.ts for the sizes the Layouts gallery offers.
+ *
+ * Keyboard (card focused): ← / → previous / next period, T today, D / W / M
+ * switch view, Esc closes the event popover.
+ */
+
+import {
+  useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent,
+} from 'react';
+import { FiChevronLeft, FiChevronRight } from 'react-icons/fi';
+import { font, radius, space, tabularNums, textSize } from '../../../styles/tokens';
+import { useTheme } from '../../../styles/useTheme';
+import { Button } from '../../common/Button';
+import { Tooltip } from '../../common/Tooltip';
+import { segmentedTab, SEGMENT_STRIP_PAD, SEGMENT_STRIP_RADIUS } from '../../common/segmented';
+import { runViewTransition } from '../../../lib/viewTransition';
+import { EmptyNote } from '../atoms';
+import { calendarAccessView } from './calendarAccess';
+import { CalendarAccessPanel } from './CalendarAccessPanel';
+import { useShellCalendar } from './useShellCalendar';
+import {
+  addDays, calendarColor, CALENDAR_VIEWS, clockLabel, countdownLabel, eventKey, eventsOnDay,
+  localeFirstDay, nextUp, nextUpText, periodTitle, rangeFor, shiftAnchor, sortEvents, startOfDay,
+  upcomingEvents, wash, type CalEvent, type CalendarView,
+} from './calendar/calendarModel';
+import { useCalendarEvents } from './calendar/useCalendarEvents';
+import {
+  DayView, EventListRow, MonthView, WeekView, type PickEvent,
+} from './calendar/CalendarViews';
+import { EventPopover } from './calendar/EventPopover';
+
+/** Below this card width the calendar is "Next up" + today's list. */
+export const COMPACT_BELOW_PX = 420;
+/** Day view puts its list beside the timeline from this width up. */
+const DAY_WIDE_FROM_PX = 560;
+export const VIEW_STORAGE_KEY = 'permagent.dashboard.calendar.view.v1';
+const NOW_TICK_MS = 30_000;
+
+const VIEW_LABEL: Record<CalendarView, string> = { day: 'Day', week: 'Week', month: 'Month' };
+const VIEW_KEY: Record<string, CalendarView> = { d: 'day', w: 'week', m: 'month' };
+
+function readStoredView(): CalendarView {
+  try {
+    const v = localStorage.getItem(VIEW_STORAGE_KEY);
+    if (v === 'day' || v === 'week' || v === 'month') return v;
+  } catch { /* private mode: fall through */ }
+  return 'week';
+}
+
+interface Props {
+  /** Pin "now" (tests, evidence harness). Absent: the real clock, ticking. */
+  nowMs?: number;
+  /** `auto` measures the card; the others force a layout (tests). */
+  sizeMode?: 'auto' | 'compact' | 'full';
+  initialView?: CalendarView;
+}
+
+export function CalendarCard({ nowMs: pinnedNow, sizeMode = 'auto', initialView }: Props) {
+  const { colors } = useTheme();
+  const rootRef = useRef<HTMLDivElement>(null);
+  const [clock, setClock] = useState(() => Date.now());
+  const nowMs = pinnedNow ?? clock;
+  const [view, setView] = useState<CalendarView>(() => initialView ?? readStoredView());
+  const [anchor, setAnchor] = useState(() => pinnedNow ?? Date.now());
+  const [width, setWidth] = useState(0);
+  const [popover, setPopover] = useState<{ event: CalEvent; anchor: HTMLElement } | null>(null);
+  const firstDay = useMemo(localeFirstDay, []);
+
+  useEffect(() => {
+    if (pinnedNow != null) return;
+    const t = setInterval(() => setClock(Date.now()), NOW_TICK_MS);
+    return () => clearInterval(t);
+  }, [pinnedNow]);
+
+  useLayoutEffect(() => {
+    const el = rootRef.current;
+    if (!el) return;
+    setWidth(el.getBoundingClientRect().width);
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(entries => {
+      const w = entries[0]?.contentRect.width;
+      if (w) setWidth(w);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  const compact = sizeMode === 'compact' || (sizeMode === 'auto' && width > 0 && width < COMPACT_BELOW_PX);
+
+  const shell = useShellCalendar(true, 300, false);
+  const access = calendarAccessView(shell.inDesktopApp, shell.status, shell.fullAccessAsked);
+
+  const mainRange = useMemo(
+    () => (compact ? null : rangeFor(view, anchor, firstDay)),
+    [compact, view, anchor, firstDay],
+  );
+  // "Next up" always looks a week ahead from today, whatever page is open.
+  const nextRange = useMemo(() => {
+    const today = startOfDay(nowMs);
+    return { startMs: today, endMs: addDays(today, 8) };
+  }, [nowMs]);
+
+  const main = useCalendarEvents(mainRange, shell, nowMs);
+  const ahead = useCalendarEvents(nextRange, shell, nowMs);
+
+  const next = useMemo(() => nextUp(ahead.events, nowMs), [ahead.events, nowMs]);
+
+  const pick: PickEvent = useCallback((event, el) => setPopover({ event, anchor: el }), []);
+  const closePopover = useCallback(() => {
+    setPopover(p => {
+      if (p && document.contains(p.anchor)) p.anchor.focus({ preventScroll: true });
+      return null;
+    });
+  }, []);
+
+  const goToday = () => setAnchor(nowMs);
+  const step = (dir: -1 | 1) => setAnchor(a => shiftAnchor(view, a, dir));
+  const switchView = (next: CalendarView) => {
+    if (next === view) return;
+    const dir = CALENDAR_VIEWS.indexOf(next) < CALENDAR_VIEWS.indexOf(view) ? 'backward' : 'forward';
+    runViewTransition(() => {
+      setView(next);
+      try { localStorage.setItem(VIEW_STORAGE_KEY, next); } catch { /* not persisted: still works */ }
+    }, { direction: dir });
+  };
+  const pickDay = (dayMs: number) => { setAnchor(dayMs); switchView('day'); };
+
+  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.metaKey || e.ctrlKey || e.altKey || compact) return;
+    const t = e.target as HTMLElement;
+    if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable) return;
+    if (e.key === 'ArrowLeft') { e.preventDefault(); step(-1); }
+    else if (e.key === 'ArrowRight') { e.preventDefault(); step(1); }
+    else if (e.key.toLowerCase() === 't') { e.preventDefault(); goToday(); }
+    else if (VIEW_KEY[e.key.toLowerCase()]) { e.preventDefault(); switchView(VIEW_KEY[e.key.toLowerCase()]); }
+  };
+
+  const ghost = {
+    '--pa-btn-bg': 'transparent', '--pa-btn-fg': colors.textMuted, '--pa-btn-border': colors.border,
+    '--pa-btn-bg-hover': colors.surfaceHi, '--pa-btn-fg-hover': colors.text, '--pa-btn-border-hover': colors.borderHi,
+    '--pa-btn-bg-active': colors.surface, '--pa-btn-pad': `${space.sm}px ${space.lg}px`,
+    '--pa-btn-radius': `${radius.sm}px`, '--pa-btn-weight': 500,
+    fontFamily: font.body, fontSize: textSize.caption,
+  } as CSSProperties;
+
+  const showAccess = access.kind !== 'connected' && access.kind !== 'checking' && access.text !== '';
+  const emptyWord = view === 'day' ? 'today' : view === 'week' ? 'this week' : 'this month';
+  const loadingFirst = (compact ? ahead : main).loading && (compact ? ahead : main).events.length === 0;
+
+  return (
+    <div
+      ref={rootRef}
+      tabIndex={0}
+      role="group"
+      aria-label="Calendar"
+      data-testid="calendar-card"
+      data-mode={compact ? 'compact' : 'full'}
+      data-view={view}
+      data-source={(compact ? ahead : main).source}
+      onKeyDown={onKeyDown}
+      style={{
+        height: '100%', boxSizing: 'border-box', outline: 'none',
+        padding: compact ? space.xxl : space.xxxl, borderRadius: radius.lg,
+        background: colors.surface, border: `1px solid ${colors.border}`,
+        boxShadow: [colors.elevationRaised, colors.cardHighlight].filter(Boolean).join(', '),
+        display: 'flex', flexDirection: 'column', gap: space.lg, overflow: 'hidden', minWidth: 0,
+      }}
+    >
+      {compact ? (
+        <div style={{ fontFamily: font.display, fontSize: textSize.small, fontWeight: 600, color: colors.text }}>
+          Calendar
+        </div>
+      ) : (
+        <div style={{ display: 'flex', alignItems: 'center', gap: space.lg, flexWrap: 'wrap' }}>
+          <h3 data-testid="calendar-title" aria-live="polite" style={{
+            margin: 0, marginRight: 'auto', fontFamily: font.display, fontSize: textSize.heading,
+            fontWeight: 600, color: colors.text, letterSpacing: '-0.005em',
+          }}>
+            {periodTitle(view, anchor, firstDay)}
+          </h3>
+          <Tooltip content="Jump to today" shortcut="T">
+            <Button colors={colors} type="button" onClick={goToday} flashSuccess={false}
+              data-testid="calendar-today" style={ghost}>Today</Button>
+          </Tooltip>
+          <div style={{ display: 'inline-flex', gap: space.xxs }}>
+            <Tooltip content="Previous" shortcut="←">
+              <Button colors={colors} type="button" aria-label="Previous period" onClick={() => step(-1)}
+                flashSuccess={false} data-testid="calendar-prev" style={{ ...ghost, '--pa-btn-pad': `${space.sm}px` } as CSSProperties}>
+                <FiChevronLeft size={14} />
+              </Button>
+            </Tooltip>
+            <Tooltip content="Next" shortcut="→">
+              <Button colors={colors} type="button" aria-label="Next period" onClick={() => step(1)}
+                flashSuccess={false} data-testid="calendar-next" style={{ ...ghost, '--pa-btn-pad': `${space.sm}px` } as CSSProperties}>
+                <FiChevronRight size={14} />
+              </Button>
+            </Tooltip>
+          </div>
+          <div role="tablist" aria-label="Calendar view" style={{
+            display: 'inline-flex', gap: SEGMENT_STRIP_PAD, padding: SEGMENT_STRIP_PAD,
+            borderRadius: SEGMENT_STRIP_RADIUS, background: colors.bgDeeper, border: `1px solid ${colors.border}`,
+          }}>
+            {CALENDAR_VIEWS.map(v => (
+              <Button key={v} colors={colors} role="tab" aria-selected={v === view}
+                data-testid={`calendar-view-${v}`} onClick={() => switchView(v)} flashSuccess={false}
+                style={segmentedTab(colors, v === view)}>
+                {VIEW_LABEL[v]}
+              </Button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <NextUpStrip next={next} loading={ahead.loading && ahead.events.length === 0}
+        empty={ahead.source !== 'none' && ahead.events.length === 0} onPick={pick} />
+
+      {compact ? (
+        <CompactList events={ahead.events} nowMs={nowMs} onPick={pick} loading={loadingFirst} />
+      ) : (
+        <div key={view} className="pa-enter" data-testid="calendar-body" style={{ minWidth: 0 }}>
+          {main.events.length === 0 && !main.loading && view !== 'month' ? (
+            <EmptyNote hint={main.source === 'daemon' ? 'Only today is read until Apple Calendar is connected' : undefined}>
+              No events {emptyWord}
+            </EmptyNote>
+          ) : null}
+          {view === 'month' && (
+            <MonthView anchorMs={anchor} nowMs={nowMs} firstDay={firstDay} events={main.events}
+              onPickEvent={pick} onPickDay={pickDay} />
+          )}
+          {view === 'week' && (
+            <WeekView anchorMs={anchor} nowMs={nowMs} firstDay={firstDay} events={main.events}
+              onPickEvent={pick} onPickDay={pickDay} />
+          )}
+          {view === 'day' && (
+            <DayView anchorMs={anchor} nowMs={nowMs} events={main.events} onPickEvent={pick}
+              onPickDay={pickDay} wide={width >= DAY_WIDE_FROM_PX} />
+          )}
+          {view === 'month' && main.events.length === 0 && !main.loading && (
+            <div style={{ marginTop: space.md }}><EmptyNote>No events {emptyWord}</EmptyNote></div>
+          )}
+        </div>
+      )}
+
+      {showAccess && (
+        <CalendarAccessPanel view={access} onConnect={shell.connect} onOpenSettings={shell.openSettings} compact />
+      )}
+
+      {popover && <EventPopover event={popover.event} anchor={popover.anchor} onClose={closePopover} />}
+    </div>
+  );
+}
+
+/** "Next: Standup · in 42 min · Work", re-evaluated by the card's own clock. */
+function NextUpStrip({ next, loading, empty, onPick }: {
+  next: ReturnType<typeof nextUp>; loading: boolean; empty: boolean; onPick: PickEvent;
+}) {
+  const { colors } = useTheme();
+  const base: CSSProperties = {
+    display: 'flex', alignItems: 'center', gap: space.lg, minWidth: 0,
+    padding: `${space.md}px ${space.xl}px`, borderRadius: radius.md,
+    fontFamily: font.body, fontSize: textSize.caption,
+  };
+  if (!next) {
+    return (
+      <div data-testid="calendar-next-up" data-state={loading ? 'loading' : 'none'}
+        style={{ ...base, background: colors.fillSubtle, color: colors.textDim }}>
+        {loading ? 'Checking your calendar…' : empty ? 'Nothing coming up in the next 7 days' : 'Next up appears once a calendar is connected'}
+      </div>
+    );
+  }
+  const hue = calendarColor(next.event.calendar, colors);
+  return (
+    <button
+      type="button"
+      className="pa-btn pa-btn--composite"
+      data-testid="calendar-next-up"
+      data-state={next.state}
+      aria-label={nextUpText(next)}
+      onClick={e => onPick(next.event, e.currentTarget)}
+      style={{
+        ...base, width: '100%', justifyContent: 'flex-start', textAlign: 'left',
+        '--pa-btn-bg': wash(hue, 14), '--pa-btn-fg': colors.text, '--pa-btn-border': 'transparent',
+        '--pa-btn-bg-hover': wash(hue, 24), '--pa-btn-fg-hover': colors.text, '--pa-btn-border-hover': 'transparent',
+        '--pa-btn-bg-active': wash(hue, 30), '--pa-btn-pad': `${space.md}px ${space.xl}px`,
+        '--pa-btn-radius': `${radius.md}px`, '--pa-btn-weight': 500,
+      } as CSSProperties}
+    >
+      <span aria-hidden style={{ width: 8, height: 8, borderRadius: radius.pill, background: hue, flexShrink: 0 }} />
+      <span style={{ fontWeight: 600, color: hue, flexShrink: 0 }}>{next.state === 'ongoing' ? 'Now' : 'Next'}</span>
+      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, flex: '0 1 auto' }}>
+        {next.event.title}
+      </span>
+      <span style={{ color: colors.textMuted, flexShrink: 0, ...tabularNums }} data-testid="calendar-countdown">
+        {next.state === 'ongoing' ? (next.minutes < 1 ? 'ending now' : `ends ${countdownLabel(next.minutes)}`) : countdownLabel(next.minutes)}
+        {next.state === 'upcoming' && next.minutes >= 60 ? ` · ${clockLabel(next.event.startMs)}` : ''}
+      </span>
+      {next.event.calendar && (
+        <span style={{ color: colors.textDim, marginLeft: 'auto', flexShrink: 0, maxWidth: '35%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {next.event.calendar}
+        </span>
+      )}
+    </button>
+  );
+}
+
+/** Compact size: today's list, or the next three events when today is done. */
+function CompactList({ events, nowMs, onPick, loading }: {
+  events: readonly CalEvent[]; nowMs: number; onPick: PickEvent; loading: boolean;
+}) {
+  const { colors } = useTheme();
+  const today = eventsOnDay(events, startOfDay(nowMs));
+  const stillToday = today.filter(e => e.endMs > nowMs || e.allDay);
+  const list = stillToday.length > 0 ? sortEvents(today).slice(0, 5) : upcomingEvents(events, nowMs, 3);
+  const heading = stillToday.length > 0 ? 'Today' : 'Coming up';
+  if (loading) return null;
+  if (list.length === 0) {
+    return <EmptyNote hint="Make the card wider for the full calendar">No events today</EmptyNote>;
+  }
+  return (
+    <div data-testid="calendar-compact-list" style={{ display: 'flex', flexDirection: 'column', gap: space.xxs, minWidth: 0 }}>
+      <div style={{ fontFamily: font.body, fontSize: textSize.micro, fontWeight: 600, letterSpacing: '0.06em',
+        textTransform: 'uppercase', color: colors.textDim, paddingBottom: space.xs }}>{heading}</div>
+      {list.map(e => <EventListRow key={eventKey(e)} event={e} onPick={onPick} />)}
+    </div>
+  );
+}

@@ -27,6 +27,10 @@ use serde::Serialize;
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CalendarEvent {
+    /// EventKit's `eventIdentifier`; empty when EventKit supplied none. A
+    /// recurring event shares it across occurrences, so the webview keys on
+    /// id + start.
+    pub id: String,
     pub title: String,
     pub start_ms: i64,
     pub end_ms: i64,
@@ -34,6 +38,10 @@ pub struct CalendarEvent {
     /// The title of the calendar the event lives in ("Work", "Home", ...).
     pub calendar: String,
     pub location: Option<String>,
+    /// How many people are invited (0 for a personal event).
+    pub attendees: u32,
+    /// The event's URL field (a meeting link), when it has one.
+    pub url: Option<String>,
 }
 
 /// System Settings > Privacy & Security > Calendars. When access has been
@@ -100,6 +108,64 @@ pub async fn calendar_upcoming_events(days: Option<u32>) -> Result<Vec<CalendarE
         let _ = days;
         Err("Calendar access needs macOS".to_string())
     }
+}
+
+/// Events overlapping `[start, end)`, both RFC 3339 timestamps, across every
+/// calendar, sorted by start. The Day / Week / Month views ask for their own
+/// visible range with this; `calendar_upcoming_events` stays for callers that
+/// only want "today". The window is capped at 62 days so a bad argument cannot
+/// ask EventKit for years of events. Errors when access has not been granted.
+#[tauri::command]
+pub async fn calendar_events_in_range(start: String, end: String) -> Result<Vec<CalendarEvent>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let (start_secs, end_secs) = parse_range(&start, &end)?;
+        tauri::async_runtime::spawn_blocking(move || macos::events_between(start_secs, end_secs))
+            .await
+            .map_err(|e| e.to_string())?
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (start, end);
+        Err("Calendar access needs macOS".to_string())
+    }
+}
+
+/// Bring Calendar.app forward. A fixed command line: nothing from the webview
+/// reaches it, for the same reason as `open_calendar_privacy_settings`.
+#[tauri::command]
+pub fn open_calendar_app() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("/usr/bin/open")
+            .args(["-a", "Calendar"])
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err("Calendar.app is macOS-only".to_string())
+    }
+}
+
+/// Unix-second bounds from two RFC 3339 strings; `end` must be after `start`
+/// and at most 62 days later.
+#[cfg(any(target_os = "macos", test))]
+fn parse_range(start: &str, end: &str) -> Result<(i64, i64), String> {
+    let s = chrono::DateTime::parse_from_rfc3339(start)
+        .map_err(|e| format!("bad start: {e}"))?
+        .timestamp();
+    let e = chrono::DateTime::parse_from_rfc3339(end)
+        .map_err(|e| format!("bad end: {e}"))?
+        .timestamp();
+    if e <= s {
+        return Err("end must be after start".to_string());
+    }
+    if e - s > 62 * 86_400 {
+        return Err("range is longer than 62 days".to_string());
+    }
+    Ok((s, e))
 }
 
 /// Open the Calendars privacy pane. A fixed URL — nothing from the webview
@@ -273,6 +339,15 @@ mod macos {
             return Err(format!("Calendar access is {}", status_name(current)));
         }
         let (start_secs, end_secs) = super::day_window(days);
+        events_between(start_secs, end_secs)
+    }
+
+    /// Every event overlapping `[start_secs, end_secs)`, sorted by start.
+    pub fn events_between(start_secs: i64, end_secs: i64) -> Result<Vec<CalendarEvent>, String> {
+        let current = status();
+        if current != EKAuthorizationStatus::FullAccess {
+            return Err(format!("Calendar access is {}", status_name(current)));
+        }
 
         let caught = objc2::exception::catch(AssertUnwindSafe(|| unsafe {
             let store = EKEventStore::new();
@@ -292,13 +367,29 @@ mod macos {
                     .location()
                     .map(|l| l.to_string())
                     .filter(|l| !l.trim().is_empty());
+                let id = event
+                    .eventIdentifier()
+                    .map(|i| i.to_string())
+                    .unwrap_or_default();
+                let attendees = event
+                    .attendees()
+                    .map(|a| a.count() as u32)
+                    .unwrap_or(0);
+                let url = event
+                    .URL()
+                    .and_then(|u| u.absoluteString())
+                    .map(|u| u.to_string())
+                    .filter(|u| !u.trim().is_empty());
                 out.push(CalendarEvent {
+                    id,
                     title: event.title().to_string(),
                     start_ms: (event.startDate().timeIntervalSince1970() * 1000.0) as i64,
                     end_ms: (event.endDate().timeIntervalSince1970() * 1000.0) as i64,
                     all_day: event.isAllDay(),
                     calendar,
                     location,
+                    attendees,
+                    url,
                 });
             }
             out
@@ -313,7 +404,7 @@ mod macos {
 
 #[cfg(test)]
 mod tests {
-    use super::day_window;
+    use super::{day_window, parse_range};
 
     #[test]
     fn day_window_starts_at_or_before_now_and_spans_the_requested_days() {
@@ -332,5 +423,13 @@ mod tests {
     #[test]
     fn day_window_treats_zero_days_as_today() {
         assert_eq!(day_window(0), day_window(1));
+    }
+
+    #[test]
+    fn parse_range_accepts_a_month_and_rejects_bad_windows() {
+        assert!(parse_range("2026-10-01T00:00:00Z", "2026-11-12T00:00:00Z").is_ok());
+        assert!(parse_range("2026-10-01T00:00:00Z", "2026-10-01T00:00:00Z").is_err());
+        assert!(parse_range("2026-10-01T00:00:00Z", "2027-10-01T00:00:00Z").is_err());
+        assert!(parse_range("yesterday", "2026-10-01T00:00:00Z").is_err());
     }
 }

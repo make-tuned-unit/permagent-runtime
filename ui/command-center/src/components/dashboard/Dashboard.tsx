@@ -359,7 +359,9 @@ export function Dashboard() {
   // 'decisions' (Needs You) is the same kind of card: a short stack of lines with
   // no scroller. With six lines its natural height passes the h:4 cap and the
   // clip cut off "Review →" (QA Q11), so it is drawn at its content's height.
-  const growsToFit = (type: string) => registry[type]?.manifest?.layout === 'compact' || type === 'decisions';
+  // 'calendar' draws its views at their own fixed heights (a month grid is
+  // six rows tall) and scrolls the time grid itself, so an h cap would slice it.
+  const growsToFit = (type: string) => registry[type]?.manifest?.layout === 'compact' || type === 'decisions' || type === 'calendar';
   visibleCards.forEach(c => configuredHeights.current.set(c.id, growsToFit(c.type) ? Math.max(c.size.h, 12) : c.size.h));
 
   return (

@@ -44,11 +44,13 @@ export const DASHBOARD_TEMPLATES: DashboardTemplate[] = [
       { type: 'decisions', id: 'decisions', position: { x: 0, y: 2 }, size: { w: 5, h: 4 } },
       { type: 'today_focus', id: 'today_focus', position: { x: 5, y: 2 }, size: { w: 7, h: 4 } },
       { type: 'in_flight', id: 'in_flight', position: { x: 0, y: 6 }, size: { w: 12, h: 3 } },
-      { type: 'calendar', id: 'calendar', position: { x: 0, y: 9 }, size: { w: 5, h: 4 } },
-      { type: 'todos', id: 'todos', position: { x: 5, y: 9 }, size: { w: 4, h: 4 } },
-      { type: 'overnight_digest', id: 'overnight_digest', position: { x: 9, y: 9 }, size: { w: 3, h: 4 } },
-      { type: 'weather', id: 'weather', position: { x: 0, y: 13 }, size: { w: 3, h: 2 } },
-      { type: 'system_stats', id: 'system_stats', position: { x: 3, y: 13 }, size: { w: 3, h: 2 } },
+      // Calendar at its medium size (7 columns): the full Day / Week / Month
+      // calendar, with the others stacked beside it.
+      { type: 'calendar', id: 'calendar', position: { x: 0, y: 9 }, size: { w: 7, h: 8 } },
+      { type: 'todos', id: 'todos', position: { x: 7, y: 9 }, size: { w: 5, h: 4 } },
+      { type: 'overnight_digest', id: 'overnight_digest', position: { x: 7, y: 13 }, size: { w: 5, h: 4 } },
+      { type: 'weather', id: 'weather', position: { x: 0, y: 17 }, size: { w: 3, h: 2 } },
+      { type: 'system_stats', id: 'system_stats', position: { x: 3, y: 17 }, size: { w: 3, h: 2 } },
     ],
   },
   {
@@ -85,7 +87,7 @@ export const DASHBOARD_TEMPLATES: DashboardTemplate[] = [
       { type: 'people_attention', id: 'people_attention', position: { x: 0, y: 0 }, size: { w: 6, h: 5 } },
       { type: 'open_commitments', id: 'open_commitments', position: { x: 6, y: 0 }, size: { w: 6, h: 5 } },
       { type: 'recent_meetings', id: 'recent_meetings', position: { x: 0, y: 5 }, size: { w: 6, h: 4 } },
-      { type: 'calendar', id: 'calendar', position: { x: 6, y: 5 }, size: { w: 6, h: 4 } },
+      { type: 'calendar', id: 'calendar', position: { x: 6, y: 5 }, size: { w: 6, h: 8 } },
     ],
   },
   {

@@ -398,6 +398,8 @@ fn main() {
             calendar::calendar_authorization_status,
             calendar::request_calendar_access,
             calendar::calendar_upcoming_events,
+            calendar::calendar_events_in_range,
+            calendar::open_calendar_app,
             calendar::open_calendar_privacy_settings,
         ])
         .setup(|app| {
