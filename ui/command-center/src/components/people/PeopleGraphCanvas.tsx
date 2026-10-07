@@ -15,6 +15,7 @@ import { useCommandCenter } from '../../lib/store';
 import { font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import type { DirectoryPerson } from '../projects/types';
+import { ErrorBoundary } from '../common/ErrorBoundary';
 import { CanvasLegend } from '../common/CanvasLegend';
 import { PEOPLE_GESTURES, PEOPLE_VOCABULARY } from './peopleLegend';
 import { isBridge, isYou, layoutPeopleGraph, type GraphNode } from './peopleGraph';
@@ -42,6 +43,9 @@ export function PeopleGraph() {
   const [people, setPeople] = useState<DirectoryPerson[]>([]);
   const [status, setStatus] = useState<Status>('loading');
   const [query, setQuery] = useState('');
+  /** The GL context was lost (or never existed): nothing can be drawn, and a
+   *  blank canvas must not pass for "no people" (QA 2026-10-07 Q12). */
+  const [glLost, setGlLost] = useState(false);
   const [hovered, setHovered] = useState<string | null>(null);
   /** Keyboard focus on a person's face — tabbing lights a node up like hover. */
   const [focusedId, setFocusedId] = useState<string | null>(null);
@@ -172,8 +176,18 @@ export function PeopleGraph() {
         </div>
       )}
       {status === 'error' && (
-        <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', color: colors.danger, fontFamily: font.body, fontSize: textSize.caption }}>
-          Couldn't load people.
+        <div role="alert" style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', color: colors.danger, fontFamily: font.body, fontSize: textSize.caption }}>
+          Couldn't load people. Switch to List or reopen this tab to try again.
+        </div>
+      )}
+      {status === 'ready' && people.length === 0 && (
+        <div role="status" style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', textAlign: 'center', color: colors.textDim, fontFamily: font.body, fontSize: textSize.caption, padding: space.xxl }}>
+          No people in your directory yet. They appear here as they come up in your work.
+        </div>
+      )}
+      {status === 'ready' && glLost && (
+        <div role="alert" style={{ position: 'absolute', inset: 0, zIndex: 1, display: 'grid', placeItems: 'center', textAlign: 'center', color: colors.warning, fontFamily: font.body, fontSize: textSize.caption, padding: space.xxl }}>
+          The graph can't draw here (3D graphics are unavailable or were reset). {people.length} {people.length === 1 ? 'person is' : 'people are'} in your directory; switch to List to see them.
         </div>
       )}
       {status === 'ready' && filtered.length === 0 && query.trim() !== '' && (
@@ -198,8 +212,14 @@ export function PeopleGraph() {
           vocabulary={PEOPLE_VOCABULARY}
         />
       )}
-      {status === 'ready' && (
+      {status === 'ready' && people.length > 0 && (
+        <ErrorBoundary surface="the people graph">
         <Canvas
+          onCreated={({ gl }) => {
+            const el = gl.domElement;
+            el.addEventListener('webglcontextlost', e => { e.preventDefault(); setGlLost(true); });
+            el.addEventListener('webglcontextrestored', () => setGlLost(false));
+          }}
           camera={{ position: [0, 7.5, 14], fov: GRAPH_FOV }}
           gl={{ alpha: true, antialias: true }}
           style={{ width: '100%', height: '100%', background: 'transparent' }}
@@ -276,6 +296,7 @@ export function PeopleGraph() {
             />
           ))}
         </Canvas>
+        </ErrorBoundary>
       )}
     </div>
   );
