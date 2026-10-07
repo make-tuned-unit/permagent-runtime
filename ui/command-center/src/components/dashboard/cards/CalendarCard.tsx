@@ -321,8 +321,12 @@ function CompactList({ events, nowMs, onPick, loading }: {
 }) {
   const { colors } = useTheme();
   const today = eventsOnDay(events, startOfDay(nowMs));
-  const stillToday = today.filter(e => e.endMs > nowMs || e.allDay);
-  const list = stillToday.length > 0 ? sortEvents(today).slice(0, 5) : upcomingEvents(events, nowMs, 3);
+  // Today's list is what is left of today (all-day items stay all day); once
+  // the day's timed events are over it gives way to the next three to come.
+  const stillToday = today.filter(e => !e.allDay && e.endMs > nowMs);
+  const list = stillToday.length > 0
+    ? sortEvents(today.filter(e => e.allDay || e.endMs > nowMs)).slice(0, 5)
+    : upcomingEvents(events, nowMs, 3);
   const heading = stillToday.length > 0 ? 'Today' : 'Coming up';
   if (loading) return null;
   if (list.length === 0) {

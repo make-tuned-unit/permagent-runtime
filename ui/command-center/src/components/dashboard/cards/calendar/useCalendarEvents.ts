@@ -37,8 +37,12 @@ export function _clearCalendarCache(): void { cache.clear(); }
 
 const keyOf = (source: CalendarSource, r: DateRange) => `${source}|${r.startMs}|${r.endMs}`;
 
+// One import shared by every range read: the card runs two of them at once.
+let tauriCore: Promise<typeof import('@tauri-apps/api/core')> | null = null;
+
 async function invokeShell<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
-  const { invoke } = await import('@tauri-apps/api/core');
+  tauriCore ??= import('@tauri-apps/api/core');
+  const { invoke } = await tauriCore;
   return invoke<T>(cmd, args);
 }
 

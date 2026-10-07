@@ -28,8 +28,6 @@ const CHIP_PX = 18;
 
 export type PickEvent = (event: CalEvent, anchor: HTMLElement) => void;
 
-const BTN = 'pa-btn pa-btn--composite';
-
 function btnVars(colors: ThemeColors, bgHover: string = colors.fillHover): CSSProperties {
   return {
     '--pa-btn-bg': 'transparent',
@@ -55,7 +53,7 @@ export function EventChip({
   return (
     <button
       type="button"
-      className={BTN}
+      className="pa-btn pa-btn--composite"
       data-testid={testId ?? 'calendar-chip'}
       data-event-key={eventKey(event)}
       aria-label={`${event.title}, ${event.allDay ? 'all day' : clockLabel(event.startMs)}`}
@@ -98,7 +96,7 @@ function DayNumber({ ms, isToday, dim, onClick, label }: {
   return (
     <button
       type="button"
-      className={BTN}
+      className="pa-btn pa-btn--composite"
       onClick={onClick}
       aria-label={label ?? new Date(ms).toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' })}
       aria-current={isToday ? 'date' : undefined}
@@ -175,7 +173,7 @@ function MonthCellView({ cell, events, onPickEvent, onPickDay }: {
       {hidden > 0 && (
         <button
           type="button"
-          className={BTN}
+          className="pa-btn pa-btn--composite"
           data-testid="calendar-more"
           onClick={() => onPickDay(cell.dayMs)}
           aria-label={`${hidden} more events, open this day`}
@@ -258,7 +256,7 @@ function TimeGrid({ days, nowMs, events, onPickEvent, scrollKey }: {
                   <button
                     key={eventKey(p.event)}
                     type="button"
-                    className={BTN}
+                    className="pa-btn pa-btn--composite"
                     data-testid="calendar-block"
                     data-event-key={eventKey(p.event)}
                     data-col={p.col}
@@ -324,7 +322,7 @@ function AllDayRow({ days, events, onPickEvent, onPickDay }: {
           paddingInline: space.xxs, minWidth: 0 }}>
           {list.slice(0, 2).map(e => <EventChip key={eventKey(e)} event={e} onPick={onPickEvent} />)}
           {list.length > 2 && (
-            <button type="button" className={BTN} onClick={() => onPickDay(days[i])}
+            <button type="button" className="pa-btn pa-btn--composite" onClick={() => onPickDay(days[i])}
               aria-label={`${list.length - 2} more all-day events, open this day`}
               style={{ ...btnVars(colors), justifyContent: 'flex-start', paddingInline: space.sm,
                 fontFamily: font.body, fontSize: textSize.micro, '--pa-btn-fg': colors.textMuted } as CSSProperties}>
@@ -373,7 +371,7 @@ export function EventListRow({ event, onPick }: { event: CalEvent; onPick: PickE
   return (
     <button
       type="button"
-      className={BTN}
+      className="pa-btn pa-btn--composite"
       data-testid="calendar-list-row"
       data-event-key={eventKey(event)}
       onClick={e => onPick(event, e.currentTarget)}
