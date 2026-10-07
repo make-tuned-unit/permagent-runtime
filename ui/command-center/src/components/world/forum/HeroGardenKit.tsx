@@ -1,5 +1,5 @@
 import { Suspense, useEffect, useMemo, useRef } from 'react';
-import { Html, useGLTF } from '@react-three/drei';
+import { useGLTF } from '@react-three/drei';
 import { useFrame } from '@react-three/fiber';
 import { BufferGeometry, CylinderGeometry, Group, Material, Mesh, MeshBasicMaterial, MeshPhysicalMaterial, MeshStandardMaterial, Object3D, SphereGeometry } from 'three';
 import { useCommandCenter } from '../../../lib/store';
@@ -14,6 +14,7 @@ import { instanceGardenDecor } from './staticGardenInstances';
 import { GardenAssetBoundary } from './GardenAssetBoundary';
 import { GardenFerns } from './GardenFerns';
 import type { GardenDecorPlacement } from './gardenLayout';
+import { HabitatNameplate } from './HabitatNameplate';
 import { getReduceMotion } from '../../../styles/tokens';
 import { createAgentWardrobe } from './agentWardrobe';
 import { heroNode, replaceFixedHeroMouth } from './heroRig';
@@ -147,7 +148,7 @@ function HeroRobot({id,index,state,live,selected,hovered,name,conversation,follo
   return <group ref={root} onClick={e=>{e.stopPropagation();onSelect(id);}} onPointerOver={e=>{e.stopPropagation();onHover(id);}} onPointerOut={()=>onHover(null)}>
     <group scale={proportions as [number,number,number]}><primitive object={owned.object} dispose={null}/></group>
     {selected&&<mesh rotation-x={-Math.PI/2} position={[0,.028,0]}><ringGeometry args={[.46,.49,48]}/><meshBasicMaterial color={station.color} transparent opacity={.7} depthWrite={false}/></mesh>}
-    {!conversation&&(selected||hovered)&&<Html position={[0,2.05,0]} center distanceFactor={8} zIndexRange={[20,0]}><div className="habitat-nameplate"><b>{name}</b><span>{live?state:'Ambient presence'}</span></div></Html>}
+    {!conversation&&(selected||hovered)&&<HabitatNameplate position={[0,2.05,0]}><b>{name}</b><span>{live?state:'Ambient presence'}</span></HabitatNameplate>}
   </group>;
 }
 export function HeroGardenAgents({onSelect,onHover,selected='',hovered='',orchestratorName='Your orchestrator',conversation=false,following=null,directing=null,socialActive=true}:{onSelect:(id:string)=>void;onHover:(id:string|null)=>void;selected?:string;hovered?:string|null;orchestratorName?:string;conversation?:boolean;following?:string|null;directing?:string|null;socialActive?:boolean}){
