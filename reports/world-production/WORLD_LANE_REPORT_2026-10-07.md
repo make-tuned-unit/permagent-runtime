@@ -57,6 +57,31 @@ Checks: `habitatRichness.test.ts`, `habitatWaterFlow.test.ts`, and `staticGarden
 
 Open defects: final rendered foliage silhouettes, alpha edges, water movement, draw submissions, frame-time tails, and camera/nameplate review remain open.
 
+## Correction 1 — camera clearance and nameplates
+
+Status: complete in source and frontend checks.
+
+Files changed:
+
+- `ui/command-center/src/components/world/forum/habitatLayout.ts`
+- `ui/command-center/src/components/world/forum/habitatArrival.test.ts`
+- `ui/command-center/src/components/world/forum/HabitatNameplate.tsx`
+- `ui/command-center/src/components/world/forum/HeroGardenKit.tsx`
+- `ui/command-center/src/components/world/forum/HabitatOrrery.tsx`
+- `ui/command-center/src/components/world/forum/forum.css`
+
+Exact camera values:
+
+- Arrival: position `[-0.5, 1.60, 5.5]`, target `[-1.1, 1.30, -1.5]`, FOV `72`.
+- Reverse arrival: position `[-1.5, 1.60, 4.5]`, target `[-1.5, 2.0, 10.0]`, FOV `80`.
+- Overview remains position `[40, 43, 37]`, target `[0, -3, -12]`, FOV `48`; the compact footprint-fit assertions remain in place.
+
+Arrival body positions tested against the runtime station/home data: orchestrator station `[-1.1, 0, 3.1]`; librarian `[-10, 3.4, -19]`; reader `[-6, 3.4, -17]`; watcher `[11, 3.4, -23]`; steward `[10, 3.4, -17]`; strix `[12, 0, -3]`; financier `[-11, 0, -3]`; forecaster `[3, 3.4, -24]`; council `[-1, 3.4, -19]`; polybot `[11, 0, 7]`; picker `[-10, 0, 8]`; growth measurement `[10, 0, -8]`; and the orchestrator table / “Sit with” seat `[-3, 0, 1.1]`. Every tested body is at least `2.0 m` horizontal distance from the arrival camera. Every `HABITAT_SOLIDS` collider is at least `0.6 m` horizontal distance from it. Arrival eye height is `1.60 m`.
+
+Nameplate clamp values: drei `Html` `distanceFactor={4}`; minimum camera distance `1.5 m`; fade band `0.35 m` (fully hidden at or inside `1.5 m`); maximum label width `140 px`. The clamp is used by agent and overview nameplates.
+
+Checks: `habitatArrival.test.ts`, `ForumView.test.tsx`, and `habitatMotion.test.ts` passed together (16 tests). `npx tsc --noEmit` passed with exit code 0. `npx vite build` passed (`3127 modules transformed`, `34.17 s`); the existing dynamic-import and large-chunk warnings were emitted.
+
 Commit: unavailable for the same worktree index permission error above.
 
 ## Lane constraints
@@ -65,4 +90,4 @@ Only frontend source/tests and allowed frontend checks are being used. No cargo,
 
 ## Final checks
 
-Completed: `npx vite build` passed (`3127 modules transformed`, `13.97 s`); `git diff --check` passed; final free disk was 28 GiB. Build emitted only the existing large-chunk warning. No cargo/Blender/Unreal/native/paid-generation process was run.
+Completed: correction focused tests passed (16 tests); `npx tsc --noEmit` passed (exit code 0); `npx vite build` passed (`3127 modules transformed`, `34.17 s`); `git diff --check` passed; final free disk was 29 GiB. Build emitted the existing dynamic-import and large-chunk warnings. No cargo/Blender/Unreal/native/paid-generation process was run.

@@ -1,9 +1,10 @@
 import { useRef, useState } from 'react';
-import { Html, useCursor } from '@react-three/drei';
+import { useCursor } from '@react-three/drei';
 import { useFrame } from '@react-three/fiber';
 import type { Group } from 'three';
 import { getReduceMotion } from '../../../styles/tokens';
 import { HABITAT_STATIONS } from './habitatLayout';
+import { HabitatNameplate } from './HabitatNameplate';
 
 const globeFragment = `
   varying vec3 vLocal; varying vec3 vWorld;
@@ -64,8 +65,6 @@ export function HabitatOrrery({ conversation, onOverview }: { conversation: bool
     <mesh position={[0,-.40,0]}>
       <cylinderGeometry args={[.22,.39,.09,48,1,true]}/><meshBasicMaterial color="#5dc7ca" transparent opacity={.055} depthWrite={false}/>
     </mesh>
-    {hovered&&!conversation&&<Html position={[0,.60,0]} center distanceFactor={6} zIndexRange={[20,0]}>
-      <div className="habitat-nameplate"><b>Explore the garden</b><span>Open the team overview</span></div>
-    </Html>}
+    {hovered&&!conversation&&<HabitatNameplate position={[0,.60,0]}><b>Explore the garden</b><span>Open the team overview</span></HabitatNameplate>}
   </group>;
 }

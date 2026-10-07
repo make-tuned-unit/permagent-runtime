@@ -13,8 +13,9 @@ import { terraceSurfaceGeometry } from './habitatTerrace';
 import { GARDEN_PLACES, PLANT_BASE_Y, type GardenDecorPlacement } from './gardenLayout';
 
 export type Point3 = [number, number, number];
-/** Human-scale arrival: beside the host/table, with the water route beyond. */
-export const HABITAT_ARRIVAL = {position: [-1.2, 1.62, 3.8] as Point3, target: [-1.1, 1.30, -1.5] as Point3, fov: 58};
+/** Human-scale arrival: clear of every station/body and solid, with the host,
+ * table, and water route sharing the eye-level frame. */
+export const HABITAT_ARRIVAL = {position: [-0.5, 1.60, 5.5] as Point3, target: [-1.1, 1.30, -1.5] as Point3, fov: 72};
 /** The overview keeps the full compact footprint in frame at both supported
  * 16:10 review sizes. Its lower target gives the connected terraces room to
  * read without returning to the rejected elevated surveillance stare. */
@@ -22,7 +23,7 @@ export const HABITAT_OVERVIEW = {position: [40, 43, 37] as Point3, target: [0, -
 /** Reverse arrival composition used by the authored rear planting/arbor
  * contract. Orbiting around the arrival should reveal a second lived-in
  * foreground, not an empty service side of the set. */
-export const HABITAT_ARRIVAL_REVERSE = {position: [-1.2, 1.62, 3.8] as Point3, target: [-1, 2.0, 10.0] as Point3, fov: 58};
+export const HABITAT_ARRIVAL_REVERSE = {position: [-1.5, 1.60, 4.5] as Point3, target: [-1.5, 2.0, 10.0] as Point3, fov: 80};
 export const ORCHESTRATOR_TABLE_SEAT: Point3 = [-3,0,1.1];
 export const TABLE_CONVERSATION_CAMERA = {position:[-3,1.50,4.80] as Point3,target:[-3,1.28,1.1] as Point3};
 // Both the crafted table and its original fallback meet this usable surface.
