@@ -109,13 +109,13 @@ describe('the passport header never runs its two phrases together', () => {
 describe('ForumPassport — no identity linked', () => {
   it('renders the neutral unlinked state and no identifiers', () => {
     (store as { linked?: boolean | null }).linked = false;
-    store.data = { did: 'did:chitin:someone', passportId: 5 };
+    store.data = { did: 'did:example:someone', passportId: 5 };
     const host = document.createElement('div');
     document.body.appendChild(host);
     const root = createRoot(host);
     act(() => root.render(<ForumPassport />));
     expect(host.textContent).toContain('No on-chain identity linked');
-    expect(host.textContent).not.toContain('did:chitin');
+    expect(host.textContent).not.toContain('did:example');
     expect(host.querySelector('[data-testid="forum-passport-chitin"]')).toBeNull();
     act(() => root.unmount());
     host.remove();

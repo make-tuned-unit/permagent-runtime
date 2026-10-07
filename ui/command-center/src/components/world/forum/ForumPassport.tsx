@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import type { IdentityState } from '../../../services/identity';
+import { chitinIdFromDid, type IdentityState } from '../../../services/identity';
 import { Button } from '../../common/Button';
 import { Tooltip } from '../../common/Tooltip';
 import { useTheme } from '../../../styles/useTheme';
@@ -50,9 +50,9 @@ export function ForumPassport({ onOpen }: { onOpen?: () => void }) {
   }, [startPolling, stopPolling]);
 
   const did = data.did?.trim() ?? '';
-  // `did:chitin:henry-malcolm` → `henry-malcolm`, which is the Chitin ID
-  // itself; the full DID stays in the title attribute for copy/paste.
-  const chitinId = did.startsWith('did:chitin:') ? did.slice('did:chitin:'.length) : did;
+  // A chitin DID ends in the slug, which is the Chitin ID itself, and
+  // the full DID stays in the tooltip for copy/paste.
+  const chitinId = chitinIdFromDid(did);
   const verified = data.soulValid === true;
   const everFetched = lastSuccessfulFetch !== null;
 

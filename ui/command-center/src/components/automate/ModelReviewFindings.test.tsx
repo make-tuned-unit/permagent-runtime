@@ -14,7 +14,7 @@ vi.mock('../../lib/api', async importOriginal => ({
 
 // A key with quotes and a comma: the contract's own shape (a JSON array),
 // which the UI must never parse or re-encode.
-const QUOTED_KEY = '["librarian","qwen2.5:7b","qwen3.5:4b","evaluate"]';
+const QUOTED_KEY = '["librarian","localmodel:7b","qwen3.5:4b","evaluate"]';
 
 const row = (key: string, state: ModelFindingRow['state'], over: Partial<ModelFindingRow> = {}, consumer = 'librarian'): ModelFindingRow => ({
   key, report_id: 'rep-1', state, defer_until: null, decision_id: null, updated_at: null,
@@ -22,7 +22,7 @@ const row = (key: string, state: ModelFindingRow['state'], over: Partial<ModelFi
     consumer, tier: 'candidate_worth_evaluating', action: 'evaluate',
     discovery: {
       source: 'ollama_library', snapshot_taken_at: '2026-09-20T00:00:00Z',
-      incumbent_identity: 'qwen2.5:7b', candidate_identity: 'qwen3.5:4b',
+      incumbent_identity: 'localmodel:7b', candidate_identity: 'qwen3.5:4b',
       quantization: 'Q4_K_M', candidate_quantization: 'Q4_K_M',
       compatibility: 'fits_memory', size: 4_700_000_000, candidate_size: 2_600_000_000,
       uncertainty: 'Not benchmarked on the Librarian workload.', stale: false,
@@ -88,7 +88,7 @@ it('groups as Open / Deferred / Dismissed and keeps the server order within each
   const text = container.textContent!;
   expect(text.indexOf('librarian')).toBeLessThan(text.indexOf('planner'));
   // Row content: consumer, identities, tier label, compatibility, uncertainty, stale.
-  expect(text).toContain('qwen2.5:7b → qwen3.5:4b');
+  expect(text).toContain('localmodel:7b → qwen3.5:4b');
   expect(text).toContain('Worth evaluating');
   expect(text).toContain('Update available');
   expect(text).toContain('Compatibility: fits_memory');

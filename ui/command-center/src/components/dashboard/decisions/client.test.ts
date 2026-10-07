@@ -244,7 +244,7 @@ describe('realDecisionsClient.evidence', () => {
       checks: [],
       diff: { files_changed: 14, insertions: 482, deletions: 97, per_file: [] },
       out_of_path_files: [],
-      verifier: { status: 'pass', rationale: 'Looks right.', model: 'qwen2.5:7b', degraded_reason: null },
+      verifier: { status: 'pass', rationale: 'Looks right.', model: 'localmodel:7b', degraded_reason: null },
       started_at: 't0',
       finished_at: 't1',
     };

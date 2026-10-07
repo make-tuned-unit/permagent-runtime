@@ -109,7 +109,7 @@ export function describeModel(id: string): ModelEntry {
   // model fell through to its raw id and the menu read as a column of serial
   // numbers — `gpt-5.4-nano-2026-03-17` — which is the thing the user called out.
   // Splitting on the separator the ids already use gets a real name out of any
-  // vendor: "GPT 5.4 Nano", "MiniMax M2.7", "Qwen3.8 27B".
+  // vendor: "GPT 5.4 Nano", "MiniMax M2.7", "Examplemodel3 27B".
   //
   // An id with no version number anywhere is left exactly as it is. There is
   // nothing to name there, and inventing a title for an unrecognised string is

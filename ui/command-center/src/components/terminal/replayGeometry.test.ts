@@ -208,7 +208,7 @@ class HarnessPainter {
       `╭${'─'.repeat(c - 2)}╮`,
       `${fit(input).padEnd(c - 1, ' ')}│`,
       `╰${'─'.repeat(c - 2)}╯`,
-      fit('gpt-5.4-mini ~/Documents/dev/CityCircle'),
+      fit('gpt-5.4-mini ~/Documents/dev/Riverside'),
     ];
   }
 
@@ -412,7 +412,7 @@ describe('pop-out replay in real xterm.js', { timeout: 30_000 }, () => {
     // The one frame is the live one, pinned to the bottom rows.
     const view = viewport(popout);
     expect(view[final.rows - 3]).toContain(PROMPT);
-    expect(view[final.rows - 1]).toBe('gpt-5.4-mini ~/Documents/dev/CityCircle');
+    expect(view[final.rows - 1]).toBe('gpt-5.4-mini ~/Documents/dev/Riverside');
     // Cell-for-cell what the original terminal would show at that size —
     // including whatever real output the harness's own resizes cost it.
     expect(all).toEqual(allLines(ref));

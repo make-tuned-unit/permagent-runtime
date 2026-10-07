@@ -1,7 +1,7 @@
 /**
  * Strategy text with over-escaped quotes (QA 2026-09-24).
  *
- * Evntally's value proposition was stored as
+ * Acme's value proposition was stored as
  * `Just \"here's what's worth your time.\"` — a literal backslash before each
  * quote, because the model escaped its tool-call string twice — and the card
  * showed the backslashes. The daemon now strips them on save; the read below

@@ -2,7 +2,7 @@
  * The analytics panels are PROJECT-SCOPED and must not carry state across a
  * project switch.
  *
- * Verifying Evntally and then switching to GetLadle left the previous project's
+ * Verifying Acme and then switching to Beacon left the previous project's
  * PASS on screen, which reads as "analytics is installed here" for a project
  * that was never verified (reported 2026-08-04). Every failure mode in this
  * surface is silent, so a false positive is the most damaging thing it can

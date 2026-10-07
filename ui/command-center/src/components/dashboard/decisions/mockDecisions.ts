@@ -311,7 +311,7 @@ const DIGESTS: Record<string, EvidenceDigestData> = {
     verifier: {
       status: 'pass',
       rationale: 'Plan matches approved scope. No public API changes outside /api/decisions.',
-      model: 'qwen2.5:7b',
+      model: 'localmodel:7b',
       degraded_reason: null,
     },
     started_at: minutesAgo(200),

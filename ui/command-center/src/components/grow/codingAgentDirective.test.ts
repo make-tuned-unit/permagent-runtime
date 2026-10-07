@@ -81,11 +81,11 @@ describe('codingAgentDirective', () => {
 describe('codingAgentDirective project slug', () => {
   const action = { title: 'Fix the funnel', recommendation: 'Do it.' };
   it('names the Permagent project slug so project tools get it, not the path', () => {
-    const text = codingAgentDirective({ projectName: 'Evntally', projectRoot: '/repo', projectSlug: 'evntally', action });
+    const text = codingAgentDirective({ projectName: 'Acme', projectRoot: '/repo', projectSlug: 'evntally', action });
     expect(text).toContain('Permagent project: evntally');
   });
   it('omits the line when there is no slug', () => {
-    const text = codingAgentDirective({ projectName: 'Evntally', projectRoot: '/repo', action });
+    const text = codingAgentDirective({ projectName: 'Acme', projectRoot: '/repo', action });
     expect(text).not.toContain('Permagent project:');
   });
 });

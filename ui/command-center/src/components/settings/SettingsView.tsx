@@ -1278,7 +1278,7 @@ export function ModelsPanel({ goto }: PanelProps) {
               <span style={{ fontSize: textSize.caption, color: colors.cyan }}>Connected</span>
             </Row>
             {ollama.installed.length === 0 ? (
-              <Row label="Models" hint="No models installed. Run 'ollama pull qwen2.5:3b' to get started.">
+              <Row label="Models" hint="No models installed. Run 'ollama pull <model>' to get started.">
                 <span style={{ fontSize: textSize.caption, color: colors.textDim }}>None</span>
               </Row>
             ) : (

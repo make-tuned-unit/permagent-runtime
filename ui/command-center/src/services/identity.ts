@@ -34,6 +34,12 @@ export async function loadIdentityConfig(): Promise<IdentityConfig> {
   };
 }
 
+/** `did:chitin:<slug>` -> `<slug>`; any other string is returned unchanged. */
+export function chitinIdFromDid(did: string): string {
+  const prefix = 'did:chitin:';
+  return did.startsWith(prefix) ? did.slice(prefix.length) : did;
+}
+
 export function isIdentityLinked(cfg: IdentityConfig): boolean {
   return cfg.slug !== '' || cfg.chain !== null;
 }
