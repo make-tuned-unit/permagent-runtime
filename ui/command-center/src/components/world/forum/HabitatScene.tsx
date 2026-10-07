@@ -4,7 +4,7 @@ import { useFrame, useThree, type ThreeEvent } from '@react-three/fiber';
 import { Mesh, MeshStandardMaterial, Object3D, PerspectiveCamera, Vector3 } from 'three';
 import { HabitatArchitecture } from './HabitatArchitecture';
 import { HabitatPlanting } from './HabitatPlanting';
-import { HABITAT_ARRIVAL, TABLE_CONVERSATION_CAMERA, habitatCollisionSource, habitatElevation, terrainGeometry, type Point3 } from './habitatLayout';
+import { HABITAT_ARRIVAL, HABITAT_OVERVIEW, TABLE_CONVERSATION_CAMERA, habitatCollisionSource, habitatElevation, terrainGeometry, type Point3 } from './habitatLayout';
 import { registerForumCollision } from './walkCollision';
 import { getForumMotion } from './ForumInhabitants';
 import { commandHabitatAgent } from './habitatMotion';
@@ -42,8 +42,8 @@ export function HabitatNavigation({district,focusAgent,overview,follow,conversat
     // Approach the archive through its central bay. The generic side view puts
     // its near column directly between the camera and the furnished room.
     const archive=district.id==='gallery'&&!p;
-    const to=new Vector3(...(conversation?TABLE_CONVERSATION_CAMERA.position:overview?[40,43,37]:arrival?HABITAT_ARRIVAL.position:archive?[-10,5.7,-12.5]:[at[0]+2.9,at[1]+2.05,at[2]+4.1]) as Point3);
-    const lookTo=new Vector3(...(conversation?TABLE_CONVERSATION_CAMERA.target:overview?[2,1,-20]:arrival?HABITAT_ARRIVAL.target:archive?[-10,4.65,-20.7]:[at[0],at[1]+1.0,at[2]]) as Point3);
+    const to=new Vector3(...(conversation?TABLE_CONVERSATION_CAMERA.position:overview?HABITAT_OVERVIEW.position:arrival?HABITAT_ARRIVAL.position:archive?[-10,5.7,-12.5]:[at[0]+2.9,at[1]+2.05,at[2]+4.1]) as Point3);
+    const lookTo=new Vector3(...(conversation?TABLE_CONVERSATION_CAMERA.target:overview?HABITAT_OVERVIEW.target:arrival?HABITAT_ARRIVAL.target:archive?[-10,4.65,-20.7]:[at[0],at[1]+1.0,at[2]]) as Point3);
     const fovTo=conversation?34:overview?48:58;
     if(initialized.current&&!getReduceMotion()){
       transition.current={elapsed:0,from:camera.position.clone(),to,lookFrom:controls.current?.target.clone()??lookTo.clone(),lookTo,fovFrom:camera instanceof PerspectiveCamera?camera.fov:fovTo,fovTo};

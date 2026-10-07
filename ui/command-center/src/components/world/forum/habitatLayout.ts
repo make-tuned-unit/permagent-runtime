@@ -13,7 +13,16 @@ import { terraceSurfaceGeometry } from './habitatTerrace';
 import { GARDEN_PLACES, PLANT_BASE_Y, type GardenDecorPlacement } from './gardenLayout';
 
 export type Point3 = [number, number, number];
-export const HABITAT_ARRIVAL = {position: [1.8, 2.15, 8.6] as Point3, target: [-3, 1.35, -2.5] as Point3, fov: 58};
+/** Human-scale arrival: beside the host/table, with the water route beyond. */
+export const HABITAT_ARRIVAL = {position: [-1.2, 1.62, 3.8] as Point3, target: [-1.1, 1.30, -1.5] as Point3, fov: 58};
+/** The overview keeps the full compact footprint in frame at both supported
+ * 16:10 review sizes. Its lower target gives the connected terraces room to
+ * read without returning to the rejected elevated surveillance stare. */
+export const HABITAT_OVERVIEW = {position: [40, 43, 37] as Point3, target: [0, -3, -12] as Point3, fov: 48};
+/** Reverse arrival composition used by the authored rear planting/arbor
+ * contract. Orbiting around the arrival should reveal a second lived-in
+ * foreground, not an empty service side of the set. */
+export const HABITAT_ARRIVAL_REVERSE = {position: [-1.2, 1.62, 3.8] as Point3, target: [-1, 2.0, 10.0] as Point3, fov: 58};
 export const HANK_TABLE_SEAT: Point3 = [-3,0,1.1];
 export const TABLE_CONVERSATION_CAMERA = {position:[-3,1.50,4.80] as Point3,target:[-3,1.28,1.1] as Point3};
 // Both the crafted table and its original fallback meet this usable surface.
@@ -145,7 +154,7 @@ for(const s of HABITAT_STATIONS.filter(s=>s.id!=='henry')) {
 }
 export const terrainGeometry=()=>terraceSurfaceGeometry();
 /** Rectangular benches carry their rotated footprint; planting uses radial proxies. */
-function decorSolidSize(p:GardenDecorPlacement):Point3 {
+export function decorSolidSize(p:GardenDecorPlacement):Point3 {
   const [width,height,depth]=p.solid!;
   const angle=p.asset==='bench'?p.heading:0,c=Math.abs(Math.cos(angle)),s=Math.abs(Math.sin(angle));
   return [(width*c+depth*s)*p.scale,height*p.scale,(width*s+depth*c)*p.scale];
