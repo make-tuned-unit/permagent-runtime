@@ -5,12 +5,15 @@ import { useTheme } from '../../styles/useTheme';
 import { TITLEBAR_HEIGHT } from '../../lib/windowChrome';
 import { Button } from '../common/Button';
 import { api } from '../../lib/api';
+import { classifyStartupConfig } from '../../lib/startupConfig';
 
 interface Props {
-  /** Called once the daemon answers a config read. `wizardDone` mirrors
-   *  `config.wizard_complete`, so the caller can route to the wizard or the
-   *  running app without re-reading anything. */
-  onReady: (wizardDone: boolean) => void;
+  /** Called once the background service answers with a valid config: `app`
+   *  when setup is complete, `wizard` for a first run. */
+  onReady: (route: 'app' | 'wizard') => void;
+  /** Called when it answers with a config that is not valid. That is not a
+   *  first run, so it must not open setup over it. */
+  onMalformed: () => void;
 }
 
 /** Same budget the old inline retry loop used: ~10s of polling before this
@@ -32,7 +35,7 @@ type Status = 'connecting' | 'retrying' | 'failed';
  * retry affordance instead of a guess. No fake progress bar: there is nothing
  * to show a fraction of, only an attempt count, which is what is shown.
  */
-export function BootScreen({ onReady }: Props) {
+export function BootScreen({ onReady, onMalformed }: Props) {
   const { colors, reduceMotion } = useTheme();
   const [status, setStatus] = useState<Status>('connecting');
   const [attempt, setAttempt] = useState(0);
@@ -57,9 +60,11 @@ export function BootScreen({ onReady }: Props) {
         setAttempt(n);
         setStatus(n === 1 ? 'connecting' : 'retrying');
         try {
-          const config = await api.getConfig();
+          const config: unknown = await api.getConfig();
           if (cancelled) return;
-          onReady((config as { config?: { wizard_complete?: boolean } })?.config?.wizard_complete === true);
+          const route = classifyStartupConfig(config);
+          if (route === 'malformed') onMalformed();
+          else onReady(route);
           return;
         } catch {
           if (n < MAX_ATTEMPTS) await new Promise(r => setTimeout(r, RETRY_DELAY_MS));
@@ -69,16 +74,16 @@ export function BootScreen({ onReady }: Props) {
     })();
 
     return () => { cancelled = true; };
-  }, [onReady, retryKey]);
+  }, [onReady, onMalformed, retryKey]);
 
   const copy = status === 'failed'
     ? {
-        title: 'Could not reach the daemon',
-        sub: 'It may still be starting, or it failed to launch. Check that Permagent is running, then try again.',
+        title: "Couldn't reach Permagent's background service",
+        sub: 'It may still be starting, or it failed to launch. Your setup and data are untouched. Try again in a moment.',
       }
     : status === 'retrying'
-      ? { title: 'Still connecting...', sub: `Waiting on the daemon (attempt ${attempt} of ${MAX_ATTEMPTS}).` }
-      : { title: 'Connecting to Permagent...', sub: '' };
+      ? { title: 'Still connecting…', sub: `Waiting for Permagent's background service (attempt ${attempt} of ${MAX_ATTEMPTS}).` }
+      : { title: 'Connecting to Permagent…', sub: '' };
 
   // D9: spring token, under 500ms, gated on reduce motion — a plain instant
   // cut with the setting on, same as the splash it follows.

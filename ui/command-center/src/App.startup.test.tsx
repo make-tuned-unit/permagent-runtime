@@ -114,8 +114,15 @@ describe('startup config contract', () => {
     mocks.getConfig.mockRejectedValue(new Error('daemon unavailable'));
     await enterLoading();
     await act(async () => { await vi.advanceTimersByTimeAsync(9000); });
-    expect(container.querySelector('[data-testid="state-block"]')?.textContent).toContain('not a first-run state');
+    expect(container.textContent).toContain("Couldn't reach Permagent's background service");
     expect(container.querySelector('[data-testid="wizard"]')).toBeNull();
+  });
+
+  it('owns one connect loop: a slow first answer is asked for once', async () => {
+    mocks.getConfig.mockReturnValue(new Promise(() => { /* never resolves */ }));
+    await enterLoading();
+    await act(async () => { await Promise.resolve(); });
+    expect(mocks.getConfig).toHaveBeenCalledTimes(1);
   });
 
   it('keeps malformed config distinct from first-run config', async () => {

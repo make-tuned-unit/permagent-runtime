@@ -30,21 +30,8 @@ import { useVersionSkew } from './hooks/useVersionSkew';
 import { onRepaintRegain, forceCompositorRepaint } from './lib/repaintOnRegain';
 import { clearPageBackgroundForVibrancy, NATIVE_WINDOW_IS_OPAQUE, TITLEBAR_HEIGHT } from './lib/windowChrome';
 
-type StartupConfigResult = 'app' | 'wizard' | 'malformed';
-
-/**
- * `/config` is a typed object response. A missing wizard flag is a legitimate
- * first-run config (the backend omits unset keys); a non-object config or a
- * non-boolean flag is a broken response and must not silently open onboarding.
- */
-export function classifyStartupConfig(payload: unknown): StartupConfigResult {
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return 'malformed';
-  const config = (payload as { config?: unknown }).config;
-  if (!config || typeof config !== 'object' || Array.isArray(config)) return 'malformed';
-  const wizardComplete = (config as Record<string, unknown>).wizard_complete;
-  if (wizardComplete !== undefined && typeof wizardComplete !== 'boolean') return 'malformed';
-  return wizardComplete === true ? 'app' : 'wizard';
-}
+// Re-exported: the startup classifier lives with the connect loop's helpers.
+export { classifyStartupConfig } from './lib/startupConfig';
 
 export function MainContent() {
   const activePanel = useCommandCenter(s => s.activePanel);
@@ -210,7 +197,6 @@ function App() {
   }, [theme, themePref, gradient.shell]);
 
   const [phase, setPhase] = useState<'splash' | 'loading' | 'unavailable' | 'wizard' | 'app'>('splash');
-  const [startupFailure, setStartupFailure] = useState<'connection' | 'malformed' | null>(null);
 
   // Install the bundled dictation model on first run so the mic "just works"
   // offline, with no download and no setup. Resolves the bundled Whisper model
@@ -250,42 +236,10 @@ function App() {
   // App↔daemon version-skew detection — only once we're in the running app.
   const versionSkew = useVersionSkew(phase === 'app');
 
-  useEffect(() => {
-    if (phase !== 'loading') return;
-    let cancelled = false;
-    setStartupFailure(null);
-    // Retry getConfig — the daemon may still be starting after a reinstall.
-    // Without retry, a transient connection failure sends us to the wizard
-    // even though wizard_complete=true in ~/.permagent/config.yaml.
-    (async () => {
-      const maxAttempts = 10;
-      const delayMs = 1000;
-      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-        if (cancelled) return;
-        try {
-          const config: unknown = await api.getConfig();
-          if (cancelled) return;
-          const result = classifyStartupConfig(config);
-          if (result === 'malformed') {
-            setStartupFailure('malformed');
-            setPhase('unavailable');
-          } else {
-            setPhase(result);
-          }
-          return;
-        } catch {
-          if (attempt < maxAttempts) {
-            await new Promise(r => setTimeout(r, delayMs));
-          }
-        }
-      }
-      if (!cancelled) {
-        setStartupFailure('connection');
-        setPhase('unavailable');
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [phase]);
+  // BootScreen owns the one connect/retry loop. Stable callbacks: an inline
+  // arrow here would restart that loop on every App render.
+  const onBootReady = useCallback((route: 'app' | 'wizard') => setPhase(route), []);
+  const onBootMalformed = useCallback(() => setPhase('unavailable'), []);
 
   useEffect(() => {
     if (phase === 'app') {
@@ -378,7 +332,7 @@ function App() {
   }
 
   if (phase === 'loading') {
-    return <BootScreen onReady={(wizardDone) => setPhase(wizardDone ? 'app' : 'wizard')} />;
+    return <BootScreen onReady={onBootReady} onMalformed={onBootMalformed} />;
   }
 
   if (phase === 'unavailable') {
@@ -386,10 +340,8 @@ function App() {
       <div style={{ background: gradient.shell, width: '100vw', height: '100vh', paddingTop: TITLEBAR_HEIGHT }}>
         <StateBlock
           tone="error"
-          title={startupFailure === 'malformed' ? 'The daemon returned an invalid configuration.' : 'Permagent is unavailable.'}
-          detail={startupFailure === 'malformed'
-            ? 'The daemon answered, but its startup configuration was not valid. Try again after checking the daemon.'
-            : 'The command center could not connect to the daemon. This is not a first-run state.'}
+          title="Permagent's settings returned an invalid configuration."
+          detail="The background service answered, but its startup configuration was not valid, so setup was not opened over it. This is not a first-run state. Try again, or check ~/.permagent/config.yaml."
           onRetry={() => setPhase('loading')}
         />
       </div>
