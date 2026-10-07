@@ -120,7 +120,6 @@ export function SectionNav({ items, scrollRoot }: { items: SectionNavItem[]; scr
         // scroll, and a translucent fill let their text collide with the tabs
         // (QA 2026-10-07 Q21). Chrome over scrolling content must be solid.
         background: colors.surface,
-        WebkitBackdropFilter: 'none',
       }}
     >
       {items.map(item => {
