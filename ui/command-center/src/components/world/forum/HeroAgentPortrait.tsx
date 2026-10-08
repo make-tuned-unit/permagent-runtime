@@ -5,7 +5,7 @@ import { getReduceMotion } from '../../../styles/tokens';
 import { extendForumLoader } from './forumGltf';
 import { disposeHeroRobot, buildHeroRobot, HERO_KIT_URL, heroProportions } from './heroRobot';
 
-type PortraitSize = 'desk' | 'dock';
+type PortraitSize = 'desk' | 'dock' | 'profile';
 
 function DemandIdle({ reducedMotion }: { reducedMotion: boolean }) {
   const invalidate = useThree(state => state.invalidate);
@@ -64,7 +64,7 @@ function useDocumentVisible() {
 export function HeroAgentPortrait({ id, size, label }: { id: string; size: PortraitSize; label?: string }) {
   const visible = useDocumentVisible();
   const reducedMotion = useMemo(() => getReduceMotion(), []);
-  const dimension = size === 'dock' ? 28 : 220;
+  const dimension = size === 'dock' ? 28 : size === 'profile' ? 112 : 220;
   return <div
     className={`hero-agent-portrait hero-agent-portrait-${size}`}
     data-testid="live-agent-portrait"
@@ -77,7 +77,7 @@ export function HeroAgentPortrait({ id, size, label }: { id: string; size: Portr
       dpr={[1, 1.5]}
       camera={{ position: [0, .88, 3.2], fov: 31, near: .1, far: 20 }}
       gl={{ alpha: true, antialias: true }}
-      style={{ width: dimension, height: size === 'dock' ? 28 : 260, background: 'transparent' }}
+      style={{ width: dimension, height: size === 'dock' ? 28 : size === 'profile' ? 136 : 260, background: 'transparent' }}
     >
       <PortraitScene id={id} reducedMotion={reducedMotion} />
     </Canvas>}

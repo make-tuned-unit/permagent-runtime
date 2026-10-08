@@ -798,3 +798,44 @@
 .habitat-world-settings summary { cursor:pointer; }
 .habitat-world-settings .garden-view-options { margin:16px 0 0; }
 .forum-shell[data-habitat=true] .forum-panel h2 { margin-top:8px; }
+
+/* Agent desk: a compact profile, with records and settings on demand. */
+.forum-shell[data-habitat=true] .forum-panel { padding:20px; }
+.agent-desk-header { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:20px; }
+.forum-shell[data-habitat=true] .agent-desk-header h2 { margin:0; font-size:20px; line-height:26px; letter-spacing:-.02em; }
+.agent-desk-header .pa-btn { min-width:30px; min-height:30px; font-size:22px; color:var(--forum-muted); }
+.agent-desk-chooser-label { display:block; margin:0 0 6px; font-size:11px; color:var(--forum-muted); }
+.forum-shell[data-habitat=true] #forum-agent { padding:9px 10px; font-size:12px; }
+.forum-shell[data-habitat=true] .forum-tabs { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:3px; margin:18px 0; padding:3px; border:1px solid var(--forum-border); border-radius:8px; background:var(--forum-inset); }
+.forum-shell[data-habitat=true] .forum-tabs .pa-btn { min-width:0; padding:8px 3px; border:0; border-radius:5px; font-size:11px; line-height:16px; }
+.forum-shell[data-habitat=true] .forum-tabs .pa-btn[aria-pressed=true] { color:var(--forum-text); background:var(--forum-panel); box-shadow:0 1px 3px #0002; }
+.agent-desk-profile-heading { display:grid; grid-template-columns:112px minmax(0,1fr); align-items:center; gap:16px; margin-bottom:16px; }
+.agent-desk-portrait-frame { width:112px; height:136px; overflow:hidden; border:1px solid color-mix(in srgb,var(--agent-trim) 32%,var(--forum-border)); border-radius:16px; background:radial-gradient(ellipse at 50% 30%,color-mix(in srgb,var(--agent-trim) 18%,transparent),var(--forum-inset)); }
+.agent-desk-profile-identity { min-width:0; }
+.agent-desk-role { display:block; color:var(--forum-muted); font-size:11px; line-height:1.5; }
+.forum-shell .agent-desk-profile h3 { margin:5px 0 10px; font-size:25px; line-height:1.15; letter-spacing:-.03em; overflow-wrap:anywhere; }
+.forum-panel .agent-desk-reported { display:flex; align-items:baseline; gap:6px; margin:0; font-size:11px; line-height:1.5; }
+.agent-desk-reported > span { width:5px; height:5px; flex-shrink:0; border-radius:50%; background:var(--forum-muted); }
+.agent-desk-primary-actions { display:flex; flex-wrap:wrap; gap:6px; }
+.agent-desk-primary-actions .pa-btn { flex:1 1 auto; min-height:34px; font-size:11px; white-space:nowrap; --pa-btn-pad:7px 10px; }
+.forum-panel .agent-desk-chat-context { margin:8px 0 18px; font-size:11px; line-height:1.5; }
+.agent-desk-question { border:1px solid var(--forum-border); border-radius:10px; background:var(--forum-inset); padding:13px 14px; margin-bottom:16px; }
+.agent-desk-question .eyebrow { font-size:9px; letter-spacing:.09em; }
+.forum-panel .agent-desk-question p { margin:8px 0 10px; font-size:12px; line-height:1.6; }
+.forum-panel .agent-desk-question .agent-desk-suggested-question { color:var(--forum-text); }
+.agent-desk-question .pa-btn { text-align:left; font-size:12px; color:var(--forum-accent); }
+.agent-desk-disclosure { border-top:1px solid var(--forum-border); }
+.agent-desk-disclosure > summary,.agent-desk-support .habitat-world-settings > summary { cursor:pointer; padding:12px 0; color:var(--forum-text); font-size:12px; line-height:18px; }
+.agent-desk-disclosure > summary > span { margin-left:8px; font-size:10px; color:var(--forum-muted); }
+.agent-desk-disclosure[open] { padding-bottom:12px; }
+.agent-desk-disclosure blockquote { margin:12px 0; padding-left:12px; border-left:2px solid var(--agent-trim,var(--forum-border)); color:var(--forum-muted); font-size:12px; line-height:1.6; }
+.agent-desk-disclosure .forum-work { margin:0; padding:0; border:0; }
+.agent-desk-disclosure .forum-passport { margin-top:4px; }
+.agent-desk-support .habitat-world-settings { border-top:1px solid var(--forum-border); border-bottom:0; padding:0; margin:0; }
+.agent-desk-support .habitat-world-settings .garden-view-options { margin:4px 0 12px; }
+@media(max-width:800px) {
+  .forum-shell[data-habitat=true][data-desk='open'] { grid-template-rows:min(30%,280px) minmax(0,1fr); }
+  .forum-shell[data-habitat=true][data-desk='closed'] { grid-template-rows:minmax(0,1fr); }
+  .forum-shell[data-habitat=true] .forum-panel { padding:16px 20px; }
+  .agent-desk-profile-heading { grid-template-columns:112px minmax(0,1fr); }
+}

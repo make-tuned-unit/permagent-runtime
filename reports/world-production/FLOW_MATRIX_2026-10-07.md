@@ -1,5 +1,7 @@
 # Permagent flow matrix — 2026-10-07 resume
 
+October 8 continuation: [Agent Desk redesign and bounded CUA](AGENT_DESK_REDESIGN_2026-10-08.md) adds compact profile/disclosure, narrow close/reopen, all four lessons, three demonstration branches and shared-chat navigation evidence. It does not complete native, capture or remaining multi-step matrix rows.
+
 Source audit: `b55bf214feeb41bd5c9708cfafe628f98c491608`, branch `world/production-20261006`. This matrix combines a source-derived test plan with the bounded runtime evidence log below. Unchecked items still need complete current-build Computer Use coverage; a partial observation does not complete a multi-step row. Earlier evidence is explicitly historical and may be Chrome, visible Chromium, or older native r28. Source paths below are relative to `ui/command-center/src/components/` unless stated otherwise.
 
 ## Evidence and execution rules

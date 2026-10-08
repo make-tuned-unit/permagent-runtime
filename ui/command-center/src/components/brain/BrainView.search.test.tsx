@@ -265,3 +265,92 @@ describe('Brain search guards', () => {
     expect(container.textContent).toContain('caroline wrote the deployment runbook yesterday');
   });
 });
+
+const savedNote = {
+  ...graphPayload.memories[0], id: 'saved-note-1', key: 'note:qa:meeting & tail',
+  text: 'Full saved note. No purchase is authorized. Final review stays pending.',
+  description: null, source: 'permagent.note', layer: 'full',
+};
+
+async function focusPreview(key = savedNote.key, text = 'Original note preview', id?: string) {
+  await act(async () => {
+    useCommandCenter.setState({ pendingBrainMemory: { key, id, preview: { text } } });
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
+
+describe('Brain saved-memory preview resolution', () => {
+  it('reads the full saved memory by encoded key and shows authoritative source without claiming graph placement', async () => {
+    apiFetchMock.mockImplementation((url: string) => {
+      if (url.startsWith('/api/brain/memory?')) return Promise.resolve(savedNote);
+      if (url.startsWith('/api/brain/graph')) return Promise.resolve(graphPayload);
+      return Promise.resolve([]);
+    });
+    await renderBrain();
+    await focusPreview();
+    expect(apiFetchMock).toHaveBeenCalledWith(
+      `/api/brain/memory?key=${encodeURIComponent(savedNote.key)}`, expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+    expect(container.textContent).toContain(savedNote.text);
+    expect(container.textContent).toContain('from note');
+    expect(container.textContent).not.toContain('source unknown');
+    expect(container.textContent).toContain('Saved memory — outside current graph');
+    expect(container.textContent).not.toContain('saved memory not verified');
+  });
+
+  it.each(['not found', 'wrong key', 'wrong id'] as const)('keeps the truthful preview when lookup returns %s', async failure => {
+    apiFetchMock.mockImplementation((url: string) => {
+      if (url.startsWith('/api/brain/memory?')) {
+        if (failure === 'not found') return Promise.reject(new Error('HTTP 404'));
+        return Promise.resolve({ ...savedNote, ...(failure === 'wrong key' ? { key: 'note:another' } : { id: 'another-id' }) });
+      }
+      if (url.startsWith('/api/brain/graph')) return Promise.resolve(graphPayload);
+      return Promise.resolve([]);
+    });
+    await renderBrain();
+    await focusPreview(savedNote.key, 'Original note preview', savedNote.id);
+    expect(container.textContent).toContain('Original note preview');
+    expect(container.textContent).toContain('Saved memory unavailable. Showing the original preview.');
+    expect(container.textContent).toContain('source unknown');
+    expect(container.textContent).not.toContain(savedNote.text);
+    expect(container.textContent).not.toContain('Saved memory — outside current graph');
+  });
+
+  it('aborts the read when Brain unmounts and ignores a late response', async () => {
+    let resolveRead!: (memory: typeof savedNote) => void;
+    const read = new Promise<typeof savedNote>(resolve => { resolveRead = resolve; });
+    apiFetchMock.mockImplementation((url: string) => {
+      if (url.startsWith('/api/brain/memory?')) return read;
+      if (url.startsWith('/api/brain/graph')) return Promise.resolve(graphPayload);
+      return Promise.resolve([]);
+    });
+    await renderBrain();
+    await focusPreview();
+    const readCall = apiFetchMock.mock.calls.find(([url]) => url.startsWith('/api/brain/memory?'));
+    await act(async () => { root.render(null); });
+    expect(readCall?.[1]?.signal?.aborted).toBe(true);
+    await act(async () => { resolveRead(savedNote); await read; });
+    expect(container.textContent).toBe('');
+  });
+
+  it('does not replace a newer selection when an older saved-memory read resolves', async () => {
+    let resolveOld!: (memory: typeof savedNote) => void;
+    const oldRead = new Promise<typeof savedNote>(resolve => { resolveOld = resolve; });
+    apiFetchMock.mockImplementation((url: string) => {
+      if (url.startsWith('/api/brain/memory?')) return oldRead;
+      if (url.startsWith('/api/brain/graph')) return Promise.resolve(graphPayload);
+      return Promise.resolve([]);
+    });
+    await renderBrain();
+    await focusPreview();
+    expect(container.textContent).toContain('Loading saved memory…');
+    const readCall = apiFetchMock.mock.calls.find(([url]) => url.startsWith('/api/brain/memory?'));
+    await focusPreview('note:loaded', 'Newer preview');
+    await act(async () => { resolveOld(savedNote); await oldRead; });
+    expect(container.textContent).toContain('Loaded note');
+    expect(container.textContent).not.toContain(savedNote.text);
+    expect(container.textContent).not.toContain('Original note preview');
+    expect(readCall?.[1]?.signal?.aborted).toBe(true);
+  });
+});

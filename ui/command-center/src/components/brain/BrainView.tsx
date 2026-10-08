@@ -49,6 +49,8 @@ interface SelectedInfo {
       enriches them; preview text may be a truncated content_summary). The side
       panel badges it so a snapshot never masquerades as the whole memory. */
   preview?: boolean;
+  /** Full saved memory read by key, which may be outside the current graph. */
+  savedMemory?: boolean;
 }
 
 
@@ -158,6 +160,41 @@ export function BrainView() {
   const selectMemory = useCallback((mem: GraphMemory, viaPreview = false) => {
     setSelected({ id: mem.id, kind: 'memory', label: deriveMemoryTitle(mem), note: mem.text.slice(0, 120), data: mem, preview: viaPreview });
   }, []);
+
+  const [previewLookup, setPreviewLookup] = useState<'loading' | 'unavailable' | null>(null);
+  useEffect(() => {
+    if (selected?.kind !== 'memory' || !selected.preview || !selected.data?.key) {
+      setPreviewLookup(null);
+      return;
+    }
+    const preview = selected.data as GraphMemory;
+    const controller = new AbortController();
+    let active = true;
+    setPreviewLookup('loading');
+    // A saved note can be absent from the capped/enriched graph. Resolve its
+    // stable key through the existing full-memory read, without changing graph
+    // population or inventing provenance from the note's UI origin.
+    apiFetch<GraphMemory>(`/api/brain/memory?key=${encodeURIComponent(preview.key!)}`, { signal: controller.signal })
+      .then(memory => {
+        if (!active) return;
+        if (!memory || typeof memory.id !== 'string' || !memory.id || memory.key !== preview.key
+          || (preview.id && memory.id !== preview.id)
+          || typeof memory.text !== 'string'
+          || (memory.source != null && typeof memory.source !== 'string')
+          || (memory.description != null && typeof memory.description !== 'string')
+          || !Array.isArray(memory.ent) || !memory.ent.every(id => typeof id === 'string')
+          || !Number.isFinite(memory.age) || !Number.isFinite(memory.weight)
+          || typeof memory.timestamp !== 'string') {
+          throw new Error('Saved memory identity or response did not match');
+        }
+        setSelected(current => current === selected ? {
+          id: memory.id, kind: 'memory', label: deriveMemoryTitle(memory),
+          note: memory.text.slice(0, 120), data: memory, savedMemory: true,
+        } : current);
+      })
+      .catch(() => { if (active) setPreviewLookup('unavailable'); });
+    return () => { active = false; controller.abort(); };
+  }, [selected]);
 
   // Forget (R5 "explicit forget with undo") from the side panel. Closing the
   // panel IS the immediate feedback (R8) — the toast that follows offers ~8s
@@ -750,7 +787,7 @@ export function BrainView() {
                 )}
               </span>
               {selected.kind === 'memory' && selected.preview && (
-                <Tooltip content="Preview from the surface you came from — not yet enriched into the Brain graph; the text may be truncated.">
+                <Tooltip content="Preview from the surface you came from. The saved memory has not been verified; this text may be truncated.">
                   <span tabIndex={0} style={{ outline: 'none' }}>
                     <span
                       style={{
@@ -758,11 +795,22 @@ export function BrainView() {
                         color: colors.warning, border: `1px solid ${colors.warning}`,
                         textTransform: 'uppercase', letterSpacing: '0.08em',
                       }}
-                    >preview — not in graph yet</span>
+                    >preview — saved memory not verified</span>
                   </span>
                 </Tooltip>
               )}
             </span>
+
+            {selected.kind === 'memory' && selected.savedMemory && !(data?.memories ?? []).some(memory => memory.id === selected.id) && (
+              <div style={{ color: colors.textMuted, fontSize: textSize.caption, marginTop: space.sm }}>
+                Saved memory — outside current graph
+              </div>
+            )}
+            {selected.kind === 'memory' && selected.preview && previewLookup && (
+              <div role="status" style={{ color: colors.textMuted, fontSize: textSize.caption, marginTop: space.sm }}>
+                {previewLookup === 'loading' ? 'Loading saved memory…' : 'Saved memory unavailable. Showing the original preview.'}
+              </div>
+            )}
 
             {/* Name / title */}
             <h3 style={{ fontFamily: font.display, fontSize: textSize.title, fontWeight: 700, color: colors.text, margin: '8px 0 12px' }}>
@@ -781,7 +829,7 @@ export function BrainView() {
                   <Chip
                     kind="static"
                     quiet
-                    title={sourceInfo.known ? 'Where this memory came from' : "No source was recorded for this memory"}
+                    title={sourceInfo.known ? 'Where this memory came from' : selected.preview ? 'Source metadata is unavailable in this preview' : "No source was recorded for this memory"}
                   >
                     {sourceInfo.phrase}
                   </Chip>
@@ -920,10 +968,9 @@ export function BrainView() {
                   ].map(stat => {
                     const interactive = !!stat.onClick;
                     return (
-                      <Tooltip content={interactive ? `Show memories that mention ${selected.label}` : undefined}>
+                      <Tooltip key={stat.label} content={interactive ? `Show memories that mention ${selected.label}` : undefined}>
                         <span tabIndex={0} style={{ display: 'inline-flex', outline: 'none' }}>
                           <button
-                            key={stat.label}
                             type="button"
                             onClick={stat.onClick}
                             disabled={!interactive}
@@ -1016,9 +1063,8 @@ export function BrainView() {
                             );
                           }
                           return (
-                            <Tooltip content={`View ${ent.name}`}>
+                            <Tooltip key={id} content={`View ${ent.name}`}>
                               <Button
-                                key={id}
                                 colors={colors}
                                 variant="ghostOn"
                                 type="button"
