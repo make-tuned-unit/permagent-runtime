@@ -59,3 +59,119 @@ python3 reports/record-evidence/scoped_capture.py transcribe --execute \
 Transcription rechecks helper/model/chunk hashes, calls only isolated3002 with the bearer in memory and saves private observed-text evidence. Assertions require accessibility-checklist commitment, cancelled purchase, no purchase task, and the final venue step-free-route cue specifically in the stop-flushed tail. No transcript is auto-sent to a project/Orchestrator by this helper. The full integrated Record flow remains unpassed until native UI/IPC can actually be driven.
 
 Validation performed: four pure Python/source contract tests, syntax, dry-run and diff checks. These test generated temporary PCM files/path rejection and the new source's nonprompting branch ordering; they do not compile Swift or prove live ScreenCaptureKit behavior. Native helper build/self-test/preflight/capture are parent-owned pending steps.
+
+## 2026-10-08: distinguish silent input from PCM conversion loss
+
+The two earlier app-scoped captures each produced a45-second chunk and a roughly
+30-second final tail with zero PCM peak/RMS. Their successful source/READY/stop
+protocol does not establish usable captured audio. The next helper adds
+`--pcm-diagnostics`, off by default and accepted only with exact Chrome inclusion
+and `--require-existing-permission`. It reports the audio format once and
+cumulative amplitude statistics every5seconds/final stop: raw channel samples,
+downmix, resampled Float, and quantized Int16. These are counts/peak/RMS only;
+no sample values, content, URLs, or window titles are logged. Default capture
+retains its existing behavior and pays no per-sample diagnostics work.
+
+The capture runner accepts the same optional flag, rejects helpers without its
+capability marker, and stores `pcmFormat`, `pcmDiagnostics`, and `pcmDiagnosis`.
+The diagnosis distinguishes incoming silence, stereo cancellation, resampling
+loss, quantization loss, and nonzero data reaching the WAV conversion. Raw channel
+zeros establish that the supplied SCK PCM is silent; they do not distinguish
+source playback, routing, session state, filtering, or TCC causes. Nonzero raw
+channels with zero downmix specifically expose phase cancellation. Extremely low
+nonzero float input can quantize to zero. Normal speech should not disappear in
+the existing straightforward Float32 averaging; the actual raw metrics must
+settle this rather than assuming the converter or macOS is responsible.
+
+After the parent grants a short compiler slot with resource limits satisfied,
+use a new output; do not overwrite staged/installed or prior reviewed helpers:
+
+```sh
+swiftc -O ui/desktop/src-tauri/audiocap/main.swift \
+  -o /Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/permagent-audiocap-pcm-review \
+  -framework ScreenCaptureKit -framework AVFoundation -framework CoreMedia -framework CoreGraphics -framework AppKit
+codesign --force --sign - /Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/permagent-audiocap-pcm-review
+codesign --verify --strict /Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/permagent-audiocap-pcm-review
+/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/permagent-audiocap-pcm-review --self-test
+shasum -a 256 /Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/permagent-audiocap-pcm-review
+```
+
+The self-test adds aggregate-amplitude silence/signal/anti-phase/quantization
+fixtures. It does not prove real capture. Only after its existing-permission
+preflight and parent capture authorization, rerun the same CUA fixture sequence:
+
+```sh
+python3 reports/record-evidence/scoped_capture.py capture --execute \
+  --helper /Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/permagent-audiocap-pcm-review \
+  --sha256 <exact-new-signed-helper-sha256> --seconds 75 --pcm-diagnostics
+```
+
+No unscoped capture, alternate browser, browser security workaround, device
+configuration change, microphone input, or new permission request is part of
+this diagnostic sequence. The runner still requires the isolated artifact
+manifest; do not weaken it to run while the daemon/artifact lane is inconsistent.
+
+## Read-only CoreAudio process routing probe and tap feasibility
+
+`audio-diagnostics/chrome_audio_process_probe.swift` queries only an explicitly
+selected Chrome root PID and its explicitly selected AudioService PID. It checks
+exact root bundle ID, executable ownership under the Chrome bundle, full ancestry,
+exact Chromium AudioService command tag, and stable PID start times before/after.
+It never prints command-line arguments, app paths, tabs, or URLs. HAL queries
+translate that PID to its audio process object, confirm the PID, and report
+`isRunningOutput` and the process's output-device IDs/alive/running/rate/mute/volume
+when supported. No tap, aggregate, capture, permission request, property write, or
+routing change occurs. Missing/changed process identity fails closed.
+
+After parent compiler authorization:
+
+```sh
+swiftc -O reports/record-evidence/audio-diagnostics/chrome_audio_process_probe.swift \
+  -o /Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/chrome-audio-process-probe \
+  -framework CoreAudio -framework AppKit
+codesign --force --sign - /Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/chrome-audio-process-probe
+codesign --verify --strict /Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/chrome-audio-process-probe
+```
+
+Root selects the current verified task-only Chrome root and AudioService PIDs.
+While root's CUA fixture plays, the explicit read-only invocation is:
+
+```sh
+/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/chrome-audio-process-probe \
+  --chrome-pid <observed-chrome-root-pid> --audio-pid <observed-chrome-audioservice-pid>
+```
+
+An active WebRTC graph with `isRunningOutput=0` or no output devices points toward
+rendering/output routing before capture. Active HAL output combined with SCK raw
+zeros points toward filtering/session/permission rather than our converter; it
+is not by itself proof which of those is responsible.
+
+A possible later CoreAudio capture would use
+`CATapDescription(stereoMixdownOfProcesses: [theExactProcessObject])`,
+`isExclusive=false`, `isPrivate=true`, `muteBehavior=.unmuted`, a private owned
+aggregate containing only that tap, and an IOProc reading only that aggregate.
+No global tap initializer, process restore, PID substitution, default-device
+write, physical-device mute, or all-system fallback is appropriate. On exit or
+selected-process identity change, stop/remove the owned IOProc, destroy its
+aggregate, and destroy its tap. The first experiment would log only amplitude
+and format before authorizing a bounded private WAV capture.
+
+**This tap experiment is not authorized to start under the present
+existing-permission-only constraint.** Apple's primary tap documentation says
+initial recording from the aggregate requests system-audio recording permission
+and requires `NSAudioCaptureUsageDescription`. The installed public CoreAudio
+headers expose process/tap APIs but no tap-specific nonprompting authorization
+preflight. `CGPreflightScreenCaptureAccess` is documented for screen capture;
+we cannot treat that as proof that a new tap helper identity has the needed grant.
+Do not test this by starting a tap, querying private TCC APIs, changing grants, or
+reading a permission database. The safe next live measurement is the instrumented
+already-authorized SCK path, plus the read-only HAL probe.
+
+Primary references: [Apple CoreAudio tap sample](https://developer.apple.com/documentation/coreaudio/capturing-system-audio-with-core-audio-taps),
+[CATapDescription](https://developer.apple.com/documentation/coreaudio/catapdescription),
+and [audio capture usage description](https://developer.apple.com/documentation/bundleresources/information-property-list/nsaudiocaptureusagedescription).
+The local SDK `AudioHardware.h` documents PID translation (unknown PID returns
+`kAudioObjectUnknown`), process output activity, and output-device scoping;
+`CATapDescription.h` documents inclusion/exclusion/private/unmuted semantics.
+Seven Python/source contract tests pass. New Swift source/fixtures remain
+uncompiled and unexecuted pending the parent resource/build slot.

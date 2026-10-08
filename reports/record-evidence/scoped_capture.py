@@ -62,9 +62,28 @@ def chunk_info(path, directory):
             'rms': math.sqrt(sum(value * value for value in values) / len(values)) if values else 0}
 
 
+def classify_pcm_diagnostics(metrics):
+    if not metrics or metrics.get('phase') != 'final':
+        return 'incomplete_diagnostics'
+    raw = metrics.get('rawChannels', [])
+    if not raw or not all(channel.get('sampleCount', 0) > 0 for channel in raw):
+        return 'no_input_samples'
+    if not any(channel.get('peak', 0) > 0 for channel in raw):
+        return 'incoming_pcm_silent'
+    if metrics.get('downmixed', {}).get('peak', 0) == 0:
+        return 'downmix_cancellation'
+    if metrics.get('resampledFloat', {}).get('peak', 0) == 0:
+        return 'resampling_loss'
+    if metrics.get('quantizedInt16', {}).get('peak', 0) == 0:
+        return 'quantization_loss'
+    return 'nonzero_pcm_reached_wav'
+
+
 def run(args):
     isolated.manifest()
     helper = helper_check(args.helper, args.sha256)
+    if args.pcm_diagnostics and b'PCM_DIAGNOSTIC_V1' not in Path(args.helper).read_bytes():
+        raise RuntimeError('Helper lacks optional PCM diagnostics; do not pass ignored flags to old helper')
     # This new mode exits before ScreenCaptureKit and never calls a request API.
     preflight = subprocess.run([args.helper, '--preflight-only'], capture_output=True, text=True, timeout=10)
     if preflight.returncode != 0 or f'PREFLIGHT {PERMISSION} granted' not in preflight.stderr:
@@ -79,9 +98,12 @@ def run(args):
     command = [args.helper, '--out', str(chunks), '--chunk-seconds', '45', '--parent-pid', str(os.getpid()),
                '--exclude-bundle-id', 'ai.permagent.record-review-20261007',
                '--include-bundle-id', BUNDLE, '--require-existing-permission']
+    if args.pcm_diagnostics:
+        command.append('--pcm-diagnostics')
     evidence = {'method': 'actual Chrome-scoped ScreenCaptureKit helper capture; NOT Record UI/Tauri IPC',
                 'helper': helper, 'bundleId': BUNDLE, 'command': command, 'chunkSeconds': 45,
                 'captureSecondsAfterReady': args.seconds, 'preflightGranted': True,
+                'pcmDiagnosticsEnabled': args.pcm_diagnostics,
                 'sourceVerified': False, 'ready': False, 'chunks': [], 'stderr': [], 'emitted': []}
     ready = threading.Event()
     lock = threading.Lock()
@@ -141,6 +163,20 @@ def run(args):
             if observed != seen: raise RuntimeError('Chunk files do not match emitted protocol paths')
         except Exception as error:
             evidence['error'] = str(error)
+        if args.pcm_diagnostics:
+            for entry in evidence['stderr']:
+                line = entry['line']
+                try:
+                    if line.startswith('PCM_FORMAT_V1 '):
+                        evidence['pcmFormat'] = json.loads(line[len('PCM_FORMAT_V1 '):])
+                    if line.startswith('PCM_DIAGNOSTIC_V1 '):
+                        metrics = json.loads(line[len('PCM_DIAGNOSTIC_V1 '):])
+                        if metrics.get('phase') == 'final': evidence['pcmDiagnostics'] = metrics
+                except ValueError:
+                    evidence['error'] = 'Malformed PCM diagnostic protocol JSON'
+            evidence['pcmDiagnosis'] = classify_pcm_diagnostics(evidence.get('pcmDiagnostics'))
+            if evidence['pcmDiagnosis'] == 'incomplete_diagnostics':
+                evidence['error'] = 'PCM diagnostic helper did not emit its final amplitude receipt'
         evidence['capturePassed'] = (not evidence.get('error') and evidence['ready'] and
             evidence['sourceVerified'] and evidence['readersJoined'] and proc.returncode == 0 and
             bool(evidence['chunks']) and any(c['peak'] > 0 for c in evidence['chunks']) and
@@ -191,6 +227,7 @@ def main():
     capture.add_argument('--helper', required=True)
     capture.add_argument('--sha256', required=True)
     capture.add_argument('--seconds', type=int, default=75)
+    capture.add_argument('--pcm-diagnostics', action='store_true', help='Opt-in aggregate amplitude evidence; no sample values logged')
     trans = sub.add_parser('transcribe')
     trans.add_argument('--execute', action='store_true')
     trans.add_argument('--run-directory', required=True)

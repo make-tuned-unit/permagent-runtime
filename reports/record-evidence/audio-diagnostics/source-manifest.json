@@ -1,0 +1,28 @@
+{
+  "method": "source-only opt-in diagnostic instrumentation; default off; no capture/build run",
+  "source": "ui/desktop/src-tauri/audiocap/main.swift",
+  "baseSha256": "beecb41e1016775e64725310ec2a62c8418f920a62c02381e7c28913a373614e",
+  "sourceSha256": "d3ed41c35c3a8cce99d5c2e62fe0f1d4b136882c72089a5b7eb8a514cffac9d1",
+  "flag": "--pcm-diagnostics",
+  "requiredScope": "--include-bundle-id com.google.Chrome --require-existing-permission",
+  "observations": [
+    "raw per-channel Float32 aggregate peak/RMS/nonzero count",
+    "downmix aggregate peak/RMS",
+    "resampled float aggregate peak/RMS",
+    "quantized Int16 aggregate peak/RMS",
+    "ASBD and AudioBufferList shape"
+  ],
+  "halProbeSource": "reports/record-evidence/audio-diagnostics/chrome_audio_process_probe.swift",
+  "halProbeSha256": "73cd50103a94a1134384886a67575f9e0d71ce1b40554802211919182c008457",
+  "built": false,
+  "captured": false,
+  "captureRunner": "reports/record-evidence/scoped_capture.py",
+  "captureRunnerSha256": "4b1009ceff220a7def6229fb953646810ea53a91e07574a8fb0dc73dc3b661b7",
+  "primaryReferences": [
+    "https://developer.apple.com/documentation/coreaudio/capturing-system-audio-with-core-audio-taps",
+    "https://developer.apple.com/documentation/coreaudio/catapdescription",
+    "https://developer.apple.com/documentation/bundleresources/information-property-list/nsaudiocaptureusagedescription"
+  ],
+  "tapExecution": "Not permitted without a proven nonprompting existing-permission path; no tap capture source executed",
+  "sourceContracts": "7 Python/source tests passed; Swift self-test assertions added but not compiled or executed"
+}

@@ -46,6 +46,7 @@ var preflightOnly = false
 var requireExistingPermission = false
 var listSourceScope = false
 var selfTest = false
+var pcmDiagnostics = false
 
 var it = CommandLine.arguments.dropFirst().makeIterator()
 while let a = it.next() {
@@ -56,6 +57,7 @@ while let a = it.next() {
     case "--exclude-bundle-id": excludedBundleID = it.next()
     case "--include-bundle-id": includedBundleID = it.next() ?? ""
     case "--self-test": selfTest = true
+    case "--pcm-diagnostics": pcmDiagnostics = true
     case "--preflight-only": preflightOnly = true
     case "--require-existing-permission": requireExistingPermission = true
     case "--list-source-scope": listSourceScope = true
@@ -221,7 +223,43 @@ func downmixFloatPCM(_ buffers: UnsafeMutableAudioBufferListPointer,
 }
 
 // ── Capture ──────────────────────────────────────────────────────────────────
+// Optional diagnostics: aggregate amplitudes only, never sample values.
+struct PCMAmplitudeStats {
+    var count = 0
+    var nonzero = 0
+    var peak: Double = 0
+    var squareSum: Double = 0
+    mutating func add(_ value: Double) {
+        count += 1
+        if value != 0 { nonzero += 1 }
+        peak = max(peak, abs(value))
+        squareSum += value * value
+    }
+    var json: [String: Any] {
+        ["sampleCount": count, "nonzeroCount": nonzero, "peak": peak,
+         "rms": count == 0 ? 0 : sqrt(squareSum / Double(count))]
+    }
+}
+
 final class Capture: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
+    private var rawChannels: [PCMAmplitudeStats] = []
+    private var monoStats = PCMAmplitudeStats()
+    private var resampledStats = PCMAmplitudeStats()
+    private var quantizedStats = PCMAmplitudeStats()
+    private var callbackCount = 0
+    private var nextDiagnosticTime = 0.0
+    private var formatReported = false
+    private func reportPCM(_ phase: String) {
+        guard pcmDiagnostics else { return }
+        let report: [String: Any] = ["phase": phase, "callbacks": callbackCount,
+            "rawChannels": rawChannels.map { $0.json }, "downmixed": monoStats.json,
+            "resampledFloat": resampledStats.json, "quantizedInt16": quantizedStats.json]
+        if let data = try? JSONSerialization.data(withJSONObject: report, options: [.sortedKeys]),
+           let line = String(data: data, encoding: .utf8) {
+            FileErrorLog.write("PCM_DIAGNOSTIC_V1 \(line)")
+        }
+    }
+
     private var pending: [Float] = []
     private var sourceRate: Double = 48_000
     private var chunkIndex = 0
@@ -270,6 +308,49 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
             FileErrorLog.write("ERROR format unsupported audio buffer layout (\(status))")
             return
         }
+        if pcmDiagnostics {
+            // Observe the unmodified buffer values independently of the downmix.
+            let buffers = UnsafeMutableAudioBufferListPointer(list)
+            if !formatReported {
+                formatReported = true
+                let report: [String: Any] = ["sampleRate": asbd.mSampleRate,
+                    "formatID": asbd.mFormatID, "formatFlags": asbd.mFormatFlags,
+                    "bitsPerChannel": asbd.mBitsPerChannel, "channels": asbd.mChannelsPerFrame,
+                    "bytesPerFrame": asbd.mBytesPerFrame, "sampleBufferFrames": CMSampleBufferGetNumSamples(sb),
+                    "bufferChannels": buffers.map { $0.mNumberChannels },
+                    "bufferBytes": buffers.map { $0.mDataByteSize }]
+                if let data = try? JSONSerialization.data(withJSONObject: report, options: [.sortedKeys]),
+                   let line = String(data: data, encoding: .utf8) {
+                    FileErrorLog.write("PCM_FORMAT_V1 \(line)")
+                }
+            }
+            if rawChannels.isEmpty {
+                rawChannels = Array(repeating: PCMAmplitudeStats(), count: Int(asbd.mChannelsPerFrame))
+            }
+            guard rawChannels.count == Int(asbd.mChannelsPerFrame) else {
+                FileErrorLog.write("ERROR diagnostic source channel count changed")
+                return
+            }
+            var channelOffset = 0
+            for buffer in buffers {
+                let channels = Int(buffer.mNumberChannels)
+                let frames = Int(buffer.mDataByteSize) / (MemoryLayout<Float>.size * channels)
+                let values = buffer.mData!.assumingMemoryBound(to: Float.self)
+                for frame in 0..<frames {
+                    for channel in 0..<channels {
+                        rawChannels[channelOffset + channel].add(Double(values[frame * channels + channel]))
+                    }
+                }
+                channelOffset += channels
+            }
+            for value in mono { monoStats.add(Double(value)) }
+            callbackCount += 1
+            let now = ProcessInfo.processInfo.systemUptime
+            if now >= nextDiagnosticTime {
+                reportPCM("receiving")
+                nextDiagnosticTime = now + 5
+            }
+        }
         // All sample/tail operations run on sampleQueue, including chunk numbering and writes.
         pending.append(contentsOf: mono)
         let needed = Int(sourceRate / TARGET_RATE * Double(chunkSamples))
@@ -296,7 +377,12 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
             var acc: Float = 0
             for j in start..<end { acc += input[j] }
             let v = max(-1, min(1, acc / Float(end - start)))
-            out.append(Int16(v < 0 ? v * 32768 : v * 32767))
+            let quantized = Int16(v < 0 ? v * 32768 : v * 32767)
+            if pcmDiagnostics {
+                resampledStats.add(Double(v))
+                quantizedStats.add(Double(quantized))
+            }
+            out.append(quantized)
         }
         guard !out.isEmpty else { return }
         let url = outURL.appendingPathComponent(String(format: "sysaudio_%04d.wav", chunkIndex))
@@ -315,6 +401,7 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
                 let rest = self.pending
                 self.pending = []
                 self.flush(rest, rate: self.sourceRate)
+                self.reportPCM("final")
             }
             completion()
         }
@@ -442,8 +529,35 @@ if selfTest {
     let escape = contents.appendingPathComponent("escaped-helper")
     try FileManager.default.createSymbolicLink(at: escape, withDestinationURL: outside)
     precondition(!executableBelongsToApplication(escape.path, bundlePath: contents.deletingLastPathComponent().path))
-    print("PASS planar stereo, interleaved stereo, mismatched channel rejection, CoreMedia undersized-list regression, exact application scope, owned descendant scope and escape rejection")
+    // Prove the diagnostics distinguish real silence, anti-phase cancellation,
+    // and a nonzero input too quiet to survive Int16 quantization.
+    var silence = PCMAmplitudeStats()
+    [0.0, 0.0, 0.0].forEach { silence.add($0) }
+    precondition(silence.count == 3 && silence.nonzero == 0 && silence.peak == 0)
+    var signal = PCMAmplitudeStats()
+    [0.5, -0.5, 0.0].forEach { signal.add($0) }
+    precondition(signal.count == 3 && signal.nonzero == 2 && signal.peak == 0.5)
+    precondition(abs(signal.squareSum - 0.5) < 0.000001)
+    var antiPhase: [Float] = [0.5, -0.5, -0.5, 0.5]
+    antiPhase.withUnsafeMutableBytes { data in
+        stereo[0] = AudioBuffer(mNumberChannels: 2, mDataByteSize: UInt32(data.count), mData: data.baseAddress)
+        let mono = downmixFloatPCM(stereo, format: format)!
+        precondition(mono.allSatisfy { $0 == 0 })
+        var raw = PCMAmplitudeStats()
+        let samples = data.bindMemory(to: Float.self)
+        for value in samples { raw.add(Double(value)) }
+        precondition(raw.nonzero == 4 && raw.peak == 0.5)
+    }
+    let quiet: Float = 0.000001
+    precondition(quiet != 0 && Int16(quiet * 32767) == 0)
+    print("PASS planar stereo, interleaved stereo, mismatched channel rejection, CoreMedia undersized-list regression, exact application scope, owned descendant scope and escape rejection, PCM silence/phase/quantization diagnostics")
     exit(0)
+}
+
+// The bounded amplitude probe is only authorized for exact Chrome ownership;
+// its permission preflight must run under the same helper identity as capture.
+if pcmDiagnostics && (includedBundleID != "com.google.Chrome" || !requireExistingPermission) {
+    fail("arguments", "--pcm-diagnostics requires exact Chrome scope and --require-existing-permission")
 }
 
 // Diagnostic/QA callers must never trigger a new permission request. This is

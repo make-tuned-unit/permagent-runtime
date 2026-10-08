@@ -52,12 +52,46 @@ class ScopedCaptureTests(unittest.TestCase):
 
     def test_permission_preflight_source_precedes_screen_capture_and_never_requests(self):
         source = (capture.isolated.LANE / 'ui/desktop/src-tauri/audiocap/main.swift').read_text()
-        preflight = source.index('if preflightOnly || requireExistingPermission {')
+        preflight = source.index('if preflightOnly || requireExistingPermission')
         shareable = source.index('content = try await SCShareableContent')
         self.assertLess(preflight, shareable)
         self.assertIn('guard CGPreflightScreenCaptureAccess() else', source)
         self.assertNotIn('CGRequestScreenCaptureAccess(', source)
         self.assertIn('if preflightOnly { exit(0) }', source)
         self.assertIn('case "--require-existing-permission"', source)
+
+    def test_pcm_classification_separates_upstream_silence_and_conversion_loss(self):
+        metrics = {'phase': 'final', 'rawChannels': [{'sampleCount': 10, 'peak': 0}],
+                   'downmixed': {'peak': 0}, 'resampledFloat': {'peak': 0}, 'quantizedInt16': {'peak': 0}}
+        self.assertEqual(capture.classify_pcm_diagnostics(None), 'incomplete_diagnostics')
+        self.assertEqual(capture.classify_pcm_diagnostics(metrics), 'incoming_pcm_silent')
+        metrics['rawChannels'][0]['peak'] = .25
+        self.assertEqual(capture.classify_pcm_diagnostics(metrics), 'downmix_cancellation')
+        metrics['downmixed']['peak'] = .25
+        self.assertEqual(capture.classify_pcm_diagnostics(metrics), 'resampling_loss')
+        metrics['resampledFloat']['peak'] = .000001
+        self.assertEqual(capture.classify_pcm_diagnostics(metrics), 'quantization_loss')
+        metrics['quantizedInt16']['peak'] = 500
+        self.assertEqual(capture.classify_pcm_diagnostics(metrics), 'nonzero_pcm_reached_wav')
+
+    def test_pcm_probe_is_default_off_exact_chrome_and_existing_permission_only(self):
+        source = (capture.isolated.LANE / 'ui/desktop/src-tauri/audiocap/main.swift').read_text()
+        self.assertIn('var pcmDiagnostics = false', source)
+        self.assertIn('case "--pcm-diagnostics": pcmDiagnostics = true', source)
+        self.assertIn('if pcmDiagnostics && (includedBundleID != "com.google.Chrome" || !requireExistingPermission)', source)
+        self.assertIn('guard pcmDiagnostics else { return }', source)
+        self.assertLess(source.index('if pcmDiagnostics &&'), source.index('content = try await SCShareableContent'))
+        self.assertIn('self.reportPCM("final")', source)
+
+    def test_hal_probe_has_no_capture_or_mutation_apis(self):
+        source = (capture.isolated.LANE / 'reports/record-evidence/audio-diagnostics/chrome_audio_process_probe.swift').read_text()
+        for forbidden in ['AudioHardwareCreateProcessTap(', 'AudioHardwareCreateAggregateDevice(',
+                          'AudioObjectSetPropertyData(', 'AudioDeviceStart(', 'CGRequestScreenCaptureAccess(']:
+            self.assertNotIn(forbidden, source)
+        self.assertIn('app.bundleIdentifier == "com.google.Chrome"', source)
+        self.assertIn('--utility-sub-type=audio.mojom.AudioService', source)
+        self.assertIn('kAudioHardwarePropertyTranslatePIDToProcessObject', source)
+        self.assertIn('kAudioProcessPropertyIsRunningOutput', source)
+        self.assertIn('Selected process identity changed during HAL inspection', source)
 
 if __name__ == '__main__': unittest.main()
