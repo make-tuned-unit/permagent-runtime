@@ -1,0 +1,45 @@
+{
+  "atUtc": "2026-10-08T14:41:44.585611+00:00",
+  "scenario": "Far55 synthetic WebRTC; process metadata only, no capture",
+  "exitCode": 0,
+  "probe": {
+    "chromePID": 726,
+    "deviceWrites": 0,
+    "devicesCreated": 0,
+    "method": "read-only HAL metadata for exact Chrome root and verified owned descendants; no capture",
+    "permissionRequests": 0,
+    "processes": [
+      {
+        "hasHALObject": true,
+        "isRunning": 0,
+        "isRunningOutput": 0,
+        "outputDevices": [],
+        "pid": 726,
+        "processObjectId": 118,
+        "role": "chrome_root"
+      },
+      {
+        "hasHALObject": true,
+        "isRunning": 0,
+        "isRunningOutput": 0,
+        "outputDevices": [],
+        "pid": 66550,
+        "processObjectId": 119,
+        "role": "owned_descendant"
+      },
+      {
+        "hasHALObject": true,
+        "isRunning": 0,
+        "isRunningOutput": 0,
+        "outputDevices": [],
+        "pid": 66551,
+        "processObjectId": 120,
+        "role": "owned_descendant"
+      }
+    ],
+    "roleClassification": "ancestry only; process arguments not read",
+    "tapsCreated": 0,
+    "unownedProcessesEmitted": 0
+  },
+  "error": null
+}

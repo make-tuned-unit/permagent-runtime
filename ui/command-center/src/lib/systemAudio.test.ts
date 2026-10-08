@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { normalizeAppList, normalizeStopResult } from './systemAudio';
+import { normalizeAppList, normalizeStopResult, normalizeStopReceipt } from './systemAudio';
 
 describe('normalizeAppList', () => {
   it('keeps well-formed apps, sorted by name, falling back to the bundle id for a blank name', () => {
@@ -41,5 +41,23 @@ describe('normalizeStopResult', () => {
 
   it('drops anything that is not a usable path', () => {
     expect(normalizeStopResult(['/t/a.wav', 3, '', '  ', null])).toEqual(['/t/a.wav']);
+  });
+});
+
+describe('normalizeStopReceipt', () => {
+  it('preserves a completed tail alongside a failed final flush', () => {
+    expect(normalizeStopReceipt({unreadPaths: ['/t/sysaudio_0001.wav'], error: 'exit 7'}))
+      .toEqual({unreadPaths: ['/t/sysaudio_0001.wav'], error: 'exit 7'});
+  });
+  it('accepts legacy arrays and unit while distinguishing no unread paths from unknown', () => {
+    expect(normalizeStopReceipt([])).toEqual({unreadPaths: [], error: null});
+    expect(normalizeStopReceipt(['/t/a.wav'])).toEqual({unreadPaths: ['/t/a.wav'], error: null});
+    expect(normalizeStopReceipt(null)).toEqual({unreadPaths: null, error: null});
+    expect(normalizeStopReceipt(undefined)).toEqual({unreadPaths: null, error: null});
+  });
+  it('never treats a malformed receipt as a clean successful stop', () => {
+    for (const raw of [{}, {unreadPaths: [], error: 7}, {unreadPaths: null, error: null}, 7]) {
+      expect(normalizeStopReceipt(raw).error).toContain('invalid stop receipt');
+    }
   });
 });

@@ -37,6 +37,9 @@ export function searchResultToGraphMemory(result: BrainSearchResult): GraphMemor
     timestamp: result.timestamp,
     layer: result.layer ?? null,
     why: result.why ?? null,
+    // Search's "memory" bucket is not a feed-source tag. Chat provenance,
+    // however, is explicit and should not be discarded as "source unknown".
+    source: result.source === 'chat' ? 'chat' : null,
   };
 }
 
@@ -79,6 +82,7 @@ export function useBrainSearch(query: string) {
 
   useEffect(() => {
     const q = query.trim();
+    const seq = ++seqRef.current;
     if (!q) {
       setResults(null);
       setError(null);
@@ -86,14 +90,14 @@ export function useBrainSearch(query: string) {
       return;
     }
 
-    const seq = ++seqRef.current;
+    setResults(null);
     setLoading(true);
     setError(null);
 
     api.searchBrain({ q })
       .then(res => {
         if (seq !== seqRef.current) return;
-        if (!res || !Array.isArray(res.results)) {
+        if (!res || !Array.isArray(res.results) || res.query !== q) {
           throw new Error('Invalid search response');
         }
         setResults(res.results);
@@ -107,6 +111,7 @@ export function useBrainSearch(query: string) {
       .finally(() => {
         if (seq === seqRef.current) setLoading(false);
       });
+    return () => { if (seq === seqRef.current) seqRef.current += 1; };
   }, [query]);
 
   return { results, loading, error };

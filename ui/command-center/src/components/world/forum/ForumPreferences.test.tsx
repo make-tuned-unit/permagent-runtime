@@ -25,13 +25,23 @@ function LightingProbe() {
   const [lighting, choose] = useForumLighting();
   return <><span data-lighting={lighting} /><button onClick={() => choose('night')}>Night</button><button onClick={() => choose('system')}>System</button></>;
 }
+const originalSetTimeout = globalThis.setTimeout;
+const originalClearTimeout = globalThis.clearTimeout;
 beforeEach(() => {
   localStorage.clear(); systemReduced = false; renderer.fail = false; listeners.clear();
   vi.useFakeTimers();
   vi.stubGlobal('matchMedia', vi.fn(() => ({ get matches() { return systemReduced; }, addEventListener: (_type: string, listener: () => void) => listeners.add(listener), removeEventListener: (_type: string, listener: () => void) => listeners.delete(listener) })));
   host = document.createElement('div'); document.body.append(host); root = createRoot(host);
 });
-afterEach(() => { act(() => root.unmount()); host.remove(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); localStorage.clear(); });
+afterEach(() => {
+  act(() => root.unmount()); host.remove();
+  // Restore mocks before uninstalling the clock. Do not spy on timer globals:
+  // Vitest restores those spies again at file teardown, reinstalling a dead
+  // fake clock in a shared worker and stranding later async act scopes.
+  vi.restoreAllMocks(); vi.useRealTimers(); vi.unstubAllGlobals(); localStorage.clear();
+  expect(globalThis.setTimeout).toBe(originalSetTimeout);
+  expect(globalThis.clearTimeout).toBe(originalClearTimeout);
+});
 
 it('updates a mounted portrait and HUD when the explicit motion preference changes', () => {
   act(() => root.render(<MotionProbe />));
@@ -49,19 +59,17 @@ it('updates a mounted portrait and HUD when the explicit motion preference chang
 });
 
 it('responds to live OS changes while preserving explicit override precedence and cleaning listeners', () => {
-  const schedule = vi.spyOn(globalThis, 'setTimeout');
-  const cancel = vi.spyOn(globalThis, 'clearTimeout');
   act(() => root.render(<MotionProbe />));
   act(() => { systemReduced = true; listeners.forEach(listener => listener()); });
   expect(host.querySelector('[data-portrait-reduced]')?.getAttribute('data-portrait-reduced')).toBe('true');
   act(() => setReduceMotion(false));
   expect(host.querySelector('[data-portrait-reduced]')?.getAttribute('data-portrait-reduced')).toBe('false');
-  const hudTimerIndex = schedule.mock.calls.map(call => call[1]).lastIndexOf(HUD_REST_DELAY_MS);
-  expect(hudTimerIndex).toBeGreaterThanOrEqual(0);
-  const hudTimer = schedule.mock.results[hudTimerIndex].value;
+  const timersBeforeUnmount = vi.getTimerCount();
+  expect(timersBeforeUnmount).toBeGreaterThan(0);
   act(() => root.render(null));
   expect(listeners.size).toBe(0);
-  expect(cancel).toHaveBeenCalledWith(hudTimer);
+  // The HUD owns one rest timer; other React/renderer tasks may remain.
+  expect(vi.getTimerCount()).toBe(timersBeforeUnmount - 1);
 });
 
 it('restores lighting after a remount and keeps System as a persisted choice', () => {

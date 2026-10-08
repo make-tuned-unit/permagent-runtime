@@ -58,6 +58,7 @@ vi.mock('../world/shared/worldEvents', () => ({
 }));
 
 import { BrainView } from './BrainView';
+import { formatMemoryDate } from './BrainList';
 import { api, apiFetch } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
 
@@ -183,6 +184,49 @@ async function clearSearch() {
 }
 
 describe('Brain search guards', () => {
+  it('labels broad search results honestly and keeps explicit conversation provenance', async () => {
+    searchBrainMock.mockResolvedValueOnce({ results: [{ ...searchHit, source: 'chat', session_id: 'session-a', preview: 'A preview before the matching word later in this message' }],
+      total: 1, query: 'caroline', offset: 0, limit: 50, fts_count: 1, spectral_count: 0, dedup_count: 0 });
+    await renderBrain();
+    await typeSearch('caroline');
+    expect(container.textContent).toContain('1 search results for "caroline"');
+    expect(container.textContent).toContain('Search finds any query word or related meaning');
+    expect(container.textContent).toContain('from a conversation');
+    expect(container.textContent).not.toContain('source unknown');
+    expect(container.textContent).not.toContain('memories matching');
+  });
+
+  it('clears previous-query rows while a different search is pending', async () => {
+    await renderBrain();
+    await typeSearch('caroline');
+    let resolveNext!: (value: Awaited<ReturnType<typeof api.searchBrain>>) => void;
+    const next = new Promise<Awaited<ReturnType<typeof api.searchBrain>>>(resolve => { resolveNext = resolve; });
+    searchBrainMock.mockReturnValueOnce(next);
+    await typeSearch('new query');
+    expect(container.textContent).toContain('Searching…');
+    expect(container.textContent).not.toContain(searchHit.preview);
+    await act(async () => {
+      resolveNext({ results: [], total: 0, query: 'new query', offset: 0, limit: 50, fts_count: 0, spectral_count: 0, dedup_count: 0 });
+      await next;
+    });
+    expect(container.textContent).toContain('No search results for "new query"');
+  });
+
+  it('rejects a response echoed for a different query', async () => {
+    searchBrainMock.mockResolvedValueOnce({ results: [searchHit], total: 1, query: 'wrong query', offset: 0, limit: 50, fts_count: 0, spectral_count: 1, dedup_count: 0 });
+    await renderBrain();
+    await typeSearch('caroline');
+    expect(container.textContent).toContain('Could not search your Brain: Invalid search response');
+    expect(container.textContent).not.toContain(searchHit.preview);
+  });
+
+  it('formats future memory dates explicitly rather than negative minutes ago', () => {
+    const now = new Date(2026, 9, 8, 12, 0).getTime();
+    expect(formatMemoryDate(new Date(now + 150 * 60_000).toISOString(), now)).toBe('Oct 8, 2:30 PM');
+    expect(formatMemoryDate(new Date(now - 5 * 60_000).toISOString(), now)).toBe('5m ago');
+    expect(formatMemoryDate('unavailable', now)).toBe('unavailable');
+  });
+
   it('1 — non-empty query calls GET /api/brain/search', async () => {
     await renderBrain();
     await typeSearch('caroline');
@@ -214,14 +258,14 @@ describe('Brain search guards', () => {
       dedup_count: 0,
     });
     await typeSearch('caroline');
-    expect(container.textContent).toContain('No memories match "caroline"');
+    expect(container.textContent).toContain('No search results for "caroline"');
     expect(container.textContent).not.toContain('Could not search your Brain');
 
     searchBrainMock.mockRejectedValueOnce(new Error('daemon offline'));
     await clearSearch();
     await typeSearch('caroline');
     expect(container.textContent).toContain('Could not search your Brain: daemon offline');
-    expect(container.textContent).not.toContain('No memories match "caroline"');
+    expect(container.textContent).not.toContain('No search results for "caroline"');
   });
 
   it('4 — clearing the query restores the previous view mode', async () => {
@@ -232,10 +276,10 @@ describe('Brain search guards', () => {
 
     await typeSearch('caroline');
     expect(container.textContent).toContain('caroline wrote the deployment runbook');
-    expect(container.textContent).toContain('matching "caroline"');
+    expect(container.textContent).toContain('search results for "caroline"');
 
     await clearSearch();
-    expect(container.textContent).not.toContain('matching "caroline"');
+    expect(container.textContent).not.toContain('search results for "caroline"');
     // "Selected" is still the lit fill, but it is now carried on the button
     // primitive's `--pa-btn-bg` custom property rather than an inline
     // `background` an inline style could never give a hover or pressed state.

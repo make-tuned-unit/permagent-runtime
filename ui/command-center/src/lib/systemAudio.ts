@@ -105,11 +105,26 @@ export function normalizeStopResult(raw: unknown): string[] | null {
   return raw.filter((p): p is string => typeof p === 'string' && p.trim().length > 0);
 }
 
-/** Stop capture (the helper flushes its partial chunk first). Resolves to the
- *  unread chunk paths, or `null` when this native does not report them. */
-export async function stopSystemAudioCapture(): Promise<string[] | null> {
-  if (!inDesktopApp()) return null;
-  return normalizeStopResult(await invoke<unknown>('stop_system_audio'));
+export interface SystemAudioStopReceipt { unreadPaths: string[] | null; error: string | null }
+
+/** Accept current receipts and older path-array/unit protocols. */
+export function normalizeStopReceipt(raw: unknown): SystemAudioStopReceipt {
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    const receipt = raw as { unreadPaths?: unknown; error?: unknown };
+    const paths = normalizeStopResult(receipt.unreadPaths);
+    const validError = receipt.error === null || typeof receipt.error === 'string';
+    return { unreadPaths: paths, error: paths !== null && validError
+      ? (receipt.error as string | null)
+      : 'The capture helper returned an invalid stop receipt; final audio may be incomplete' };
+  }
+  return { unreadPaths: normalizeStopResult(raw), error: raw == null || Array.isArray(raw)
+    ? null : 'The capture helper returned an invalid stop receipt; final audio may be incomplete' };
+}
+
+/** Preserve unread tails even when native reports an unsuccessful final flush. */
+export async function stopSystemAudioCapture(): Promise<SystemAudioStopReceipt> {
+  if (!inDesktopApp()) return { unreadPaths: null, error: null };
+  return normalizeStopReceipt(await invoke<unknown>('stop_system_audio'));
 }
 
 /** Read (and natively delete) one completed chunk. */

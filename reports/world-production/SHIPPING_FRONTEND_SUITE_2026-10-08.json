@@ -1,0 +1,3114 @@
+{
+  "success": false,
+  "numTotalTestSuites": 1419,
+  "numPassedTestSuites": 1419,
+  "numFailedTestSuites": 0,
+  "numTotalTests": 3923,
+  "numPassedTests": 3534,
+  "numFailedTests": 389,
+  "numPendingTests": 0,
+  "exitCode": 1,
+  "minimumFreeGiB": 20.305313110351562,
+  "elapsedSeconds": 279.06030070901033,
+  "atUtc": "2026-10-08T14:43:42.517350+00:00",
+  "rawReport": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/shipping-frontend-suite-20261008.json",
+  "log": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/shipping-frontend-suite-20261008.log",
+  "failedFiles": [
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/App.workspaces.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " MainContent workspace load states renders an explicit retry state when workspace loading fails",
+          "failureMessages": [
+            "expected '' to contain 'Couldn\\'t load workspaces.'"
+          ]
+        },
+        {
+          "title": " MainContent workspace load states keeps a genuine empty workspace response distinct from offline failure",
+          "failureMessages": [
+            "expected '' to contain 'No workspaces available'"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/lib/notifications.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " inbox_file_received \u2192 download notification turns a real inbox_file_received frame into a download AppNotification naming the file",
+          "failureMessages": [
+            "expected a download notification, got: []: expected undefined to be truthy"
+          ]
+        },
+        {
+          "title": " toast() \u2014 \"System messages\" preference vs. opts.force (R8, coordinator ruling 2026-09-25) opts.force bypasses the preference \u2014 a failure caused by the user's own click always toasts (NN/g H9, HAX G16)",
+          "failureMessages": [
+            "expected undefined to be truthy"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/lib/useToolOnScreen.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " is true when the active workspace hosts the tool",
+          "failureMessages": [
+            "expected undefined to be true // Object.is equality"
+          ]
+        },
+        {
+          "title": " is false while another workspace is the active one",
+          "failureMessages": [
+            "expected undefined to be false // Object.is equality"
+          ]
+        },
+        {
+          "title": " is false while a full-bleed overlay covers the workspaces",
+          "failureMessages": [
+            "expected undefined to be false // Object.is equality"
+          ]
+        },
+        {
+          "title": " is false when there is no active workspace at all",
+          "failureMessages": [
+            "expected undefined to be false // Object.is equality"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/hooks/useMeetingDictation.drafts.test.ts",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " readDrafts returns every stashed draft, newest first",
+          "failureMessages": [
+            "expected [] to deeply equal [ '2026-08-07T11:00:00.000Z', \u2026(2) ]"
+          ]
+        },
+        {
+          "title": " readDrafts keeps a second recording from burying an unrecovered first",
+          "failureMessages": [
+            "expected [] to deeply equal [ 'Second', 'First' ]"
+          ]
+        },
+        {
+          "title": " readDrafts ignores unrelated keys and unparseable slots rather than throwing",
+          "failureMessages": [
+            "expected [] to deeply equal [ '2026-08-07T11:00:00.000Z' ]"
+          ]
+        },
+        {
+          "title": " pruneDrafts bounds the stash and never evicts the recording being written",
+          "failureMessages": [
+            "expected [] to have a length of 5 but got +0"
+          ]
+        },
+        {
+          "title": " pruneDrafts leaves a stash that is already within bounds alone",
+          "failureMessages": [
+            "expected [] to have a length of 2 but got +0"
+          ]
+        },
+        {
+          "title": " migrateLegacyDraft moves the old single slot into a keyed one and retires the old key",
+          "failureMessages": [
+            "expected [] to deeply equal [ '2026-08-06T22:00:00.000Z' ]"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/styles/spaceScale.test.ts",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " space scale is never re-typed as the number it already is",
+          "failureMessages": [
+            "use space.<step> from styles/tokens \u2014 the scale already has this size: expected [ 'App.tsx:369  gap: 12', \u2026(2) ] to deeply equal []"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/styles/textScale.test.ts",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " type ramp is never re-typed as the number it already is",
+          "failureMessages": [
+            "use textSize.<role> from styles/tokens \u2014 the ramp already has this size: expected [ 'App.tsx:369  12px', \u2026(1) ] to deeply equal []"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/automate/AutomateView.delete.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " DeleteAutomationControl asks on the row instead of deleting, and never opens a dialog",
+          "failureMessages": [
+            "Cannot read properties of undefined (reading 'dispatchEvent')"
+          ]
+        },
+        {
+          "title": " DeleteAutomationControl backs out cleanly",
+          "failureMessages": [
+            "Cannot read properties of undefined (reading 'dispatchEvent')"
+          ]
+        },
+        {
+          "title": " DeleteAutomationControl deletes once the affirmative is clicked",
+          "failureMessages": [
+            "Cannot read properties of undefined (reading 'dispatchEvent')"
+          ]
+        },
+        {
+          "title": " DeleteAutomationControl states a failure on the control and stays open to retry",
+          "failureMessages": [
+            "Cannot read properties of undefined (reading 'dispatchEvent')"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/automate/AutomateView.resume.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " shows the card schedule in words and flips PAUSED right after a successful Resume",
+          "failureMessages": [
+            "expected '' to contain 'Weekdays at 6:00 AM'"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/automate/JobHealthStrip.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " says \"everything is running\" in the ok state",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'getAttribute')"
+          ]
+        },
+        {
+          "title": " says job health is unknown rather than claiming green when the fetch failed",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'getAttribute')"
+          ]
+        },
+        {
+          "title": " lists each problem, opening one that has a page here and not one that does not",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'textContent')"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/automate/LearnedList.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " groups skills by tool and shows readable titles, never the raw signature as the heading",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'textContent')"
+          ]
+        },
+        {
+          "title": " opens the skill in the library when a single-pattern group is clicked",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'dispatchEvent')"
+          ]
+        },
+        {
+          "title": " expands a multi-pattern group to its patterns, each opening its own skill",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'dispatchEvent')"
+          ]
+        },
+        {
+          "title": " renders a proposal card and reports a failed save on that same card",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'textContent')"
+          ]
+        },
+        {
+          "title": " dismisses a proposal by its hash",
+          "failureMessages": [
+            "Cannot read properties of undefined (reading 'dispatchEvent')"
+          ]
+        },
+        {
+          "title": " marks an archived group distinctly from an active one",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'textContent')"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/brain/BrainView.legend.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " Brain graph key starts collapsed on a first visit, behind its \"Key\" button",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'textContent')"
+          ]
+        },
+        {
+          "title": " Brain graph key teaches the gestures the scene actually has",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'dispatchEvent')"
+          ]
+        },
+        {
+          "title": " Brain graph key does not offer a gesture the scene does not have",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'dispatchEvent')"
+          ]
+        },
+        {
+          "title": " Brain graph key says what separates the three things that share one shape",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'dispatchEvent')"
+          ]
+        },
+        {
+          "title": " Brain graph key admits the travelling lights are constant, not live traffic",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'dispatchEvent')"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/build/BuildView.rail.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " Build progress rail says what it is counting once it appears",
+          "failureMessages": [
+            "expected null not to be null"
+          ]
+        },
+        {
+          "title": " Build progress rail says what an idle Build tab is for, truthfully \u2014 the terminal is a plain shell until a project is launched (B1)",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'textContent')"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/build/CouncilEscalation.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " CouncilEscalation offers one explicit Council approval for a recommended live run",
+          "failureMessages": [
+            "expected null not to be null"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/build/CycleTabsButton.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " CycleTabsButton is always rendered as a labeled button and cycles by click",
+          "failureMessages": [
+            "expected null not to be null"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/build/RecentRunsPanel.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " previews three of 100 runs and keeps all history/evidence inside a bounded scroll area",
+          "failureMessages": [
+            "expected [] to have a length of 3 but got +0"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/common/AnimatedNumber.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " shows the initial value immediately with no count-up on first mount",
+          "failureMessages": [
+            "expected '' to be '42' // Object.is equality"
+          ]
+        },
+        {
+          "title": " formats with the given Intl options",
+          "failureMessages": [
+            "expected '' to match /\\$1,234/"
+          ]
+        },
+        {
+          "title": " renders prefix and suffix inside the same tabular-nums span",
+          "failureMessages": [
+            "expected '' to be '+7%' // Object.is equality"
+          ]
+        },
+        {
+          "title": " animates toward a new value and settles exactly on it",
+          "failureMessages": [
+            "expected '' to be '100' // Object.is equality"
+          ]
+        },
+        {
+          "title": " jumps straight to the target with no animation under reduced motion",
+          "failureMessages": [
+            "expected '' to be '500' // Object.is equality"
+          ]
+        },
+        {
+          "title": " continues from the value actually on screen when interrupted mid-animation, instead of snapping to the previous target",
+          "failureMessages": [
+            "expected null not to be null"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/common/AsOf.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " AsOf says how old the figures are and that something is still trying",
+          "failureMessages": [
+            "expected '' to be 'Updated 2m ago \u00b7 reconnecting' // Object.is equality"
+          ]
+        },
+        {
+          "title": " AsOf keeps the rest of Home's sentences intact",
+          "failureMessages": [
+            "expected '' to be 'Updated 30m ago \u00b7 reconnecting' // Object.is equality"
+          ]
+        },
+        {
+          "title": " AsOf colours a stale reading with the stale role, not the plain text colour",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'style')"
+          ]
+        },
+        {
+          "title": " AsOf stays quiet while the reading is still fresh",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'textContent')"
+          ]
+        },
+        {
+          "title": " AsOf marks a stale reading non-verbally too, for anyone who does not read colour",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'querySelector')"
+          ]
+        },
+        {
+          "title": " AsOf puts the exact timestamp on hover",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'focus')"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/common/CanvasLegend.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " CanvasLegend teaches itself on a first visit",
+          "failureMessages": [
+            "expected null not to be null"
+          ]
+        },
+        {
+          "title": " CanvasLegend goes quiet once dismissed, and remembers it next time",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'dispatchEvent')"
+          ]
+        },
+        {
+          "title": " CanvasLegend leaves a way back that says what it is",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'dispatchEvent')"
+          ]
+        },
+        {
+          "title": " CanvasLegend can be dismissed from the keyboard",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'dispatchEvent')"
+          ]
+        },
+        {
+          "title": " CanvasLegend keeps one canvas\u2019s answer out of another\u2019s",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'dispatchEvent')"
+          ]
+        },
+        {
+          "title": " CanvasLegend names itself for a screen reader without shouting on screen",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'getAttribute')"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/common/ConfirmDialog.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " states the consequence rather than asking \"are you sure?\"",
+          "failureMessages": [
+            "expected 'Go' to contain 'Mint a new drain key?'"
+          ]
+        },
+        {
+          "title": " runs the affirmative action and leaves closing to the caller",
+          "failureMessages": [
+            "no button labelled \"Mint a new key\": expected undefined not to be undefined"
+          ]
+        },
+        {
+          "title": " cancels without running the action",
+          "failureMessages": [
+            "no button labelled \"Cancel\": expected undefined not to be undefined"
+          ]
+        },
+        {
+          "title": " Escape cancels \u2014 the shell it is built on owns that",
+          "failureMessages": [
+            "expected \"spy\" to be called 1 times, but got 0 times"
+          ]
+        },
+        {
+          "title": " keeps the dialog open and names the failure when the action rejects",
+          "failureMessages": [
+            "no button labelled \"Mint a new key\": expected undefined not to be undefined"
+          ]
+        },
+        {
+          "title": " treats a `false` resolution as a failure too \u2014 nothing ticks",
+          "failureMessages": [
+            "no button labelled \"Mint a new key\": expected undefined not to be undefined"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/common/JobProgress.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " names the phase on the root so a screenshot is self-describing",
+          "failureMessages": [
+            "expected undefined to be 'running' // Object.is equality"
+          ]
+        },
+        {
+          "title": " with a reported size: determinate bar and a mono percentage",
+          "failureMessages": [
+            "expected undefined to be 'true' // Object.is equality"
+          ]
+        },
+        {
+          "title": " with no reported size: indeterminate, and no invented percentage",
+          "failureMessages": [
+            "expected undefined to be 'false' // Object.is equality"
+          ]
+        },
+        {
+          "title": " offers Stop only when the job can actually be stopped",
+          "failureMessages": [
+            "expected null not to be null"
+          ]
+        },
+        {
+          "title": " success names what completed rather than just vanishing",
+          "failureMessages": [
+            "expected undefined to be 'succeeded' // Object.is equality"
+          ]
+        },
+        {
+          "title": " failure prints the backend's own message and offers a retry",
+          "failureMessages": [
+            "expected '' to contain 'scanner refused the connection'"
+          ]
+        },
+        {
+          "title": " a stopped job says stopped \u2014 not failed, and with no error text",
+          "failureMessages": [
+            "expected undefined to be 'stopped' // Object.is equality"
+          ]
+        },
+        {
+          "title": " shows the backend's own stage name when it gives one",
+          "failureMessages": [
+            "expected '' to contain 'loading_model'"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/common/StateBlock.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " StateBlock uses the readable muted semantic for explanatory detail copy",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'querySelector')"
+          ]
+        },
+        {
+          "title": " StateBlock renders a plain, dim \"not ready yet\" line for loading \u2014 no retry, no error emphasis",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'textContent')"
+          ]
+        },
+        {
+          "title": " StateBlock keeps error emphasis and retry action semantics unchanged",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'textContent')"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/browser/BrowserControls.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " exposes tab selection and close as independent native controls",
+          "failureMessages": [
+            "expected null to be truthy"
+          ]
+        },
+        {
+          "title": " removing a bookmark never navigates, and neither control is nested",
+          "failureMessages": [
+            "expected null to be truthy"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/dashboard/CardScrollBody.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " fades the bottom edge and counts the hidden rows when the list overflows",
+          "failureMessages": [
+            "Object.defineProperty called on non-object"
+          ]
+        },
+        {
+          "title": " says nothing when everything fits, and drops the affordance at the end of the list",
+          "failureMessages": [
+            "Object.defineProperty called on non-object"
+          ]
+        },
+        {
+          "title": " the pill scrolls the list on toward the hidden rows",
+          "failureMessages": [
+            "Object.defineProperty called on non-object"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/dashboard/CustomizeButton.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " Home customize door says what it opens without being hovered",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'textContent')"
+          ]
+        },
+        {
+          "title": " Home customize door says how to leave once inside",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'textContent')"
+          ]
+        },
+        {
+          "title": " Home customize door toggles",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'dispatchEvent')"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/dashboard/LayoutsGallery.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " lists all five templates by name plus Custom (yours)",
+          "failureMessages": [
+            "expected 'Go' to contain 'Morning Briefing'"
+          ]
+        },
+        {
+          "title": " Try opens the current-vs-proposed overlay without applying anything",
+          "failureMessages": [
+            "Cannot read properties of undefined (reading 'click')"
+          ]
+        },
+        {
+          "title": " Apply persists the REALIZED layout (comingSoon cards dropped) and closes",
+          "failureMessages": [
+            "Cannot read properties of undefined (reading 'click')"
+          ]
+        },
+        {
+          "title": " Keep current dismisses the overlay with no apply call",
+          "failureMessages": [
+            "Cannot read properties of undefined (reading 'click')"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/dashboard/MissingCard.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " a card the registry has no entry for holds its place instead of vanishing",
+          "failureMessages": [
+            "expected null not to be null"
+          ]
+        },
+        {
+          "title": " a card the registry has no entry for says it is still coming while the manifest is in flight",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'textContent')"
+          ]
+        },
+        {
+          "title": " a card the registry has no entry for says a failed fetch failed, not that the card is gone",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'textContent')"
+          ]
+        },
+        {
+          "title": " a card the registry has no entry for says a genuinely absent card type is absent, and how to clear it",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'textContent')"
+          ]
+        },
+        {
+          "title": " a card the registry has no entry for names the card type, so the placeholder is identifiable",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'textContent')"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/dashboard/bannerSlot.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " only one banner is on screen when both have something to say",
+          "failureMessages": [
+            "expected [] to deeply equal [ 'banner-learn-next' ]"
+          ]
+        },
+        {
+          "title": " the one that has something to say gets the slot when it is alone",
+          "failureMessages": [
+            "expected [] to deeply equal [ 'banner-echo' ]"
+          ]
+        },
+        {
+          "title": " the slot passes on when the holder goes quiet",
+          "failureMessages": [
+            "expected [] to deeply equal [ 'banner-learn-next' ]"
+          ]
+        },
+        {
+          "title": " unmounting releases the slot rather than holding it off screen",
+          "failureMessages": [
+            "expected [] to deeply equal [ 'banner-echo' ]"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/dashboard/useDashboard.race.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " useDashboard request ordering discards an older response that resolves after a manual refresh",
+          "failureMessages": [
+            "expected '' to be 'current' // Object.is equality"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/dashboard/useDashboard.stale.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " useDashboard freshness records when the figures on screen were last true",
+          "failureMessages": [
+            "Cannot read properties of undefined (reading 'lastOkAt')"
+          ]
+        },
+        {
+          "title": " useDashboard freshness keeps the last good figures but stops calling them current",
+          "failureMessages": [
+            "expected '' to be 'all quiet' // Object.is equality"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/dashboard/useLayout.ready.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " does not expose the initial default layout as loaded while the saved layout is pending",
+          "failureMessages": [
+            "expected '' to be 'loading' // Object.is equality"
+          ]
+        },
+        {
+          "title": " marks the displayed fallback ready when the saved layout fails",
+          "failureMessages": [
+            "expected '' to be 'loading' // Object.is equality"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/finance/FundamentalsKey.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " says it is still checking rather than reporting \"no key\" before the read lands",
+          "failureMessages": [
+            "expected '' to match /Checking/i"
+          ]
+        },
+        {
+          "title": " surfaces a failed save at the control and never ticks",
+          "failureMessages": [
+            "Cannot read properties of undefined (reading 'click')"
+          ]
+        },
+        {
+          "title": " holds the pending phase and ticks on a save that lands",
+          "failureMessages": [
+            "Cannot read properties of undefined (reading 'click')"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/finance/PolybotKeys.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " shows status rows and no password fields until Add or Replace",
+          "failureMessages": [
+            "expected  to have a length of 6 but got +0"
+          ]
+        },
+        {
+          "title": " opens a single editor on Replace",
+          "failureMessages": [
+            "expected undefined to be truthy"
+          ]
+        },
+        {
+          "title": " surfaces a failed key save at the control and never ticks",
+          "failureMessages": [
+            "Cannot read properties of undefined (reading 'click')"
+          ]
+        },
+        {
+          "title": " says a row is still being checked rather than reporting \"not set\"",
+          "failureMessages": [
+            "expected '' to match /Checking/"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/chat/ChatInput.send.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " the composer placeholder is one line that truncates, never the textarea's own wrapping one",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'getAttribute')"
+          ]
+        },
+        {
+          "title": " the composer placeholder disappears as soon as there is text, so it cannot sit under the caret",
+          "failureMessages": [
+            "'set value' called on an object that is not a valid instance of HTMLTextAreaElement."
+          ]
+        },
+        {
+          "title": " send button is square with the field, not a smaller box beside it",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'style')"
+          ]
+        },
+        {
+          "title": " send button never wears the brand gradient, and answers a press once it can send",
+          "failureMessages": [
+            "'set value' called on an object that is not a valid instance of HTMLTextAreaElement."
+          ]
+        },
+        {
+          "title": " send button goes quiet with nothing to send, and lights up once there is",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'disabled')"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/chat/ChatInput.stop.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " says so on screen when the cancel request itself fails",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'click')"
+          ]
+        },
+        {
+          "title": " clears the failure notice when Stop is pressed again",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'click')"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/chat/ChatLauncher.publish.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " chat launcher size publication publishes the measured pill on mount, and observes it for later changes",
+          "failureMessages": [
+            "expected \"spy\" to be called with arguments: [ { width: 186, height: 44 } ]\n\nReceived: \n\n\n\nNumber of calls: 0\n"
+          ]
+        },
+        {
+          "title": " chat launcher size publication re-publishes when the observer fires",
+          "failureMessages": [
+            "expected \"spy\" to be called with arguments: [ { width: 186, height: 44 } ]\n\nReceived: \n\n\n\nNumber of calls: 0\n"
+          ]
+        },
+        {
+          "title": " chat launcher size publication publishes null while a chat surface is already open, so no corner is reserved",
+          "failureMessages": [
+            "expected \"spy\" to be called with arguments: [ null ]\n\nReceived: \n\n\n\nNumber of calls: 0\n"
+          ]
+        },
+        {
+          "title": " chat launcher size publication keeps the anchor the reserved corner is computed from",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'style')"
+          ]
+        },
+        {
+          "title": " chat launcher size publication animates only properties that cannot change the published box",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'style')"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/chat/ChatView.lifecycle.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " does not load history or open SSE after unmount while session creation is pending",
+          "failureMessages": [
+            "expected \"spy\" to be called 1 times, but got 0 times"
+          ]
+        },
+        {
+          "title": " renders the shared session picker in the docked chat header",
+          "failureMessages": [
+            "expected null not to be null"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/chat/ChatView.voiceOverlay.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " takes the surface over and says its own words",
+          "failureMessages": [
+            "expected null to be truthy"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/chat/CodeBlock.streaming.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " highlighting a block that is still arriving highlights once when the block settles, not once per delta",
+          "failureMessages": [
+            "expected \"spy\" to be called 1 times, but got 0 times"
+          ]
+        },
+        {
+          "title": " highlighting a block that is still arriving shows the newest code on every delta rather than a stale colourised snapshot",
+          "failureMessages": [
+            "expected null not to be null"
+          ]
+        },
+        {
+          "title": " highlighting a block that is still arriving paints a block that arrives complete without waiting on the settle timer",
+          "failureMessages": [
+            "expected undefined to be 'already done' // Object.is equality"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/chat/ImageMessage.error.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " ImageMessage error state (R2) renders the <img> normally when nothing has gone wrong",
+          "failureMessages": [
+            "expected null to be truthy"
+          ]
+        },
+        {
+          "title": " ImageMessage error state (R2) shows a named error state instead of a bare broken-image glyph when the <img> fails",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'dispatchEvent')"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/chat/MessageBubble.copy.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " copy control on an agent message copies the dispatch body without the fences the agent wrapped it in",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'click')"
+          ]
+        },
+        {
+          "title": " copy control on an agent message copies the agent's own text, never the name/timestamp chrome around it",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'click')"
+          ]
+        },
+        {
+          "title": " copy control on an agent message confirms the copy on screen and announces it to screen readers",
+          "failureMessages": [
+            "expected undefined to be '' // Object.is equality"
+          ]
+        },
+        {
+          "title": " copy control on an agent message says so when the copy fails instead of doing nothing visible",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'click')"
+          ]
+        },
+        {
+          "title": " copy control on an agent message is a real button \u2014 reachable and operable from the keyboard, and labelled",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'tagName')"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/chat/MessageBubble.measure.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " bubble reading measure (C3) applies the measure to a user bubble",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'getAttribute')"
+          ]
+        },
+        {
+          "title": " bubble reading measure (C3) applies the measure to a assistant bubble",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'getAttribute')"
+          ]
+        },
+        {
+          "title": " bubble reading measure (C3) applies the measure to a system bubble",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'getAttribute')"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/chat/MessageList.authError.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " MessageList daemon-auth surface names the auth failure instead of leaving the chat silent",
+          "failureMessages": [
+            "expected null not to be null"
+          ]
+        },
+        {
+          "title": " MessageList daemon-auth surface clears the banner once auth recovers",
+          "failureMessages": [
+            "expected null not to be null"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/chat/ModelPicker.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " ModelPicker typeahead haiku hides opus",
+          "failureMessages": [
+            "expected null to be truthy"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/chat/RoleRoutingPrompt.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " RoleRoutingPrompt shows Apply recommended routing when the daemon says prompt",
+          "failureMessages": [
+            "expected '' to contain 'Apply recommended routing'"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/chat/SessionPicker.states.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " SessionPicker states shows a loading state while the list is in flight, then the populated list",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'click')"
+          ]
+        },
+        {
+          "title": " SessionPicker states shows a truthful empty state, not a blank dropdown, when there really are no other sessions",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'click')"
+          ]
+        },
+        {
+          "title": " SessionPicker states shows an error with retry when the daemon is unreachable, distinct from empty",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'click')"
+          ]
+        },
+        {
+          "title": " SessionPicker states keeps the dropdown open and reports a failed \"New session\" instead of closing silently",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'click')"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/chat/SkillPromptBanner.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " says so at the control when the skill could not be saved",
+          "failureMessages": [
+            "Cannot read properties of undefined (reading 'click')"
+          ]
+        },
+        {
+          "title": " holds a pending phase and ticks when the skill is saved",
+          "failureMessages": [
+            "Cannot read properties of undefined (reading 'click')"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/history/HistoryView.tabs.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " History segmented control marks exactly one tab selected, in the shared selected look",
+          "failureMessages": [
+            "dark: expected [] to have a length of 1 but got +0"
+          ]
+        },
+        {
+          "title": " History page padding (QA 2026-09-24) insets the header, segments and list from the rail like every other view",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'style')"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/grow/DailyPageviewsChart.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " DailyPageviewsChart renders one bar per UTC day and an explanatory trendline",
+          "failureMessages": [
+            "expected  to have a length of 3 but got +0"
+          ]
+        },
+        {
+          "title": " DailyPageviewsChart renders an honest empty state rather than a blank chart",
+          "failureMessages": [
+            "expected '' to contain 'No daily pageview data is available'"
+          ]
+        },
+        {
+          "title": " DailyPageviewsChart uses the existing readable type ramp for SVG ticks and HTML annotations",
+          "failureMessages": [
+            "expected undefined to be '11px' // Object.is equality"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/grow/GrowResults.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " Measure now is disabled while the run is in flight and re-enabled after",
+          "failureMessages": [
+            "no Measure now button: expected undefined to be truthy"
+          ]
+        },
+        {
+          "title": " Measure now shows the sweep tally on success and refreshes the results underneath",
+          "failureMessages": [
+            "no Measure now button: expected undefined to be truthy"
+          ]
+        },
+        {
+          "title": " Measure now reports a refused run rather than silently doing nothing",
+          "failureMessages": [
+            "no Measure now button: expected undefined to be truthy"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/grow/GrowView.header.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " Grow header context counts counts the goal cards on the board, singular/plural correct",
+          "failureMessages": [
+            "Test timed out in 5000ms.\nIf this is a long-running test, pass a timeout value as the last argument or configure it globally with \"testTimeout\"."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/mobius/Mobius.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " Mobius reduce-motion gate default motion: thinking animates (frame_000, not the static logo)",
+          "failureMessages": [
+            "the given combination of arguments (undefined and string) is invalid for this assertion. You can use an array, a map, an object, a set, a string, or a weakset instead of a string"
+          ]
+        },
+        {
+          "title": " Mobius reduce-motion gate default motion: speaking animates (frame_000, not the static logo)",
+          "failureMessages": [
+            "the given combination of arguments (undefined and string) is invalid for this assertion. You can use an array, a map, an object, a set, a string, or a weakset instead of a string"
+          ]
+        },
+        {
+          "title": " Mobius reduce-motion gate default motion: calibrating animates (frame_000, not the static logo)",
+          "failureMessages": [
+            "the given combination of arguments (undefined and string) is invalid for this assertion. You can use an array, a map, an object, a set, a string, or a weakset instead of a string"
+          ]
+        },
+        {
+          "title": " Mobius reduce-motion gate reduce motion: thinking freezes on the static logo, not a cycling frame",
+          "failureMessages": [
+            "the given combination of arguments (undefined and string) is invalid for this assertion. You can use an array, a map, an object, a set, a string, or a weakset instead of a string"
+          ]
+        },
+        {
+          "title": " Mobius reduce-motion gate reduce motion: speaking freezes on the static logo, not a cycling frame",
+          "failureMessages": [
+            "the given combination of arguments (undefined and string) is invalid for this assertion. You can use an array, a map, an object, a set, a string, or a weakset instead of a string"
+          ]
+        },
+        {
+          "title": " Mobius reduce-motion gate reduce motion: calibrating freezes on the static logo, not a cycling frame",
+          "failureMessages": [
+            "the given combination of arguments (undefined and string) is invalid for this assertion. You can use an array, a map, an object, a set, a string, or a weakset instead of a string"
+          ]
+        },
+        {
+          "title": " Mobius reduce-motion gate reduce motion: idle also freezes on the static logo (unchanged behaviour)",
+          "failureMessages": [
+            "the given combination of arguments (undefined and string) is invalid for this assertion. You can use an array, a map, an object, a set, a string, or a weakset instead of a string"
+          ]
+        },
+        {
+          "title": " Mobius reduce-motion gate sleeping is always the static logo, motion setting aside",
+          "failureMessages": [
+            "the given combination of arguments (undefined and string) is invalid for this assertion. You can use an array, a map, an object, a set, a string, or a weakset instead of a string"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/inspection/InspectionPanel.pressable.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " an event row is a keyboard-operable disclosure (role, tabIndex, aria-expanded)",
+          "failureMessages": [
+            "expected null to be truthy"
+          ]
+        },
+        {
+          "title": " a memory row is a keyboard-operable disclosure",
+          "failureMessages": [
+            "expected undefined to be truthy"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/notifications/NotificationHost.decisions.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " NotificationHost tray \u2014 Decision Inbox row does not claim \"all quiet\" while decisions are pending",
+          "failureMessages": [
+            "expected '' to contain 'Nova needs 23 answers'"
+          ]
+        },
+        {
+          "title": " NotificationHost tray \u2014 Decision Inbox row opens Home's Decision Review through the shared entry point and closes the tray",
+          "failureMessages": [
+            "Cannot read properties of undefined (reading 'click')"
+          ]
+        },
+        {
+          "title": " NotificationHost tray \u2014 Decision Inbox row says so when Home is unreachable instead of looking like it worked",
+          "failureMessages": [
+            "Cannot read properties of undefined (reading 'click')"
+          ]
+        },
+        {
+          "title": " NotificationHost tray \u2014 Decision Inbox row still says \"all quiet\" when the queue really is empty",
+          "failureMessages": [
+            "expected '' to contain 'Nothing needs you \u2014 all quiet.'"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/people/PeopleGraphCanvas.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " People graph key starts collapsed on a first visit, behind its \"Key\" button",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'textContent')"
+          ]
+        },
+        {
+          "title": " People graph key teaches the premise the layout is built on",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'dispatchEvent')"
+          ]
+        },
+        {
+          "title": " People graph key explains what a bridge person is, and what a line means",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'dispatchEvent')"
+          ]
+        },
+        {
+          "title": " People graph key names the dimming convention with its real threshold",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'dispatchEvent')"
+          ]
+        },
+        {
+          "title": " People graph key teaches the gestures this canvas has",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'dispatchEvent')"
+          ]
+        },
+        {
+          "title": " People graph key goes quiet for good once dismissed",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'dispatchEvent')"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/people/PeopleView.navigate.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " PeopleView agent navigation opens the named person and clears the pending seam",
+          "failureMessages": [
+            "expected { person: 'Ada Lovelace' } to be null"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/people/PeopleView.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " PeopleView wears the same ViewHeader as every other tab, with Graph|List as afterTitle",
+          "failureMessages": [
+            "expected null to be truthy"
+          ]
+        },
+        {
+          "title": " PeopleView opens a side panel of always-editable fields when a person is selected",
+          "failureMessages": [
+            "expected null to be truthy"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/people/PersonSearchPicker.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " PersonSearchPicker loads the unfiltered directory and lists role/company as the subtitle",
+          "failureMessages": [
+            "expected \"spy\" to be called with arguments: [ '/api/people' ]\n\nReceived: \n\n\n\nNumber of calls: 0\n"
+          ]
+        },
+        {
+          "title": " PersonSearchPicker excludes ids already accounted for elsewhere",
+          "failureMessages": [
+            "expected '' to contain 'Jane Doe'"
+          ]
+        },
+        {
+          "title": " PersonSearchPicker re-queries with the typed text",
+          "failureMessages": [
+            "'set value' called on an object that is not a valid instance of HTMLInputElement."
+          ]
+        },
+        {
+          "title": " PersonSearchPicker shows a directory-empty message distinct from a filtered-to-nothing one",
+          "failureMessages": [
+            "expected '' to contain 'No people in the directory.'"
+          ]
+        },
+        {
+          "title": " PersonSearchPicker shows a search error rather than an empty state on a failed fetch",
+          "failureMessages": [
+            "expected '' to contain 'Couldn\\'t search the directory.'"
+          ]
+        },
+        {
+          "title": " PersonSearchPicker calls onPick with the full person record when a row is clicked",
+          "failureMessages": [
+            "expected undefined to be truthy"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/sessions/SessionsList.error.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " C6 \u2014 failed load renders the inline error, not the empty-state lie shows the error + Retry and hides \"No sessions yet\" when sessionsError is set",
+          "failureMessages": [
+            "expected '' to contain 'Couldn\\'t load sessions'"
+          ]
+        },
+        {
+          "title": " C6 \u2014 failed load renders the inline error, not the empty-state lie still shows the honest empty state when the daemon really has no sessions",
+          "failureMessages": [
+            "expected '' to contain 'No sessions yet'"
+          ]
+        },
+        {
+          "title": " C5 \u2014 Escape in the rename input cancels the rename only one Escape closes the input but does NOT close the overlay",
+          "failureMessages": [
+            "expected null to be truthy"
+          ]
+        },
+        {
+          "title": " C5 \u2014 Escape in the rename input cancels the rename only Escape outside the rename still closes the overlay (the window handler is live)",
+          "failureMessages": [
+            "expected \"spy\" to be called 1 times, but got 0 times"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/sessions/SessionsList.pressable.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " a session row is a keyboard-operable control (role, tabIndex) with the shared pressable class",
+          "failureMessages": [
+            "expected null to be truthy"
+          ]
+        },
+        {
+          "title": " Enter on a row selects the session, same as a click",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'dispatchEvent')"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/projects/DocumentViewer.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " DocumentViewer sandboxes PDF previews without scripts or same-origin access",
+          "failureMessages": [
+            "expected null not to be null"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/projects/EcosystemPanel.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " renders grouped cited items and sends the refresh research to Henry",
+          "failureMessages": [
+            "expected \"spy\" to be called with arguments: [ '/api/projects/project%2F1/intel' ]\n\nReceived: \n\n\n\nNumber of calls: 0\n"
+          ]
+        },
+        {
+          "title": " dismisses an item after the DELETE succeeds",
+          "failureMessages": [
+            "expected \"spy\" to be called with arguments: [ \u2026(2) ]\n\nReceived: \n\n\n\nNumber of calls: 0\n"
+          ]
+        },
+        {
+          "title": " renders an unsafe source URL as inert text",
+          "failureMessages": [
+            "expected '' to contain 'Source'"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/projects/MarketPanel.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " never shows a number without the method that produced it",
+          "failureMessages": [
+            "expected '' to contain 'up 9% over the next 7 steps'"
+          ]
+        },
+        {
+          "title": " renders the reason a short series cannot be forecast, not an empty chart",
+          "failureMessages": [
+            "expected '' to contain '42 of 180'"
+          ]
+        },
+        {
+          "title": " says a stale collector is stale rather than showing its last numbers as current",
+          "failureMessages": [
+            "expected '' to contain 'No recent data'"
+          ]
+        },
+        {
+          "title": " distinguishes nothing bound from a flat market",
+          "failureMessages": [
+            "expected '' to contain 'No market series bound'"
+          ]
+        },
+        {
+          "title": " labels a snapshot-only source and an unofficial one where the user sees them",
+          "failureMessages": [
+            "expected '' to contain 'snapshot-only'"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/projects/NotesPanel.collapse.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " NotesPanel collapsed notes hides the body until the title row is clicked, then hides again on re-click",
+          "failureMessages": [
+            "expected null to be truthy"
+          ]
+        },
+        {
+          "title": " NotesPanel collapsed notes labels an untitled note with its first line",
+          "failureMessages": [
+            "expected '' to contain 'First line becomes the label'"
+          ]
+        },
+        {
+          "title": " NotesPanel collapsed notes copies title + body via the copy button without expanding the note",
+          "failureMessages": [
+            "Cannot read properties of undefined (reading 'click')"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/projects/PersonDetailModal.enrich.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " PersonDetailModal run enrichment sends the enrichment to chat instead of copying a prompt",
+          "failureMessages": [
+            "expected undefined to be truthy"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/projects/PersonDetailModal.links.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " PersonDetailModal profile links opens an enriched LinkedIn URL in the in-app browser on the Build tab",
+          "failureMessages": [
+            "enriched linkedin must render a click target: expected undefined to be truthy"
+          ]
+        },
+        {
+          "title": " PersonDetailModal profile links shows the enriched job title in the Role field",
+          "failureMessages": [
+            "expected undefined to be 'Director of Field Operations' // Object.is equality"
+          ]
+        },
+        {
+          "title": " PersonDetailModal profile links opens an enriched Facebook URL from the Facebook field",
+          "failureMessages": [
+            "the given combination of arguments (undefined and string) is invalid for this assertion. You can use an array, a map, an object, a set, a string, or a weakset instead of a string"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/projects/PersonDetailModal.meetings.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " PersonDetailModal meetings POSTs a meeting with an RFC-3339 starts_at",
+          "failureMessages": [
+            "expected undefined to be truthy"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/projects/PersonDetailModal.relationships.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " Person detail relationships and activity renders graph relationships and real per-person activity",
+          "failureMessages": [
+            "expected '' to contain 'Related people'"
+          ]
+        },
+        {
+          "title": " Person detail relationships and activity posts a selected typed relationship",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'click')"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/projects/ProjectDetails.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " Project details activity loads mounted project endpoints and orders their real rows newest first",
+          "failureMessages": [
+            "expected \"spy\" to be called with arguments: [ 'project/a' ]\n\nReceived: \n\n\n\nNumber of calls: 0\n"
+          ]
+        },
+        {
+          "title": " Project details activity surfaces endpoint failure with a retry action",
+          "failureMessages": [
+            "expected '' to contain 'Couldn\\'t load activity.'"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/projects/ProjectWorkspace.navigation.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " holds a request until its project mounts, then consumes it into the requested lens",
+          "failureMessages": [
+            "expected '' to contain 'Test Overview'"
+          ]
+        },
+        {
+          "title": " an explicit lens request overrides old card/note deep links without modifying either artifact",
+          "failureMessages": [
+            "expected '' to contain 'Test Overview'"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/projects/ProjectsView.cardSignal.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " Projects grid card live signal (P3) shows open tasks, goals in flight and last activity for an active project",
+          "failureMessages": [
+            "expected null not to be null"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/projects/VerificationApprovalPanel.privilege.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " reads as None at cleanRuns 0",
+          "failureMessages": [
+            "expected undefined to be 'none' // Object.is equality"
+          ]
+        },
+        {
+          "title": " reads as Read-only at cleanRuns 5 (the read-only threshold)",
+          "failureMessages": [
+            "expected undefined to be 'read_only' // Object.is equality"
+          ]
+        },
+        {
+          "title": " reads as Full at cleanRuns 20 (the full threshold)",
+          "failureMessages": [
+            "expected undefined to be 'full' // Object.is equality"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/projects/VerificationApprovalPanel.save.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " adding an allowlist entry sends only the updated allowlist",
+          "failureMessages": [
+            "'set value' called on an object that is not a valid instance of HTMLInputElement."
+          ]
+        },
+        {
+          "title": " saving thresholds sends only the changed threshold, not both and not the allowlist",
+          "failureMessages": [
+            "'set value' called on an object that is not a valid instance of HTMLInputElement."
+          ]
+        },
+        {
+          "title": " Reset sends exactly {reset: true}",
+          "failureMessages": [
+            "Cannot read properties of undefined (reading 'dispatchEvent')"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/projects/currentProject.shared.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " one current project across the tabs what Projects opens is what Grow shows",
+          "failureMessages": [
+            "Test timed out in 5000ms.\nIf this is a long-running test, pass a timeout value as the last argument or configure it globally with \"testTimeout\"."
+          ]
+        },
+        {
+          "title": " one current project across the tabs Grow shows the first project when nothing is selected, without claiming the shared selection",
+          "failureMessages": [
+            "Test timed out in 5000ms.\nIf this is a long-running test, pass a timeout value as the last argument or configure it globally with \"testTimeout\"."
+          ]
+        },
+        {
+          "title": " one current project across the tabs clearing the selection stays cleared while Grow is mounted",
+          "failureMessages": [
+            "Test timed out in 5000ms.\nIf this is a long-running test, pass a timeout value as the last argument or configure it globally with \"testTimeout\"."
+          ]
+        },
+        {
+          "title": " one current project across the tabs a selection this list has lost is dropped, not left pointing at nothing",
+          "failureMessages": [
+            "Test timed out in 5000ms.\nIf this is a long-running test, pass a timeout value as the last argument or configure it globally with \"testTimeout\"."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/projects/useProjectSignals.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " counts open tasks and goals in flight, and finds the latest activity",
+          "failureMessages": [
+            "expected undefined to deeply equal { Object (openTasks, goalsInFlight, ...) }"
+          ]
+        },
+        {
+          "title": " a column with no stateBinding counts as open, not settled",
+          "failureMessages": [
+            "Cannot read properties of undefined (reading 'openTasks')"
+          ]
+        },
+        {
+          "title": " a project whose fetch fails reads as no signal, not a crash",
+          "failureMessages": [
+            "expected undefined to deeply equal { openTasks: +0, \u2026(2) }"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/settings/AuthLogSection.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " AuthLogSection shows a loading state before the log resolves",
+          "failureMessages": [
+            "expected '' to contain 'Loading auth log'"
+          ]
+        },
+        {
+          "title": " AuthLogSection shows an honest error state, not empty",
+          "failureMessages": [
+            "expected '' to contain 'Couldn\\'t read the auth log'"
+          ]
+        },
+        {
+          "title": " AuthLogSection shows the empty state when nothing has been recorded",
+          "failureMessages": [
+            "expected '' to contain 'No events recorded yet'"
+          ]
+        },
+        {
+          "title": " AuthLogSection renders a row in plain language, not the raw route-class enum",
+          "failureMessages": [
+            "expected null to be truthy"
+          ]
+        },
+        {
+          "title": " AuthLogSection refreshes on demand",
+          "failureMessages": [
+            "Cannot read properties of undefined (reading 'dispatchEvent')"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/settings/BackupsSection.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " BackupsSection shows a loading state before snapshots resolve",
+          "failureMessages": [
+            "expected '' to contain 'Loading snapshots'"
+          ]
+        },
+        {
+          "title": " BackupsSection shows an honest error state with retry, not empty",
+          "failureMessages": [
+            "expected '' to contain 'Couldn\\'t read backup snapshots'"
+          ]
+        },
+        {
+          "title": " BackupsSection shows the empty state when there are no snapshots yet",
+          "failureMessages": [
+            "expected '' to contain 'No snapshots yet'"
+          ]
+        },
+        {
+          "title": " BackupsSection lists the newest snapshot per database",
+          "failureMessages": [
+            "expected null to be truthy"
+          ]
+        },
+        {
+          "title": " BackupsSection confirms before running an immediate backup, then calls the endpoint",
+          "failureMessages": [
+            "Cannot read properties of undefined (reading 'dispatchEvent')"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/settings/GmailConnectSection.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " GmailConnectSection shows the connect form when not connected",
+          "failureMessages": [
+            "expected '' to contain 'Not connected'"
+          ]
+        },
+        {
+          "title": " GmailConnectSection shows Disconnect, not the connect form, when already connected",
+          "failureMessages": [
+            "expected '' to contain 'Connected'"
+          ]
+        },
+        {
+          "title": " GmailConnectSection confirms before connecting, then opens the auth URL without handling OAuth itself",
+          "failureMessages": [
+            "'set value' called on an object that is not a valid instance of HTMLInputElement."
+          ]
+        },
+        {
+          "title": " GmailConnectSection confirms before disconnecting",
+          "failureMessages": [
+            "Cannot read properties of undefined (reading 'dispatchEvent')"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/settings/MessagingGatewaysSection.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " MessagingGatewaysSection offers a connect form when Telegram is not configured",
+          "failureMessages": [
+            "expected '' to contain 'Connect Telegram'"
+          ]
+        },
+        {
+          "title": " MessagingGatewaysSection confirms before connecting, then starts the gateway with the pasted token",
+          "failureMessages": [
+            "'set value' called on an object that is not a valid instance of HTMLInputElement."
+          ]
+        },
+        {
+          "title": " MessagingGatewaysSection shows a running gateway with its paired users and confirms unpair",
+          "failureMessages": [
+            "expected '' to contain 'Telegram'"
+          ]
+        },
+        {
+          "title": " MessagingGatewaysSection reads the tunnel status and shows it running with its URL",
+          "failureMessages": [
+            "expected '' to contain 'Running'"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/settings/ProvidersSection.remove.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " removing a custom provider asks on the row first, and removes nothing on the first click",
+          "failureMessages": [
+            "the custom provider card should offer Remove: expected undefined not to be undefined"
+          ]
+        },
+        {
+          "title": " removing a custom provider removes on the second, explicit click",
+          "failureMessages": [
+            "Cannot read properties of undefined (reading 'dispatchEvent')"
+          ]
+        },
+        {
+          "title": " removing a custom provider backs out without removing anything",
+          "failureMessages": [
+            "Cannot read properties of undefined (reading 'dispatchEvent')"
+          ]
+        },
+        {
+          "title": " removing a custom provider says so on the row when the removal fails, and never looks like it worked",
+          "failureMessages": [
+            "Cannot read properties of undefined (reading 'dispatchEvent')"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/settings/SettingsView.autonomy.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " AutonomyPanel guardrail wiring persists a selectable trust level through the config endpoint",
+          "failureMessages": [
+            "expected undefined to be truthy"
+          ]
+        },
+        {
+          "title": " AutonomyPanel guardrail wiring keeps the hanging per-tool modes locked (honest \"Soon\" guard)",
+          "failureMessages": [
+            "expected [] to have a length of 2 but got +0"
+          ]
+        },
+        {
+          "title": " AutonomyPanel guardrail wiring says what Home says about the count, and points there (J3)",
+          "failureMessages": [
+            "expected '' to contain 'your agent needs 3 answers'"
+          ]
+        },
+        {
+          "title": " AutonomyPanel guardrail wiring replaced the spend-cap sliders with a link to Spend",
+          "failureMessages": [
+            "expected undefined to be truthy"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/settings/SettingsView.preview-controls.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " settings preview controls are gone Preferences has a LIVE open-on-launch select and no disabled preview controls",
+          "failureMessages": [
+            "expected null to be truthy"
+          ]
+        },
+        {
+          "title": " settings preview controls are gone Memory keeps only the live Brain/Librarian links \u2014 no sliders, no toggles",
+          "failureMessages": [
+            "expected '' to contain 'Open Brain view'"
+          ]
+        },
+        {
+          "title": " settings preview controls are gone Data & privacy dropped the fake local-first/E2E/diagnostics/prompt toggles",
+          "failureMessages": [
+            "expected '' to contain 'Share product analytics'"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/settings/ToolsPanel.canUse.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " ToolsPanel \"What <name> can use\" falls back to \"your agent\" before the persona name loads",
+          "failureMessages": [
+            "expected '' to contain 'What your agent can use'"
+          ]
+        },
+        {
+          "title": " ToolsPanel \"What <name> can use\" uses the persona's configured name once it loads",
+          "failureMessages": [
+            "expected '' to contain 'What Henry can use'"
+          ]
+        },
+        {
+          "title": " ToolsPanel \"What <name> can use\" says plainly when nothing is connected, distinct from a loading state",
+          "failureMessages": [
+            "expected '' to contain 'Nothing connected yet'"
+          ]
+        },
+        {
+          "title": " ToolsPanel \"What <name> can use\" lists each enabled tool by its display name",
+          "failureMessages": [
+            "expected undefined to be 'Brave Search' // Object.is equality"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/settings/atoms.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " Row dim fades the row when dim is set, without hiding its content",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'style')"
+          ]
+        },
+        {
+          "title": " Row dim renders at full opacity when dim is not set",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'style')"
+          ]
+        },
+        {
+          "title": " Details renders a native, keyboard-operable disclosure with a short summary",
+          "failureMessages": [
+            "expected null to be truthy"
+          ]
+        },
+        {
+          "title": " ListRow renders as a button when onOpen is given, and a plain row otherwise",
+          "failureMessages": [
+            "expected null to be truthy"
+          ]
+        },
+        {
+          "title": " Row switch labels names direct and nested switches from their own visible row without leaking labels",
+          "failureMessages": [
+            "expected [] to deeply equal [ 'Task completed', \u2026(3) ]"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/sidebar/NavAgentStatus.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " HeaderAgentStatus uses the name the user configured, the same one the World shows",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'textContent')"
+          ]
+        },
+        {
+          "title": " HeaderAgentStatus never shows the dashboard payload name, which is the default persona",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'textContent')"
+          ]
+        },
+        {
+          "title": " HeaderAgentStatus never shows the store default \"Agent\" as though it were a name",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'textContent')"
+          ]
+        },
+        {
+          "title": " HeaderAgentStatus takes state from the data it is handed, and does not fetch its own",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'getAttribute')"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/sidebar/historyRow.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " History rail row is in the rail, and opens the History destination",
+          "failureMessages": [
+            "no History row in the sidebar rail: expected undefined to be truthy"
+          ]
+        },
+        {
+          "title": " History rail row toggles back to chat rather than trapping you on it",
+          "failureMessages": [
+            "no History row in the sidebar rail: expected undefined to be truthy"
+          ]
+        },
+        {
+          "title": " History rail row is the only entry point \u2014 Settings does not list History",
+          "failureMessages": [
+            "History appears twice in the rail: expected [] to have a length of 1 but got +0"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/sidebar/sidebarTooltipDismiss.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " sidebar row tooltip opens on focus and closes when the row is activated",
+          "failureMessages": [
+            "expected undefined to be truthy"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/sidebar/sidebarVibrancy.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " the rail over a transparent window thins to the vibrancy tint so the native material is not buried",
+          "failureMessages": [
+            "Sidebar rendered nothing: expected null to be truthy"
+          ]
+        },
+        {
+          "title": " the rail over a transparent window keeps glassHi while the window is opaque, as shipped",
+          "failureMessages": [
+            "Sidebar rendered nothing: expected null to be truthy"
+          ]
+        },
+        {
+          "title": " the rail over a transparent window still goes flat under Reduce Transparency, transparent window or not",
+          "failureMessages": [
+            "Sidebar rendered nothing: expected null to be truthy"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/skills/SkillDetailPanel.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " keeps the skill and says what happened when the delete fails",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'dispatchEvent')"
+          ]
+        },
+        {
+          "title": " closes the panel when the delete lands",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'dispatchEvent')"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/tool-results/ToolResult.label.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " ToolResult label (R3) shows a plain-English label instead of the raw identifier for an overridden tool",
+          "failureMessages": [
+            "expected '' to contain 'Create a card'"
+          ]
+        },
+        {
+          "title": " ToolResult label (R3) keeps the raw name reachable in the expanded detail even though the badge is renamed",
+          "failureMessages": [
+            "expected '' to contain 'Search Gmail'"
+          ]
+        },
+        {
+          "title": " ToolResult label (R3) falls back to the mechanical label for a tool with no override",
+          "failureMessages": [
+            "expected '' to contain 'Widget status'"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/splash/Splash.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " Splash reveals both tagline lines in sequence (via opacity) and calls onDone once the pass completes",
+          "failureMessages": [
+            "Cannot read properties of undefined (reading 'style')"
+          ]
+        },
+        {
+          "title": " Splash clicking skips straight to the exit phase without waiting out the sequence",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'dispatchEvent')"
+          ]
+        },
+        {
+          "title": " Splash R4 dagK-pressable: Escape skips straight to the exit phase, for a keyboard user with no way to click",
+          "failureMessages": [
+            "expected \"spy\" to be called 1 times, but got 0 times"
+          ]
+        },
+        {
+          "title": " Splash default motion: the orb runs the thinking loop",
+          "failureMessages": [
+            "the given combination of arguments (undefined and string) is invalid for this assertion. You can use an array, a map, an object, a set, a string, or a weakset instead of a string"
+          ]
+        },
+        {
+          "title": " Splash reduce motion: the orb is static, not the thinking loop",
+          "failureMessages": [
+            "the given combination of arguments (undefined and string) is invalid for this assertion. You can use an array, a map, an object, a set, a string, or a weakset instead of a string"
+          ]
+        },
+        {
+          "title": " Splash reduce motion: the exit fade is instant (no transition string)",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'style')"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/voice/VoicePicker.default.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " VoicePicker default persistence preserves intentional null outside onboarding",
+          "failureMessages": [
+            "expected undefined to be 'bf_emma' // Object.is equality"
+          ]
+        },
+        {
+          "title": " VoicePicker default persistence persists the same default voice that onboarding displays",
+          "failureMessages": [
+            "expected undefined to be 'bf_emma' // Object.is equality"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/terminal/Terminal.browser.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " explains the desktop requirement without initializing xterm, invoking PTY commands or sending a pending launch",
+          "failureMessages": [
+            "the given combination of arguments (undefined and string) is invalid for this assertion. You can use an array, a map, an object, a set, a string, or a weakset instead of a string"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/terminal/TerminalManager.persistence.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " TerminalManager tab persistence keeps all tabs and the active session through a single-commit key remount",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'createProjectTab')"
+          ]
+        },
+        {
+          "title": " TerminalManager tab persistence remains correct across repeated toggles (there and back again)",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'createProjectTab')"
+          ]
+        },
+        {
+          "title": " TerminalManager tab persistence a genuinely fresh mount still starts with one empty tab",
+          "failureMessages": [
+            "expected [] to have a length of 1 but got +0"
+          ]
+        },
+        {
+          "title": " TerminalManager tab persistence detached pane windows do not write into the shared persistence",
+          "failureMessages": [
+            "expected [] to deeply equal [ 'popped-out' ]"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/wizard/StepReview.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " announces pending reads without blocking an intentional Start",
+          "failureMessages": [
+            "expected '' to contain 'Checking saved settings\u2026'"
+          ]
+        },
+        {
+          "title": " reports failed optional reads as unavailable, not off or unconfigured",
+          "failureMessages": [
+            "Cannot read properties of undefined (reading 'parentElement')"
+          ]
+        },
+        {
+          "title": " keeps independently verified fields when config and provider reads fail",
+          "failureMessages": [
+            "Cannot read properties of undefined (reading 'parentElement')"
+          ]
+        },
+        {
+          "title": " retains a verified search provider while identifying other unreadable providers",
+          "failureMessages": [
+            "Cannot read properties of undefined (reading 'parentElement')"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/workspaces/WorkspaceRenderer.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " renders the Solar Forum for a world panel by default",
+          "failureMessages": [
+            "Test timed out in 5000ms.\nIf this is a long-running test, pass a timeout value as the last argument or configure it globally with \"testTimeout\"."
+          ]
+        },
+        {
+          "title": " falls back to the legacy WorldView when the rollback flag is set",
+          "failureMessages": [
+            "Test timed out in 5000ms.\nIf this is a long-running test, pass a timeout value as the last argument or configure it globally with \"testTimeout\"."
+          ]
+        },
+        {
+          "title": " ignores a stored value that is not the rollback flag",
+          "failureMessages": [
+            "Test timed out in 5000ms.\nIf this is a long-running test, pass a timeout value as the last argument or configure it globally with \"testTimeout\"."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/settings/agents/LibrarianAwaiting.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " distinguishes an empty queue from a failed load",
+          "failureMessages": [
+            "expected '' to contain 'Nothing waiting on you'"
+          ]
+        },
+        {
+          "title": " offers retry on load failure",
+          "failureMessages": [
+            "expected '' to contain 'Could not load'"
+          ]
+        },
+        {
+          "title": " saves the answer before removing the request and updating the count",
+          "failureMessages": [
+            "'set value' called on an object that is not a valid instance of HTMLTextAreaElement."
+          ]
+        },
+        {
+          "title": " keeps the answer and request after a failed save",
+          "failureMessages": [
+            "'set value' called on an object that is not a valid instance of HTMLTextAreaElement."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/settings/agents/SkillsSection.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " Settings \u2192 Agents \u2192 Skills opens the Skills Library",
+          "failureMessages": [
+            "expected null not to be null"
+          ]
+        },
+        {
+          "title": " Settings \u2192 Agents \u2192 Skills loads the library so the count it states is a real one",
+          "failureMessages": [
+            "expected \"spy\" to be called at least once"
+          ]
+        },
+        {
+          "title": " Settings \u2192 Agents \u2192 Skills states the count when there are skills",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'textContent')"
+          ]
+        },
+        {
+          "title": " Settings \u2192 Agents \u2192 Skills explains an empty library instead of leaving a bare door",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'textContent')"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/world/WorldHUD.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " World key teaches the walking keys BEFORE the camera switches, not after",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'textContent')"
+          ]
+        },
+        {
+          "title": " World key teaches the gestures orbit mode actually has",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'textContent')"
+          ]
+        },
+        {
+          "title": " World key separates the Brain-driven ambience from the set dressing",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'textContent')"
+          ]
+        },
+        {
+          "title": " World key names the avatars nothing reports, from the roster itself",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'textContent')"
+          ]
+        },
+        {
+          "title": " World key stops offering orbit gestures once they are dead",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'textContent')"
+          ]
+        },
+        {
+          "title": " World key keeps the camera-mode badge it always had",
+          "failureMessages": [
+            "expected '' to contain 'ORBIT'"
+          ]
+        },
+        {
+          "title": " World key goes quiet for good once dismissed",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'dispatchEvent')"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/world/useSelectedAgentProxy.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " selected agent camera binding delivers selection immediately and follows motion without an unrelated render",
+          "failureMessages": [
+            "expected null to match object { id: 'henry', \u2026(1) }"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/dashboard/decisions/DecisionInbox.entrypoints.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " every entry point opens the same one-at-a-time review: Home (ruling 2)",
+          "failureMessages": [
+            "expected null to be truthy"
+          ]
+        },
+        {
+          "title": " every entry point opens the same one-at-a-time review: Council (ruling 2)",
+          "failureMessages": [
+            "expected undefined to be truthy"
+          ]
+        },
+        {
+          "title": " every entry point opens the same one-at-a-time review: Timeline (ruling 2)",
+          "failureMessages": [
+            "expected undefined to be truthy"
+          ]
+        },
+        {
+          "title": " every entry point opens the same one-at-a-time review: Settings fallback (ruling 2)",
+          "failureMessages": [
+            "expected undefined to be truthy"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/dashboard/decisions/DecisionReview.toast.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " after the hold is sent, the same toast stays but offers no Undo",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'dispatchEvent')"
+          ]
+        },
+        {
+          "title": " after Z, the toast says Undone and offers no Undo",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'dispatchEvent')"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/dashboard/decisions/DiscussionPane.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " DiscussionPane keydown does not propagate navigation keys while editing (rulings 6, 11)",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'dispatchEvent')"
+          ]
+        },
+        {
+          "title": " DiscussionPane j on Send bubbles out while j in the textarea stays contained (ruling 11)",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'dispatchEvent')"
+          ]
+        },
+        {
+          "title": " DiscussionPane Enter sends; Shift+Enter and composition preserve editing (ruling 11)",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'dispatchEvent')"
+          ]
+        },
+        {
+          "title": " DiscussionPane is an inline composer: placeholder only when idle, a labelled input, messages as plain text (U7; rulings 6, 7)",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'placeholder')"
+          ]
+        },
+        {
+          "title": " DiscussionPane disables input and Send while creating (ruling 6)",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'disabled')"
+          ]
+        },
+        {
+          "title": " DiscussionPane disables input and Send while sending (ruling 6)",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'disabled')"
+          ]
+        },
+        {
+          "title": " DiscussionPane shows the daemon error and retries without discarding the input (ruling 7)",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'textContent')"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/dashboard/decisions/useDecisionQueue.test.ts",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " D1 queue \u2014 rulings 4 and 5 all pending decisions are reachable beyond the first ten",
+          "failureMessages": [
+            "Cannot read properties of undefined (reading 'focusedId')"
+          ]
+        },
+        {
+          "title": " D1 queue \u2014 rulings 4 and 5 focus survives refetch, new arrivals and reordering",
+          "failureMessages": [
+            "Cannot read properties of undefined (reading 'ordered')"
+          ]
+        },
+        {
+          "title": " D1 queue \u2014 rulings 4 and 5 external resolution updates position and advances deterministically",
+          "failureMessages": [
+            "Cannot read properties of undefined (reading 'focus')"
+          ]
+        },
+        {
+          "title": " D1 queue \u2014 rulings 4 and 5 Later defers locally without answering or hiding pending work",
+          "failureMessages": [
+            "Cannot read properties of undefined (reading 'later')"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/dashboard/cards/InFlightCard.pressable.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " a goal row is a keyboard-operable control (role, tabIndex, pa-pressable)",
+          "failureMessages": [
+            "expected null to be truthy"
+          ]
+        },
+        {
+          "title": " Enter on a goal row opens the same goal a click would",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'dispatchEvent')"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/dashboard/cards/RecentCard.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " shows a human label, not a serialized args blob, as the row title",
+          "failureMessages": [
+            "expected [] to have a length of 2 but got +0"
+          ]
+        },
+        {
+          "title": " the title owns the row and shows its full text in the shared Tooltip; the status word gives way",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'textContent')"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/dashboard/cards/TimelineCard.pressable.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " a row with evidence to open is a keyboard-operable control (role, tabIndex, pa-pressable)",
+          "failureMessages": [
+            "expected null to be truthy"
+          ]
+        },
+        {
+          "title": " Enter on a goal row opens the goal detail, same as a click",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'dispatchEvent')"
+          ]
+        },
+        {
+          "title": " a row with no evidence stays a plain, non-interactive row",
+          "failureMessages": [
+            "expected undefined to be truthy"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/dashboard/cards/TodosCard.layout.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " puts the overdue label on the second line, giving the title the row",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'textContent')"
+          ]
+        },
+        {
+          "title": " lets the title wrap to two lines instead of one ellipsised nowrap line",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'firstElementChild')"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/dashboard/cards/cardNotes.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " Calendar card empty state in a browser tab, replaces the grant note with where the grant actually lives",
+          "failureMessages": [
+            "expected '' to contain 'Apple Calendar connects in the Permag\u2026'"
+          ]
+        },
+        {
+          "title": " Calendar card empty state still shows an unmodified daemon note verbatim on other cards",
+          "failureMessages": [
+            "expected '' to contain 'Weather is unavailable right now'"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/world/agents/stateSources.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " AgentStateSources without a daemon credential sends no Henry-status or roster request while unpaired, and says Henry cannot be seen",
+          "failureMessages": [
+            "expected undefined to be 'error' // Object.is equality"
+          ]
+        },
+        {
+          "title": " AgentStateSources without a daemon credential does not re-publish the World state on every unpaired tick",
+          "failureMessages": [
+            "expected undefined to be 'error' // Object.is equality"
+          ]
+        },
+        {
+          "title": " AgentStateSources without a daemon credential starts the real poll on its own once a credential appears",
+          "failureMessages": [
+            "expected \"spy\" to be called 1 times, but got 0 times"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/world/shared/useOrchestratorName.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " recovers the configured name after daemon startup and refreshes a renamed identity",
+          "failureMessages": [
+            "expected '' to be 'Connecting' // Object.is equality"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/world/forum/EvidenceLesson.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " offers corrective feedback for either answer and can be revisited",
+          "failureMessages": [
+            "Cannot read properties of undefined (reading 'click')"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/world/forum/ForumAppView.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " connects World actions to the existing app navigation, goal details, skill library and agent settings",
+          "failureMessages": [
+            "expected undefined to be false // Object.is equality"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/world/forum/ForumConversation.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " opens the current shared chat through the dock without sending or creating a session",
+          "failureMessages": [
+            "expected '' to contain 'No messages to show here yet.'"
+          ]
+        },
+        {
+          "title": " retains existing history while disconnected and when opening shared chat",
+          "failureMessages": [
+            "expected undefined to be 'Your saved reply' // Object.is equality"
+          ]
+        },
+        {
+          "title": " preserves the active reply stop control and reports cancellation errors",
+          "failureMessages": [
+            "Cannot read properties of undefined (reading 'disabled')"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/world/forum/ForumNavigation.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " finds the sovereign at its current walking position again on a repeated request",
+          "failureMessages": [
+            "expected last \"spy\" call to have been called with [ 10, 3.5, 10 ]"
+          ]
+        },
+        {
+          "title": " opens the commons on the wide vista, and gives every other district back the narrow lens",
+          "failureMessages": [
+            "expected last \"spy\" call to have been called with [ +0, 12, 24 ]"
+          ]
+        },
+        {
+          "title": " drops back to the narrow lens to find a person, so a portrait is not shot on a landscape field",
+          "failureMessages": [
+            "expected last \"spy\" call to have been called with [ 9, 3.5, 1 ]"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/world/forum/ForumPostProcessing.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " ForumPostProcessing applies AgX inside the composer, after Bloom and before the grade",
+          "failureMessages": [
+            "expected [] to deeply equal [ 'Bloom', 'ToneMapping', \u2026(3) ]"
+          ]
+        },
+        {
+          "title": " ForumPostProcessing keeps the composer single-sampled (the ANGLE/Metal black-rectangle fix)",
+          "failureMessages": [
+            "expected undefined to be '0' // Object.is equality"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/world/forum/ForumView.authNotice.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " shows why the World cannot reach the agent, and clears when paired",
+          "failureMessages": [
+            "the given combination of arguments (undefined and string) is invalid for this assertion. You can use an array, a map, an object, a set, a string, or a weakset instead of a string"
+          ]
+        },
+        {
+          "title": " pairs this tab from a pasted Settings \u2192 Devices link",
+          "failureMessages": [
+            "expected null to be truthy"
+          ]
+        },
+        {
+          "title": " says so when the pasted text is not a pairing link",
+          "failureMessages": [
+            "'set value' called on an object that is not a valid instance of HTMLInputElement."
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/world/forum/ForumView.conversation.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " takes over an existing voice chat at the table without starting a new session",
+          "failureMessages": [
+            "Cannot read properties of undefined (reading 'click')"
+          ]
+        },
+        {
+          "title": " hands active voice controls back to chat when the World is hidden",
+          "failureMessages": [
+            "Cannot read properties of undefined (reading 'click')"
+          ]
+        },
+        {
+          "title": " explicitly leaving the table ends voice and restores garden controls",
+          "failureMessages": [
+            "Cannot read properties of undefined (reading 'click')"
+          ]
+        },
+        {
+          "title": " keeps movement on demand and reading the work feed does not move the camera",
+          "failureMessages": [
+            "Cannot read properties of undefined (reading 'click')"
+          ]
+        },
+        {
+          "title": " keeps the evidence exercise reachable from the consolidated agent desk",
+          "failureMessages": [
+            "Cannot read properties of undefined (reading 'click')"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/world/forum/ForumView.profile.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " keeps seating explicit and hides sovereign identity/seating for a specialist",
+          "failureMessages": [
+            "expected false to be true // Object.is equality"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/world/forum/ForumWalk.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " opens the Agora when the walker steps through the ring, and closes it walking back",
+          "failureMessages": [
+            "expected \"spy\" to be called 1 times, but got 0 times"
+          ]
+        },
+        {
+          "title": " offers E in the exedra and enters the Agora on that key",
+          "failureMessages": [
+            "expected last \"spy\" call to have been called with [ true ]"
+          ]
+        },
+        {
+          "title": " leaves the Agora on Escape instead of leaving walk mode",
+          "failureMessages": [
+            "expected \"spy\" to be called 1 times, but got 0 times"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/world/forum/HabitatAgentDock.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " uses the current hero portrait renderer for the 28 px collaborator emblem",
+          "failureMessages": [
+            "expected undefined to be 'henry:dock' // Object.is equality"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/world/forum/HabitatLearning.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " offers all three non-dispatching demonstrations with feedback and revisit",
+          "failureMessages": [
+            "expected '' to contain 'Plan against constraints'"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/world/forum/MeshAgora.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " says the Mesh is not connected while the shared status is offline",
+          "failureMessages": [
+            "expected '' to contain 'MESH: NOT CONNECTED'"
+          ]
+        },
+        {
+          "title": " says the Mesh is connecting while the shared status is connecting",
+          "failureMessages": [
+            "expected '' to contain 'MESH: CONNECTING'"
+          ]
+        },
+        {
+          "title": " prints the real peer count only when the shared status is connected",
+          "failureMessages": [
+            "expected '' to contain 'MESH: CONNECTED \u00b7 3 peers'"
+          ]
+        },
+        {
+          "title": " speaks of a single peer in the singular",
+          "failureMessages": [
+            "expected '' to contain 'MESH: CONNECTED \u00b7 1 peer'"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/world/forum/OrchestratorConversation.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " waits for an explicit voice start and releases voice when leaving the table",
+          "failureMessages": [
+            "Cannot read properties of undefined (reading 'click')"
+          ]
+        },
+        {
+          "title": " interrupts existing playback and shows actual errors without creating a second engine",
+          "failureMessages": [
+            "expected '' to contain 'Speaking'"
+          ]
+        },
+        {
+          "title": " keeps the browser preview honest when the app voice host is unavailable",
+          "failureMessages": [
+            "Cannot read properties of undefined (reading 'disabled')"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/world/forum/railAccessibility.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " the closed place rail leaves the accessibility tree pairs aria-hidden with inert when closed",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'getAttribute')"
+          ]
+        },
+        {
+          "title": " the closed place rail leaves the accessibility tree carries neither while open, so the places stay readable",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'getAttribute')"
+          ]
+        },
+        {
+          "title": " the closed place rail leaves the accessibility tree keeps every place out of the tab order while closed",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'querySelectorAll')"
+          ]
+        },
+        {
+          "title": " the closed place rail leaves the accessibility tree returns focus to the handle when it closes under the keyboard",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'querySelector')"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/world/forum/useSystemAppearance.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " switches day \u2192 night \u2192 day on system changes without remounting or a clock",
+          "failureMessages": [
+            "expected '' to be 'day' // Object.is equality"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/world/forum/worldLabelStacking.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " in-world labels stack beneath the forum HUD gives the canvas host the class that contains the labels",
+          "failureMessages": [
+            "the canvas host rendered: expected null not to be null"
+          ]
+        },
+        {
+          "title": " in-world labels stack beneath the forum HUD puts the HUD after the canvas host and at or above it",
+          "failureMessages": [
+            "Cannot read properties of null (reading 'querySelector')"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/world/areas/hall/BlenderVault.test.tsx",
+      "message": "",
+      "failedTests": [
+        {
+          "title": " Blender World asset gate preserves the usable old hall when asset is loading",
+          "failureMessages": [
+            "expected '' to be 'original usable hall' // Object.is equality"
+          ]
+        },
+        {
+          "title": " Blender World asset gate preserves the usable old hall when asset is failed",
+          "failureMessages": [
+            "expected '' to be 'original usable hall' // Object.is equality"
+          ]
+        }
+      ]
+    }
+  ]
+}

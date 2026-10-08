@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useCommandCenter, navigateToTool } from './lib/store';
 import { useTheme } from './styles/useTheme';
+import { space, textSize } from './styles/tokens';
 import { Sidebar } from './components/sidebar/Sidebar';
 import { SettingsView } from './components/settings/SettingsView';
 import { HistoryView, isHistoryTab, type HistoryTabKey } from './components/history/HistoryView';
@@ -21,12 +22,14 @@ import { NotificationHost } from './components/notifications/NotificationHost';
 import { toast } from './lib/notifications';
 import { VersionSkewBanner } from './components/version/VersionSkewBanner';
 import { StateBlock } from './components/common/StateBlock';
-import { api, fileToBase64 } from './lib/api';
+import { fileToBase64 } from './lib/api';
 import { createChatWindow } from './lib/chatWindow';
 import type { LayoutNode } from './lib/store';
 import { useAppNavigate } from './hooks/useAppNavigate';
 import { getOpenOnLaunch } from './lib/openOnLaunch';
 import { useVersionSkew } from './hooks/useVersionSkew';
+import { useDictationReadiness } from './lib/dictationReadiness';
+import { Button } from './components/common/Button';
 import { onRepaintRegain, forceCompositorRepaint } from './lib/repaintOnRegain';
 import { clearPageBackgroundForVibrancy, NATIVE_WINDOW_IS_OPAQUE, TITLEBAR_HEIGHT } from './lib/windowChrome';
 
@@ -137,7 +140,7 @@ function App() {
   const setActivePanel = useCommandCenter(s => s.setActivePanel);
   const activePanel = useCommandCenter(s => s.activePanel);
   const activeWorkspace = useCommandCenter(s => s.workspaces.find(w => w.id === s.activeWorkspaceId));
-  const { gradient, density, theme, themePref } = useTheme();
+  const { colors, gradient, density, theme, themePref } = useTheme();
 
   // One-time native window setup.
   //
@@ -198,25 +201,7 @@ function App() {
 
   const [phase, setPhase] = useState<'splash' | 'loading' | 'unavailable' | 'wizard' | 'app'>('splash');
 
-  // Install the bundled dictation model on first run so the mic "just works"
-  // offline, with no download and no setup. Resolves the bundled Whisper model
-  // (Tauri resource) and asks the daemon to install it + set LOCAL_WHISPER_MODEL.
-  // Idempotent, fire-and-forget; a dev/unbundled build simply no-ops. Gated on
-  // `phase === 'app'` so the daemon is known ready (mount is too early — the app
-  // is still waiting for the daemon, and provisioning runs only once).
-  const dictationProvisioned = useRef(false);
-  useEffect(() => {
-    if (phase !== 'app' || dictationProvisioned.current) return;
-    if (!('__TAURI_INTERNALS__' in window)) return;
-    dictationProvisioned.current = true;
-    (async () => {
-      try {
-        const { resolveResource } = await import('@tauri-apps/api/path');
-        const modelPath = await resolveResource('whisper/whisper-base-q8_0.gguf');
-        await api.provisionDictationModel(modelPath);
-      } catch { /* no bundled model (dev build) — dictation stays opt-in */ }
-    })();
-  }, [phase]);
+  const dictationReadiness = useDictationReadiness(phase === 'app');
 
   // Subscribe to AppNavigate events from the agent
   useAppNavigate();
@@ -381,6 +366,12 @@ function App() {
       <div className="flex flex-col flex-1 min-w-0" style={NATIVE_WINDOW_IS_OPAQUE ? undefined : { background: gradient.shell }}>
         <div data-tauri-drag-region style={{ height: TITLEBAR_HEIGHT, flexShrink: 0 }} />
         <VersionSkewBanner skew={versionSkew} />
+        {dictationReadiness.status !== 'ready' && (
+          <div role="status" style={{ padding: `${space.md}px ${space.xxl}px`, color: colors.text, background: colors.surface, fontSize: textSize.caption, display: 'flex', gap: space.xl, alignItems: 'center' }}>
+            <span style={{ flex: 1 }}>{dictationReadiness.message} Recording is available after this check succeeds.</span>
+            {dictationReadiness.status !== 'checking' && <Button colors={colors} onClick={dictationReadiness.retry}>Retry transcription setup</Button>}
+          </div>
+        )}
         <div className="flex flex-1 min-h-0">
           <main className="flex-1 min-w-0 overflow-hidden relative">
             <DropZone zoneId="workspace-chat-fallback" onDrop={handleDrop} disabled={!!(activeWorkspace && (hasToolType(activeWorkspace.layoutJson, 'world') || hasToolType(activeWorkspace.layoutJson, 'memory')))}>

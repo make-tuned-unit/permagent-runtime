@@ -16,7 +16,10 @@
 use crate::state::AppState;
 use axum::extract::{DefaultBodyLimit, Multipart, State};
 use axum::http::StatusCode;
-use axum::routing::post;
+use axum::routing::{get, post};
+#[cfg(feature = "local-inference")]
+#[path = "dictation_status.rs"]
+mod status_probe;
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -27,6 +30,7 @@ const MAX_AUDIO_SIZE: usize = 25 * 1024 * 1024;
 
 /// The model bundled in the shipped app (see scripts/copy-whisper-model.sh).
 /// "base" is the size/quality sweet spot for dictation.
+#[cfg(feature = "local-inference")]
 const BUNDLED_MODEL_ID: &str = "base";
 
 #[derive(Serialize)]
@@ -42,7 +46,52 @@ pub fn routes(state: Arc<AppState>) -> Router {
             post(transcribe_handler).layer(DefaultBodyLimit::max(MAX_AUDIO_SIZE * 2)),
         )
         .route("/api/dictation/provision", post(provision_handler))
+        .route("/api/dictation/status", get(status_handler))
         .with_state(state)
+}
+
+/// Availability only: no model loading, download, inference, or explicit config writes.
+/// The shared Config reader may initialize, recover, or migrate its configuration.
+#[derive(Serialize)]
+struct DictationStatus {
+    status: &'static str,
+    reason: &'static str,
+    model: Option<String>,
+    inference_verified: bool,
+}
+
+async fn status_handler() -> Json<DictationStatus> {
+    #[cfg(not(feature = "local-inference"))]
+    let (reason, model) = ("feature_disabled", None);
+    #[cfg(feature = "local-inference")]
+    let (reason, model) = {
+        use permagent::config::{Config, ConfigError};
+        match Config::global()
+            .get_param::<String>(permagent::dictation::whisper::LOCAL_WHISPER_MODEL_CONFIG_KEY)
+        {
+            Err(ConfigError::NotFound(_)) => ("not_configured", None),
+            Err(_) => ("config_unavailable", None),
+            Ok(id) if id.trim().is_empty() => ("not_configured", None),
+            Ok(id) => match permagent::dictation::whisper::get_model(&id) {
+                Some(model) => (
+                    status_probe::model_file_reason(&model.local_path()),
+                    Some(model.id.to_string()),
+                ),
+                // Never echo an unsupported config value (it could contain a path).
+                None => ("unsupported_model", None),
+            },
+        }
+    };
+    Json(DictationStatus {
+        status: if reason == "model_available" {
+            "available"
+        } else {
+            "unavailable"
+        },
+        reason,
+        model,
+        inference_verified: false,
+    })
 }
 
 #[derive(Deserialize)]
@@ -54,9 +103,9 @@ pub struct ProvisionRequest {
 
 #[derive(Serialize)]
 pub struct ProvisionResponse {
-    /// "ready" — the model is installed and `LOCAL_WHISPER_MODEL` is set, so
-    /// dictation works. "unavailable" — no bundled model was found (e.g. a dev
-    /// build); dictation stays unconfigured and the mic shows its setup hint.
+    /// "ready" — the model is installed and `LOCAL_WHISPER_MODEL` is set;
+    /// this does not verify inference. "unavailable" — no bundled model was
+    /// found or local inference is absent from this build.
     pub status: String,
     pub model: Option<String>,
 }
@@ -67,6 +116,7 @@ pub struct ProvisionResponse {
 /// `LOCAL_WHISPER_MODEL` at it. Idempotent and cheap on subsequent calls: if the
 /// model is already installed it only re-affirms the config. Never an error when
 /// the bundle is simply absent — that's the normal dev case.
+#[cfg(feature = "local-inference")]
 async fn provision_handler(
     State(_state): State<Arc<AppState>>,
     Json(req): Json<ProvisionRequest>,
@@ -127,6 +177,20 @@ async fn provision_handler(
     }))
 }
 
+/// A build without local inference cannot provision a usable transcription
+/// model. Return the existing unavailable contract without reading the path,
+/// copying files, or changing transcription configuration.
+#[cfg(not(feature = "local-inference"))]
+async fn provision_handler(
+    Json(_req): Json<ProvisionRequest>,
+) -> Result<Json<ProvisionResponse>, (StatusCode, String)> {
+    Ok(Json(ProvisionResponse {
+        status: "unavailable".to_string(),
+        model: None,
+    }))
+}
+
+#[cfg(feature = "local-inference")]
 fn set_dictation_model(model_id: &str) -> Result<(), (StatusCode, String)> {
     permagent::config::Config::global()
         .set_param(
@@ -198,4 +262,37 @@ async fn transcribe(_audio: Vec<u8>) -> Result<Json<TranscribeResponse>, (Status
         StatusCode::SERVICE_UNAVAILABLE,
         "Dictation is not available in this build".to_string(),
     ))
+}
+
+#[cfg(all(test, not(feature = "local-inference")))]
+mod feature_disabled_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn disabled_build_reports_unavailable_consistently_without_provisioning() {
+        let status = status_handler().await.0;
+        assert_eq!(status.status, "unavailable");
+        assert_eq!(status.reason, "feature_disabled");
+        assert!(status.model.is_none());
+        assert!(!status.inference_verified);
+
+        // A supplied path cannot make this build able to transcribe or cause
+        // it to provision files/config for a feature that is not compiled.
+        let provision = provision_handler(Json(ProvisionRequest {
+            bundled_path: "/unused/synthetic/model.gguf".into(),
+        }))
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(provision.status, "unavailable");
+        assert!(provision.model.is_none());
+
+        match transcribe(Vec::new()).await {
+            Err((code, message)) => {
+                assert_eq!(code, StatusCode::SERVICE_UNAVAILABLE);
+                assert_eq!(message, "Dictation is not available in this build");
+            }
+            Ok(_) => panic!("feature-disabled build claimed transcription success"),
+        }
+    }
 }

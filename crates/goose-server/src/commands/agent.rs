@@ -42,6 +42,18 @@ pub async fn run(host: Option<String>, port: Option<u16>) -> Result<()> {
 
     let settings = configuration::Settings::new()?.with_overrides(host, port);
 
+    // Production startup only: keep deliberately brainless AppState unit fixtures
+    // unchanged, while a fresh downloadable install gets an empty local Brain.
+    use permagent_daemon::brain_bootstrap::{initialize_fresh_brain, BootstrapOutcome};
+    match initialize_fresh_brain(&permagent::config::paths::Paths::data_dir()) {
+        Ok(BootstrapOutcome::Created) => info!("Created empty first-user Brain ontology; mounting next"),
+        Ok(BootstrapOutcome::ExistingOntology) => {}
+        Ok(BootstrapOutcome::ExistingUninitialized) => tracing::warn!(
+            "Existing Brain directory has no ontology; automatic setup skipped to preserve data. Long-term memory requires explicit repair."
+        ),
+        Err(error) => tracing::warn!(%error, "First-user Brain setup failed; long-term memory may be unavailable"),
+    }
+
     let app_state = state::AppState::new(settings.tls).await?;
 
     // D10: the goal dispatcher the promotion/unpark nudges call. Without it, a

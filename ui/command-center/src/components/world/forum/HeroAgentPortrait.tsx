@@ -1,6 +1,7 @@
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 import { useEffect, useMemo, useState } from 'react';
+import { textSize } from '../../../styles/tokens';
 import { useForumReducedMotion } from './useForumReducedMotion';
 import { GardenAssetBoundary } from './GardenAssetBoundary';
 import { extendForumLoader } from './forumGltf';
@@ -75,7 +76,7 @@ export function HeroAgentPortrait({ id, size, label }: { id: string; size: Portr
     role={label ? 'img' : undefined}
     aria-hidden={label ? undefined : true}
   >
-    {visible && <GardenAssetBoundary key={id} onFailure={() => setFailedId(id)} fallback={<div className="agent-portrait-fallback" style={{ width: dimension, height: size === 'dock' ? 28 : size === 'profile' ? 136 : 260, display: 'grid', placeContent: 'center', textAlign: 'center', fontSize: 11, color: 'var(--forum-muted)' }}><span aria-hidden="true">◇</span>{size !== 'dock' && <span>Portrait unavailable</span>}</div>}><Canvas
+    {visible && <GardenAssetBoundary key={id} onFailure={() => setFailedId(id)} fallback={<div className="agent-portrait-fallback" style={{ width: dimension, height: size === 'dock' ? 28 : size === 'profile' ? 136 : 260, display: 'grid', placeContent: 'center', textAlign: 'center', fontSize: textSize.micro, color: 'var(--forum-muted)' }}><span aria-hidden="true">◇</span>{size !== 'dock' && <span>Portrait unavailable</span>}</div>}><Canvas
       frameloop="demand"
       dpr={[1, 1.5]}
       camera={{ position: [0, .88, 3.2], fov: 31, near: .1, far: 20 }}

@@ -30,7 +30,7 @@ export function AgentDeskProfile(props: Props) {
       {props.sovereign && <Button colors={colors} flashSuccess={false} aria-label={`Sit with ${props.name}`} onClick={props.onSit}>Sit together</Button>}
       <Button colors={colors} flashSuccess={false} onClick={props.onBrief}>Write a brief</Button>
     </div>
-    <p className="agent-desk-chat-context">{props.sovereign ? 'Chat continues your shared conversation.' : 'Chat and briefs go to your orchestrator, with this role as context.'}</p>
+    <p className="agent-desk-chat-context">Chat continues your shared conversation.{!props.sovereign && ' Briefs include this role as context for your orchestrator.'}</p>
     <div className="agent-desk-question">
       <span className="eyebrow">START WITH A QUESTION</span>
       <p className="agent-desk-suggested-question">“{props.question}”</p>

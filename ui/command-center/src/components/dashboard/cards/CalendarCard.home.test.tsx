@@ -128,10 +128,49 @@ describe('Calendar on Home, minimised', () => {
     delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__;
     await renderOnHome('overview');
     expect(q('calendar-today-summary')!.textContent).toBe('Calendar not connected');
+    expect(host.textContent).not.toContain('No events today');
+    expect(host.textContent).toContain('Connect a calendar to see events');
+    expect(invoke.mock.calls.some(([command]) => command === 'request_calendar_access')).toBe(false);
+  });
+
+  it('reports a failed compact read honestly and retries the visible range', async () => {
+    invoke.mockImplementation(async (command: string) => {
+      if (command === 'calendar_authorization_status') return 'fullAccess';
+      throw new Error('Calendar read failed');
+    });
+    await renderOnHome('overview');
+    expect(q('calendar-today-summary')!.textContent).toBe('Calendar unavailable');
+    expect(q('calendar-next-up')!.textContent).toBe('Upcoming events could not be read');
+    expect(q('calendar-failed')).not.toBeNull();
+    expect(host.textContent).not.toContain('No events today');
+    expect(host.textContent).not.toContain('Calendar not connected');
+    invoke.mockImplementation(serve);
+    act(() => q('calendar-retry')!.click());
+    await settle();
+    expect(q('calendar-failed')).toBeNull();
+    expect(q('calendar-compact-list')!.textContent).toContain('Standup');
+    expect(q('calendar-today-summary')!.textContent).toBe('3 events left today');
+  });
+
+  it('still distinguishes a verified empty day from an unread calendar', async () => {
+    invoke.mockImplementation(async (command: string) => command === 'calendar_authorization_status' ? 'fullAccess' : []);
+    await renderOnHome('overview');
+    expect(q('calendar-today-summary')!.textContent).toBe('Nothing left today');
+    expect(host.textContent).toContain('No events today');
+    expect(q('calendar-failed')).toBeNull();
   });
 });
 
 describe('Calendar on Home, focused', () => {
+  it('does not claim an empty Day when no calendar source has been read', async () => {
+    delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__;
+    await renderOnHome('focused');
+    act(() => q('calendar-view-day')!.click());
+    await settle();
+    expect(q('calendar-body')!.textContent).toContain('Connect a calendar to see events');
+    expect(q('calendar-body')!.textContent).not.toContain('No events');
+  });
+
   it('is the full calendar with its Day / Week / Month views', async () => {
     await renderOnHome('focused');
     expect(q('calendar-card')!.dataset.mode).toBe('full');

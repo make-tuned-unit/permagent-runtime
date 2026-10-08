@@ -1,0 +1,25 @@
+{
+  "success": true,
+  "numTotalTests": 3923,
+  "numPassedTests": 3923,
+  "numFailedTests": 0,
+  "numPendingTests": 0,
+  "testFiles": 486,
+  "exitCode": 0,
+  "minimumFreeGiB": 21.91006851196289,
+  "elapsedSeconds": 324.3282895000011,
+  "atUtc": "2026-10-08T14:55:57.317137+00:00",
+  "command": [
+    "/Users/j/.local/share/mise/installs/node/24.19.0/bin/node",
+    "node_modules/vitest/vitest.mjs",
+    "run",
+    "--pool=forks",
+    "--poolOptions.forks.minForks=1",
+    "--poolOptions.forks.maxForks=1",
+    "--reporter=json",
+    "--outputFile=/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/shipping-frontend-isolated-20261008.json"
+  ],
+  "rawReport": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/shipping-frontend-isolated-20261008.json",
+  "log": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/shipping-frontend-isolated-20261008.log",
+  "failedFiles": []
+}

@@ -72,6 +72,15 @@ export function pickerDescription(s: RecordingSources): string {
   return 'Nothing is selected to record.';
 }
 
+/** No words is a useful warning, not proof of silence: ASR may still be pending. */
+export function noSpeechFeedback(sources: RecordingSources | null, seconds: number, near: number, far: number): string | null {
+  if (!sources || seconds < 60) return null;
+  const missing = [sources.mic && near === 0 ? 'your microphone' : null,
+    sources.system && far === 0 ? (sources.app?.name ?? 'system audio') : null].filter(Boolean);
+  if (!missing.length) return null;
+  return `No speech has been transcribed from ${missing.join(' or ')} yet. Transcription may still be processing. If people are speaking, check the selected microphone and that the call app is playing audio. Stop and resolve this before continuing; typed notes are kept.`;
+}
+
 /** What the panel can honestly claim about capture right now, naming the
  *  sources actually recording — a system-only recording never says "you".
  *  Pure; tested. */
@@ -126,7 +135,7 @@ export function MeetingRecorder({ open }: { open: boolean }) {
   // that asks for glass rather than being inherited from whoever mounted first.
   const floatingGlass = useGlass('glass');
   const {
-    state, error, elapsedSeconds, failedChunks, target, hasUnsavedTranscript,
+    state, error, elapsedSeconds, failedChunks, target, hasUnsavedTranscript, dictationReadiness,
     start, stop, retrySave, discard,
     systemAudio, setSystemAudio, systemAudioError, systemAudioAvailable,
     recordMic, setRecordMic, systemAudioApp, setSystemAudioApp, listSystemAudioApps, activeSources,
@@ -176,7 +185,7 @@ export function MeetingRecorder({ open }: { open: boolean }) {
   const hasSource = recordMic || systemAudio;
   const chosenApp = systemAudio ? systemAudioApp : null;
   const chosenAppState = chosenApp ? appAvailability(chosenApp, captureApps) : 'available';
-  const canStart = hasSource && chosenAppState === 'available';
+  const canStart = hasSource && chosenAppState === 'available' && dictationReadiness.status === 'ready';
 
   // Modal focus: move focus INTO the dialog when it opens, keep Tab inside it
   // while open, and hand focus back to the Record button on close. Without
@@ -274,8 +283,10 @@ export function MeetingRecorder({ open }: { open: boolean }) {
     if (!pickerOpen) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') { e.stopPropagation(); setPickerOpen(false); setFilter(''); }
-      // Not from the app list: Enter there belongs to the select itself.
-      if (e.key === 'Enter' && selectedId && (e.target as HTMLElement | null)?.tagName !== 'SELECT') {
+      // Native controls own Enter. In particular Cancel/Retry must never
+      // have their activation intercepted into acquiring microphone access.
+      const shortcutTarget = e.target === filterRef.current || e.target === dialogRef.current;
+      if (e.key === 'Enter' && selectedId && shortcutTarget) {
         e.preventDefault(); void handleStart();
       }
     };
@@ -525,6 +536,15 @@ export function MeetingRecorder({ open }: { open: boolean }) {
               {pickerDescription({ mic: recordMic, system: systemAudio, app: systemAudio ? systemAudioApp : null })}
             </div>
 
+            <div role="status" style={{ fontSize: textSize.micro, color: dictationReadiness.status === 'ready' ? colors.textMuted : colors.danger, lineHeight: 1.5, marginBottom: space.lg }}>
+              {dictationReadiness.message || (dictationReadiness.status === 'checking' ? 'Checking local transcription…' : 'Local transcription setup needs attention.')}
+              {dictationReadiness.status !== 'ready' && dictationReadiness.status !== 'checking' && (
+                <Button colors={colors} flashSuccess={false} onClick={() => { void dictationReadiness.retry(); }} style={btnVars('quiet')}>
+                  Retry transcription setup
+                </Button>
+              )}
+            </div>
+
             {/* The transcript is written up by the configured model, and that
                 is a separate question from where the audio was transcribed.
                 Saying only "transcribed locally" here read as a blanket privacy
@@ -562,8 +582,9 @@ export function MeetingRecorder({ open }: { open: boolean }) {
                 />
                 <span>
                   <span style={{ color: colors.text, fontWeight: 600 }}>Record my microphone</span>
-                  {' '}— this Mac's current input device. Turn it off to record only
-                  the call's audio.
+                  {' '}— this device's current input. {canCaptureSystem
+                    ? 'Turn it off to record only the call’s audio.'
+                    : 'Microphone is the only recording source available here. Use the desktop app to also capture call audio.'}
                 </span>
               </label>
               {canCaptureSystem && (
@@ -959,6 +980,12 @@ export function MeetingRecorder({ open }: { open: boolean }) {
               {activeSources && captureLine(activeSources, nearChunksHeard, farChunksHeard)}
               {' · transcribed locally on this device'}
               {failedChunks > 0 && ` · ${failedChunks} segment${failedChunks > 1 ? 's' : ''} failed to transcribe`}
+            </div>
+          )}
+
+          {state === 'recording' && noSpeechFeedback(activeSources, elapsedSeconds, nearChunksHeard, farChunksHeard) && (
+            <div role="status" style={{ fontSize: textSize.micro, color: colors.danger, lineHeight: 1.4 }}>
+              {noSpeechFeedback(activeSources, elapsedSeconds, nearChunksHeard, farChunksHeard)}
             </div>
           )}
 

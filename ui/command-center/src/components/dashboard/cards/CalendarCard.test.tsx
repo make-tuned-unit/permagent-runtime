@@ -90,6 +90,23 @@ describe('Next up', () => {
 });
 
 describe('views and keyboard', () => {
+  it('moves focus and selection within the view tabs without paging the date', async () => {
+    await render({ initialView: 'week' });
+    const week = q('calendar-view-week')!;
+    act(() => week.focus());
+    await key('ArrowRight', week);
+    expect(q('calendar-card')!.dataset.view).toBe('month');
+    expect(document.activeElement).toBe(q('calendar-view-month'));
+    expect(q('calendar-title')!.textContent).toMatch(/October/);
+    expect([...host.querySelectorAll('[role="tab"]')].filter(tab => tab.getAttribute('tabindex') === '0')).toEqual([q('calendar-view-month')]);
+    await key('Home', q('calendar-view-month')!);
+    expect(q('calendar-card')!.dataset.view).toBe('day');
+    expect(document.activeElement).toBe(q('calendar-view-day'));
+    await key('ArrowLeft', q('calendar-view-day')!);
+    expect(q('calendar-card')!.dataset.view).toBe('month');
+    expect(q('calendar-title')!.textContent).toMatch(/October/);
+  });
+
   it('defaults to Week and remembers the view', async () => {
     await render();
     expect(q('calendar-card')!.dataset.view).toBe('week');

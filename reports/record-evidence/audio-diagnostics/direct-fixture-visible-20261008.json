@@ -1,0 +1,103 @@
+{
+  "schema": 2,
+  "transport": "direct",
+  "webrtc_connected": false,
+  "scenario": "far",
+  "started_at": "2026-10-08T14:34:38.694Z",
+  "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36",
+  "expected_fixture_only": true,
+  "observed_permagent_transcript": null,
+  "events": [
+    {
+      "at": "2026-10-08T14:34:38.695Z",
+      "type": "preparing",
+      "detail": "far; transport=direct; secureContext=true; RTCPeerConnection=function; canvasCapture=function"
+    },
+    {
+      "at": "2026-10-08T14:34:38.711Z",
+      "type": "audio-context",
+      "detail": "running"
+    },
+    {
+      "at": "2026-10-08T14:34:38.717Z",
+      "type": "frame-pump",
+      "detail": "started before peer setup"
+    },
+    {
+      "at": "2026-10-08T14:34:38.719Z",
+      "type": "direct-output",
+      "detail": "Web Audio destination only; not a call, no receiver/network evidence"
+    },
+    {
+      "at": "2026-10-08T14:34:38.722Z",
+      "type": "output",
+      "detail": "{\"near\":false,\"far\":true,\"level\":0.65}"
+    },
+    {
+      "at": "2026-10-08T14:34:38.744Z",
+      "type": "audio-files-ready",
+      "detail": "2 hashes and decode operations passed"
+    },
+    {
+      "at": "2026-10-08T14:34:38.745Z",
+      "type": "playback",
+      "detail": "direct; 2 verified files; 55s scheduled"
+    },
+    {
+      "at": "2026-10-08T14:34:42.146Z",
+      "type": "cue",
+      "detail": "far_open expected at 3s"
+    },
+    {
+      "at": "2026-10-08T14:35:28.146Z",
+      "type": "cue",
+      "detail": "far_tail expected at 49s"
+    },
+    {
+      "at": "2026-10-08T14:35:34.148Z",
+      "type": "ended",
+      "detail": "scenario-complete"
+    }
+  ],
+  "scheduled_cues": [
+    {
+      "id": "far_open",
+      "side": "far",
+      "at_seconds": 3,
+      "duration_seconds": 10.043833,
+      "end_seconds": 13.043833,
+      "voice": "Daniel",
+      "rate_wpm": 190,
+      "script": "Synthetic remote participant, cobalt nine. I will review the accessibility checklist. The old idea to buy equipment is cancelled. Do not create a purchase task.",
+      "url": "assets/far_open.wav",
+      "sha256": "b4d3a23a835bdb2d5e1249f701ffc26c1fc66c4f9cd6a0f593a5796e6b10a92d",
+      "bytes": 482182,
+      "sample_rate": 24000,
+      "channels": 1,
+      "encoding": "PCM signed 16-bit little-endian WAV"
+    },
+    {
+      "id": "far_tail",
+      "side": "far",
+      "at_seconds": 49,
+      "duration_seconds": 3.803375,
+      "end_seconds": 52.803375,
+      "voice": "Daniel",
+      "rate_wpm": 190,
+      "script": "Cobalt nine final commitment: confirm the venue step free route.",
+      "url": "assets/far_tail.wav",
+      "sha256": "5b031422135c64d6ce7d814931becb0b67a30bf6dfc526f014158eed30f8e882",
+      "bytes": 182640,
+      "sample_rate": 24000,
+      "channels": 1,
+      "encoding": "PCM signed 16-bit little-endian WAV"
+    }
+  ],
+  "instructions": "Turn ON Also record the other participants. Keep the physical microphone quiet. Synthetic remote audio traverses WebRTC before playback. Check the final commitment at 49 seconds survives Stop & save.",
+  "playback_started_at": "2026-10-08T14:34:38.745Z",
+  "final_peer_states": null,
+  "receiver_stats": [],
+  "ended_at": "2026-10-08T14:35:34.146Z",
+  "end_reason": "scenario-complete",
+  "elapsed_seconds": 55.058
+}

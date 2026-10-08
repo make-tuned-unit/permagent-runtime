@@ -18,11 +18,11 @@ import { toast } from '../../lib/notifications';
 import { Tooltip } from '../common/Tooltip';
 // ── Date formatting ──────────────────────────────────────────────────
 
-function formatDate(ts: string): string {
+export function formatMemoryDate(ts: string, nowMs = Date.now()): string {
   const d = new Date(ts);
   if (isNaN(d.getTime())) return ts;
-  const now = new Date();
-  const diff = now.getTime() - d.getTime();
+  const diff = nowMs - d.getTime();
+  if (diff < 0) return d.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
   const mins = Math.floor(diff / 60000);
   if (mins < 60) return `${mins}m ago`;
   const hrs = Math.floor(mins / 60);
@@ -278,11 +278,16 @@ export function BrainList({
         <span>
           {!isSearch && filteredEntities.length > 0 && `${filteredEntities.length} entities`}
           {!isSearch && filteredEntities.length > 0 && showMemories && ' · '}
-          {showMemories && `${displayTotal.toLocaleString()} memories`}
-          {isSearch ? ` matching "${searchQuery}"` : ''}
+          {showMemories && (isSearch
+            ? displayLoading ? 'Searching…' : `${displayTotal.toLocaleString()} search results for "${searchQuery}"`
+            : `${displayTotal.toLocaleString()} memories`)}
         </span>
         <span>{(isSearch ? 0 : filteredEntities.length) + displayMemories.length} shown</span>
       </div>
+
+      {isSearch && <div style={{ padding: `${space.xs}px ${space.xxl}px`, fontSize: textSize.micro, color: colors.textDim }}>
+        Search finds any query word or related meaning. Excerpts may omit matching words.
+      </div>}
 
       {/* "Sources" filter row (R5; UX_BENCHMARK_RESEARCH §5) — only once the
           API has actually returned a source for something to filter by, and
@@ -421,7 +426,7 @@ export function BrainList({
 
         {showMemories && !displayLoading && !displayError && displayMemories.length === 0 && (
           <div style={{ padding: 40, textAlign: 'center', fontFamily: font.body, fontSize: textSize.small, color: colors.textMuted }}>
-            {isSearch ? `No memories match "${searchQuery}" — try a name or project.` : sourceFilter || timeValue < 1 ? 'No memories match these filters.' : 'No memories yet.'}
+            {isSearch ? `No search results for "${searchQuery}" — try a name or project.` : sourceFilter || timeValue < 1 ? 'No memories match these filters.' : 'No memories yet.'}
           </div>
         )}
 
@@ -515,7 +520,7 @@ function MemoryRow({ memory, selected, highlightTerms, onClick, onForget }: {
           )}
         </div>
         <span style={{ fontFamily: font.mono, fontSize: 10, color: colors.textDim, flexShrink: 0 }}>
-          {formatDate(memory.timestamp)}
+          {formatMemoryDate(memory.timestamp)}
         </span>
       </div>
 

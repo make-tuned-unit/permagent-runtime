@@ -24,6 +24,9 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use tauri::{AppHandle, Emitter, Manager};
 
+#[path = "system_audio_lifecycle.rs"]
+mod lifecycle;
+
 const SCOPED_AUDIO_PROTOCOL: &[u8] = b"PERMAGENT_AUDIOCAP_SCOPED_SOURCE_V1";
 
 #[derive(serde::Serialize)]
@@ -155,33 +158,12 @@ struct CaptureProcess {
 
 impl CaptureProcess {
     fn stop(&mut self) -> Result<(), String> {
-        #[cfg(unix)]
-        unsafe {
-            libc::kill(self.child.id() as i32, libc::SIGTERM);
-        }
-        let mut exited = false;
-        for _ in 0..30 {
-            if self.child.try_wait().map_err(|e| e.to_string())?.is_some() {
-                exited = true;
-                break;
+        lifecycle::stop_and_drain(&mut self.child, &mut self.readers, |pid| {
+            #[cfg(unix)]
+            unsafe {
+                libc::kill(pid as i32, libc::SIGTERM);
             }
-            std::thread::sleep(std::time::Duration::from_millis(100));
-        }
-        if !exited {
-            self.child.kill().map_err(|e| e.to_string())?;
-            self.child.wait().map_err(|e| e.to_string())?;
-        }
-        // EOF follows process exit. Return only after the final stdout path was registered/emitted.
-        for reader in self.readers.drain(..) {
-            reader
-                .join()
-                .map_err(|_| "capture output reader panicked".to_string())?;
-        }
-        if exited {
-            Ok(())
-        } else {
-            Err("capture helper timed out; final audio may be incomplete".into())
-        }
+        })
     }
 }
 
@@ -400,22 +382,36 @@ pub async fn start_system_audio(
     Ok(())
 }
 
-/// Flush/join before resolving. The returned unread paths close the asynchronous
-/// webview-event delivery race: clients deduplicate these against emitted paths.
+/// Even a failed final flush may have produced a valid unread tail. Keep paths
+/// and failure together so the renderer can preserve it without claiming success.
+#[derive(Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemAudioStopReceipt {
+    unread_paths: Vec<String>,
+    error: Option<String>,
+}
+
+fn stop_capture_with_receipt(
+    capture: &mut CaptureProcess,
+    chunks: &Mutex<BTreeSet<PathBuf>>,
+) -> Result<SystemAudioStopReceipt, String> {
+    let stopped = capture.stop();
+    let receipt = lifecycle::receipt_after_stop(stopped, &capture.directory, chunks)?;
+    Ok(SystemAudioStopReceipt {
+        unread_paths: receipt.unread_paths,
+        error: receipt.error,
+    })
+}
+
+/// Flush/join before resolving. Clients deduplicate unread paths against events.
 #[tauri::command]
-pub async fn stop_system_audio(app: AppHandle) -> Result<Vec<String>, String> {
+pub async fn stop_system_audio(app: AppHandle) -> Result<SystemAudioStopReceipt, String> {
     let state = app.state::<SystemAudioState>();
     let mut guard = state.capture.lock().map_err(|e| e.to_string())?;
     let Some(mut capture) = guard.take() else {
-        return Ok(Vec::new());
+        return Ok(SystemAudioStopReceipt::default());
     };
-    capture.stop()?;
-    let chunks = state.chunks.lock().map_err(|e| e.to_string())?;
-    Ok(chunks
-        .iter()
-        .filter(|p| p.parent() == Some(capture.directory.as_path()))
-        .map(|p| p.to_string_lossy().into_owned())
-        .collect())
+    stop_capture_with_receipt(&mut capture, &state.chunks)
 }
 
 #[tauri::command]
@@ -541,6 +537,56 @@ mod tests {
         capture.stop().unwrap();
         assert!(tail_seen.load(Ordering::SeqCst));
         assert!(capture.child.try_wait().unwrap().is_some());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_stop_receipt_keeps_owned_tail_after_draining_output() {
+        let directory = create_capture_directory(
+            std::env::temp_dir()
+                .join(format!("permagent-audiocap-{}", uuid::Uuid::new_v4()))
+                .to_str()
+                .unwrap(),
+        )
+        .unwrap();
+        let tail = directory.join("sysaudio_0000.wav");
+        std::fs::write(&tail, b"synthetic WAV fixture").unwrap();
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "printf '%s\n' \"$1\"; exit 7", "capture-fixture"])
+            .arg(&tail)
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let output = child.stdout.take().unwrap();
+        assert_eq!(child.wait().unwrap().code(), Some(7));
+        let chunks = Arc::new(Mutex::new(BTreeSet::from([directory
+            .join("different-capture")
+            .join("sysaudio_0000.wav")])));
+        let owned = chunks.clone();
+        let owned_directory = directory.clone();
+        let reader = std::thread::spawn(move || {
+            for line in BufReader::new(output).lines() {
+                let path = PathBuf::from(line.unwrap());
+                validate_chunk(&path, &owned_directory).unwrap();
+                owned.lock().unwrap().insert(path);
+            }
+        });
+        let mut capture = CaptureProcess {
+            child,
+            readers: vec![reader],
+            directory,
+        };
+        let receipt = stop_capture_with_receipt(&mut capture, &chunks).unwrap();
+        let error = receipt.error.unwrap();
+        assert!(error.contains("exited unsuccessfully"), "{error}");
+        assert!(error.contains('7'), "{error}");
+        assert!(error.contains("final audio may be incomplete"), "{error}");
+        assert_eq!(
+            receipt.unread_paths,
+            vec![tail.to_string_lossy().into_owned()]
+        );
+        assert!(capture.readers.is_empty());
+        std::fs::remove_file(tail).unwrap();
     }
 
     #[test]

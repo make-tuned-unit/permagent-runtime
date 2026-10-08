@@ -1,0 +1,392 @@
+{
+  "scope": "read-only verified Chrome-family metadata around 49s final speech cue; no capture",
+  "observations": [
+    {
+      "atUtc": "2026-10-08T14:42:18.774366+00:00",
+      "exitCode": 0,
+      "probe": {
+        "chromePID": 726,
+        "deviceWrites": 0,
+        "devicesCreated": 0,
+        "method": "read-only HAL metadata for exact Chrome root and verified owned descendants; no capture",
+        "permissionRequests": 0,
+        "processes": [
+          {
+            "hasHALObject": true,
+            "isRunning": 0,
+            "isRunningOutput": 0,
+            "outputDevices": [],
+            "pid": 726,
+            "processObjectId": 118,
+            "role": "chrome_root"
+          },
+          {
+            "hasHALObject": true,
+            "isRunning": 0,
+            "isRunningOutput": 0,
+            "outputDevices": [],
+            "pid": 66550,
+            "processObjectId": 119,
+            "role": "owned_descendant"
+          },
+          {
+            "hasHALObject": true,
+            "isRunning": 0,
+            "isRunningOutput": 0,
+            "outputDevices": [],
+            "pid": 66551,
+            "processObjectId": 120,
+            "role": "owned_descendant"
+          }
+        ],
+        "roleClassification": "ancestry only; process arguments not read",
+        "tapsCreated": 0,
+        "unownedProcessesEmitted": 0
+      }
+    },
+    {
+      "atUtc": "2026-10-08T14:42:21.873618+00:00",
+      "exitCode": 0,
+      "probe": {
+        "chromePID": 726,
+        "deviceWrites": 0,
+        "devicesCreated": 0,
+        "method": "read-only HAL metadata for exact Chrome root and verified owned descendants; no capture",
+        "permissionRequests": 0,
+        "processes": [
+          {
+            "hasHALObject": true,
+            "isRunning": 0,
+            "isRunningOutput": 0,
+            "outputDevices": [],
+            "pid": 726,
+            "processObjectId": 118,
+            "role": "chrome_root"
+          },
+          {
+            "hasHALObject": true,
+            "isRunning": 0,
+            "isRunningOutput": 0,
+            "outputDevices": [],
+            "pid": 66550,
+            "processObjectId": 119,
+            "role": "owned_descendant"
+          },
+          {
+            "hasHALObject": true,
+            "isRunning": 0,
+            "isRunningOutput": 0,
+            "outputDevices": [],
+            "pid": 66551,
+            "processObjectId": 120,
+            "role": "owned_descendant"
+          }
+        ],
+        "roleClassification": "ancestry only; process arguments not read",
+        "tapsCreated": 0,
+        "unownedProcessesEmitted": 0
+      }
+    },
+    {
+      "atUtc": "2026-10-08T14:42:24.973542+00:00",
+      "exitCode": 0,
+      "probe": {
+        "chromePID": 726,
+        "deviceWrites": 0,
+        "devicesCreated": 0,
+        "method": "read-only HAL metadata for exact Chrome root and verified owned descendants; no capture",
+        "permissionRequests": 0,
+        "processes": [
+          {
+            "hasHALObject": true,
+            "isRunning": 0,
+            "isRunningOutput": 0,
+            "outputDevices": [],
+            "pid": 726,
+            "processObjectId": 118,
+            "role": "chrome_root"
+          },
+          {
+            "hasHALObject": true,
+            "isRunning": 0,
+            "isRunningOutput": 0,
+            "outputDevices": [],
+            "pid": 66550,
+            "processObjectId": 119,
+            "role": "owned_descendant"
+          },
+          {
+            "hasHALObject": true,
+            "isRunning": 0,
+            "isRunningOutput": 0,
+            "outputDevices": [],
+            "pid": 66551,
+            "processObjectId": 120,
+            "role": "owned_descendant"
+          }
+        ],
+        "roleClassification": "ancestry only; process arguments not read",
+        "tapsCreated": 0,
+        "unownedProcessesEmitted": 0
+      }
+    },
+    {
+      "atUtc": "2026-10-08T14:42:28.061824+00:00",
+      "exitCode": 0,
+      "probe": {
+        "chromePID": 726,
+        "deviceWrites": 0,
+        "devicesCreated": 0,
+        "method": "read-only HAL metadata for exact Chrome root and verified owned descendants; no capture",
+        "permissionRequests": 0,
+        "processes": [
+          {
+            "hasHALObject": true,
+            "isRunning": 0,
+            "isRunningOutput": 0,
+            "outputDevices": [],
+            "pid": 726,
+            "processObjectId": 118,
+            "role": "chrome_root"
+          },
+          {
+            "hasHALObject": true,
+            "isRunning": 0,
+            "isRunningOutput": 0,
+            "outputDevices": [],
+            "pid": 66550,
+            "processObjectId": 119,
+            "role": "owned_descendant"
+          },
+          {
+            "hasHALObject": true,
+            "isRunning": 0,
+            "isRunningOutput": 0,
+            "outputDevices": [],
+            "pid": 66551,
+            "processObjectId": 120,
+            "role": "owned_descendant"
+          }
+        ],
+        "roleClassification": "ancestry only; process arguments not read",
+        "tapsCreated": 0,
+        "unownedProcessesEmitted": 0
+      }
+    },
+    {
+      "atUtc": "2026-10-08T14:42:31.149415+00:00",
+      "exitCode": 0,
+      "probe": {
+        "chromePID": 726,
+        "deviceWrites": 0,
+        "devicesCreated": 0,
+        "method": "read-only HAL metadata for exact Chrome root and verified owned descendants; no capture",
+        "permissionRequests": 0,
+        "processes": [
+          {
+            "hasHALObject": true,
+            "isRunning": 0,
+            "isRunningOutput": 0,
+            "outputDevices": [],
+            "pid": 726,
+            "processObjectId": 118,
+            "role": "chrome_root"
+          },
+          {
+            "hasHALObject": true,
+            "isRunning": 0,
+            "isRunningOutput": 0,
+            "outputDevices": [],
+            "pid": 66550,
+            "processObjectId": 119,
+            "role": "owned_descendant"
+          },
+          {
+            "hasHALObject": true,
+            "isRunning": 0,
+            "isRunningOutput": 0,
+            "outputDevices": [],
+            "pid": 66551,
+            "processObjectId": 120,
+            "role": "owned_descendant"
+          }
+        ],
+        "roleClassification": "ancestry only; process arguments not read",
+        "tapsCreated": 0,
+        "unownedProcessesEmitted": 0
+      }
+    },
+    {
+      "atUtc": "2026-10-08T14:42:34.233963+00:00",
+      "exitCode": 0,
+      "probe": {
+        "chromePID": 726,
+        "deviceWrites": 0,
+        "devicesCreated": 0,
+        "method": "read-only HAL metadata for exact Chrome root and verified owned descendants; no capture",
+        "permissionRequests": 0,
+        "processes": [
+          {
+            "hasHALObject": true,
+            "isRunning": 0,
+            "isRunningOutput": 0,
+            "outputDevices": [],
+            "pid": 726,
+            "processObjectId": 118,
+            "role": "chrome_root"
+          },
+          {
+            "hasHALObject": true,
+            "isRunning": 0,
+            "isRunningOutput": 0,
+            "outputDevices": [],
+            "pid": 66550,
+            "processObjectId": 119,
+            "role": "owned_descendant"
+          },
+          {
+            "hasHALObject": true,
+            "isRunning": 0,
+            "isRunningOutput": 0,
+            "outputDevices": [],
+            "pid": 66551,
+            "processObjectId": 120,
+            "role": "owned_descendant"
+          }
+        ],
+        "roleClassification": "ancestry only; process arguments not read",
+        "tapsCreated": 0,
+        "unownedProcessesEmitted": 0
+      }
+    },
+    {
+      "atUtc": "2026-10-08T14:42:37.311067+00:00",
+      "exitCode": 0,
+      "probe": {
+        "chromePID": 726,
+        "deviceWrites": 0,
+        "devicesCreated": 0,
+        "method": "read-only HAL metadata for exact Chrome root and verified owned descendants; no capture",
+        "permissionRequests": 0,
+        "processes": [
+          {
+            "hasHALObject": true,
+            "isRunning": 0,
+            "isRunningOutput": 0,
+            "outputDevices": [],
+            "pid": 726,
+            "processObjectId": 118,
+            "role": "chrome_root"
+          },
+          {
+            "hasHALObject": true,
+            "isRunning": 0,
+            "isRunningOutput": 0,
+            "outputDevices": [],
+            "pid": 66550,
+            "processObjectId": 119,
+            "role": "owned_descendant"
+          },
+          {
+            "hasHALObject": true,
+            "isRunning": 0,
+            "isRunningOutput": 0,
+            "outputDevices": [],
+            "pid": 66551,
+            "processObjectId": 120,
+            "role": "owned_descendant"
+          }
+        ],
+        "roleClassification": "ancestry only; process arguments not read",
+        "tapsCreated": 0,
+        "unownedProcessesEmitted": 0
+      }
+    },
+    {
+      "atUtc": "2026-10-08T14:42:40.400620+00:00",
+      "exitCode": 0,
+      "probe": {
+        "chromePID": 726,
+        "deviceWrites": 0,
+        "devicesCreated": 0,
+        "method": "read-only HAL metadata for exact Chrome root and verified owned descendants; no capture",
+        "permissionRequests": 0,
+        "processes": [
+          {
+            "hasHALObject": true,
+            "isRunning": 0,
+            "isRunningOutput": 0,
+            "outputDevices": [],
+            "pid": 726,
+            "processObjectId": 118,
+            "role": "chrome_root"
+          },
+          {
+            "hasHALObject": true,
+            "isRunning": 0,
+            "isRunningOutput": 0,
+            "outputDevices": [],
+            "pid": 66550,
+            "processObjectId": 119,
+            "role": "owned_descendant"
+          },
+          {
+            "hasHALObject": true,
+            "isRunning": 0,
+            "isRunningOutput": 0,
+            "outputDevices": [],
+            "pid": 66551,
+            "processObjectId": 120,
+            "role": "owned_descendant"
+          }
+        ],
+        "roleClassification": "ancestry only; process arguments not read",
+        "tapsCreated": 0,
+        "unownedProcessesEmitted": 0
+      }
+    },
+    {
+      "atUtc": "2026-10-08T14:42:43.495311+00:00",
+      "exitCode": 0,
+      "probe": {
+        "chromePID": 726,
+        "deviceWrites": 0,
+        "devicesCreated": 0,
+        "method": "read-only HAL metadata for exact Chrome root and verified owned descendants; no capture",
+        "permissionRequests": 0,
+        "processes": [
+          {
+            "hasHALObject": true,
+            "isRunning": 0,
+            "isRunningOutput": 0,
+            "outputDevices": [],
+            "pid": 726,
+            "processObjectId": 118,
+            "role": "chrome_root"
+          },
+          {
+            "hasHALObject": true,
+            "isRunning": 0,
+            "isRunningOutput": 0,
+            "outputDevices": [],
+            "pid": 66550,
+            "processObjectId": 119,
+            "role": "owned_descendant"
+          },
+          {
+            "hasHALObject": true,
+            "isRunning": 0,
+            "isRunningOutput": 0,
+            "outputDevices": [],
+            "pid": 66551,
+            "processObjectId": 120,
+            "role": "owned_descendant"
+          }
+        ],
+        "roleClassification": "ancestry only; process arguments not read",
+        "tapsCreated": 0,
+        "unownedProcessesEmitted": 0
+      }
+    }
+  ]
+}

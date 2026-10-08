@@ -1,0 +1,72 @@
+{
+  "observedAt": "2026-10-08T14:57:28.135846+00:00",
+  "chrome": {
+    "chromePID": 726,
+    "deviceWrites": 0,
+    "devicesCreated": 0,
+    "method": "read-only HAL metadata for exact Chrome root and verified owned descendants; no capture",
+    "permissionRequests": 0,
+    "processes": [
+      {
+        "hasHALObject": true,
+        "isRunning": 0,
+        "isRunningOutput": 0,
+        "outputDevices": [],
+        "pid": 726,
+        "processObjectId": 118,
+        "role": "chrome_root"
+      },
+      {
+        "hasHALObject": true,
+        "isRunning": 1,
+        "isRunningOutput": 1,
+        "outputDevices": [
+          {
+            "isAlive": 1,
+            "isDefaultOutput": true,
+            "isRunningSomewhere": 1,
+            "masterMute": 0,
+            "masterVolume": 0.312542587518692,
+            "objectId": 96,
+            "sampleRate": 48000.0
+          }
+        ],
+        "pid": 66550,
+        "processObjectId": 119,
+        "role": "owned_descendant"
+      },
+      {
+        "hasHALObject": true,
+        "isRunning": 0,
+        "isRunningOutput": 0,
+        "outputDevices": [],
+        "pid": 66551,
+        "processObjectId": 120,
+        "role": "owned_descendant"
+      }
+    ],
+    "roleClassification": "ancestry only; process arguments not read",
+    "tapsCreated": 0,
+    "unownedProcessesEmitted": 0
+  },
+  "defaultOutput": {
+    "device": {
+      "isAlive": 1,
+      "isRunningSomewhere": 1,
+      "masterMute": 0,
+      "masterVolume": 0.312542587518692,
+      "objectId": 96,
+      "sampleRate": 48000.0,
+      "unavailableProperties": []
+    },
+    "deviceWrites": 0,
+    "devicesCreated": 0,
+    "hasDefaultOutput": true,
+    "limitations": "System default only; does not prove Chrome uses this device or that sound is audible.",
+    "method": "read-only public HAL metadata for system default output",
+    "observedAt": "2026-10-08T14:57:28.291794+00:00",
+    "permissionRequests": 0,
+    "processesQueried": 0,
+    "tapsCreated": 0
+  }
+}

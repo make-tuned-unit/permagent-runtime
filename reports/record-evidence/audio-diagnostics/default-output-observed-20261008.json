@@ -1,0 +1,20 @@
+{
+  "device": {
+    "isAlive": 1,
+    "isRunningSomewhere": 0,
+    "masterMute": 0,
+    "masterVolume": 0.312542587518692,
+    "objectId": 96,
+    "sampleRate": 48000.0,
+    "unavailableProperties": []
+  },
+  "deviceWrites": 0,
+  "devicesCreated": 0,
+  "hasDefaultOutput": true,
+  "limitations": "System default only; does not prove Chrome uses this device or that sound is audible.",
+  "method": "read-only public HAL metadata for system default output",
+  "observedAt": "2026-10-08T14:45:54.662573+00:00",
+  "permissionRequests": 0,
+  "processesQueried": 0,
+  "tapsCreated": 0
+}

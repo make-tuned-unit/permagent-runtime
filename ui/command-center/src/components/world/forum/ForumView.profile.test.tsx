@@ -79,7 +79,7 @@ it('keeps seating explicit and hides sovereign identity/seating for a specialist
   act(() => (host.querySelector('button[aria-label="Leave table"]') as HTMLButtonElement).click());
   const select = host.querySelector('#forum-agent') as HTMLSelectElement;
   act(() => { select.value = 'librarian'; select.dispatchEvent(new Event('change', { bubbles: true })); });
-  expect(profile().textContent).toContain('with this role as context');
+  expect(profile().textContent).toContain('Chat continues your shared conversation. Briefs include this role as context for your orchestrator.');
   expect(profile().textContent).not.toContain('Sit together');
   expect(profile().textContent).not.toContain('Identity & passport');
   expect(askFromForum).not.toHaveBeenCalled(); expect(sendMessage).not.toHaveBeenCalled();

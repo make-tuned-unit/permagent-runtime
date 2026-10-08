@@ -10,7 +10,7 @@ import { describe, it, expect, vi } from 'vitest';
 vi.mock('../../lib/api', () => ({ api: {}, apiFetch: vi.fn() }));
 
 import {
-  captureLine, focusables, pickerDescription, recordButtonTooltip, triageStatusLine,
+  captureLine, noSpeechFeedback, focusables, pickerDescription, recordButtonTooltip, triageStatusLine,
 } from './MeetingRecorder';
 import { appAvailability, describeSources, unavailableAppMessage } from '../../hooks/useMeetingDictation';
 
@@ -124,5 +124,18 @@ describe('recordButtonTooltip', () => {
     expect(recordButtonTooltip('idle')).toBe('Record a meeting to a project note');
     expect(recordButtonTooltip('error')).toBe('Record a meeting to a project note');
     expect(recordButtonTooltip('finishing')).toBe('Transcribing & saving…');
+  });
+});
+
+describe('no speech feedback', () => {
+  it('waits for the first chunk and names only sources without words, without claiming PCM silence', () => {
+    const sources = { mic: true, system: true, app: APP };
+    expect(noSpeechFeedback(sources, 59, 0, 0)).toBeNull();
+    expect(noSpeechFeedback(sources, 60, 1, 1)).toBeNull();
+    const feedback = noSpeechFeedback(sources, 60, 1, 0)!;
+    expect(feedback).toContain('No speech has been transcribed from Record Practice yet');
+    expect(feedback).toContain('may still be processing');
+    expect(feedback).toContain('typed notes are kept');
+    expect(noSpeechFeedback({ mic: false, system: true, app: APP }, 90, 0, 1)).toBeNull();
   });
 });

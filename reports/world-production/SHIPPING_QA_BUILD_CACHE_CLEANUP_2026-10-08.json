@@ -1,0 +1,38 @@
+{
+  "atUtc": "2026-10-08T14:31:57.239893+00:00",
+  "scope": "Unused rebuildable pctx build-script executables in owned target only",
+  "files": [
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/pctx_code_execution_runtime-abdc154ac6aacbd5/build_script_build-abdc154ac6aacbd5",
+      "bytes": 71909664,
+      "links": 1
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/pctx_code_execution_runtime-abdc154ac6aacbd5/build_script_build-abdc154ac6aacbd5.d",
+      "bytes": 2821,
+      "links": 1
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/pctx_code_execution_runtime-f53efbefcdbe3d55/build_script_build-f53efbefcdbe3d55",
+      "bytes": 71909904,
+      "links": 1
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/pctx_code_execution_runtime-f53efbefcdbe3d55/build_script_build-f53efbefcdbe3d55.d",
+      "bytes": 2821,
+      "links": 1
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/pctx_type_check_runtime-4f0984b1578f2c46/build_script_build-4f0984b1578f2c46",
+      "bytes": 79012784,
+      "links": 1
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/pctx_type_check_runtime-4f0984b1578f2c46/build_script_build-4f0984b1578f2c46.d",
+      "bytes": 2809,
+      "links": 1
+    }
+  ],
+  "freeBefore": 25699262464,
+  "freeAfter": 25922080768
+}

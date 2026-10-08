@@ -1,0 +1,39 @@
+{
+  "source": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/desktop/src-tauri/src/system_audio_lifecycle.rs",
+  "sourceSha256": "53b1d9591989975810db34654c39c486ef2935c2ddab67a2ba44f5ec894abe22",
+  "startedUtc": "2026-10-08T14:47:58.378249+00:00",
+  "minimumFreeGiB": 20.127975463867188,
+  "floorGiB": 20,
+  "commands": [
+    {
+      "phase": "compile",
+      "args": [
+        "rustc",
+        "--edition=2021",
+        "--test",
+        "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/desktop/src-tauri/src/system_audio_lifecycle.rs",
+        "-C",
+        "debuginfo=0",
+        "-o",
+        "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/record-lifecycle-standalone-61f9978d/lifecycle-tests"
+      ],
+      "exitCode": 0,
+      "elapsedSeconds": 0.8322204580035759,
+      "aborted": null,
+      "log": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/record-lifecycle-standalone-61f9978d/compile.log"
+    },
+    {
+      "phase": "test",
+      "args": [
+        "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/record-lifecycle-standalone-61f9978d/lifecycle-tests",
+        "--test-threads=1"
+      ],
+      "exitCode": 0,
+      "elapsedSeconds": 3.636216457991395,
+      "aborted": null,
+      "log": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/record-lifecycle-standalone-61f9978d/test.log"
+    }
+  ],
+  "scope": "standalone production lifecycle module; owned fake stdin/stdout helpers only; no audio/Tauri/Cargo/device or daemon activity",
+  "passed": true
+}

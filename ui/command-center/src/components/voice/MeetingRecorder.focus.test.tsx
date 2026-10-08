@@ -21,6 +21,14 @@ vi.mock('../../lib/api', () => ({
   ]),
 }));
 
+const { readiness } = vi.hoisted(() => ({ readiness: {
+  status: 'ready', message: 'Local model found; inference not yet verified', retry: vi.fn(async () => {}),
+} }));
+vi.mock('../../lib/dictationReadiness', () => ({
+  useDictationReadiness: () => readiness,
+  getDictationReadiness: () => readiness,
+}));
+
 import { MeetingRecorder } from './MeetingRecorder';
 import { requestRecordOpen, useAppNavigationRequests } from '../../lib/appNavigationRequests';
 
@@ -31,6 +39,7 @@ let host: HTMLDivElement;
 
 beforeEach(() => {
   localStorage.clear();
+  readiness.status = 'ready'; readiness.message = 'Local model found'; readiness.retry.mockClear();
   useAppNavigationRequests.setState({ recordOpen: null });
   host = document.createElement('div');
   document.body.appendChild(host);
@@ -78,6 +87,8 @@ describe('Record picker focus', () => {
     const mic = Array.from(dialog()!.querySelectorAll('label'))
       .find(l => l.textContent?.includes('Record my microphone'))!.querySelector('input')!;
     expect(mic.checked).toBe(true);
+    expect(dialog()!.textContent).toContain('Microphone is the only recording source available here');
+    expect(dialog()!.textContent).not.toContain('Turn it off to record only');
     act(() => mic.click());
     expect(mic.checked).toBe(false);
     expect(dialog()!.querySelector('[role="alert"]')?.textContent).toMatch(/at least one source/);
@@ -122,4 +133,33 @@ it('an agent open request shows the picker without acquiring microphone media', 
     if (original) Object.defineProperty(navigator, 'mediaDevices', original);
     else Reflect.deleteProperty(navigator, 'mediaDevices');
   }
+});
+
+it('shows a model setup error and Retry while preventing Start without opening media', async () => {
+  readiness.status = 'unavailable'; readiness.message = 'No local model configured';
+  act(() => recordButton().click());
+  await flush();
+  const d = dialog()!;
+  expect(d.textContent).toContain('No local model configured');
+  const start = Array.from(d.querySelectorAll('button')).find(b => b.textContent?.includes('Start recording'))!;
+  expect(start.disabled).toBe(true);
+  const retry = Array.from(d.querySelectorAll('button')).find(b => b.textContent?.includes('Retry transcription setup'))!;
+  act(() => retry.click());
+  expect(readiness.retry).toHaveBeenCalledTimes(1);
+});
+
+it('leaves Enter on Cancel to the button instead of starting the selected project recording', async () => {
+  act(() => recordButton().click());
+  await flush();
+  const d = dialog()!;
+  const project = Array.from(d.querySelectorAll('button')).find(b => b.textContent?.trim() === 'Synthetic One')!;
+  act(() => project.click());
+  const cancel = Array.from(d.querySelectorAll('button')).find(b => b.textContent === 'Cancel')!;
+  cancel.focus();
+  const enter = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+  act(() => cancel.dispatchEvent(enter));
+  expect(enter.defaultPrevented).toBe(false);
+  // jsdom does not perform native keyboard activation; emulate the unblocked click.
+  act(() => cancel.click());
+  expect(dialog()).toBeNull();
 });

@@ -1,0 +1,208 @@
+Window: "Record QA · local practice call", App: Google Chrome.
+0 standard window Record QA · local practice call - Part of group 🧪 First-use browser QA - Google Chrome, URL: 127.0.0.1:5489/, Secondary Actions: Raise
+	1 container Record QA · local practice call - Part of group 🧪 First-use browser QA - Google Chrome, URL: 127.0.0.1:5489/
+		2 container
+			3 toolbar
+				4 button Back
+				5 button (disabled) Forward
+				6 button Reload
+				7 container
+					8 pop up button View site information
+					9 text field (settable) Address and search bar, Value: 127.0.0.1:5489, Placeholder: Ask Google or type a URL
+					10 button Bookmark this tab
+				11 pop up button Extensions
+				12 checkbox Downloads, Value: 0
+				13 button Jesse
+				14 pop up button Chrome
+			15 toolbar Bookmarks
+				16 toolbar Saved Tab Groups
+					17 saved tab group button  🧪 First-use browser QA group - Opened
+					18 saved tab group button  ✅Claude group - Closed
+					19 saved tab group button  ✅Claude group - Closed
+					20 saved tab group button  ✅Claude group - Closed
+					21 saved tab group button  ✅Claude group - Closed
+					22 saved tab group button  ✅Claude group - Closed
+					23 saved tab group button  ✅Claude group - Closed
+					24 saved tab group button  ✅Claude group - Closed
+					25 saved tab group button  Claude group - Closed
+					26 saved tab group button  ✅Claude group - Closed
+					27 button Tab groups
+			28 container
+				29 scroll area
+					30 HTML content Record QA · local practice call, URL: 127.0.0.1:5489/
+						31 heading Record QA · local practice call, Value: 1
+							32 text Record QA · local practice call
+						33 text Two synthetic participants over local WebRTC. No real meeting service, accounts, camera or microphone.
+						34 container
+							35 text Fixture captions are ground truth, not observed transcripts.  Start Record in the Permagent review app first, then start this fixture. Stopping this page stops fixture playback only; use  Stop & save in Permagent  to finish the recording.
+						36 container
+							37 text Transport
+							38 pop up button Playback transport, Value: WebRTC practice call
+								39 (selected) WebRTC practice call
+						40 container
+							41 text Scenario
+							42 pop up button Practice scenario, Value: Far-side practice call · 55 seconds
+								43 (selected) Far-side practice call · 55 seconds
+						44 button Start practice call
+						45 button (disabled) Stop fixture playback
+						46 button Download run evidence
+						47 text WEBRTC · real local peer negotiation and received tracks. A failure never switches automatically to direct audio.
+						48 text Turn ON Also record the other participants. Keep the physical microphone quiet. Synthetic remote audio traverses WebRTC before playback. Check the final commitment at 49 seconds survives Stop & save.
+						49 checkbox Play near participant audio, Value: 0
+						50 checkbox Play far participant audio, Value: 1
+						51 container
+							52 text Output level
+							53 slider Output level, Value: 0.65, Secondary Actions: Increment, Decrement
+						54 text Fixture ended (scenario-complete). Stop & save separately in Permagent.
+						55 text 0:55 / 0:55
+						56 progress indicator 55
+						57 container Audio output route status
+							58 heading Audio output route status, Value: 2
+								59 text Audio output route status
+							60 text Observed browser state only; decoded media and progressing clocks do not prove audible system output. Sink categories hide device identifiers. Updated at cues and every five seconds; after Stop, the last snapshot remains timestamped.
+							61 container Audio output route status
+								62 text 14:58:01 · ending:scenario-complete · webrtc · document visible · focus true
+Context running · t 55.5093s · sink default · rate 48000 Hz
+Output clock 55.4906s / 111390.9ms · latency base 0.0053s / output 0.016s
+near: received HTMLAudio · paused false · muted true · volume 0.65 · time 55.4243s · ready 4 · error none · sink default
+  tracks: live, enabled true, muted false
+far: received HTMLAudio · paused false · muted false · volume 0.65 · time 55.4232s · ready 4 · error none · sink default
+  tracks: live, e
+						63 container
+							64 heading Amber seven · near participant, Value: 2
+								65 text Amber seven · near participant
+							66 container Unable to play media.
+							67 text Near output · receiver in WebRTC mode closed Expected synthetic speech — synthetic participant silent —
+						68 container
+							69 heading Cobalt nine · far participant, Value: 2
+								70 text Cobalt nine · far participant
+							71 container Unable to play media.
+							72 text Far output · receiver in WebRTC mode closed Expected synthetic speech — synthetic participant silent —
+						73 text Both audible receivers share this Mac's system output. If the microphone hears the speakers, attribution can duplicate. “Duplex” here tests two network streams and echo exposure; it does not prove isolated microphone/system channels. This page never calls getUserMedia.
+						74 container
+							75 heading Expected results, Value: 2
+								76 text Expected results
+							77 content list
+								78 container
+									79 AXListMarker • 
+									80 text cobalt nine
+								81 container
+									82 AXListMarker • 
+									83 text review accessibility checklist
+								84 container
+									85 AXListMarker • 
+									86 text purchase cancelled
+								87 container
+									88 AXListMarker • 
+									89 text confirm venue step-free route after 49 seconds
+							90 text Type into the Permagent notepad:
+							91 text accessibility + venue route matter; no launch approval, no purchase, no email Only catalogue and add stated commitments to the disposable Record QA project. Do not execute tasks, send emails or buy anything.
+						92 container
+							93 heading Connection and playback log, Value: 2
+								94 text Connection and playback log
+							95 container Latest fixture checkpoint
+								96 text 14:58:01 ended: scenario-complete
+							97 container Near peer diagnostics
+								98 text Offer final: {"connection":"connected","ice":"connected","gathering":"complete","signaling":"stable","dtls":[{"mid":"0","sender":"connected","receiver":"connected","ice":"connected"},{"mid":"1","sender":"connected","receiver":"connected","ice":"connected"}]}
+							99 container Far peer diagnostics
+								100 text Answer final: {"connection":"connected","ice":"connected","gathering":"complete","signaling":"stable","dtls":[{"mid":"0","sender":"connected","receiver":"connected","ice":"connected"},{"mid":"1","sender":"connected","receiver":"connected","ice":"connected"}]}
+							101 container Fixture event log, newest first
+								102 text 14:58:01 ended scenario-complete
+								103 text 14:58:00 receiver-proof {"audio":true,"video":true,"inbound":[{"side":"near-receiver","kind":"audio","packets":2750,"energy":0},{"side":"near-receiver","kind":"video","packets":633,"frames":274},{"side":"far-receiver","kind":"audio","packets":2750,"energy":1.1437250883259529},{"side":"far-receiver","kind":"video","packets":568,"frames":274}]}
+								104 text 14:57:55 receiver-proof {"audio":true,"video":true,"inbound":[{"side":"near-receiver","kind":"audio","packets":2500,"energy":0},{"side":"near-receiver","kind":"video","packets":577,"frames":249},{"side":"far-receiver","kind":"audio","packets":2500,"energy":0.9086686139531589},{"side":"far-receiver","kind":"video","packets":518,"frames":249}]}
+								105 text 14:57:55 cue far_tail expected at 49s
+								106 text 14:57:50 receiver-proof {"audio":true,"video":true,"inbound":[{"side":"near-receiver","kind":"audio","packets":2250,"energy":0},{"side":"near-receiver","kind":"video","packets":520,"frames":224},{"side":"far-receiver","kind":"audio","packets":2250,"energy":0.8619715021945502},{"side":"far-receiver","kind":"video","packets":468,"frames":224}]}
+								107 text 14:57:45 receiver-proof {"audio":true,"video":true,"inbound":[{"side":"near-receiver","kind":"audio","packets":2000,"energy":0},{"side":"near-receiver","kind":"video","packets":464,"frames":199},{"side":"far-receiver","kind":"audio","packets":2000,"energy":0.8619715021945502},{"side":"far-receiver","kind":"video","packets":418,"frames":199}]}
+								108 text 14:57:40 receiver-proof {"audio":true,"video":true,"inbound":[{"side":"near-receiver","kind":"audio","packets":1750,"energy":0},{"side":"near-receiver","kind":"video","packets":408,"frames":174},{"side":"far-receiver","kind":"audio","packets":1750,"energy":0.8619715021945502},{"side":"far-receiver","kind":"video","packets":368,"frames":174}]}
+								109 text 14:57:35 receiver-proof {"audio":true,"video":true,"inbound":[{"side":"near-receiver","kind":"audio","packets":1500,"energy":0},{"side":"near-receiver","kind":"video","packets":352,"frames":149},{"side":"far-receiver","kind":"audio","packets":1500,"energy":0.8619715021945502},{"side":"far-receiver","kind":"video","packets":318,"frames":149}]}
+								110 text 14:57:30 receiver-proof {"audio":true,"video":true,"inbound":[{"side":"near-receiver","kind":"audio","packets":1250,"energy":0},{"side":"near-receiver","kind":"video","packets":295,"frames":124},{"side":"far-receiver","kind":"audio","packets":1250,"energy":0.8619715021945502},{"side":"far-receiver","kind":"video","packets":268,"frames":124}]}
+								111 text 14:57:25 receiver-proof {"audio":true,"video":true,"inbound":[{"side":"near-receiver","kind":"audio","packets":1000,"energy":0},{"side":"near-receiver","kind":"video","packets":239,"frames":99},{"side":"far-receiver","kind":"audio","packets":1000,"energy":0.8619715021945502},{"side":"far-receiver","kind":"video","packets":218,"frames":99}]}
+								112 text 14:57:20 receiver-proof {"audio":true,"video":true,"inbound":[{"side":"near-receiver","kind":"audio","packets":750,"energy":0},{"side":"near-receiver","kind":"video","packets":183,"frames":74},{"side":"far-receiver","kind":"audio","packets":750,"energy":0.8619715021945502},{"side":"far-receiver","kind":"video","packets":168,"frames":74}]}
+								113 text 14:57:15 receiver-proof {"audio":true,"video":true,"inbound":[{"side":"near-receiver","kind":"audio","packets":500,"energy":0},{"side":"near-receiver","kind":"video","packets":128,"frames":49},{"side":"far-receiver","kind":"audio","packets":500,"energy":0.5379304428040689},{"side":"far-receiver","kind":"video","packets":118,"frames":49}]}
+								114 text 14:57:10 receiver-proof {"audio":true,"video":true,"inbound":[{"side":"near-receiver","kind":"audio","packets":250,"energy":0},{"side":"near-receiver","kind":"video","packets":72,"frames":24},{"side":"far-receiver","kind":"audio","packets":250,"energy":0.14501985554232522},{"side":"far-receiver","kind":"video","packets":68,"frames":24}]}
+								115 text 14:57:09 cue far_open expected at 3s
+								116 text 14:57:06 play-resolved nearVideo; readyState=4
+								117 text 14:57:05 play-resolved farVideo; readyState=4
+								118 text 14:57:05 playback webrtc; 2 verified files; 55s scheduled
+								119 text 14:57:05 audio-files-ready 2 hashes and decode operations passed
+								120 text 14:57:05 receiver-proof {"audio":false,"video":false,"inbound":[]}
+								121 text 14:57:05 audio-elements-ready context=running; beginning file verification
+								122 text 14:57:05 play-resolved farAudio; readyState=4
+								123 text 14:57:05 play-resolved nearAudio; readyState=4
+								124 text 14:57:05 play-request farAudio; readyState=0; paused=true; tracks=audio:live:true
+								125 text 14:57:05 play-request nearAudio; readyState=0; paused=true; tracks=audio:live:true
+								126 text 14:57:05 play-request farVideo; readyState=0; paused=true; tracks=video:live:true
+								127 text 14:57:05 play-request nearVideo; readyState=0; paused=true; tracks=video:live:true
+								128 text 14:57:05 output {"near":false,"far":true,"level":0.65}
+								129 text 14:57:05 connectionstatechange far: {"connection":"connected","ice":"connected","gathering":"complete","signaling":"stable","dtls":[{"mid":"0","sender":"connected","receiver":"connected","ice":"connected"},{"mid":"1","sender":"connected","receiver":"connected","ice":"connected"}]}
+								130 text 14:57:05 connectionstatechange near: {"connection":"connected","ice":"connected","gathering":"complete","signaling":"stable","dtls":[{"mid":"0","sender":"connected","receiver":"connected","ice":"connected"},{"mid":"1","sender":"connected","receiver":"connected","ice":"connected"}]}
+								131 text 14:57:05 iceconnectionstatechange far: {"connection":"connecting","ice":"connected","gathering":"complete","signaling":"stable","dtls":[{"mid":"0","sender":"new","receiver":"new","ice":"connected"},{"mid":"1","sender":"new","receiver":"new","ice":"connected"}]}
+								132 text 14:57:05 track far receiver: audio, muted=true
+								133 text 14:57:05 track far receiver: video, muted=true
+								134 text 14:57:05 signalingstatechange far: {"connection":"connecting","ice":"checking","gathering":"complete","signaling":"stable","dtls":[{"mid":"0","sender":"new","receiver":"new","ice":"checking"},{"mid":"1","sender":"new","receiver":"new","ice":"checking"}]}
+								135 text 14:57:05 icecandidate near: gathering ended
+								136 text 14:57:05 gather-summary answer: 1 candidate lines in complete SDP
+								137 text 14:57:05 icegatheringstatechange near: {"connection":"connecting","ice":"connected","gathering":"complete","signaling":"stable","dtls":[{"mid":"0","sender":"connecting","receiver":"connecting","ice":"connected"},{"mid":"1","sender":"connecting","receiver":"connecting","ice":"connected"}]}
+								138 text 14:57:05 iceconnectionstatechange near: {"connection":"connecting","ice":"connected","gathering":"gathering","signaling":"stable","dtls":[{"mid":"0","sender":"connecting","receiver":"connecting","ice":"connected"},{"mid":"1","sender":"connecting","receiver":"connecting","ice":"connected"}]}
+								139 text 14:57:05 connectionstatechange far: {"connection":"connecting","ice":"checking","gathering":"complete","signaling":"have-local-offer","dtls":[{"mid":"0","sender":"new","receiver":"new","ice":"checking"},{"mid":"1","sender":"new","receiver":"new","ice":"new"}]}
+								140 text 14:57:05 iceconnectionstatechange far: {"connection":"new","ice":"checking","gathering":"complete","signaling":"have-local-offer","dtls":[{"mid":"0","sender":"new","receiver":"new","ice":"checking"},{"mid":"1","sender":"new","receiver":"new","ice":"new"}]}
+								141 text 14:57:05 connectionstatechange near: {"connection":"connecting","ice":"checking","gathering":"gathering","signaling":"stable","dtls":[{"mid":"0","sender":"new","receiver":"new","ice":"checking"},{"mid":"1","sender":"new","receiver":"new","ice":"checking"}]}
+								142 text 14:57:05 icecandidate near: {"type":"host","protocol":"udp","address":"9e96cbdc-5ce9-4854-9c3b-cee7a2c0ce2d.local","port":59113,"sdpMid":"0"}
+								143 text 14:57:05 iceconnectionstatechange near: {"connection":"new","ice":"checking","gathering":"gathering","signaling":"stable","dtls":[{"mid":"0","sender":"new","receiver":"new","ice":"checking"},{"mid":"1","sender":"new","receiver":"new","ice":"checking"}]}
+								144 text 14:57:05 icegatheringstatechange near: {"connection":"new","ice":"new","gathering":"gathering","signaling":"stable","dtls":[{"mid":"0","sender":"new","receiver":"new","ice":"new"},{"mid":"1","sender":"new","receiver":"new","ice":"new"}]}
+								145 text 14:57:05 signalingstatechange near: {"connection":"new","ice":"new","gathering":"new","signaling":"stable","dtls":[{"mid":"0","sender":"new","receiver":"new","ice":"new"},{"mid":"1","sender":"new","receiver":"new","ice":"new"}]}
+								146 text 14:57:05 track near receiver: audio, muted=true
+								147 text 14:57:05 track near receiver: video, muted=true
+								148 text 14:57:05 signalingstatechange near: {"connection":"new","ice":"new","gathering":"new","signaling":"have-remote-offer","dtls":[{"mid":"0"},{"mid":"1"}]}
+								149 text 14:57:05 icecandidate far: gathering ended
+								150 text 14:57:05 gather-summary offer: 2 candidate lines in complete SDP
+								151 text 14:57:05 icegatheringstatechange far: {"connection":"new","ice":"new","gathering":"complete","signaling":"have-local-offer","dtls":[{"mid":"0","sender":"new","receiver":"new","ice":"new"},{"mid":"1","sender":"new","receiver":"new","ice":"new"}]}
+								152 text 14:57:05 icecandidate far: {"type":"host","protocol":"udp","address":"9e96cbdc-5ce9-4854-9c3b-cee7a2c0ce2d.local","port":57946,"sdpMid":"1"}
+								153 text 14:57:05 icecandidate far: {"type":"host","protocol":"udp","address":"9e96cbdc-5ce9-4854-9c3b-cee7a2c0ce2d.local","port":56005,"sdpMid":"0"}
+								154 text 14:57:05 icegatheringstatechange far: {"connection":"new","ice":"new","gathering":"gathering","signaling":"have-local-offer","dtls":[{"mid":"0","sender":"new","receiver":"new","ice":"new"},{"mid":"1","sender":"new","receiver":"new","ice":"new"}]}
+								155 text 14:57:05 signalingstatechange far: {"connection":"new","ice":"new","gathering":"new","signaling":"have-local-offer","dtls":[{"mid":"0","sender":"new","receiver":"new","ice":"new"},{"mid":"1","sender":"new","receiver":"new","ice":"new"}]}
+								156 text 14:57:05 silent-track-pump started; zero-valued audio only
+								157 text 14:57:05 frame-pump started before peer setup
+								158 text 14:57:05 audio-context running
+								159 text 14:57:05 preparing far; transport=webrtc; secureContext=true; RTCPeerConnection=function; canvasCapture=function
+							160 text Run evidence records connection state, decoded receiver statistics, mute settings and scheduled cues. It contains no app transcript.
+						161 disclosure triangle Exact cue schedule and file hashes
+							162 text Exact cue schedule and file hashes
+						163 disclosure triangle Run evidence JSON (also visible if native download is unavailable)
+							164 text Run evidence JSON (also visible if native download is unavailable)
+			165 container Infobar Container
+				166 container Infobar
+					167 container
+						168 text "ChatGPT" started debugging this browser
+						169 button Cancel
+					170 button Close
+			171 pop up button Tab search
+			172 container
+				173 tab group
+					174 tab (settable, boolean) Permagent - High memory usage - 980 MB, Value: off
+						175 button Close
+					176 tab (settable, boolean) Permagent - Memory usage - 233 MB, Value: off
+						177 button Close
+					178 tab group  group 🧪 First-use browser QA - 2 Tabs, •  Record QA · local practice call, •  Permagent - Expanded
+					179 tab (selected, settable, boolean) Record QA · local practice call - Part of group 🧪 First-use browser QA - Memory usage - 102 MB, Value: on
+						180 button Close
+					181 tab (settable, boolean) Permagent - Part of group 🧪 First-use browser QA - Memory usage - 129 MB, Value: off
+						182 button Close
+			183 button New Tab
+			184 button Open Gemini in Chrome
+	185 close button
+	186 full screen button Help: this button also has an action to zoom the window, Secondary Actions: zoom the window
+	187 minimize button
+188 menu bar
+	189 Chrome
+	190 File
+	191 Edit
+	192 View
+	193 History
+	194 Bookmarks
+	195 Profiles
+	196 Tab
+	197 Window
+	198 Help
+
+The focused UI element is 30 HTML content Record QA · local practice call, URL: 127.0.0.1:5489/

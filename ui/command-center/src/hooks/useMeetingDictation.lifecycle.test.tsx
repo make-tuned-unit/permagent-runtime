@@ -29,6 +29,13 @@ const { transcribeAudio, createProjectNote, getMeetingTriage, retryMeetingTriage
 vi.mock('../lib/api', () => ({
   api: { transcribeAudio, createProjectNote, getMeetingTriage, retryMeetingTriage },
 }));
+const { readiness } = vi.hoisted(() => ({ readiness: {
+  status: 'ready', message: 'Local model found; inference is not yet verified', retry: vi.fn(async () => {}),
+} }));
+vi.mock('../lib/dictationReadiness', () => ({
+  useDictationReadiness: () => readiness,
+  getDictationReadiness: () => readiness,
+}));
 vi.mock('../lib/emitActivity', () => ({ emitActivity: vi.fn() }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke }));
 vi.mock('@tauri-apps/api/event', () => ({ listen }));
@@ -60,10 +67,12 @@ let tracks: FakeTrack[] = [];
 let proc: { onaudioprocess: ((e: unknown) => void) | null; connect: () => void; disconnect: () => void } | null = null;
 let contexts: FakeAudioContext[] = [];
 let failAudioContext = false;
+let contextInitiallySuspended = false;
+let resumeAudioContext = vi.fn(async () => {});
 
 class FakeAudioContext {
   sampleRate = RATE;
-  state = 'running';
+  state = contextInitiallySuspended ? 'suspended' : 'running';
   destination = {};
   constructor() {
     if (failAudioContext) throw new Error('audio device busy');
@@ -74,6 +83,7 @@ class FakeAudioContext {
     proc = { onaudioprocess: null, connect: () => {}, disconnect: () => {} };
     return proc;
   }
+  async resume() { await resumeAudioContext(); this.state = 'running'; }
   close() { this.state = 'closed'; return Promise.resolve(); }
 }
 
@@ -96,7 +106,7 @@ let failStartSystemAudio = false;
 /** What `stop_system_audio` RETURNS: the newer native lists unread chunk
  *  paths; `undefined` models an older native that returns nothing. Consumed
  *  by the next stop. */
-let stopReturns: Array<string[] | undefined> = [];
+let stopReturns: Array<string[] | undefined | {unreadPaths: string[]; error: string | null}> = [];
 /** `system_audio_available`. */
 let helperAvailable = true;
 /** `list_system_audio_apps`; 'missing' models a native without the command. */
@@ -123,8 +133,10 @@ function blobText(blob: Blob): Promise<string> {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  readiness.status = 'ready'; readiness.message = 'Local model found';
   localStorage.clear();
   tracks = []; proc = null; contexts = []; failAudioContext = false;
+  contextInitiallySuspended = false; resumeAudioContext = vi.fn(async () => {});
   handlers = {}; invokeLog = []; flushOnStop = []; failStartSystemAudio = false; stopReturns = []; helperAvailable = true;
   runningApps = [{ bundleId: 'ai.permagent.record-practice-20261007', name: 'Record Practice' }];
   micTexts = []; farTexts.clear();
@@ -1027,7 +1039,113 @@ describe('helper error after Start', () => {
     micTexts = ['still here'];
     speak(1);
     await run(() => r.h.stop());
-    expect(noteBody()).toBe('still here');
+    expect(noteBody()).toContain('still here');
+    expect(noteBody()).toContain(GAP_MARKER);
+    expect(r.h.failedChunks).toBe(1);
+  });
+});
+
+describe('retry save ownership', () => {
+  it('blocks a new recording while retry saves the old project transcript', async () => {
+    const r = mount();
+    await run(() => r.h.start(PROJECT_A));
+    micTexts = ['keep this in project A'];
+    speak(1);
+    createProjectNote.mockRejectedValueOnce(new Error('offline'));
+    await run(() => r.h.stop());
+    let release!: (value: {id: string}) => void;
+    createProjectNote.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+    let pending!: Promise<unknown>;
+    act(() => { pending = r.h.retrySave(); });
+    await run(() => r.h.start(PROJECT_B));
+    expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledTimes(1);
+    expect(r.h.state).toBe('finishing');
+    await act(async () => { release({id: 'saved-a'}); await pending; });
+    expect(createProjectNote.mock.calls[1][0]).toBe(PROJECT_A.projectId);
+    expect(r.h.state).toBe('idle');
+    expect(tracks.every(t => t.stopped)).toBe(true);
+    expect(readDrafts()).toEqual([]);
+    r.unmount();
+  });
+});
+
+describe('transcription setup guard', () => {
+  it('does not acquire either source or create a draft when the local model is unavailable', async () => {
+    const r = mount();
+    readiness.status = 'unavailable';
+    readiness.message = 'No local transcription model is configured';
+    act(() => r.h.setSystemAudio(true));
+    await run(() => r.h.start(PROJECT_A));
+    expect(r.h.state).toBe('error');
+    expect(r.h.error).toBe(readiness.message);
+    expect(navigator.mediaDevices.getUserMedia).not.toHaveBeenCalled();
+    expect(invokeLog).not.toContain('start_system_audio');
+    expect(readDrafts()).toEqual([]);
+    r.unmount();
+  });
+});
+
+describe('microphone context readiness', () => {
+  it('resumes a suspended microphone context before claiming recording', async () => {
+    contextInitiallySuspended = true;
+    const r = mount();
+    await run(() => r.h.start(PROJECT_A));
+    expect(resumeAudioContext).toHaveBeenCalledTimes(1);
+    expect(contexts[0].state).toBe('running');
+    expect(r.h.state).toBe('recording');
+    act(() => r.h.discard());
+    await settle();
+    r.unmount();
+  });
+
+  it('releases the microphone and reports a resume failure instead of recording silence', async () => {
+    contextInitiallySuspended = true;
+    resumeAudioContext.mockRejectedValueOnce(new Error('audio session unavailable'));
+    const r = mount();
+    await run(() => r.h.start(PROJECT_A));
+    expect(r.h.state).toBe('error');
+    expect(r.h.error).toContain('audio session unavailable');
+    expect(tracks[0].stopped).toBe(true);
+    expect(contexts[0].state).toBe('closed');
+    expect(proc).toBeNull();
+    expect(readDrafts()).toEqual([]);
+    r.unmount();
+  });
+});
+
+describe('capture and transcription failure evidence', () => {
+  it('keeps a failed far-side write between its surrounding successful chunks in the saved note', async () => {
+    const r = mount();
+    act(() => r.h.setSystemAudio(true));
+    await run(() => r.h.start(PROJECT_A));
+    transcribeAudio.mockResolvedValueOnce({text: 'before the missing segment'})
+      .mockResolvedValueOnce({text: 'final commitment retained'});
+    act(() => emit('system_audio_chunk', '/tmp/before.wav'));
+    await settle();
+    act(() => emit('system_audio_error', { kind: 'write', detail: 'disk write failed' }));
+    act(() => emit('system_audio_chunk', '/tmp/after.wav'));
+    await settle();
+    expect(readDrafts()[0].farParts).toEqual(['before the missing segment', GAP_MARKER, 'final commitment retained']);
+    await run(() => r.h.stop());
+    expect(noteBody()).toBe(`**Others:** before the missing segment\n\n**Others:** ${GAP_MARKER}\n\n**Others:** final commitment retained`);
+    expect(createProjectNote.mock.calls[0][0]).toBe(PROJECT_A.projectId);
+    expect(r.h.failedChunks).toBe(1);
+    r.unmount();
+  });
+
+  it('shows the local model setup failure instead of only an unexplained failed-segment count', async () => {
+    const r = mount();
+    await run(() => r.h.start(PROJECT_A));
+    transcribeAudio.mockRejectedValueOnce(new Error('No local dictation model is configured'));
+    act(() => speak(MEETING_CHUNK_SECONDS));
+    await settle();
+    expect(r.h.error).toMatch(/No local dictation model is configured/);
+    expect(r.h.error).toMatch(/Stop and resolve the local transcription error/);
+    expect(r.h.failedChunks).toBe(1);
+    expect(readDrafts()[0].parts).toEqual([GAP_MARKER]);
+    act(() => r.h.discard());
+    await settle();
+    r.unmount();
   });
 });
 
@@ -1089,6 +1207,32 @@ describe('retired recording and final capture errors', () => {
     } finally {
       act(() => r.h.discard());
     }
+  });
+
+  it('takes a failed-stop receipt tail once, freezes it for retry, and ignores its late duplicate event', async () => {
+    const r = mount();
+    act(() => r.h.setSystemAudio(true));
+    await run(() => r.h.start(PROJECT_A));
+    const tail = '/tmp/final-error-tail.wav';
+    farTexts.set(tail, 'Final decision: do not purchase. Review the internal checklist.');
+    const lateEvent = handlers.system_audio_chunk[0];
+    stopReturns = [{unreadPaths: [tail], error: 'capture helper exited unsuccessfully (exit status: 7)'}];
+    const saved = await run(() => r.h.stop());
+    expect(saved).toBeNull();
+    expect(createProjectNote).not.toHaveBeenCalled();
+    expect(r.h.state).toBe('error');
+    expect(farReads()).toEqual([tail]);
+    const draft = readDrafts()[0];
+    expect(draft.body).toContain('Final decision: do not purchase. Review the internal checklist.');
+    expect(draft.body).toContain(GAP_MARKER);
+    act(() => lateEvent({payload: tail}));
+    await settle();
+    expect(farReads()).toEqual([tail]);
+    await run(() => r.h.retrySave());
+    expect(sentRecordingId()).toBe(draft.recordingId);
+    expect(noteBody()).toBe(draft.body);
+    expect(createProjectNote.mock.calls[0][0]).toBe(PROJECT_A.projectId);
+    r.unmount();
   });
 
   it('keeps a recoverable draft when the final system audio flush fails', async () => {

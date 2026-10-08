@@ -1,0 +1,19 @@
+{
+  "atUtc": "2026-10-08T14:34:50.250957+00:00",
+  "scenario": "Far55 synthetic direct-output diagnostic; no WebRTC and no capture",
+  "exitCode": 0,
+  "probe": {
+    "audioServicePID": 66550,
+    "chromePID": 726,
+    "devicesCreated": 0,
+    "deviceWrites": 0,
+    "isRunning": 0,
+    "isRunningOutput": 0,
+    "method": "read-only exact Chrome AudioService HAL metadata; no capture",
+    "outputDevices": [],
+    "permissionRequests": 0,
+    "processObjectId": 119,
+    "tapsCreated": 0
+  },
+  "error": null
+}

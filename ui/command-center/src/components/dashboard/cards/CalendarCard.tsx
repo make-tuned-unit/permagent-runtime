@@ -157,6 +157,16 @@ export function CalendarCard({ nowMs: pinnedNow, sizeMode = 'auto', initialView 
     // the event popover (portalled to <body>) must not page the calendar.
     if (!rootRef.current?.contains(t)) return;
     if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable) return;
+    if (t.closest('[role="tablist"]') && ['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) {
+      e.preventDefault();
+      const index = CALENDAR_VIEWS.indexOf(view);
+      const next = e.key === 'Home' ? CALENDAR_VIEWS[0]
+        : e.key === 'End' ? CALENDAR_VIEWS[CALENDAR_VIEWS.length - 1]
+          : CALENDAR_VIEWS[(index + (e.key === 'ArrowRight' ? 1 : -1) + CALENDAR_VIEWS.length) % CALENDAR_VIEWS.length];
+      switchView(next);
+      rootRef.current.querySelector<HTMLButtonElement>(`[data-testid="calendar-view-${next}"]`)?.focus();
+      return;
+    }
     if (e.key === 'ArrowLeft') { e.preventDefault(); step(-1); }
     else if (e.key === 'ArrowRight') { e.preventDefault(); step(1); }
     else if (e.key.toLowerCase() === 't') { e.preventDefault(); goToday(); }
@@ -172,11 +182,13 @@ export function CalendarCard({ nowMs: pinnedNow, sizeMode = 'auto', initialView 
   } as CSSProperties;
 
   const showAccess = access.kind !== 'connected' && access.kind !== 'checking' && access.text !== '';
-  const emptyWord = view === 'day' ? 'today' : view === 'week' ? 'this week' : 'this month';
+  const emptyWord = view === 'day' ? (startOfDay(anchor) === startOfDay(nowMs) ? 'today' : 'on this day') : view === 'week' ? 'this week' : 'this month';
   // Granted, yet neither EventKit nor the daemon answered and nothing is
   // cached: say so rather than claim an empty week. (Without a grant, or
   // outside the desktop app, the access panel already explains the gap.)
-  const readFailed = main.failed && shell.inDesktopApp && shell.status === 'fullAccess';
+  const shown = compact ? ahead : main;
+  const readFailed = shown.failed && shell.inDesktopApp && shell.status === 'fullAccess';
+  const aheadFailed = ahead.failed && shell.inDesktopApp && shell.status === 'fullAccess';
   const loadingFirst =(compact ? ahead : main).loading && (compact ? ahead : main).events.length === 0;
 
   return (
@@ -200,7 +212,7 @@ export function CalendarCard({ nowMs: pinnedNow, sizeMode = 'auto', initialView 
     >
       {compact && home ? (
         <CompactDateHeader nowMs={nowMs} events={ahead.events} loading={ahead.loading && ahead.events.length === 0}
-          source={ahead.source} onExpand={home.expand} />
+          source={ahead.source} failed={readFailed} onExpand={home.expand} />
       ) : compact ? (
         <div style={{ fontFamily: font.display, fontSize: textSize.small, fontWeight: 600, color: colors.text }}>
           Calendar
@@ -236,7 +248,7 @@ export function CalendarCard({ nowMs: pinnedNow, sizeMode = 'auto', initialView 
             borderRadius: SEGMENT_STRIP_RADIUS, background: colors.bgDeeper, border: `1px solid ${colors.border}`,
           }}>
             {CALENDAR_VIEWS.map(v => (
-              <Button key={v} colors={colors} role="tab" aria-selected={v === view}
+              <Button key={v} colors={colors} role="tab" aria-selected={v === view} tabIndex={v === view ? 0 : -1}
                 data-testid={`calendar-view-${v}`} onClick={() => switchView(v)} flashSuccess={false}
                 style={segmentedTab(colors, v === view)}>
                 {VIEW_LABEL[v]}
@@ -247,7 +259,7 @@ export function CalendarCard({ nowMs: pinnedNow, sizeMode = 'auto', initialView 
       )}
 
       <NextUpStrip stacked={compact} next={next} loading={ahead.loading && ahead.events.length === 0}
-        empty={ahead.source === 'eventkit'} todayOnly={ahead.source === 'daemon'} onPick={pick} />
+        empty={ahead.source === 'eventkit'} todayOnly={ahead.source === 'daemon'} failed={aheadFailed} onPick={pick} />
 
       {(compact ? ahead : main).source === 'daemon' && (
         <div data-testid="calendar-partial" role="status">
@@ -255,8 +267,13 @@ export function CalendarCard({ nowMs: pinnedNow, sizeMode = 'auto', initialView 
         </div>
       )}
 
+      {compact && readFailed && <div data-testid="calendar-failed" role="status" style={{ display: 'flex', alignItems: 'center', gap: space.lg }}>
+        <EmptyNote>The calendar could not be read just now</EmptyNote>
+        <Button colors={colors} type="button" onClick={ahead.refresh} flashSuccess={false} data-testid="calendar-retry" style={ghost}>Retry</Button>
+      </div>}
       {compact ? (
         <CompactList events={ahead.events} nowMs={nowMs} onPick={pick} loading={loadingFirst}
+          emptyLabel={readFailed ? 'Events unavailable' : ahead.source === 'none' ? 'Connect a calendar to see events' : ahead.source === 'daemon' ? 'No events reported today' : 'No events today'}
           emptyHint={home ? 'Expand for the Day, Week and Month calendar' : undefined} />
       ) : (
         <div key={view} className="pa-enter" data-testid="calendar-body" style={{ minWidth: 0 }}>
@@ -289,7 +306,7 @@ export function CalendarCard({ nowMs: pinnedNow, sizeMode = 'auto', initialView 
           {view === 'day' && (
             <DayView anchorMs={anchor} nowMs={nowMs} events={main.events} onPickEvent={pick}
               onPickDay={pickDay} wide={width >= DAY_WIDE_FROM_PX}
-              emptyLabel={main.loading ? 'Checking events…' : readFailed ? 'Events unavailable' : main.source === 'daemon' && startOfDay(anchor) !== startOfDay(nowMs) ? 'This date has not been checked' : undefined} />
+              emptyLabel={main.loading ? 'Checking events…' : readFailed ? 'Events unavailable' : main.source === 'none' ? 'Connect a calendar to see events' : main.source === 'daemon' ? (startOfDay(anchor) !== startOfDay(nowMs) ? 'This date has not been checked' : 'No events reported today') : undefined} />
           )}
           {view === 'month' && main.source === 'eventkit' && main.events.length === 0 && !main.loading && !(readFailed) && (
             <div style={{ marginTop: space.md }}><EmptyNote>No events {emptyWord}</EmptyNote></div>
@@ -312,8 +329,8 @@ export function CalendarCard({ nowMs: pinnedNow, sizeMode = 'auto', initialView 
  * the full calendar. "Nothing left today" is only said when today's events
  * were actually read; with no calendar connected it says that instead.
  */
-function CompactDateHeader({ nowMs, events, loading, source, onExpand }: {
-  nowMs: number; events: readonly CalEvent[]; loading: boolean; source: CalendarSource; onExpand: () => void;
+function CompactDateHeader({ nowMs, events, loading, source, failed, onExpand }: {
+  nowMs: number; events: readonly CalEvent[]; loading: boolean; source: CalendarSource; failed: boolean; onExpand: () => void;
 }) {
   const { colors } = useTheme();
   const now = new Date(nowMs);
@@ -321,8 +338,10 @@ function CompactDateHeader({ nowMs, events, loading, source, onExpand }: {
   const fullDate = now.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' });
   const left = eventsOnDay(events, startOfDay(nowMs)).filter(e => e.allDay || e.endMs > nowMs).length;
   const summary = loading ? 'Checking today…'
+    : failed ? 'Calendar unavailable'
     : source === 'none' ? 'Calendar not connected'
     : left > 0 ? `${left} event${left === 1 ? '' : 's'} left today`
+    : source === 'daemon' ? 'Nothing else reported today'
     : 'Nothing left today';
   return (
     <button
@@ -367,8 +386,8 @@ function CompactDateHeader({ nowMs, events, loading, source, onExpand }: {
 }
 
 /** "Next: Standup · in 42 min · Work", re-evaluated by the card's own clock. */
-function NextUpStrip({ next, loading, empty, todayOnly, onPick, stacked }: {
-  stacked: boolean; next: ReturnType<typeof nextUp>; loading: boolean; empty: boolean; todayOnly: boolean; onPick: PickEvent;
+function NextUpStrip({ next, loading, empty, todayOnly, failed, onPick, stacked }: {
+  stacked: boolean; next: ReturnType<typeof nextUp>; loading: boolean; empty: boolean; todayOnly: boolean; failed: boolean; onPick: PickEvent;
 }) {
   const { colors } = useTheme();
   const base: CSSProperties = {
@@ -380,7 +399,7 @@ function NextUpStrip({ next, loading, empty, todayOnly, onPick, stacked }: {
     return (
       <div data-testid="calendar-next-up" data-state={loading ? 'loading' : 'none'}
         style={{ ...base, background: colors.fillSubtle, color: colors.textDim }}>
-        {loading ? 'Checking your calendar…' : todayOnly ? 'Nothing else reported today; later dates are unavailable' : empty ? 'Nothing coming up in the next 7 days' : 'Next up appears once a calendar is connected'}
+        {loading ? 'Checking your calendar…' : failed ? 'Upcoming events could not be read' : todayOnly ? 'Nothing else reported today; later dates are unavailable' : empty ? 'Nothing coming up in the next 7 days' : 'Next up appears once a calendar is connected'}
       </div>
     );
   }
@@ -420,8 +439,8 @@ function NextUpStrip({ next, loading, empty, todayOnly, onPick, stacked }: {
 }
 
 /** Compact size: today's list, or the next three events when today is done. */
-function CompactList({ events, nowMs, onPick, loading, emptyHint = 'Make the card wider for the full calendar' }: {
-  events: readonly CalEvent[]; nowMs: number; onPick: PickEvent; loading: boolean; emptyHint?: string;
+function CompactList({ events, nowMs, onPick, loading, emptyLabel, emptyHint = 'Make the card wider for the full calendar' }: {
+  events: readonly CalEvent[]; nowMs: number; onPick: PickEvent; loading: boolean; emptyLabel: string; emptyHint?: string;
 }) {
   const { colors } = useTheme();
   const today = eventsOnDay(events, startOfDay(nowMs));
@@ -434,7 +453,7 @@ function CompactList({ events, nowMs, onPick, loading, emptyHint = 'Make the car
   const heading = stillToday.length > 0 ? 'Today' : 'Coming up';
   if (loading) return null;
   if (list.length === 0) {
-    return <EmptyNote hint={emptyHint}>No events today</EmptyNote>;
+    return <EmptyNote hint={emptyHint}>{emptyLabel}</EmptyNote>;
   }
   return (
     <div data-testid="calendar-compact-list" style={{ display: 'flex', flexDirection: 'column', gap: space.xxs, minWidth: 0 }}>

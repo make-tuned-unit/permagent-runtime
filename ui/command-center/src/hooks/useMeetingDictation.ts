@@ -37,6 +37,7 @@ import {
   stopSystemAudioCapture,
   systemAudioAvailable as probeSystemAudio,
 } from '../lib/systemAudio';
+import { getDictationReadiness, useDictationReadiness } from '../lib/dictationReadiness';
 import { encodeWav } from './useDictation';
 
 export type MeetingDictationState =
@@ -325,6 +326,12 @@ export function micStartError(e: unknown): string {
   return `Couldn't start the microphone${detail ? ` (${detail})` : ''}`;
 }
 
+/** Preserve the setup/provider reason while making the missing segment explicit. */
+function transcriptionError(e: unknown, source: string): string {
+  const detail = (e as Error | null)?.message || 'the transcription request failed';
+  return `Couldn't transcribe a ${source} segment: ${detail}. Stop and resolve the local transcription error before recording more speech. This segment is marked as missing; already transcribed words and typed notes are kept.`;
+}
+
 /**
  * Far-side chunks, stamped with the recording they belong to.
  *
@@ -419,6 +426,7 @@ export function composeTranscriptBody(parts: string[], farParts: string[]): stri
 }
 
 export function useMeetingDictation() {
+  const dictationReadiness = useDictationReadiness();
   const [state, setState] = useState<MeetingDictationState>('idle');
   const [error, setError] = useState<string | null>(null);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
@@ -593,10 +601,11 @@ export function useMeetingDictation() {
           if (!isCurrent()) return;
           stash.parts[slot] = text;
           if (text.trim().length > 0) setFarChunksHeard(n => n + 1);
-        } catch {
+        } catch (e) {
           if (!isCurrent()) return;
           stash.parts[slot] = GAP_MARKER;
           setFailedChunks(n => n + 1);
+          setError(transcriptionError(e, 'system audio'));
         }
         stashDraft();
       });
@@ -622,6 +631,11 @@ export function useMeetingDictation() {
             : `System audio capture failed (${payload.detail}), and it was the only source, so recording stopped.`);
           return;
         }
+        // A helper write/stream failure may never produce a WAV. Preserve
+        // that missing segment in the durable note, not just a transient alert.
+        stash.parts.push(GAP_MARKER);
+        setFailedChunks(n => n + 1);
+        stashDraft();
         setSystemAudioError(
           payload.kind === 'permission'
             ? 'Screen Recording permission is off, so the other participants are not being recorded. Grant it to Permagent in System Settings → Privacy & Security → Screen Recording, then restart the recording.'
@@ -672,12 +686,15 @@ export function useMeetingDictation() {
     unlistenRef.current = [];
     if ('__TAURI_INTERNALS__' in window) {
       try {
-        const unread = await stopSystemAudioCapture();
+        const receipt = await stopSystemAudioCapture();
         // Let the flushed chunk's event dispatch before the listeners go.
         await new Promise(resolve => setTimeout(resolve, 0));
-        if (takeTail && intake && unread) unread.forEach(intake);
+        if (takeTail && intake && receipt.unreadPaths) receipt.unreadPaths.forEach(intake);
+        if (takeTail && hadCapture) failure = receipt.error;
       } catch (e) {
         if (takeTail && hadCapture) failure = (e as Error)?.message || String(e);
+        // Legacy rejecting natives may still have queued a final chunk event.
+        await new Promise(resolve => setTimeout(resolve, 0));
       }
     }
     unlisteners.forEach(fn => { try { fn(); } catch { /* already gone */ } });
@@ -766,17 +783,24 @@ export function useMeetingDictation() {
         if (!isCurrent()) return;
         parts[slot] = text;
         if (text.trim().length > 0) setNearChunksHeard(n => n + 1);
-      } catch {
+      } catch (e) {
         if (!isCurrent()) return;
         parts[slot] = GAP_MARKER;
         setFailedChunks(n => n + 1);
+        setError(transcriptionError(e, 'microphone'));
       }
       stashDraft();
     });
   }, [stashDraft]);
 
   const start = useCallback(async (nextTarget: MeetingTarget) => {
-    if (state === 'recording' || state === 'finishing' || startingRef.current) return;
+    if (state === 'recording' || state === 'finishing' || startingRef.current || savingRef.current || stoppingRef.current) return;
+    const readiness = getDictationReadiness();
+    if (readiness.status !== 'ready') {
+      setError(readiness.message || 'Local transcription is not ready. Check recording setup and retry.');
+      setState('error');
+      return;
+    }
     const micWanted = recordMic;
     const app = systemAudio ? systemAudioApp : null;
     if (!micWanted && !systemAudio) {
@@ -860,6 +884,16 @@ export function useMeetingDictation() {
       let ctx: AudioContext;
       try { ctx = new AudioContext({ sampleRate: 16000 }); } catch { ctx = new AudioContext(); }
       ctxRef.current = ctx;
+      // A granted microphone can still have a suspended Web Audio context.
+      // Do not announce a recording whose processor will never receive PCM.
+      if (ctx.state === 'suspended') await ctx.resume();
+      if (recordingIdRef.current !== recordingId) {
+        stream.getTracks().forEach(track => track.stop());
+        if (ctx.state !== 'closed') void ctx.close();
+        startingRef.current = false;
+        return;
+      }
+      if (ctx.state !== 'running') throw new Error('The microphone audio context is not running');
       rateRef.current = ctx.sampleRate;
       const source = ctx.createMediaStreamSource(stream);
       // ScriptProcessorNode: deprecated but universally available in the
@@ -1140,6 +1174,7 @@ export function useMeetingDictation() {
     const unsaved = unsavedRef.current;
     if (!unsaved || !target || savingRef.current) return null;
     setError(null);
+    setState('finishing');
     // The SAME recording id as the failed attempt — never a fresh one: if the
     // first save landed and only its response was lost, this returns it.
     return attemptSave(target, unsaved.title, unsaved.body, unsaved.recordingId);
@@ -1206,6 +1241,7 @@ export function useMeetingDictation() {
   }, [clearDraft]);
 
   return {
+    dictationReadiness,
     state,
     error,
     elapsedSeconds,

@@ -5,11 +5,23 @@
 // no gate executes is a shared package nobody can trust.
 import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
+import { validateNativeBuildInputs } from './src/lib/nativeBuildInputs';
 
 const isTauri = !!process.env.TAURI_ENV_PLATFORM;
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), {
+    name: 'validate-native-daemon-target',
+    apply: 'build',
+    configResolved(config) {
+      if (!isTauri) return;
+      // Includes mode-specific .env files, not just shell exports.
+      validateNativeBuildInputs(config.env, {
+        root: process.env.PERMAGENT_REVIEW_ROOT,
+        port: process.env.PERMAGENT_REVIEW_PORT,
+      });
+    },
+  }],
   // Keep one module instance for React + R3F + Three across optimized deps.
   // Standalone `forum.html` can otherwise load mixed instances and trip
   // Canvas hook context guards (`R3F: Hooks can only be used...`).

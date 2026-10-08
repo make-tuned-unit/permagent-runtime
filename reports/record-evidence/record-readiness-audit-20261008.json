@@ -1,0 +1,126 @@
+{
+  "createdUtc": "2026-10-08T14:29:57.010699+00:00",
+  "baseCommit": "7f4046c325d1df3b5ffdf31fa895d40b8dc7e2a2",
+  "scope": "Record source audit and lightweight mocked frontend tests; no live capture/UI, device changes, native compile or installation",
+  "changes": [
+    {
+      "problem": "Dual-source helper error could leave a saved note without evidence of lost system audio",
+      "proof": "Existing dual-source test plus write failure between two known chunks failed before fix",
+      "fix": "Append gap at event order; persist draft immediately; failed segment count; surrounding successful words and target project preserved"
+    },
+    {
+      "problem": "Missing local transcription model reason swallowed by catch",
+      "proof": "Mocked missing model error yielded null user-facing error before fix",
+      "fix": "Expose exact transcription error with stop/resolve guidance and explicit missing segment; no invented Settings control"
+    },
+    {
+      "problem": "Suspended microphone AudioContext was treated as recording",
+      "proof": "Two mocked suspended-context tests failed before fix: resume never called and rejected resume still recording",
+      "fix": "Resume suspended context, verify running, recheck recording identity after await; failure releases mic/context"
+    },
+    {
+      "problem": "No actionable feedback while waiting indefinitely for first source words",
+      "fix": "After60s report selected sources without transcribed words; explicitly admits processing lag, checks mic/call playback, preserves typed notes; does not infer raw PCM amplitude"
+    },
+    {
+      "problem": "Browser picker told user mic could be switched off to capture call although no system source available",
+      "proof": "Parent CUA observation; rendered no-source disabled Start regression retained",
+      "fix": "Conditional copy describes microphone-only availability and desktop call-audio capability"
+    },
+    {
+      "problem": "Native stop accepted already-failed helper exit as success",
+      "proof": "Read-only control-flow inspection; old branch tested only is_some, ignored ExitStatus.success",
+      "fix": "Preserve exit status before signaling; drain stdout/stderr readers; reject nonzero/signaled status; add real fake-helper exit7/read-drain regression source",
+      "validation": "rustfmt and whitespace pass only; new Rust test not compiled/run"
+    },
+    {
+      "problem": "Picker global Enter handling intercepted Cancel and could acquire mic",
+      "fix": "Enter shortcut restricted to filter/dialog; native buttons/selects/checkboxes keep their activation",
+      "proof": "Independent source review; rendered Cancel Enter test selects a project then verifies default not prevented and Cancel closes"
+    },
+    {
+      "problem": "Retry-save A allowed Start B; A continuation could clear B state while B microphone ran",
+      "proof": "Deferred retry regression reproduced two getUserMedia calls before fix",
+      "fix": "Start checks saving/stopping refs; retry enters finishing, keeping same recording ID and immutable note body"
+    },
+    {
+      "problem": "Record started despite unverified/missing local model",
+      "fix": "Consume setup owner shared readiness snapshot; picker status/retry, disabled Start; imperative start guard before either source",
+      "proof": "Unavailable readiness blocks mic/helper/draft; picker Retry invokes setup only",
+      "limit": "Backend file/config availability is not completed model inference; source requires updated status endpoint and native/backend packaging"
+    },
+    {
+      "problem": "Rejecting failed stop before returning unread paths could lose a valid final tail",
+      "fix": "Native stop returns structured receipt containing owned unreadPaths and optional error after joining all readers; renderer accepts old array/unit, intakes tail before signaling failure; rejects malformed receipts",
+      "proof": "Mocked receipt tail retained exactly once despite late duplicate; final negation+commitment and gap frozen for explicit retry with same ID; native real exit7+stdout-tail owned-path regression prepared but not compiled"
+    }
+  ],
+  "validation": {
+    "recordTests": {
+      "files": 6,
+      "passed": 131,
+      "nativeAudio": "mocked",
+      "includes": "stop receipt tail+error+late duplicate; same-id frozen-body retry; retry-save/new-start exclusion; keyboard Cancel; model-unavailable no media; suspended context; persistent gap; no-words guidance"
+    },
+    "typeScript": "tsc --noEmit exit0 after readiness integration and App owner corrections",
+    "finalPickerRerun": {
+      "passed": 7,
+      "note": "Included in131; known unrelated Tooltip act warnings remain"
+    },
+    "gitDiffCheck": "passed",
+    "cargo": "not run",
+    "swift": "not run",
+    "liveCapture": "not run",
+    "standaloneNativeLifecycle": {
+      "passed": 5,
+      "receipt": "reports/record-evidence/native-lifecycle-standalone-20261008.json",
+      "method": "rustc --test on the production stdlib-only module called by system_audio.rs; tiny owned stdin/stdout fake helpers; not duplicated logic",
+      "scope": "exit7 and unread scoped tail, graceful tail drain, reader panic cleanup, pre-exited PID protection, timeout/owned child cleanup",
+      "minimumFreeGiB": 20.127975463867188,
+      "limit": "Tauri serde/IPC adapter and full application not compiled in this run"
+    }
+  },
+  "sckAudit": {
+    "selection": "SCShareableContent inventory snapshot \u2192 exact bundle roots + verified executable/ancestry descendants \u2192 includingApplications filter; no fallback if selected app missing",
+    "SDK": "SCRunningApplication init/new unavailable, PID/bundle readonly: cannot safely synthesize HAL-only process as SCK application",
+    "notProven": "Whether root filter includes audio of absent descendant or application respawn; raw PCM silence not diagnosed by source selection alone",
+    "nextEvidence": "Root-owned playback with family HAL output map correlated to selected SCK inventory; no blind recapture"
+  },
+  "firstRunAudit": {
+    "microphone": "User-triggered getUserMedia; NSMicrophoneUsageDescription + audio-input entitlement present; denied/missing/busy distinguished; permission UI not tested this pass",
+    "systemAudio": "User opt-in; NSWorkspace picker without SCK request; production helper may request normal system consent; diagnostic existing-permission constraint is NOT a product restriction",
+    "model": "Shared readiness/retry now source-implemented by setup owner and consumed here; normal configured-file checks gate capture; endpoint native/HTTP acceptance still pending"
+  },
+  "acceptanceStillOpen": [
+    "Actual nonzero scoped call capture through Record UI and ASR tail/negation into selected project Orchestrator/Brain/cards",
+    "Native stop new regression and native app rebuild; current installed review predates frontend source",
+    "First-run microphone and Screen Recording grant/deny/retry and relaunch behavior",
+    "Gap/write failure + selected-source disappearance under real native helper; current tests mocked",
+    "No-words notice is ASR progress warning, not raw signal monitoring; sustained silence after earlier words is not monitored",
+    "Source-scoped filter snapshot versus Chrome audio owner must be resolved with root live evidence",
+    "Native structured stop receipt and GET dictation status source need compiled app/daemon validation together",
+    "Setup Retry and first-model missing/corrupt/feature-disabled readiness source must be verified on fresh installation",
+    "No system audio WAV is yet proven nonzero in the actual scoped practice call; all prior live source silence remains unresolved"
+  ],
+  "files": {
+    "ui/command-center/src/hooks/useMeetingDictation.ts": "e1e223680112fc2665be3f0a9826495cf005f0c7372b297a120ba876b67b06d1",
+    "ui/command-center/src/hooks/useMeetingDictation.lifecycle.test.tsx": "cbb91e40691e6c209101236e172a9bf20bb3d172bfbb65e64e96f9dc9e8c5103",
+    "ui/command-center/src/components/voice/MeetingRecorder.tsx": "d9a4e441d0155ad490c7f0dc8eb5a662dc7ae193b6ec07d4b873effd16e92faf",
+    "ui/command-center/src/components/voice/MeetingRecorder.test.tsx": "3938de0a9a3d24256cefbb5bddf76efa8819d4af377f0ca164c8d1512410db84",
+    "ui/command-center/src/components/voice/MeetingRecorder.focus.test.tsx": "cd0869d1c77af9debba7c9c0f87a935f991efdf329dbfee9838e341c7c8d353b",
+    "ui/desktop/src-tauri/src/system_audio.rs": "dbdcf3948d475a3cd272cbfda8a7f1d7ca60fd5f0796c2593b74aaf0a1046254",
+    "ui/command-center/src/lib/systemAudio.ts": "8ffba1bb6fc598174224f8f536de2af52a56b1a529b361ced1b4e30d44e71acd",
+    "ui/command-center/src/lib/systemAudio.test.ts": "189b9208a89467506325806c1c7712eaffef8ba228054f4e017d8461aad251d4",
+    "ui/desktop/src-tauri/src/system_audio_lifecycle.rs": "53b1d9591989975810db34654c39c486ef2935c2ddab67a2ba44f5ec894abe22"
+  },
+  "updatedUtc": "2026-10-08T14:48:49.523726+00:00",
+  "stopIPC": {
+    "current": "{unreadPaths:string[], error:string|null}",
+    "frontendCompatibility": "legacy arrays and null/unit accepted; malformed objects marked incomplete",
+    "nativeRegressions": "failed_stop_receipt_keeps_owned_tail_after_draining_output; existing stop_waits_for_final_stdout_before_returning",
+    "ownership": "Only paths registered by validated helper stdout and under the stopped capture directory returned; read command retains canonical owned registry/O_NOFOLLOW validation",
+    "packaging": "Ship new native and frontend together; native compile/test not run by this worker",
+    "productionLifecycleModule": "ui/desktop/src-tauri/src/system_audio_lifecycle.rs",
+    "standaloneNativeValidation": "5 production lifecycle tests passed with rustc; thin Tauri adapter still requires native integration build"
+  }
+}

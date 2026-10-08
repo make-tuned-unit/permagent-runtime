@@ -1,0 +1,1856 @@
+{
+  "atUtc": "2026-10-08T15:01:14.866862+00:00",
+  "scope": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006",
+  "action": "read-only inventory; no deletion",
+  "category": "regenerable Cargo build-script executables only; exclude outputs/libraries/runtime/staged artifacts",
+  "candidateBytesDeduplicated": 326827184,
+  "candidateGiB": 0.3043815344572067,
+  "files": [
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/ahash-1b3c9ea7db625479/build_script_build-1b3c9ea7db625479",
+      "bytes": 642960,
+      "mtimeUtc": "2026-10-08T01:00:26.971134+00:00",
+      "sha256": "b1a163ec5096932541436851add9ede53ce842846385cb4d378a7721aab7491a",
+      "links": 1,
+      "inode": 151041492
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/ahash-d846358556337994/build_script_build-d846358556337994",
+      "bytes": 681600,
+      "mtimeUtc": "2026-10-07T22:45:55.720849+00:00",
+      "sha256": "61339fc492d6ce6df90772e153aa9770ac9840caea8a836e33e1fc1220270a69",
+      "links": 1,
+      "inode": 149866547
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/anyhow-88597862b4c02e69/build_script_build-88597862b4c02e69",
+      "bytes": 582992,
+      "mtimeUtc": "2026-10-08T00:18:02.923140+00:00",
+      "sha256": "0d3bc985e55664518630bba136ad83e2006762db8e8cd7469780d966756e287c",
+      "links": 1,
+      "inode": 150672320
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/anyhow-96a518fcb8528321/build_script_build-96a518fcb8528321",
+      "bytes": 582992,
+      "mtimeUtc": "2026-10-08T01:00:06.706833+00:00",
+      "sha256": "ad35372a6168334aeb02ae5a595631b401af1753f8e5daff1c1f28b501dfa158",
+      "links": 1,
+      "inode": 151040565
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/anyhow-e5c961ff22c9a759/build_script_build-e5c961ff22c9a759",
+      "bytes": 622976,
+      "mtimeUtc": "2026-10-07T22:45:50.036456+00:00",
+      "sha256": "4fab66e6ed7acb6cb60b8c8338c680ab8fa53adabf7f66816142f1fb6a7416cb",
+      "links": 1,
+      "inode": 149862852
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/av-scenechange-c3ed69a610c73f19/build_script_build-c3ed69a610c73f19",
+      "bytes": 435008,
+      "mtimeUtc": "2026-10-08T01:37:01.261363+00:00",
+      "sha256": "ec07f02d61e5d7abd694f2685433fc01722c80a28132b8cb23b9134c14ac075b",
+      "links": 1,
+      "inode": 151313874
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/aws-lc-rs-05757e1fbb2c6cf5/build_script_build-05757e1fbb2c6cf5",
+      "bytes": 547456,
+      "mtimeUtc": "2026-10-07T22:46:11.877324+00:00",
+      "sha256": "02554521da5f7f8b694906112e14e25227cab5e2d61fecc12165323cf2e4795d",
+      "links": 1,
+      "inode": 149877587
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/aws-lc-rs-de6ace8598eb4deb/build_script_build-de6ace8598eb4deb",
+      "bytes": 509600,
+      "mtimeUtc": "2026-10-08T01:01:10.919513+00:00",
+      "sha256": "a6475dd6754c1163c98b3c3e70f08d11696879235cf0488c6b9c9096e9cf0c2c",
+      "links": 1,
+      "inode": 151045933
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/aws-lc-rs-dfe77ecc6c10d0f0/build_script_build-dfe77ecc6c10d0f0",
+      "bytes": 509744,
+      "mtimeUtc": "2026-10-08T01:00:16.338432+00:00",
+      "sha256": "9f08a6096cc2ba35a3696581c173284fa3ec404c771546189be2f52bda18033e",
+      "links": 1,
+      "inode": 151041180
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/aws-types-50eb61672682c1ec/build_script_build-50eb61672682c1ec",
+      "bytes": 738176,
+      "mtimeUtc": "2026-10-07T22:46:36.837500+00:00",
+      "sha256": "929c348560452b8f3f8279ac1210fef01e6c6480369bad136e99898645d41094",
+      "links": 1,
+      "inode": 149880739
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/aws-types-569728ad2d6cbe97/build_script_build-569728ad2d6cbe97",
+      "bytes": 698624,
+      "mtimeUtc": "2026-10-08T01:04:20.313572+00:00",
+      "sha256": "402deb5dd8683288d628414d382437e996ebfd4bcb49b4759e989c7e5f3db2ae",
+      "links": 1,
+      "inode": 151082954
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/bindgen-0daa59c1eaeb4d3d/build_script_build-0daa59c1eaeb4d3d",
+      "bytes": 519648,
+      "mtimeUtc": "2026-10-07T22:46:09.071821+00:00",
+      "sha256": "cc6d19034d8327adceaa38e3e66e3ce752a66d64c549aaf5b6a539fd21d5e877",
+      "links": 1,
+      "inode": 149877245
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/bindgen-b161b8a55a812f0a/build_script_build-b161b8a55a812f0a",
+      "bytes": 484048,
+      "mtimeUtc": "2026-10-08T01:00:58.414281+00:00",
+      "sha256": "865310e6e86f693ab2033621f5a955c2c866d349570f46c19344f0576ffffa07",
+      "links": 1,
+      "inode": 151045098
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/biome_diagnostics_categories-12812b95709de73d/build_script_build-12812b95709de73d",
+      "bytes": 1020784,
+      "mtimeUtc": "2026-10-07T23:13:20.361653+00:00",
+      "sha256": "3d56a5b0fb70c0c000b21d1cdcb325e5f328392ed060aaf3c1511f75a4a0a1da",
+      "links": 1,
+      "inode": 150091338
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/biome_diagnostics_categories-580186f35d9504c3/build_script_build-580186f35d9504c3",
+      "bytes": 922416,
+      "mtimeUtc": "2026-10-08T01:02:42.058886+00:00",
+      "sha256": "2178ec4ad1f61a7b52679633374984b65b9d37b20e53ffef271485b454484c02",
+      "links": 1,
+      "inode": 151062794
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/blake3-11294d2eb86f53b4/build_script_build-11294d2eb86f53b4",
+      "bytes": 2135456,
+      "mtimeUtc": "2026-10-08T01:04:59.364212+00:00",
+      "sha256": "a7952368e7ffd3425254987847e291d32d727a2821dc193a1f80f3ab13beeb86",
+      "links": 1,
+      "inode": 151087575
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/blake3-1b1e8c53c6b2efb5/build_script_build-1b1e8c53c6b2efb5",
+      "bytes": 2199488,
+      "mtimeUtc": "2026-10-07T23:13:42.933897+00:00",
+      "sha256": "d8035d74710834f54961a3244edb66bc8d21a0bacfc53077ff4d7af3943620ca",
+      "links": 1,
+      "inode": 150092645
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/bzip2-sys-39d1c1c7da029e18/build_script_build-39d1c1c7da029e18",
+      "bytes": 2457472,
+      "mtimeUtc": "2026-10-08T01:37:47.454566+00:00",
+      "sha256": "d517361394ec9d1bcf17a24f6a33fb2d2bb5bd56582c2676ca3378b2b6005f9c",
+      "links": 1,
+      "inode": 151333953
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/camino-2968ea396ff2b02d/build_script_build-2968ea396ff2b02d",
+      "bytes": 555904,
+      "mtimeUtc": "2026-10-08T00:18:12.275238+00:00",
+      "sha256": "a752ee0f5c40a651ad4f001a9618b6e6555735595c81915081d074da7f70a538",
+      "links": 1,
+      "inode": 150672812
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/camino-4982db63ee90fdb3/build_script_build-4982db63ee90fdb3",
+      "bytes": 593904,
+      "mtimeUtc": "2026-10-07T22:46:29.608195+00:00",
+      "sha256": "ea333622dbe268e7472a4facd580477f623287794d5cab1e899ce9273d290bcc",
+      "links": 1,
+      "inode": 149880001
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/clang-sys-2e35fad45ea86553/build_script_build-2e35fad45ea86553",
+      "bytes": 497072,
+      "mtimeUtc": "2026-10-07T23:13:00.415715+00:00",
+      "sha256": "f7dc16136a9e35d0875714eff93dd11d0030a418c1cb55c710898ac776b77900",
+      "links": 1,
+      "inode": 150089454
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/clang-sys-95e1bd6d2da0a835/build_script_build-95e1bd6d2da0a835",
+      "bytes": 459328,
+      "mtimeUtc": "2026-10-08T01:00:54.693483+00:00",
+      "sha256": "7d50c4c96549bf7dd1fec1c7f9c85c0ca7c9061cc0c179d4be04cce288faf0da",
+      "links": 1,
+      "inode": 151044771
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/cookie-087e88edef1a7e7b/build_script_build-087e88edef1a7e7b",
+      "bytes": 679648,
+      "mtimeUtc": "2026-10-07T22:46:11.475359+00:00",
+      "sha256": "c138a2797027011a08c5212cdf8706ee4ee80b2c6de986aec43bacbac85e7df6",
+      "links": 1,
+      "inode": 149877517
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/cookie-b31cc543829ebd28/build_script_build-b31cc543829ebd28",
+      "bytes": 641312,
+      "mtimeUtc": "2026-10-08T00:18:57.030805+00:00",
+      "sha256": "e85d5e4bd7b261cbe2efc23946d1d3442971ec504afe8e795baed26cb162ed39",
+      "links": 1,
+      "inode": 150674314
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/cookie-f4530c8aef117a58/build_script_build-f4530c8aef117a58",
+      "bytes": 641312,
+      "mtimeUtc": "2026-10-08T01:01:09.583108+00:00",
+      "sha256": "40632c090b6131ce0869872aee75cddced75d7959cec99a542ee2c7c09aa14e4",
+      "links": 1,
+      "inode": 151045745
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/crc32fast-4b11ac1a7f7e7fac/build_script_build-4b11ac1a7f7e7fac",
+      "bytes": 532160,
+      "mtimeUtc": "2026-10-08T00:18:47.259435+00:00",
+      "sha256": "065499e0f390dcd069556c51c6e824ab6c5adefdaead86d141ee58d404a41e40",
+      "links": 1,
+      "inode": 150673860
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/crc32fast-7480e0115e5ea85a/build_script_build-7480e0115e5ea85a",
+      "bytes": 570272,
+      "mtimeUtc": "2026-10-07T22:45:49.547250+00:00",
+      "sha256": "3ddd22645eabec87721eb84e3edddc20affc34f0c1bf52b887a6a95c201a6791",
+      "links": 1,
+      "inode": 149862165
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/crossbeam-epoch-35e966b6034629a2/build_script_build-35e966b6034629a2",
+      "bytes": 494256,
+      "mtimeUtc": "2026-10-07T22:46:09.754801+00:00",
+      "sha256": "29464cb4054f14cd07abb31a92c2d9353042f1144b72aef973d53451bbe60bd1",
+      "links": 1,
+      "inode": 149877292
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/crossbeam-epoch-8d1933c864ee4adb/build_script_build-8d1933c864ee4adb",
+      "bytes": 459264,
+      "mtimeUtc": "2026-10-08T01:01:03.359475+00:00",
+      "sha256": "94e8c14d9b7e52c709c6b3b0f3b99c664d45800deab12be8a23a9af92259852b",
+      "links": 1,
+      "inode": 151045395
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/crossbeam-utils-2e16fa5e243832f5/build_script_build-2e16fa5e243832f5",
+      "bytes": 538880,
+      "mtimeUtc": "2026-10-07T22:46:34.558148+00:00",
+      "sha256": "437fa591888ecf873e85e4e07c092fa21eff89cb8cc0ea87eea0096e2eadc3de",
+      "links": 1,
+      "inode": 149880437
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/crossbeam-utils-ce1147b5998a8219/build_script_build-ce1147b5998a8219",
+      "bytes": 503376,
+      "mtimeUtc": "2026-10-08T01:00:41.095497+00:00",
+      "sha256": "59c8207a95af34bf45c10b4e7ed4c2ae95579222a4dab9765384ae19db42ce3f",
+      "links": 1,
+      "inode": 151042065
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/crossbeam-utils-fb0be3eaa1a7b7a1/build_script_build-fb0be3eaa1a7b7a1",
+      "bytes": 503376,
+      "mtimeUtc": "2026-10-08T00:18:56.342680+00:00",
+      "sha256": "6e2a3f07790c17a3483c477ac3002f1a1291ad1ebcbc83a9b24458accc7024bd",
+      "links": 1,
+      "inode": 150674274
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/crunchy-8a61f8ffe1b33ee9/build_script_build-8a61f8ffe1b33ee9",
+      "bytes": 517360,
+      "mtimeUtc": "2026-10-07T22:51:16.174509+00:00",
+      "sha256": "4b60a1bcef9269658b333d2238e0f651478c99388702fcbcf8620067cd8d8341",
+      "links": 1,
+      "inode": 149923484
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/crunchy-ff93bf1573183e29/build_script_build-ff93bf1573183e29",
+      "bytes": 480944,
+      "mtimeUtc": "2026-10-08T01:37:00.727016+00:00",
+      "sha256": "4b397050ea8b39ad5ad73e2d73879ba050b66e5294768dc326b1624bcce832cf",
+      "links": 1,
+      "inode": 151313806
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/curve25519-dalek-1f34d7c7dddfeb93/build_script_build-1f34d7c7dddfeb93",
+      "bytes": 698928,
+      "mtimeUtc": "2026-10-08T01:04:20.154322+00:00",
+      "sha256": "a16eb6cca63b79476e86a774d9d739f0ac2d168cf5320fd7cb8a7f68af2f6e98",
+      "links": 1,
+      "inode": 151082821
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/curve25519-dalek-fb4a66a449da87a1/build_script_build-fb4a66a449da87a1",
+      "bytes": 696144,
+      "mtimeUtc": "2026-10-08T01:39:03.438679+00:00",
+      "sha256": "5654a1e46b2a4d0ddb61a3cf77a45cb21e7cce069e6eccb5148d1b193944067c",
+      "links": 1,
+      "inode": 151352325
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/doc-comment-252fd6c8d7fa7597/build_script_build-252fd6c8d7fa7597",
+      "bytes": 534720,
+      "mtimeUtc": "2026-10-08T01:38:42.356251+00:00",
+      "sha256": "b9828468dbb84d5b09b62cf1955de3389135300717a8ec0959d47f60ef0f4b1d",
+      "links": 1,
+      "inode": 151339705
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/erased-serde-172c42c76dac18a5/build_script_build-172c42c76dac18a5",
+      "bytes": 530608,
+      "mtimeUtc": "2026-10-08T00:17:55.405577+00:00",
+      "sha256": "35a2bb93cec21e743b111e1a6c2a9bb69b06281b2af391d13a73f74f77b334d2",
+      "links": 1,
+      "inode": 150671990
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/esaxx-rs-b677c38f2e0f948a/build_script_build-b677c38f2e0f948a",
+      "bytes": 428272,
+      "mtimeUtc": "2026-10-08T01:05:35.006223+00:00",
+      "sha256": "dc20ef9b1e3a57520fb894cdcb79a1fa9378443ffa7848d6f0af8bbb15ae5626",
+      "links": 1,
+      "inode": 151114672
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/esaxx-rs-d2acf10ec9eb813b/build_script_build-d2acf10ec9eb813b",
+      "bytes": 462016,
+      "mtimeUtc": "2026-10-07T22:46:43.528397+00:00",
+      "sha256": "5968216cc6200d292e5f9bae585bb95de74651112237ba0d50278fb1dc74db1a",
+      "links": 1,
+      "inode": 149890370
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/fs-err-5fa413d21d1ad2ce/build_script_build-5fa413d21d1ad2ce",
+      "bytes": 753600,
+      "mtimeUtc": "2026-10-08T01:16:51.685970+00:00",
+      "sha256": "9f6688edd46ff06a42858afa896f44c4ace085fc134923e88bce84ec7fca5e51",
+      "links": 1,
+      "inode": 151222165
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/fs-err-86d797be94054e85/build_script_build-86d797be94054e85",
+      "bytes": 753600,
+      "mtimeUtc": "2026-10-08T01:39:03.768864+00:00",
+      "sha256": "22c6f069bded9b5101c49cfd5b7bd7b5a7e2d07d257eb81231ea5028050a1fa5",
+      "links": 1,
+      "inode": 151352672
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/generic-array-79658a36c155e886/build_script_build-79658a36c155e886",
+      "bytes": 609664,
+      "mtimeUtc": "2026-10-08T00:18:48.673047+00:00",
+      "sha256": "c261c78e6c83745b7acca564d8ef06d57cd9ea542cf387ee293bca28febeb04c",
+      "links": 1,
+      "inode": 150673921
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/generic-array-84d93dc2463ba7f0/build_script_build-84d93dc2463ba7f0",
+      "bytes": 647968,
+      "mtimeUtc": "2026-10-07T22:45:49.962214+00:00",
+      "sha256": "d43d386c923364680c559afce80dfdf31e1f3e2a92f379f4da659c5def504f37",
+      "links": 1,
+      "inode": 149862726
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/getrandom-36241a7b62f4e942/build_script_build-36241a7b62f4e942",
+      "bytes": 459264,
+      "mtimeUtc": "2026-10-08T00:17:46.451167+00:00",
+      "sha256": "b722f8cc4c4e708939cff08033524d3ae40e3e945da52d9c34dc9a2847c3ca31",
+      "links": 1,
+      "inode": 150671320
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/getrandom-7583d57f5bce0511/build_script_build-7583d57f5bce0511",
+      "bytes": 494176,
+      "mtimeUtc": "2026-10-07T22:51:17.795932+00:00",
+      "sha256": "d26dbb3eda13a12183dc840d616d914514214172a1b0fd1ccf062446a0646069",
+      "links": 1,
+      "inode": 149923603
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/getrandom-8f32a8c38aef6b28/build_script_build-8f32a8c38aef6b28",
+      "bytes": 459264,
+      "mtimeUtc": "2026-10-08T01:00:05.073750+00:00",
+      "sha256": "8fcc9128e7900c27a457a506a8338ff2013bed06eca90a5a4472a4ed611c6787",
+      "links": 1,
+      "inode": 151040491
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/getrandom-e166d4ad2b1327ab/build_script_build-e166d4ad2b1327ab",
+      "bytes": 562528,
+      "mtimeUtc": "2026-10-08T00:19:18.311642+00:00",
+      "sha256": "49839b81378ff261c26eb02459e602bb29c6bd4b54fecdbc2a49d9e74a5cb2a4",
+      "links": 1,
+      "inode": 150675287
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/getrandom-f5ea03964ece173a/build_script_build-f5ea03964ece173a",
+      "bytes": 562528,
+      "mtimeUtc": "2026-10-08T00:59:12.135522+00:00",
+      "sha256": "630a235070845d94103e653bf630746f4ccb6a4b9505de96d768f36272e98ad2",
+      "links": 1,
+      "inode": 151039124
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/httparse-134a21bbb5457d26/build_script_build-134a21bbb5457d26",
+      "bytes": 590784,
+      "mtimeUtc": "2026-10-08T00:19:00.624295+00:00",
+      "sha256": "d2b114ba1898995e787eb28c84f96ade17a3ab5a6523ee381217cd2b2475d006",
+      "links": 1,
+      "inode": 150674503
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/httparse-b9573e8daf6a18c6/build_script_build-b9573e8daf6a18c6",
+      "bytes": 630016,
+      "mtimeUtc": "2026-10-07T22:45:50.752864+00:00",
+      "sha256": "68500681843d6fbb7c8b8de9350d1803d98d189e8f142a47fc5efcda4788ff98",
+      "links": 1,
+      "inode": 149866068
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/icu_calendar_data-3124e488e87d2bf9/build_script_build-3124e488e87d2bf9",
+      "bytes": 433472,
+      "mtimeUtc": "2026-10-08T01:01:03.237017+00:00",
+      "sha256": "851a35d20c4b6ee6ef1c0b9dfe977530773d8a73021342c168670f552356cdbb",
+      "links": 1,
+      "inode": 151045380
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/icu_calendar_data-84f1ec120ba344e6/build_script_build-84f1ec120ba344e6",
+      "bytes": 468416,
+      "mtimeUtc": "2026-10-07T22:46:08.985832+00:00",
+      "sha256": "9395892ea9aa4cd2c5df8fbaa1703229983bd02d51f14ee0064ee41757da82c5",
+      "links": 1,
+      "inode": 149877229
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/icu_locale_data-31707eace8b6c923/build_script_build-31707eace8b6c923",
+      "bytes": 468416,
+      "mtimeUtc": "2026-10-07T22:46:07.983502+00:00",
+      "sha256": "14c39d704be93e2e98def70d0f3e79a5302c34cde4c8ee67f43c9dbc220dd59c",
+      "links": 1,
+      "inode": 149877078
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/icu_locale_data-c846796cbe591749/build_script_build-c846796cbe591749",
+      "bytes": 433472,
+      "mtimeUtc": "2026-10-08T01:00:56.574048+00:00",
+      "sha256": "e274355a8399649ac1ac2ae91bf7684373d5d016af65575cae2dc9a4c9065183",
+      "links": 1,
+      "inode": 151044971
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/icu_normalizer_data-7d3918d710af5b54/build_script_build-7d3918d710af5b54",
+      "bytes": 433472,
+      "mtimeUtc": "2026-10-08T00:17:43.586308+00:00",
+      "sha256": "ee6d309b56dc8f4786e1ddffc131c6233f9e4e03c1200e5f179fdec76d7b491a",
+      "links": 1,
+      "inode": 150671155
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/icu_normalizer_data-b034278bcf152294/build_script_build-b034278bcf152294",
+      "bytes": 433472,
+      "mtimeUtc": "2026-10-08T00:59:04.880186+00:00",
+      "sha256": "fc5489e8bc46896b7088a12d3a94ee4ada2e1500bf3023948489130350500e26",
+      "links": 1,
+      "inode": 151038798
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/icu_normalizer_data-ba6551c9915f4455/build_script_build-ba6551c9915f4455",
+      "bytes": 468416,
+      "mtimeUtc": "2026-10-07T22:45:48.305389+00:00",
+      "sha256": "3d74df32d2b334384c83277faf34a88243ba9d3c583f088ef065d87ef33367f5",
+      "links": 1,
+      "inode": 149860102
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/icu_properties_data-7fd898307125deb5/build_script_build-7fd898307125deb5",
+      "bytes": 433440,
+      "mtimeUtc": "2026-10-08T00:17:43.666381+00:00",
+      "sha256": "eda21bbc6198048229bc828be81218b4816f287a5411bcdb2d8cbbe2098e1f5f",
+      "links": 1,
+      "inode": 150671165
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/icu_properties_data-bb0ecff9d66945c3/build_script_build-bb0ecff9d66945c3",
+      "bytes": 468416,
+      "mtimeUtc": "2026-10-07T22:45:48.306982+00:00",
+      "sha256": "5e32a5818254a8929bbcafa83d44c16897a1fcfa65cd70959468a0c2438a746b",
+      "links": 1,
+      "inode": 149860108
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/icu_properties_data-de0fac11e348ab2d/build_script_build-de0fac11e348ab2d",
+      "bytes": 433472,
+      "mtimeUtc": "2026-10-08T00:59:04.793377+00:00",
+      "sha256": "f659af9312788b6baec8b4ffdb16a84f466fca83d90bdd455b6f6aed24be85ed",
+      "links": 1,
+      "inode": 151038783
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/indexmap-2346756f59396f97/build_script_build-2346756f59396f97",
+      "bytes": 801664,
+      "mtimeUtc": "2026-10-07T22:46:20.810607+00:00",
+      "sha256": "07a27df1b74e9aa2589bc44eba4c6777174788486672d72962c34520bea1ff30",
+      "links": 1,
+      "inode": 149879021
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/indexmap-e210931447478936/build_script_build-e210931447478936",
+      "bytes": 759840,
+      "mtimeUtc": "2026-10-08T00:18:11.197048+00:00",
+      "sha256": "4c329457f65baa84d0a30461bf449d7c86db8ab9a7fe7a6a6a614f78ca8c8a9d",
+      "links": 1,
+      "inode": 150672739
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/libc-150d4feaa233cf6c/build_script_build-150d4feaa233cf6c",
+      "bytes": 607232,
+      "mtimeUtc": "2026-10-08T00:58:46.369655+00:00",
+      "sha256": "7440849a11d40f15805b4c3cf351d4728838e8fa8c1c48a57385c420fa8c058f",
+      "links": 1,
+      "inode": 151037884
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/libc-28e38bc4cd820e55/build_script_build-28e38bc4cd820e55",
+      "bytes": 646320,
+      "mtimeUtc": "2026-10-07T22:45:46.012701+00:00",
+      "sha256": "ad20a562e8cafbe05b03d126aa03dd921f66e9a14a63df8b4465d768c64e6fa6",
+      "links": 1,
+      "inode": 149859085
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/libc-579f4e06ea243a2f/build_script_build-579f4e06ea243a2f",
+      "bytes": 606704,
+      "mtimeUtc": "2026-10-08T00:17:44.775252+00:00",
+      "sha256": "8e730eab9f3dc3c19916089acf6309ce01f24eee5ba13fb5a4485fb2ef35e061",
+      "links": 1,
+      "inode": 150671229
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/libc-cec2d81639533936/build_script_build-cec2d81639533936",
+      "bytes": 606704,
+      "mtimeUtc": "2026-10-08T00:17:36.027728+00:00",
+      "sha256": "fb56821d918dc6d19b49e4aab50eeff69e1160a541cbef50f3118504a1f01860",
+      "links": 1,
+      "inode": 150670837
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/libm-67940783e0b588a0/build_script_build-67940783e0b588a0",
+      "bytes": 536368,
+      "mtimeUtc": "2026-10-08T00:58:55.395877+00:00",
+      "sha256": "dfc9308f19dbe4f8c6c7727556f8468699603cbc3b972628e20f60d5242595d3",
+      "links": 1,
+      "inode": 151038274
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/libm-724d949d2b77ea99/build_script_build-724d949d2b77ea99",
+      "bytes": 573264,
+      "mtimeUtc": "2026-10-07T22:45:46.179077+00:00",
+      "sha256": "e43ebffa105e199178736c69a2e848f4a741744344e984a9b6c269ff3d416542",
+      "links": 1,
+      "inode": 149859122
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/libsqlite3-sys-37fba5f8dac386f0/build_script_build-37fba5f8dac386f0",
+      "bytes": 2704272,
+      "mtimeUtc": "2026-10-07T23:13:51.613747+00:00",
+      "sha256": "551a0bbf2759a59ae3c6650181619563f29818e2aab15594836d1767899d2c40",
+      "links": 1,
+      "inode": 150093175
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/libsqlite3-sys-5d216fee38aaf7f4/build_script_build-5d216fee38aaf7f4",
+      "bytes": 2639456,
+      "mtimeUtc": "2026-10-08T01:03:01.165496+00:00",
+      "sha256": "8e6eff4aba8c0728c2e28f245f9a8a6e2b4fdf722678cb1150914c2b9df45138",
+      "links": 1,
+      "inode": 151063579
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/libsqlite3-sys-dd89c460ef58ebdd/build_script_build-dd89c460ef58ebdd",
+      "bytes": 2639456,
+      "mtimeUtc": "2026-10-08T01:05:56.965049+00:00",
+      "sha256": "b2d45576d2ea38f21776934c431d16b01d30e2e747d2f65acc4845e4cda44d9c",
+      "links": 1,
+      "inode": 151119473
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/llama-cpp-2-d842563de16b49da/build_script_build-d842563de16b49da",
+      "bytes": 433600,
+      "mtimeUtc": "2026-10-08T01:17:03.415484+00:00",
+      "sha256": "a9999b7d0c598f6dca37b8399e7854202e33cdd9774d1040ef3a0b3801fbed2e",
+      "links": 1,
+      "inode": 151223637
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/llama-cpp-sys-2-b29cca3ddc4e5baf/build_script_build-b29cca3ddc4e5baf",
+      "bytes": 19229232,
+      "mtimeUtc": "2026-10-08T01:06:33.636871+00:00",
+      "sha256": "2820ea262ac21b5b7f97e15678c19e38070ff95aabf268af0e0ebd74414eb5d6",
+      "links": 1,
+      "inode": 151123628
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/matrixmultiply-9b556c844ff412e1/build_script_build-9b556c844ff412e1",
+      "bytes": 752336,
+      "mtimeUtc": "2026-10-08T01:39:03.636311+00:00",
+      "sha256": "dbfea051eddb194a2c9ca788218ad0685d26e6692b34c37c48a2c20262ff7fd5",
+      "links": 1,
+      "inode": 151352532
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/memoffset-a8eab1612797ee04/build_script_build-a8eab1612797ee04",
+      "bytes": 794496,
+      "mtimeUtc": "2026-10-07T22:46:19.761211+00:00",
+      "sha256": "e6b3fef742638c2e3f5c512d1efc7f643d39b191386ec0b7511250235c871c62",
+      "links": 1,
+      "inode": 149878813
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/memoffset-b6925d4a932bb7b3/build_script_build-b6925d4a932bb7b3",
+      "bytes": 752752,
+      "mtimeUtc": "2026-10-08T01:02:17.452308+00:00",
+      "sha256": "5b5d5ef6053e3a45d8abe98ad1897fab5631c7a3ffa5546762934e790cc9e701",
+      "links": 1,
+      "inode": 151056975
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/mime_guess-815171a4b9faa6c4/build_script_build-815171a4b9faa6c4",
+      "bytes": 462976,
+      "mtimeUtc": "2026-10-08T01:02:29.384543+00:00",
+      "sha256": "c86c9588d0dec9e870481f0f1eb7d81a593925ba1ef6745d8ef683ecf8f4e9c0",
+      "links": 1,
+      "inode": 151062021
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/mime_guess-ec4cb974fb4ec3c0/build_script_build-ec4cb974fb4ec3c0",
+      "bytes": 499744,
+      "mtimeUtc": "2026-10-07T23:13:16.704848+00:00",
+      "sha256": "0d2c33e0e14d2805c94e7e48c0452ee4baa02d84013c82bec53dbfe7cb797d37",
+      "links": 1,
+      "inode": 150091067
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/mockall_derive-983adb3ebfa45503/build_script_build-983adb3ebfa45503",
+      "bytes": 431504,
+      "mtimeUtc": "2026-10-08T01:15:45.651658+00:00",
+      "sha256": "1870d81e64b8a754fcb85fca761f67d454867030fe68a3e0324e3be0c08f9867",
+      "links": 1,
+      "inode": 151204469
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/mockall_derive-f5674c13dea60f1e/build_script_build-f5674c13dea60f1e",
+      "bytes": 466272,
+      "mtimeUtc": "2026-10-07T23:14:17.549039+00:00",
+      "sha256": "ab9f220b71e8b46836e7a9771bacea9a7da2275249fb066cd43cec31a516a37a",
+      "links": 1,
+      "inode": 150094565
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/multer-2493cb06beb61f55/build_script_build-2493cb06beb61f55",
+      "bytes": 612784,
+      "mtimeUtc": "2026-10-08T01:36:05.216820+00:00",
+      "sha256": "d8f8f9077199c713c516e811d0d46ea55b7d0397a2b4feab170935b5c2bf1d70",
+      "links": 1,
+      "inode": 151306011
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/native-tls-0fb9ed302605c737/build_script_build-0fb9ed302605c737",
+      "bytes": 434128,
+      "mtimeUtc": "2026-10-08T01:37:47.778217+00:00",
+      "sha256": "f1b8d4ca27ee932d173140a4cc4c723ddd2867578dddce152323770d187d5759",
+      "links": 1,
+      "inode": 151333986
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/native-tls-cbc0b4015fc146ca/build_script_build-cbc0b4015fc146ca",
+      "bytes": 469088,
+      "mtimeUtc": "2026-10-07T22:51:19.934227+00:00",
+      "sha256": "db60cf03630fa48ba9a6ec86e11f5ec1a4d2bcf1caa496623a1deba64ecab9ac",
+      "links": 1,
+      "inode": 149923798
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/nix-930d72e9feba3deb/build_script_build-930d72e9feba3deb",
+      "bytes": 608800,
+      "mtimeUtc": "2026-10-07T22:46:17.835647+00:00",
+      "sha256": "0ea0cade0d896ae4e89f2a51358dd5c4a22aa4365c9471de8866924d05660032",
+      "links": 1,
+      "inode": 149878366
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/nix-99650b1dc735a537/build_script_build-99650b1dc735a537",
+      "bytes": 572176,
+      "mtimeUtc": "2026-10-08T01:01:55.012342+00:00",
+      "sha256": "71d377bcdd43c6fd3dff08494701e69fb1cf37c20062436e1762127c86ab8bd6",
+      "links": 1,
+      "inode": 151051852
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/nix-be67e1d61a78a7a2/build_script_build-be67e1d61a78a7a2",
+      "bytes": 551104,
+      "mtimeUtc": "2026-10-08T00:19:31.247808+00:00",
+      "sha256": "6fa7595c0744d2f3ba7414f483bf31eebc8fb360d28015933c70ca8120d3b040",
+      "links": 1,
+      "inode": 150683198
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/num-traits-1e688a6478e33fb2/build_script_build-1e688a6478e33fb2",
+      "bytes": 753376,
+      "mtimeUtc": "2026-10-08T01:00:53.667158+00:00",
+      "sha256": "2cb9f7a48b8d4c12f2629c65cb6c02f4aa7a4d18b0c82e729eb9b1269fe18c2b",
+      "links": 1,
+      "inode": 151044695
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/num-traits-abf608ef0a77d320/build_script_build-abf608ef0a77d320",
+      "bytes": 753376,
+      "mtimeUtc": "2026-10-08T00:59:02.219215+00:00",
+      "sha256": "3591750c951d01a4c71589ba9358b47a9b749aebb8b5ef575a923cc2623cce18",
+      "links": 1,
+      "inode": 151038599
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/num-traits-b32877099d453227/build_script_build-b32877099d453227",
+      "bytes": 753376,
+      "mtimeUtc": "2026-10-08T00:19:37.511131+00:00",
+      "sha256": "3cc49950ace2c8b2ff9ae69b2a3b61d1812be9351af51e8620c8558cd0012e07",
+      "links": 1,
+      "inode": 150683371
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/num-traits-f4146f06326e080c/build_script_build-f4146f06326e080c",
+      "bytes": 795136,
+      "mtimeUtc": "2026-10-07T22:46:07.595896+00:00",
+      "sha256": "a98991f9d06763a579cdae94a91d8fb2940f13e2aaffc628b380a73a86b03b93",
+      "links": 1,
+      "inode": 149877015
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/objc2-exception-helper-0174ca9611009ed8/build_script_build-0174ca9611009ed8",
+      "bytes": 1700256,
+      "mtimeUtc": "2026-10-08T00:17:48.155700+00:00",
+      "sha256": "4df78071e26187956613554a6a1ae51e4e30550727d6ca9f881405d61602a6d6",
+      "links": 1,
+      "inode": 150671382
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/objc2-exception-helper-5dbfc350e473b358/build_script_build-5dbfc350e473b358",
+      "bytes": 2145616,
+      "mtimeUtc": "2026-10-07T22:46:17.347527+00:00",
+      "sha256": "54fb2ff08220ef385608779c6b5ff00edce8d4e17e1b13f44bdadb4c8969b960",
+      "links": 1,
+      "inode": 149878255
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/objc2-exception-helper-638d07ac9017a4de/build_script_build-638d07ac9017a4de",
+      "bytes": 2164144,
+      "mtimeUtc": "2026-10-07T23:13:11.530218+00:00",
+      "sha256": "3ca751f858675aea2ebd3c8571a6bcbf1b530b257eb5b9d6a793b1c82bff8259",
+      "links": 1,
+      "inode": 150090635
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/objc2-exception-helper-de92181a0e6e07a4/build_script_build-de92181a0e6e07a4",
+      "bytes": 2101280,
+      "mtimeUtc": "2026-10-08T01:01:46.226569+00:00",
+      "sha256": "db915df3af39ea389865bea4cdf30b1af1dc9cfb1eab22bdb2ba579fcd280b04",
+      "links": 1,
+      "inode": 151051610
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/objc2-f008df7654c55ee8/build_script_build-f008df7654c55ee8",
+      "bytes": 452688,
+      "mtimeUtc": "2026-10-08T00:17:49.955316+00:00",
+      "sha256": "6a5397ccadcb79bfd0ff317cc060dbef3fe3e9acb583dbc2b935bc53f3f8fdc5",
+      "links": 1,
+      "inode": 150671509
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/objc2-f999f19bb8b76473/build_script_build-f999f19bb8b76473",
+      "bytes": 452688,
+      "mtimeUtc": "2026-10-08T01:02:23.763399+00:00",
+      "sha256": "5311082d424faef7a194551535cdc40ddb4a91fd3171698180a05d128769688f",
+      "links": 1,
+      "inode": 151061518
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/objc2-fea201d3e84a3c07/build_script_build-fea201d3e84a3c07",
+      "bytes": 487968,
+      "mtimeUtc": "2026-10-07T22:46:20.884015+00:00",
+      "sha256": "c63bda705b491d82c72969412b06b68faf4fa10aea4ecaa01e52b7892252bc2e",
+      "links": 1,
+      "inode": 149879029
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/object-28d1238fa5a15bd3/build_script_build-28d1238fa5a15bd3",
+      "bytes": 570096,
+      "mtimeUtc": "2026-10-07T22:46:22.567028+00:00",
+      "sha256": "e62f6d50a6f5d4f6ff428f5cfdcb3abcf33a036e4860684b9b4fb9cf66bba7b8",
+      "links": 1,
+      "inode": 149879237
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/object-2dea1ee9d0b0be85/build_script_build-2dea1ee9d0b0be85",
+      "bytes": 531664,
+      "mtimeUtc": "2026-10-08T01:01:15.404790+00:00",
+      "sha256": "0126a66a1fa6279437bdcef0ae413da762c096877a3c65d7204716f97eba3062",
+      "links": 1,
+      "inode": 151047355
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/object-e4e4a18f007de3aa/build_script_build-e4e4a18f007de3aa",
+      "bytes": 531664,
+      "mtimeUtc": "2026-10-08T01:02:31.426593+00:00",
+      "sha256": "f03705f2a08283c3aaa6a711ba0e3461e05ce185ab8d212bf81e86e938fbe646",
+      "links": 1,
+      "inode": 151062210
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/onig_sys-20ba372b1f8846fe/build_script_build-20ba372b1f8846fe",
+      "bytes": 2509424,
+      "mtimeUtc": "2026-10-08T01:04:58.755946+00:00",
+      "sha256": "ac800234a9aff358467d0386879f166b4102b70ced7b4f9e2d23aa0ca4c77ed8",
+      "links": 1,
+      "inode": 151087517
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/onig_sys-f8d860762a256f38/build_script_build-f8d860762a256f38",
+      "bytes": 2576192,
+      "mtimeUtc": "2026-10-07T23:13:43.170769+00:00",
+      "sha256": "6eb846fc31ccd70125649e080fdb739d7b88d4f029bdb7b4f70e6fa3dc2080df",
+      "links": 1,
+      "inode": 150092655
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/parking_lot_core-1059fbd6fb473115/build_script_build-1059fbd6fb473115",
+      "bytes": 494256,
+      "mtimeUtc": "2026-10-07T22:45:46.372173+00:00",
+      "sha256": "5107586b0fc93883cd6f33f7ea9f2231998344790bc70887b2992fdb5161b161",
+      "links": 1,
+      "inode": 149859142
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/parking_lot_core-b6a506edeadcf60b/build_script_build-b6a506edeadcf60b",
+      "bytes": 459264,
+      "mtimeUtc": "2026-10-08T00:17:55.296561+00:00",
+      "sha256": "f613367e4a52121baa69cbb047c932eddbdbb99ca7d9b52cc529c4f4412e2fd3",
+      "links": 1,
+      "inode": 150671980
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/paste-5d51b5e85b476b8c/build_script_build-5d51b5e85b476b8c",
+      "bytes": 530768,
+      "mtimeUtc": "2026-10-08T01:00:41.289280+00:00",
+      "sha256": "66e1949e57078d059197f9513b4d83fe015f317cc55d7a2d5390868b108ea72b",
+      "links": 1,
+      "inode": 151042095
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/paste-7d918bf496e22975/build_script_build-7d918bf496e22975",
+      "bytes": 568704,
+      "mtimeUtc": "2026-10-07T22:45:58.245666+00:00",
+      "sha256": "8e5e28efd48e5a14b4338a0ef3723c0f145b8a176f307ab50be502009a2302e4",
+      "links": 1,
+      "inode": 149872692
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/permagent-app-b7441f8a1be6078a/build_script_build-b7441f8a1be6078a",
+      "bytes": 19903936,
+      "mtimeUtc": "2026-10-08T01:34:53.592021+00:00",
+      "sha256": "2495d5d274bf5e055c123f93900cae6f0cf447b4a7e7c9ae2f3d8d2ebdc3b83e",
+      "links": 1,
+      "inode": 151299620
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/permagent-daemon-579a0a869087509e/build_script_build-579a0a869087509e",
+      "bytes": 668224,
+      "mtimeUtc": "2026-10-08T01:40:54.193997+00:00",
+      "sha256": "c5c7d7204f92514b88eaf11f594c7bf445b560b84a8d8aee45e58cff18655d46",
+      "links": 1,
+      "inode": 151358204
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/portable-atomic-fc153414201b4acc/build_script_build-fc153414201b4acc",
+      "bytes": 700064,
+      "mtimeUtc": "2026-10-07T23:08:17.913101+00:00",
+      "sha256": "5308abc7e180c1626f1e96294d9e4930a3fd584a756aa3029f7122770f7e65d3",
+      "links": 1,
+      "inode": 150066107
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/prettyplease-81f18b312da95e0b/build_script_build-81f18b312da95e0b",
+      "bytes": 471088,
+      "mtimeUtc": "2026-10-07T22:46:08.001632+00:00",
+      "sha256": "3bdeace46f59ace8bbf3901d2a819502b840e0d2e9c5ff96e822b3e150ab5f85",
+      "links": 1,
+      "inode": 149877084
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/prettyplease-fd4d1c7bb1c54dc5/build_script_build-fd4d1c7bb1c54dc5",
+      "bytes": 435520,
+      "mtimeUtc": "2026-10-08T01:00:54.933361+00:00",
+      "sha256": "7f3d62b6dbc67b8ea7e6a6c5351215a87b439567830f8c2b4de209881befc907",
+      "links": 1,
+      "inode": 151044815
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/proc-macro-error-317971d477a77b3e/build_script_build-317971d477a77b3e",
+      "bytes": 636144,
+      "mtimeUtc": "2026-10-08T01:01:31.968182+00:00",
+      "sha256": "8d1febf279e36dd97ee18b3a05a01fa2030873fe7971b00fbf726f66271082aa",
+      "links": 1,
+      "inode": 151051078
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/proc-macro-error-3b01d16408c0c53e/build_script_build-3b01d16408c0c53e",
+      "bytes": 674544,
+      "mtimeUtc": "2026-10-07T22:46:15.781132+00:00",
+      "sha256": "bda65e18379343541691f55bc515102cbb5a5e6f15c231b135441c734b5f88aa",
+      "links": 1,
+      "inode": 149878078
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/proc-macro-error-attr-7e4c82baa50b0f48/build_script_build-7e4c82baa50b0f48",
+      "bytes": 647968,
+      "mtimeUtc": "2026-10-07T22:46:13.956927+00:00",
+      "sha256": "19576207042142ca6f69516ab9f144114b13342cc12dfa0564a84a9689c7b723",
+      "links": 1,
+      "inode": 149877817
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/proc-macro-error-attr-eb2a78be60b43cd9/build_script_build-eb2a78be60b43cd9",
+      "bytes": 609664,
+      "mtimeUtc": "2026-10-08T01:01:20.855999+00:00",
+      "sha256": "af21037a4bdd69dde872fde8716c2e0366f4d58bd3983f4d5f1405957f081a8a",
+      "links": 1,
+      "inode": 151050695
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/proc-macro2-01a5653e293b2368/build_script_build-01a5653e293b2368",
+      "bytes": 584576,
+      "mtimeUtc": "2026-10-08T00:17:32.574944+00:00",
+      "sha256": "3d00560bd654046b584091f3b88053c728487ffb25f9eb4f44439cc4947bb5d8",
+      "links": 1,
+      "inode": 150670724
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/proc-macro2-ad2ae10de4d29c44/build_script_build-ad2ae10de4d29c44",
+      "bytes": 584576,
+      "mtimeUtc": "2026-10-08T00:58:42.647520+00:00",
+      "sha256": "97cb243867074a5dc59a0f85000f0db6f527f5525b5aa4e63fe793487598b86b",
+      "links": 1,
+      "inode": 151037785
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/proc-macro2-b750a89f3c35b104/build_script_build-b750a89f3c35b104",
+      "bytes": 624992,
+      "mtimeUtc": "2026-10-07T22:45:46.017173+00:00",
+      "sha256": "7c5b2aedb8606595b0044a2adaa26783d83d3b2e5ddf9608948b05938328f6e5",
+      "links": 1,
+      "inode": 149859086
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/psm-1d54f585a7fbb0ea/build_script_build-1d54f585a7fbb0ea",
+      "bytes": 3151504,
+      "mtimeUtc": "2026-10-08T01:02:11.471900+00:00",
+      "sha256": "5075bb2bf5aeb77f47c9ba1604ebc8f398ff0652cd10fc669a5b684f4b6e056c",
+      "links": 1,
+      "inode": 151054753
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/psm-31136ec0eeea0d10/build_script_build-31136ec0eeea0d10",
+      "bytes": 3218576,
+      "mtimeUtc": "2026-10-07T23:13:13.937823+00:00",
+      "sha256": "b2746f9747a2d622b5a7f79123d6129583219cd2caae6f632497a608b08d63f1",
+      "links": 1,
+      "inode": 150090814
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/pulldown-cmark-1cb0ee4124ee8f36/build_script_build-1cb0ee4124ee8f36",
+      "bytes": 428352,
+      "mtimeUtc": "2026-10-08T01:17:01.875919+00:00",
+      "sha256": "d89b7ea6371ea83ca027f0d2ee9b114d9c3de26ea64a72446a895360faced0b8",
+      "links": 1,
+      "inode": 151223507
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/pulldown-cmark-c3de63d8ae87bd87/build_script_build-c3de63d8ae87bd87",
+      "bytes": 462096,
+      "mtimeUtc": "2026-10-07T22:47:06.594181+00:00",
+      "sha256": "113f4278e89e3e82a6e688951b0da1d36e383b0c2a2b44496063cab744901333",
+      "links": 1,
+      "inode": 149891986
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/pulp-27078146a0ca994d/build_script_build-27078146a0ca994d",
+      "bytes": 655888,
+      "mtimeUtc": "2026-10-08T01:03:03.794884+00:00",
+      "sha256": "3846dd65b057cd98d82dc07fe49fb9f808893a6b59429280f159310a81dad3e7",
+      "links": 1,
+      "inode": 151063792
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/pulp-b99943fa3525c383/build_script_build-b99943fa3525c383",
+      "bytes": 695792,
+      "mtimeUtc": "2026-10-07T22:46:26.484559+00:00",
+      "sha256": "f2d9170f4ac13a7ebc8f8dafdb9bfddfda1adabc4921c44c2293a417b7883e37",
+      "links": 1,
+      "inode": 149879624
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/quote-06d25db82d3f3b22/build_script_build-06d25db82d3f3b22",
+      "bytes": 568688,
+      "mtimeUtc": "2026-10-07T22:45:45.982315+00:00",
+      "sha256": "16f45f46c8aca296f983d8cf61f16cdcb1676dbecb6a77b1e654fcbb5997a6fc",
+      "links": 1,
+      "inode": 149859083
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/quote-60b5aab40aa1efd7/build_script_build-60b5aab40aa1efd7",
+      "bytes": 530608,
+      "mtimeUtc": "2026-10-08T00:17:33.211429+00:00",
+      "sha256": "8c600f36a978ab0b7e0f0a0e7a45c0832ef5f20212b1af942bf7c040dbc9ee42",
+      "links": 1,
+      "inode": 150670751
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/radium-336efa86d4bf947c/build_script_build-336efa86d4bf947c",
+      "bytes": 495488,
+      "mtimeUtc": "2026-10-07T22:45:56.806062+00:00",
+      "sha256": "fa30d4291f70843fabd13a52d871ee058b385fa625aadf6bbd1571867309cf3f",
+      "links": 1,
+      "inode": 149866702
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/radium-b6f5ca91e66e4546/build_script_build-b6f5ca91e66e4546",
+      "bytes": 459680,
+      "mtimeUtc": "2026-10-08T01:00:40.950010+00:00",
+      "sha256": "15cb4b7e52b763d421fa1d6a747df4f4aecac386146d4c0f773d016c2d86ad75",
+      "links": 1,
+      "inode": 151042042
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/rav1e-c9eb6b230227dc53/build_script_build-c9eb6b230227dc53",
+      "bytes": 897856,
+      "mtimeUtc": "2026-10-08T01:37:03.274509+00:00",
+      "sha256": "f4bb0d1afba3a567f63344457598dd2f3b64ce1026fa84b1a62d0584833d3dc1",
+      "links": 1,
+      "inode": 151314041
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/rayon-core-0f79bca3ee686fd1/build_script_build-0f79bca3ee686fd1",
+      "bytes": 431504,
+      "mtimeUtc": "2026-10-08T01:01:50.284091+00:00",
+      "sha256": "5d62fc1a343b646a98f2df8b9db7fb43dc048b73507e0dc7e93a8a12e183fc51",
+      "links": 1,
+      "inode": 151051675
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/rayon-core-26c0a6b982548519/build_script_build-26c0a6b982548519",
+      "bytes": 466272,
+      "mtimeUtc": "2026-10-07T22:46:17.494325+00:00",
+      "sha256": "049aab25a8276d2c7a4b61a69bb2cc9f9cca3e1def8416cfdd1e1cbeda31209b",
+      "links": 1,
+      "inode": 149878286
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/ref-cast-2f7bb4485d014891/build_script_build-2f7bb4485d014891",
+      "bytes": 597248,
+      "mtimeUtc": "2026-10-07T22:46:10.855450+00:00",
+      "sha256": "2df32e70f49f67dd1dd9c5f06007f6d3443e626262900658b41b67b942c9f4cb",
+      "links": 1,
+      "inode": 149877422
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/ref-cast-8dea7808e93994a2/build_script_build-8dea7808e93994a2",
+      "bytes": 558752,
+      "mtimeUtc": "2026-10-08T01:01:07.894504+00:00",
+      "sha256": "fac76a7aff177466222402d58a57f64f516d15a3b6df541844e662318cd42988",
+      "links": 1,
+      "inode": 151045624
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/ring-06d6bc1948a32978/build_script_build-06d6bc1948a32978",
+      "bytes": 2296752,
+      "mtimeUtc": "2026-10-08T01:00:07.219683+00:00",
+      "sha256": "cdde3d7efb57c06b2ca7f714ca77e0c7a92cf40c742c185d58ba7b3a29a3ac97",
+      "links": 1,
+      "inode": 151040603
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/ring-4aebbaf350c4c07d/build_script_build-4aebbaf350c4c07d",
+      "bytes": 1879552,
+      "mtimeUtc": "2026-10-08T00:18:51.673297+00:00",
+      "sha256": "6263560961dbf82720052f7da3cbd2b8ad513c0d23b81bebb97b533e64d119ee",
+      "links": 1,
+      "inode": 150674055
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/ring-6f2bcc39ce681da5/build_script_build-6f2bcc39ce681da5",
+      "bytes": 2361792,
+      "mtimeUtc": "2026-10-07T23:12:42.497352+00:00",
+      "sha256": "c9b2603119878b09f67daba50b2668755cba722b257a4baeefcd3a47ec102fe7",
+      "links": 1,
+      "inode": 150087914
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/rmcp-49f162b298262009/build_script_build-49f162b298262009",
+      "bytes": 512416,
+      "mtimeUtc": "2026-10-08T01:04:21.843358+00:00",
+      "sha256": "3f9d22e33a21d0854ea9bcb817bcc5df911ac97fb01d0693f68f85b9f4d782fc",
+      "links": 1,
+      "inode": 151083347
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/rmcp-6b60d082ca658467/build_script_build-6b60d082ca658467",
+      "bytes": 550080,
+      "mtimeUtc": "2026-10-07T22:46:40.557304+00:00",
+      "sha256": "3a2df0a65d31799d650efb352804492dc271ccf424834967bbaccee399917147",
+      "links": 1,
+      "inode": 149890148
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/rmcp-c2a2305fed377ad0/build_script_build-c2a2305fed377ad0",
+      "bytes": 512416,
+      "mtimeUtc": "2026-10-08T01:04:59.996158+00:00",
+      "sha256": "61ea54981c0571c52b298e7df92687f7cffca700bbc476c3d2e71945e6464c3f",
+      "links": 1,
+      "inode": 151087716
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/rmcp-ef8989231536e33d/build_script_build-ef8989231536e33d",
+      "bytes": 512416,
+      "mtimeUtc": "2026-10-08T01:36:48.106383+00:00",
+      "sha256": "ba430ef3cc9e23b682eb0b3b0bff90d634caeb8656416bb7b1fe717f4bb702aa",
+      "links": 1,
+      "inode": 151311563
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/rustix-45ec0e95ed6f675e/build_script_build-45ec0e95ed6f675e",
+      "bytes": 583728,
+      "mtimeUtc": "2026-10-08T00:19:17.989873+00:00",
+      "sha256": "8f05047538bee503c7219a5c4208da4ef8bf2e71f08a9048e9c37693a3492e0a",
+      "links": 1,
+      "inode": 150675269
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/rustix-765557605f48ab11/build_script_build-765557605f48ab11",
+      "bytes": 621904,
+      "mtimeUtc": "2026-10-07T22:46:11.655599+00:00",
+      "sha256": "34a4dcdfff32a3e5d90e59901d275cb09e64b8e85bc41cc7a5b660eef0aa5077",
+      "links": 1,
+      "inode": 149877541
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/rustix-a49a4e93e49c4771/build_script_build-a49a4e93e49c4771",
+      "bytes": 582448,
+      "mtimeUtc": "2026-10-08T01:01:11.271488+00:00",
+      "sha256": "530e93fc22ece482b0c7b16d393387241285f6fb8483a8fde3b9cd7bf5e84bc0",
+      "links": 1,
+      "inode": 151045993
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/rustls-09ec8d3803a81e9b/build_script_build-09ec8d3803a81e9b",
+      "bytes": 428272,
+      "mtimeUtc": "2026-10-08T01:35:42.738290+00:00",
+      "sha256": "14d0f8ff9202e619e25dd4dedf1e797e3db6092c208ab90a0e064db2eaddb3be",
+      "links": 1,
+      "inode": 151302617
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/rustls-4b3fc57d481a1c8a/build_script_build-4b3fc57d481a1c8a",
+      "bytes": 428272,
+      "mtimeUtc": "2026-10-08T01:01:32.885399+00:00",
+      "sha256": "3b42844bdb2e8d86947c32829750397c51b84699e80d12cb5c3d94c495137130",
+      "links": 1,
+      "inode": 151051167
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/rustls-581127767f08b16f/build_script_build-581127767f08b16f",
+      "bytes": 428272,
+      "mtimeUtc": "2026-10-08T01:35:34.559770+00:00",
+      "sha256": "81439d85751c9f76ef986be95cff31d8de333653fffbb0b785cae5e1dcda0e58",
+      "links": 1,
+      "inode": 151301987
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/rustls-83695f58761425a7/build_script_build-83695f58761425a7",
+      "bytes": 428272,
+      "mtimeUtc": "2026-10-08T01:00:30.152787+00:00",
+      "sha256": "6760ce8dae5bab0e44bdaeaa7954c446874984a61b07f072a903a77c4acb8647",
+      "links": 1,
+      "inode": 151041633
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/rustls-f1e8019153a5043e/build_script_build-f1e8019153a5043e",
+      "bytes": 428272,
+      "mtimeUtc": "2026-10-08T00:19:00.728478+00:00",
+      "sha256": "0ec559bed1d511fd49403eddb0cc3265b80d93865fdaf9e6de657af209ac425c",
+      "links": 1,
+      "inode": 150674521
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/rustversion-228f0475654961e0/build_script_build-228f0475654961e0",
+      "bytes": 627024,
+      "mtimeUtc": "2026-10-07T22:46:19.920201+00:00",
+      "sha256": "7d1fada0e328975a499609b6e26f5939e1354dd99b760b7ed7979333d6290658",
+      "links": 1,
+      "inode": 149878827
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/rustversion-e30876530369bb6f/build_script_build-e30876530369bb6f",
+      "bytes": 587008,
+      "mtimeUtc": "2026-10-08T01:02:18.505626+00:00",
+      "sha256": "7ef4b1bc6b62d80bfe0d9782ecbd35a3a10ccd4c5f424a6be151f3213392f517",
+      "links": 1,
+      "inode": 151057082
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/schemars-37d763353b17034c/build_script_build-37d763353b17034c",
+      "bytes": 435024,
+      "mtimeUtc": "2026-10-08T01:02:31.163185+00:00",
+      "sha256": "3c2ea68168ec4dcd7c75493fd1fabb7a0f048104bc2b501bef8f4c37c83bd736",
+      "links": 1,
+      "inode": 151062180
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/schemars-46e920795e06bed0/build_script_build-46e920795e06bed0",
+      "bytes": 435024,
+      "mtimeUtc": "2026-10-08T00:18:15.676328+00:00",
+      "sha256": "8d1e60f2ae969d5e956ecf142a0d9d791aa6cfff6508f1ac7a61230dfee8c9b9",
+      "links": 1,
+      "inode": 150672974
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/schemars-5b1894d1142ebcfb/build_script_build-5b1894d1142ebcfb",
+      "bytes": 470240,
+      "mtimeUtc": "2026-10-07T22:46:22.550519+00:00",
+      "sha256": "1fb104cae04afd9615c70f789729d2e2e7dda97c43fdb5de861596eb21328435",
+      "links": 1,
+      "inode": 149879233
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/selectors-80d6ee4b59cca95d/build_script_build-80d6ee4b59cca95d",
+      "bytes": 693184,
+      "mtimeUtc": "2026-10-08T00:18:11.346381+00:00",
+      "sha256": "ca567976247ce8a02672caf75561bfce81a8fb770e144551f54e770a6ade75b6",
+      "links": 1,
+      "inode": 150672751
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/serde-19b355f7e617f2bb/build_script_build-19b355f7e617f2bb",
+      "bytes": 558752,
+      "mtimeUtc": "2026-10-08T00:17:45.659636+00:00",
+      "sha256": "609b407181733602701b1c1059825a0d1c893333f411d351a3d27fece2afa25f",
+      "links": 1,
+      "inode": 150671270
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/serde-87ca35229097efa9/build_script_build-87ca35229097efa9",
+      "bytes": 597056,
+      "mtimeUtc": "2026-10-07T22:45:46.029135+00:00",
+      "sha256": "ab760542d4a33406a4f0f8445466713a23518d023a8baefc157369cd377a3d37",
+      "links": 1,
+      "inode": 149859088
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/serde-ab8e9ce5f69c2142/build_script_build-ab8e9ce5f69c2142",
+      "bytes": 558752,
+      "mtimeUtc": "2026-10-08T00:17:54.864479+00:00",
+      "sha256": "69066317cbabfe000afe8b0c87c3e9fc73f167281402d24e602798b53bdfef17",
+      "links": 1,
+      "inode": 150671942
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/serde-cba11ad64e3f49db/build_script_build-cba11ad64e3f49db",
+      "bytes": 558752,
+      "mtimeUtc": "2026-10-08T00:58:50.064451+00:00",
+      "sha256": "1248b88478cdc015a38785144ca82aedf158f05dcbe543921d578594cd034be3",
+      "links": 1,
+      "inode": 151037983
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/serde_core-73f9ae9c0aea013e/build_script_build-73f9ae9c0aea013e",
+      "bytes": 597808,
+      "mtimeUtc": "2026-10-07T22:45:46.025673+00:00",
+      "sha256": "b3dfc6f7637f1cbc59c07afb21539d2e3ec9bfd6b10a73460ddb71daa207c886",
+      "links": 1,
+      "inode": 149859087
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/serde_core-ad52ceba1a97d4cd/build_script_build-ad52ceba1a97d4cd",
+      "bytes": 559264,
+      "mtimeUtc": "2026-10-08T00:17:40.590943+00:00",
+      "sha256": "2dcac4759374753ea33a0b626b91c7fdedc471f9012646dddc79414142e42ddb",
+      "links": 1,
+      "inode": 150671016
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/serde_core-d4e42a098121edae/build_script_build-d4e42a098121edae",
+      "bytes": 559264,
+      "mtimeUtc": "2026-10-08T00:17:36.689663+00:00",
+      "sha256": "791fb7072349aa5b4604fc3ad4b7679aed6bab50672e2428fb9c44a09bb0b3da",
+      "links": 1,
+      "inode": 150670860
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/serde_core-f1eb39cfb70a3e9a/build_script_build-f1eb39cfb70a3e9a",
+      "bytes": 559264,
+      "mtimeUtc": "2026-10-08T00:58:47.101653+00:00",
+      "sha256": "c48f546b76da12c67b48103012d1d9bee31b9f694b5ba87c74e50c89af176e5f",
+      "links": 1,
+      "inode": 151037918
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/serde_json-6a01ffab203c47c8/build_script_build-6a01ffab203c47c8",
+      "bytes": 432960,
+      "mtimeUtc": "2026-10-08T00:18:39.212197+00:00",
+      "sha256": "2f683a6c04dee625a1443e706a428ed2be4246648e318d3316d10f73b5e4e6af",
+      "links": 1,
+      "inode": 150673624
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/serde_json-708b39f1500820cf/build_script_build-708b39f1500820cf",
+      "bytes": 467920,
+      "mtimeUtc": "2026-10-07T22:45:46.537784+00:00",
+      "sha256": "272bd5c2d4914ca64f0757cb14f17b1f64921a90b9125281f29aae6823f167f3",
+      "links": 1,
+      "inode": 149859194
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/serde_json-9286804dcd1e8015/build_script_build-9286804dcd1e8015",
+      "bytes": 432960,
+      "mtimeUtc": "2026-10-08T00:17:50.037201+00:00",
+      "sha256": "58f3268bfd7d2833ec2bc592ce71c4271556c263bb587b274ada5670343b5c78",
+      "links": 1,
+      "inode": 150671519
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/serde_json-b2a24087319f976b/build_script_build-b2a24087319f976b",
+      "bytes": 432960,
+      "mtimeUtc": "2026-10-08T00:58:57.550576+00:00",
+      "sha256": "7404de7a2526d692643faeb153e58d64c1020b4e515263243b5df451005916e3",
+      "links": 1,
+      "inode": 151038406
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/sherpa-onnx-sys-3934e464ba209ed2/build_script_build-3934e464ba209ed2",
+      "bytes": 8191856,
+      "mtimeUtc": "2026-10-08T01:39:27.443704+00:00",
+      "sha256": "06e84c9a372779495288cb33f5ff4d43111b4f2f65bd370d2017f725c458acc6",
+      "links": 1,
+      "inode": 151355332
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/sherpa-onnx-sys-929ebc895efc5b17/build_script_build-929ebc895efc5b17",
+      "bytes": 8801616,
+      "mtimeUtc": "2026-10-07T23:25:46.191973+00:00",
+      "sha256": "82ba214dda122801751ebb1177c2c7129b813bb7e2a0e73d7a4d066f06dd8db8",
+      "links": 1,
+      "inode": 150168984
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/signal-hook-0707f08e2d25b7d3/build_script_build-0707f08e2d25b7d3",
+      "bytes": 428272,
+      "mtimeUtc": "2026-10-08T00:19:25.393784+00:00",
+      "sha256": "4971e64fac1039b4f89ca2827679a5b10daa16b8510d8685cb333cb25a47999d",
+      "links": 1,
+      "inode": 150675503
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/smartstring-a3afa43e95cde454/build_script_build-a3afa43e95cde454",
+      "bytes": 907168,
+      "mtimeUtc": "2026-10-08T01:02:23.343806+00:00",
+      "sha256": "c3feb51e83bbdcc77782f7bfa0c8c5226f6c05f7a78e556c08ea0bd9a11cef29",
+      "links": 1,
+      "inode": 151059744
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/smartstring-fc32ec1ee4894e8f/build_script_build-fc32ec1ee4894e8f",
+      "bytes": 949760,
+      "mtimeUtc": "2026-10-07T22:46:20.744367+00:00",
+      "sha256": "9bc1a31d7b8077023d6193adb3a9a5ca8c4415a5b79ff4def85c29ea2a8f1656",
+      "links": 1,
+      "inode": 149879008
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/stacker-be9872ac1ce608c7/build_script_build-be9872ac1ce608c7",
+      "bytes": 2165104,
+      "mtimeUtc": "2026-10-07T23:13:15.531157+00:00",
+      "sha256": "7d96956d5046e049d48442d7726871944fd7f1fd4b2c9798040c48e3c8f8da4a",
+      "links": 1,
+      "inode": 150090961
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/stacker-d58d4f21d91a0e39/build_script_build-d58d4f21d91a0e39",
+      "bytes": 2102080,
+      "mtimeUtc": "2026-10-08T01:02:23.504774+00:00",
+      "sha256": "8bf3cd3eb62bd7394e49bf33fff545d76a1a9bea44d532731d1c0f621ef60fd5",
+      "links": 1,
+      "inode": 151060496
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/syn-49a903338f65fb58/build_script_build-49a903338f65fb58",
+      "bytes": 594176,
+      "mtimeUtc": "2026-10-07T22:46:14.145969+00:00",
+      "sha256": "d796692545f227c62b1efa7e35387f743c6a5d5a2fedfd819d5b51e96d351591",
+      "links": 1,
+      "inode": 149877855
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/syn-d0bd526c7d9955db/build_script_build-d0bd526c7d9955db",
+      "bytes": 556096,
+      "mtimeUtc": "2026-10-08T01:01:21.601954+00:00",
+      "sha256": "c967ee1119501e61e1741d9b383e1bd5f70ad64c4b27a866ffde6aecdee29529",
+      "links": 1,
+      "inode": 151050781
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/sys-info-1a395fe59f61e03d/build_script_build-1a395fe59f61e03d",
+      "bytes": 2101984,
+      "mtimeUtc": "2026-10-08T01:16:52.709075+00:00",
+      "sha256": "aa2dbc9e063b2514e2d065b140f9a926ff66ac2329a570a93d818c8ff0522f33",
+      "links": 1,
+      "inode": 151222370
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/sys-info-63c4eee8c842118b/build_script_build-63c4eee8c842118b",
+      "bytes": 2164992,
+      "mtimeUtc": "2026-10-07T23:14:58.595190+00:00",
+      "sha256": "3891e6c013140916a82085cf67897a180e198bb2edaaae058b1489b3524b8040",
+      "links": 1,
+      "inode": 150096305
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/system-configuration-sys-1260913cd261d3c2/build_script_build-1260913cd261d3c2",
+      "bytes": 511680,
+      "mtimeUtc": "2026-10-07T22:45:55.888746+00:00",
+      "sha256": "abf18468dbe62e8a66d5dd0a73f643f86d24080b400f24e9989ac699d8d70883",
+      "links": 1,
+      "inode": 149866564
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/system-configuration-sys-aa81f6cab54a5774/build_script_build-aa81f6cab54a5774",
+      "bytes": 476320,
+      "mtimeUtc": "2026-10-08T01:00:17.368354+00:00",
+      "sha256": "77cbe9e96189f789d4e0f8cc2fcdaf3c2c3ca89ac6fd9a6506941a2e501bf76e",
+      "links": 1,
+      "inode": 151041247
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/tauri-0891d44bb06db114/build_script_build-0891d44bb06db114",
+      "bytes": 11411136,
+      "mtimeUtc": "2026-10-08T00:18:59.318378+00:00",
+      "sha256": "151e597ab816c080def5b04453bf810914bd5abd18db18e30a7e8fb1a56f9db2",
+      "links": 1,
+      "inode": 150674407
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/tauri-plugin-shell-88ba684350f787d3/build_script_build-88ba684350f787d3",
+      "bytes": 12831712,
+      "mtimeUtc": "2026-10-08T00:19:37.303218+00:00",
+      "sha256": "9e0660dccaf6b5eb199c5945734cb68e10c693bc4a151b7d0c1e8c60433b218f",
+      "links": 1,
+      "inode": 150683352
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/tauri-plugin-updater-ddad7ca0fb3e461a/build_script_build-ddad7ca0fb3e461a",
+      "bytes": 12784368,
+      "mtimeUtc": "2026-10-08T00:19:36.974442+00:00",
+      "sha256": "f21c008737c0887855ce33032f41d4c316f34fa478cf40a4f27a001b14a8c055",
+      "links": 1,
+      "inode": 150683343
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/tauri-runtime-0ff240d2ee42f676/build_script_build-0ff240d2ee42f676",
+      "bytes": 434896,
+      "mtimeUtc": "2026-10-08T00:19:10.466967+00:00",
+      "sha256": "284cbe1a220b48e5cbe2c219dac6968676b3db6d759592daa983e811fd5d6b30",
+      "links": 1,
+      "inode": 150675093
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/tauri-runtime-wry-4945ca2f23d91b68/build_script_build-4945ca2f23d91b68",
+      "bytes": 434912,
+      "mtimeUtc": "2026-10-08T00:19:17.809889+00:00",
+      "sha256": "91252e033aabbb77a90ca3adbb0d665a735aec421005284940ab7396bb1ec044",
+      "links": 1,
+      "inode": 150675250
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/thiserror-c5769c70a5c2698c/build_script_build-c5769c70a5c2698c",
+      "bytes": 563360,
+      "mtimeUtc": "2026-10-08T00:17:50.669451+00:00",
+      "sha256": "195297321a5eb1dc3b3586dfddf556cc6da8fd315bd85d3f56d2142ee70ebdbd",
+      "links": 1,
+      "inode": 150671758
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/thiserror-e24ed4e08e967530/build_script_build-e24ed4e08e967530",
+      "bytes": 609360,
+      "mtimeUtc": "2026-10-08T00:59:06.359091+00:00",
+      "sha256": "b858d36221b460f16550ee1646938e78424aa5f714e15125c2849ad906216c74",
+      "links": 1,
+      "inode": 151038879
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/thiserror-e4907c40c903d30b/build_script_build-e4907c40c903d30b",
+      "bytes": 609056,
+      "mtimeUtc": "2026-10-08T00:17:50.269432+00:00",
+      "sha256": "b1a7997f9b93763e1f41942d3af324805bb49a8caffe53df7945bda14ced51ac",
+      "links": 1,
+      "inode": 150671540
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/thiserror-e690829f1473fc7c/build_script_build-e690829f1473fc7c",
+      "bytes": 603040,
+      "mtimeUtc": "2026-10-07T22:46:11.836511+00:00",
+      "sha256": "33b09d8c75d86b4fcd4e2e6635022773c5c36aeed7a13bd823024d9915fcaa2f",
+      "links": 1,
+      "inode": 149877585
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/tiny-keccak-59b1895c60aea5ca/build_script_build-59b1895c60aea5ca",
+      "bytes": 462016,
+      "mtimeUtc": "2026-10-07T22:51:18.960708+00:00",
+      "sha256": "02f80908c0d21b00848079acecb3fb4aef6f7f664fac4130c408e06079377351",
+      "links": 1,
+      "inode": 149923710
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/tiny-keccak-aad2079a755e5c36/build_script_build-aad2079a755e5c36",
+      "bytes": 428272,
+      "mtimeUtc": "2026-10-08T01:37:27.498230+00:00",
+      "sha256": "983224412589e0aa5900bb4f4681c50c202e00ee774db1551e6402cfb3ff5ee4",
+      "links": 1,
+      "inode": 151330579
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/tokio-cron-scheduler-699dd484d6bea135/build_script_build-699dd484d6bea135",
+      "bytes": 434544,
+      "mtimeUtc": "2026-10-08T01:17:03.821226+00:00",
+      "sha256": "c2e9c32ac9e170fee4cbcbc4967dcb73a830cfa6890f31a93c26b0fad24d2b47",
+      "links": 1,
+      "inode": 151223693
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/tokio-cron-scheduler-8ace595442e60177/build_script_build-8ace595442e60177",
+      "bytes": 469744,
+      "mtimeUtc": "2026-10-07T22:47:06.960777+00:00",
+      "sha256": "d4653a720ce398db7e43476b9e2ae10ce638e8add9f9bba1df31a720d21c22e3",
+      "links": 1,
+      "inode": 149892054
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/tree-sitter-636d2f56b3c98a87/build_script_build-636d2f56b3c98a87",
+      "bytes": 2110672,
+      "mtimeUtc": "2026-10-08T01:16:49.715799+00:00",
+      "sha256": "eff3053153fa6a3dc363ef2ab4190ea1ad91c280043a4aa737b278ec3998d084",
+      "links": 1,
+      "inode": 151221733
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/tree-sitter-f8255d02fc0e9a94/build_script_build-f8255d02fc0e9a94",
+      "bytes": 2173696,
+      "mtimeUtc": "2026-10-07T23:14:56.324006+00:00",
+      "sha256": "01c55887cb8136cdbdc4f8641c7b1cb072ee37dc78257f35af53fd2ec59d083f",
+      "links": 1,
+      "inode": 150096242
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/tree-sitter-go-badb79d76cba6b01/build_script_build-badb79d76cba6b01",
+      "bytes": 2100848,
+      "mtimeUtc": "2026-10-08T01:16:51.850121+00:00",
+      "sha256": "13c00837ae2d1d4f56bd3b5b4dfc4d37739d72c00a3b2d91eaf8bb5131b29471",
+      "links": 1,
+      "inode": 151222250
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/tree-sitter-go-ff8baddc03430699/build_script_build-ff8baddc03430699",
+      "bytes": 2163792,
+      "mtimeUtc": "2026-10-07T23:14:59.178934+00:00",
+      "sha256": "2a477c6874d149d9f12d7814913514e1ce32a0ff50c6b18cb42d73c8e326ea6e",
+      "links": 1,
+      "inode": 150096318
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/tree-sitter-java-182423d85e082d0a/build_script_build-182423d85e082d0a",
+      "bytes": 2084224,
+      "mtimeUtc": "2026-10-08T01:16:52.882563+00:00",
+      "sha256": "e709875a7eb5a7eb4d5510721311270f1d7d57586a26ce4d74894e17506b7cf0",
+      "links": 1,
+      "inode": 151222389
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/tree-sitter-java-237e59ad28c26d4d/build_script_build-237e59ad28c26d4d",
+      "bytes": 2147168,
+      "mtimeUtc": "2026-10-07T23:15:00.787764+00:00",
+      "sha256": "72f42a5eb76dc7204cf7b2f0bce49eae50c1e82f5288cbc9692acabf00845707",
+      "links": 1,
+      "inode": 150096391
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/tree-sitter-javascript-0001f4970ce5fb47/build_script_build-0001f4970ce5fb47",
+      "bytes": 2100976,
+      "mtimeUtc": "2026-10-08T01:16:53.423651+00:00",
+      "sha256": "058eb7991acee399fba3c933174e88a166ed0d45b1752f93d20257999cb444fd",
+      "links": 1,
+      "inode": 151222487
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/tree-sitter-javascript-7f6b09a829466f56/build_script_build-7f6b09a829466f56",
+      "bytes": 2163936,
+      "mtimeUtc": "2026-10-07T23:15:00.644341+00:00",
+      "sha256": "a905bf132f3f95dcac6041b2fb956645d5bdf0147285f21051e946d241fd2c05",
+      "links": 1,
+      "inode": 150096387
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/tree-sitter-kotlin-ng-2c9acc94834216c1/build_script_build-2c9acc94834216c1",
+      "bytes": 2163824,
+      "mtimeUtc": "2026-10-07T23:15:00.373277+00:00",
+      "sha256": "013c7bc5a04d520f742b2fe5c23b98b028ed256e1ae180b308541e05e6426bee",
+      "links": 1,
+      "inode": 150096376
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/tree-sitter-kotlin-ng-b17ae400e9cc16c5/build_script_build-b17ae400e9cc16c5",
+      "bytes": 2100880,
+      "mtimeUtc": "2026-10-08T01:16:53.234023+00:00",
+      "sha256": "b17e304e113f0c8c20f4518f8de407c756c9f442574b156f4ff2a9080ac178d3",
+      "links": 1,
+      "inode": 151222431
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/tree-sitter-language-4b4169fc25e9f284/build_script_build-4b4169fc25e9f284",
+      "bytes": 453680,
+      "mtimeUtc": "2026-10-08T01:01:07.688599+00:00",
+      "sha256": "88281388d4fb3b356b66d2a12a63dacc0a4d7008ab08045dce60a4a6d70a75c6",
+      "links": 1,
+      "inode": 151045608
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/tree-sitter-language-f12fa5d91d6d41ca/build_script_build-f12fa5d91d6d41ca",
+      "bytes": 489024,
+      "mtimeUtc": "2026-10-07T22:46:10.769290+00:00",
+      "sha256": "7b3cd4be3923105e25064098a75b5f95e31cdef1ed506b1a4b1adae3e40c7210",
+      "links": 1,
+      "inode": 149877407
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/tree-sitter-python-2faa1d5f4349654d/build_script_build-2faa1d5f4349654d",
+      "bytes": 2163936,
+      "mtimeUtc": "2026-10-07T23:15:01.163548+00:00",
+      "sha256": "4281db8bbbb9e0a820c2b2a570bc8d39e7e5e5923f8247c788a7a71facc8e81f",
+      "links": 1,
+      "inode": 150096408
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/tree-sitter-python-e5cc1e77971e2205/build_script_build-e5cc1e77971e2205",
+      "bytes": 2100976,
+      "mtimeUtc": "2026-10-08T01:16:52.192131+00:00",
+      "sha256": "c8f74949b84739cc11bd51ceeba65baae549cb9f4ca100704c995bd34e94548e",
+      "links": 1,
+      "inode": 151222315
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/tree-sitter-ruby-2102edabccbfd0c3/build_script_build-2102edabccbfd0c3",
+      "bytes": 2163824,
+      "mtimeUtc": "2026-10-07T23:15:00.018034+00:00",
+      "sha256": "475683618440f07935c504842e4f3964345af64d3e6af89c3bf2dba7bd3cce16",
+      "links": 1,
+      "inode": 150096362
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/tree-sitter-ruby-79cd7c86ef8ba5f5/build_script_build-79cd7c86ef8ba5f5",
+      "bytes": 2100880,
+      "mtimeUtc": "2026-10-08T01:16:52.361310+00:00",
+      "sha256": "4dc45a03a6dd4da93b9a4c27236d994d95117b766c3199939c5eb7fdc504f67d",
+      "links": 1,
+      "inode": 151222332
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/tree-sitter-rust-570d7a226a1be164/build_script_build-570d7a226a1be164",
+      "bytes": 2100736,
+      "mtimeUtc": "2026-10-08T01:16:52.543955+00:00",
+      "sha256": "e7713c8f63eac3167da5f5e20a3ef3ce1defaa11811795c371fbc7559eceed07",
+      "links": 1,
+      "inode": 151222347
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/tree-sitter-rust-965336d176727df9/build_script_build-965336d176727df9",
+      "bytes": 2147152,
+      "mtimeUtc": "2026-10-07T23:14:59.871432+00:00",
+      "sha256": "c2a5f0b06d8f0efc6d1faec5ec77096e89dc7c5ce01ce77c5e55d800d5b59a8b",
+      "links": 1,
+      "inode": 150096356
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/tree-sitter-swift-2885bd505bc1c7ce/build_script_build-2885bd505bc1c7ce",
+      "bytes": 2147168,
+      "mtimeUtc": "2026-10-07T23:14:59.576734+00:00",
+      "sha256": "fdbc677884ed028348d925867d8d6d163f0e8af16ea7f6d28bf339f24daf92df",
+      "links": 1,
+      "inode": 150096343
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/tree-sitter-swift-8b9bc8151bf90720/build_script_build-8b9bc8151bf90720",
+      "bytes": 2100736,
+      "mtimeUtc": "2026-10-08T01:16:52.035797+00:00",
+      "sha256": "901c10e41f90b9fbca9efd29e8414e827c899b2c0da9a523300e078a466c5198",
+      "links": 1,
+      "inode": 151222291
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/tree-sitter-typescript-fe0730a024d83ccd/build_script_build-fe0730a024d83ccd",
+      "bytes": 2164432,
+      "mtimeUtc": "2026-10-07T23:15:01.037850+00:00",
+      "sha256": "aa377ee9b234229d5c77dc4062c50f83d7168e3a3e00fb4c2105eb8a43670b63",
+      "links": 1,
+      "inode": 150096405
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/tree-sitter-typescript-ff76168fbd67a201/build_script_build-ff76168fbd67a201",
+      "bytes": 2101504,
+      "mtimeUtc": "2026-10-08T01:16:53.053440+00:00",
+      "sha256": "798f876057ce146f519d28b7cfb1307d1d9c10abadab96810d86685170a3dcf1",
+      "links": 1,
+      "inode": 151222409
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/typeid-f739a2f898547954/build_script_build-f739a2f898547954",
+      "bytes": 530608,
+      "mtimeUtc": "2026-10-08T00:17:50.139109+00:00",
+      "sha256": "270024f5662d4dd7121de953cba7786a03f6443abdcba531c6572d138f0f1499",
+      "links": 1,
+      "inode": 150671529
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/v8-goose-7e1665967cb693c7/build_script_build-7e1665967cb693c7",
+      "bytes": 18178848,
+      "mtimeUtc": "2026-10-07T23:25:08.554417+00:00",
+      "sha256": "c2f6637db7ca14c71a3e29ec81ca5aa84c05cf5e339d34966acb4351e31733ac",
+      "links": 1,
+      "inode": 150113056
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/v8-goose-a0bd72c4b39699d7/build_script_build-a0bd72c4b39699d7",
+      "bytes": 17662640,
+      "mtimeUtc": "2026-10-08T01:01:33.850367+00:00",
+      "sha256": "e242acb5c093ed027ab3e35e309b61fef8767c2a3124911bcb037ce674ff92fd",
+      "links": 1,
+      "inode": 151051204
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/web_atoms-dcecdfd664aac099/build_script_build-dcecdfd664aac099",
+      "bytes": 1671040,
+      "mtimeUtc": "2026-10-08T00:18:04.083506+00:00",
+      "sha256": "5eaae0dfdbc139ce394f8e85c202a35aa4a23865137446a440d140edb0c920d0",
+      "links": 1,
+      "inode": 150672397
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/wry-f4e5d5dc6ab6a7cd/build_script_build-f4e5d5dc6ab6a7cd",
+      "bytes": 533728,
+      "mtimeUtc": "2026-10-08T00:19:10.328456+00:00",
+      "sha256": "242b8854af09be19143620a5264113a52b95936e5ce9b698410fa8b7f83701c9",
+      "links": 1,
+      "inode": 150675076
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/zerocopy-5cfb308ad1d6ccf3/build_script_build-5cfb308ad1d6ccf3",
+      "bytes": 658736,
+      "mtimeUtc": "2026-10-07T22:46:22.855282+00:00",
+      "sha256": "710b21013537de19bfa62d7f4580dff1fcb82cd3bfc7722ab64331775a8fbaa9",
+      "links": 1,
+      "inode": 149879301
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/zerocopy-c85b5f2595c42158/build_script_build-c85b5f2595c42158",
+      "bytes": 619120,
+      "mtimeUtc": "2026-10-08T00:59:07.271292+00:00",
+      "sha256": "e6872580fd6522c5e4ca43e6c07089c9d340feea845baf29e9320a07eecc28c7",
+      "links": 1,
+      "inode": 151038926
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/zerocopy-ebb9c647ba9ab3fa/build_script_build-ebb9c647ba9ab3fa",
+      "bytes": 619104,
+      "mtimeUtc": "2026-10-08T01:02:30.976698+00:00",
+      "sha256": "b3c5fd88f8fdd428071ba726a0f0d8c99f4fa362be9ed644b1b9431af6e22021",
+      "links": 1,
+      "inode": 151062159
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/zip-3fddac03294af29d/build_script_build-3fddac03294af29d",
+      "bytes": 433696,
+      "mtimeUtc": "2026-10-08T01:39:03.971500+00:00",
+      "sha256": "5f951e94a99fec7258d5a3110cc18e66f88456f722935fabfbf99370d60827db",
+      "links": 1,
+      "inode": 151352786
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/zmij-2b4a68a7fa29ade4/build_script_build-2b4a68a7fa29ade4",
+      "bytes": 571392,
+      "mtimeUtc": "2026-10-07T22:45:46.411813+00:00",
+      "sha256": "81cec1dc369aed72516071877e0b6450c4e8571237a9681844ab0f3bc74717a1",
+      "links": 1,
+      "inode": 149859144
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/zmij-a4c6f6f11aa2fe77/build_script_build-a4c6f6f11aa2fe77",
+      "bytes": 532736,
+      "mtimeUtc": "2026-10-08T00:17:43.508751+00:00",
+      "sha256": "6ea28988ee27b6b15ef35b25895e966e780e21d99decd5eeebc8dff12c3ace50",
+      "links": 1,
+      "inode": 150671145
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/zstd-safe-5eccf362f099f904/build_script_build-5eccf362f099f904",
+      "bytes": 433856,
+      "mtimeUtc": "2026-10-08T01:00:30.066748+00:00",
+      "sha256": "a6f8ca3fe2685affa92a348836d9c09ab8ddd6b22d6a0c56e96a2c907596b889",
+      "links": 1,
+      "inode": 151041617
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/zstd-safe-bcb12ee6d58aa103/build_script_build-bcb12ee6d58aa103",
+      "bytes": 468768,
+      "mtimeUtc": "2026-10-07T22:45:56.129039+00:00",
+      "sha256": "483a2b6d479a5d003619b0255c62dc952e962325c0ebaa476825b3d8a5f78a03",
+      "links": 1,
+      "inode": 149866593
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/zstd-sys-60e426cfac459880/build_script_build-60e426cfac459880",
+      "bytes": 2649200,
+      "mtimeUtc": "2026-10-07T23:12:45.754681+00:00",
+      "sha256": "dd48ba6cff83fb87d912a63fee565b9c547ede0185bfa21fb01a124314b20e7b",
+      "links": 1,
+      "inode": 150088296
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/build/zstd-sys-d5b5c0f3c2045f50/build_script_build-d5b5c0f3c2045f50",
+      "bytes": 2581888,
+      "mtimeUtc": "2026-10-08T01:00:18.020418+00:00",
+      "sha256": "6a10c535f4b7230448f2149b42911920a575c2beb7bd8dd73ab57bc0c7f257f1",
+      "links": 1,
+      "inode": 151041294
+    }
+  ],
+  "requestedReclaimGiB": [
+    3,
+    5
+  ],
+  "sufficient": false,
+  "note": "Whole target only3.9GiB on disk, most remaining large files are protected binaries, models, libraries and staged app. No safe3\u20135GiB set remains in this scope."
+}
