@@ -139,7 +139,7 @@ export function previewToGraphMemory(target: BrainMemoryTarget, now = Date.now()
     ent: [],
     age: ageFromTimestamp(p.timestamp, now),
     weight: clamp01(p.weight ?? 0),
-    timestamp: p.timestamp ?? new Date(now).toISOString(),
+    timestamp: p.timestamp ?? '',
   };
 }
 

@@ -49,3 +49,7 @@ No new UI interaction, model/runtime operation, test execution or source edit wa
 ## Native continuation reconciliation
 
 [Native resume receipt](NATIVE_RECORD_RESUME_2026-10-08.json) and the final [shipping QA](SHIPPING_QA_2026-10-08.md) section add real native coverage for Record selection/cancellation/scope/permission denial, retained meeting source-to-Brain navigation, Calendar ranges/unqueried dates, World demonstration branches/brief export/night/reduced-motion navigation, and terminal/browser pop-outs. These supersede only those subcases above, not whole rows. Full native capture remains gated on Screen Recording permission; broader lifecycle/fresh-user/deeper Settings cases remain open. Recovery wording source fix passes82 targeted tests and is not embedded in the retained r4 stage.
+
+### Read-only browser continuation, October 8 after18:02UTC
+
+[Bounded evidence](READONLY_RESUME_2026-10-08.json): Brain Notes/source/date/empty state/last-row clearance, ranked search/date honesty/Graph, existing project-note provenance; Automate draft modes/focus/cancel/reset; History categories/search/empty/clear/last-row; Chat spaces/no Voice, clear/keyboard resize/close/reopen. No mutating actions or all-row completion. Search excerpts, native capture, full Settings/workflow matrix and release gates remain open.

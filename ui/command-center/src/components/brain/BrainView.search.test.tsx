@@ -59,6 +59,7 @@ vi.mock('../world/shared/worldEvents', () => ({
 
 import { BrainView } from './BrainView';
 import { formatMemoryDate } from './BrainList';
+import { searchResultToGraphMemory } from './brainSearch';
 import { api, apiFetch } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
 
@@ -225,6 +226,22 @@ describe('Brain search guards', () => {
     expect(formatMemoryDate(new Date(now + 150 * 60_000).toISOString(), now)).toBe('Oct 8, 2:30 PM');
     expect(formatMemoryDate(new Date(now - 5 * 60_000).toISOString(), now)).toBe('5m ago');
     expect(formatMemoryDate('unavailable', now)).toBe('unavailable');
+    expect(formatMemoryDate('', now)).toBe('date unknown');
+  });
+
+  it('does not present Spectral query time as memory age in rows or details', async () => {
+    await renderBrain();
+    await typeSearch('caroline');
+    const row = container.querySelector('[role="button"][aria-label^="Memory:"]') as HTMLDivElement;
+    expect(row.textContent).toContain('date unknown');
+    await act(async () => { row.click(); });
+    expect(container.textContent).toContain('recencydate unknown');
+    expect(searchResultToGraphMemory(searchHit).age).toBe(0.5);
+  });
+
+  it('retains actual message dates on chat search hits', () => {
+    const chat = searchResultToGraphMemory({ ...searchHit, source: 'chat', id: 'session:1' });
+    expect(chat.timestamp).toBe(searchHit.timestamp);
   });
 
   it('1 — non-empty query calls GET /api/brain/search', async () => {

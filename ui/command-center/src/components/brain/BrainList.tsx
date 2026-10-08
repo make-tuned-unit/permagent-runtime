@@ -19,6 +19,7 @@ import { Tooltip } from '../common/Tooltip';
 // ── Date formatting ──────────────────────────────────────────────────
 
 export function formatMemoryDate(ts: string, nowMs = Date.now()): string {
+  if (!ts.trim()) return 'date unknown';
   const d = new Date(ts);
   if (isNaN(d.getTime())) return ts;
   const diff = nowMs - d.getTime();
@@ -561,7 +562,7 @@ function MemoryRow({ memory, selected, highlightTerms, onClick, onForget }: {
             0..1 scene coordinate, clamped at 90 days, so every memory past the
             window shared one bucket and a three-year-old note read as merely
             "older" — on the list whose subject is what was learned when. */}
-        <AsOf asOf={memory.timestamp} granularity="calendar" staleAfterMs={MEMORY_STALE_AFTER_DAYS * 86_400_000} />
+        <AsOf asOf={memory.timestamp} granularity="calendar" unknownLabel="date unknown" staleAfterMs={MEMORY_STALE_AFTER_DAYS * 86_400_000} />
         {/* Last referenced (R5's "created/last-referenced" pair) — Spectral's
             Memify reinforcement timestamp, the closest durable signal it
             carries; never marked stale, since "not yet referenced again" is

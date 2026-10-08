@@ -80,6 +80,8 @@ describe('previewToGraphMemory', () => {
     const m = previewToGraphMemory({ key: 'k', preview: { text: 't' } });
     expect(m.weight).toBe(0);
     expect(m.age).toBe(0.5);
+    expect(m.timestamp).toBe('');
+    expect(formatMemoryAge(m.timestamp).label).toBe('date unknown');
   });
 });
 

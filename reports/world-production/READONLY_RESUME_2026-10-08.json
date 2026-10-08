@@ -1,0 +1,94 @@
+{
+  "date": "2026-10-08",
+  "scope": "Read-only Chrome 5301 UI backed by existing production 3001; no application data mutations, sends, jobs or permission changes",
+  "base_commit": "cf5cfdc9",
+  "preview": {
+    "pid": 79354,
+    "supervisor_pid": 79353,
+    "start_gib": 22.065685272216797,
+    "start_utc": "2026-10-08T18:02:27Z",
+    "reason": "requested",
+    "min_gib": 20.73584747314453,
+    "end_gib": 20.746837615966797,
+    "exit_code": 0
+  },
+  "checks": {
+    "brain_notes": {
+      "all_time_memories": 5091,
+      "notes_memories": 38,
+      "all_notes_provenance": true,
+      "empty_date_window": "No memories match these filters.",
+      "last_row_clear_of_fixed_slider": true,
+      "restored_all_sources_and_all_time": true
+    },
+    "brain_search": {
+      "query": "permagent",
+      "ranked_results": 50,
+      "observed_defect": "Synthetic Spectral hits stamped with query time were displayed as 0m ago / today.",
+      "fix": "Suppress known synthetic query timestamps in UI; preserve real chat timestamps. Undated cross-surface previews no longer synthesize current time.",
+      "browser_recheck": "date unknown in result rows and selected detail; graph renders after clearing search",
+      "remaining": "Search result details still show backend excerpts; no full-search-memory read acceptance."
+    },
+    "project_note": {
+      "view_in_brain": "Human title, from a note, Saved memory \u2014 outside current graph",
+      "returned_to_project": true,
+      "note_edited": false
+    },
+    "automate_draft": {
+      "existing_automations_before_after": 6,
+      "custom_cron": "0 9 * * 1-5 \u2192 Preview: Weekdays at 9:00 AM",
+      "one_time": "Uses this device's local time (America/Halifax). No timezone input.",
+      "interval": "Amount 1, unit hours, no recurring timezone",
+      "focus_trap": "Tab from final Create returns to Close within dialog",
+      "cancel_focus": "Returns to + Create automation",
+      "discarded_draft": "Reopens with blank name/task and weekday-8-AM default",
+      "submitted": false
+    },
+    "history": {
+      "total": 1234,
+      "categories": {
+        "conversations": 270,
+        "agent_runs": 153,
+        "system": 876
+      },
+      "empty_search": "Category-specific no conversations / no agent runs match text",
+      "matching_query": "pong returned 11 conversations including titles without pong",
+      "search_restored": true,
+      "last_row_bottom_px": 683.1875,
+      "viewport_height_px": 786,
+      "limitations": "No sort control exposed; no session opened, forked, renamed or deleted; transcript-only hits not opened to validate body."
+    },
+    "chat": {
+      "draft": "QA draft with spaces",
+      "space_key": "No voice activation; draft remained visible",
+      "cleared": true,
+      "resize_aria_values": [
+        392,
+        384
+      ],
+      "reopen": "Blank composer, Send disabled",
+      "sent": false,
+      "voice_activated": false
+    }
+  },
+  "validation": {
+    "test_files": 3,
+    "total": 56,
+    "passed": 56,
+    "failed": 0,
+    "typescript_exit_code": 0,
+    "test_min_gib": 21.754653930664062,
+    "typecheck_min_gib": 21.464763641357422,
+    "raw_tests": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/brain-date-honesty-tests-20261008.json",
+    "initial_test_attempt": "55/56; new test used button tag for a role=button div. Corrected selector, then 56/56 passed.",
+    "diff_check": "passed"
+  },
+  "unresolved": {
+    "terminal_second_tab": "Source intentionally creates replacement shell when final tab detached; two tabs after redock are consistent with design. Exact PTY continuity still unverified.",
+    "native_record_ax": "Settings/picker focus review found no confirmed root cause. Native AX observation remains open.",
+    "runtime_start": "Below 25 GiB; isolated runtime and builds not started.",
+    "screen_recording_permission": "Prior action-time question still pending; no grant made.",
+    "native_stage": "r4 predates this date fix and prior recovery-copy fix."
+  },
+  "final_free_gib": 19.453006744384766
+}

@@ -26,15 +26,20 @@ export interface BrainSearchResponse {
 }
 
 export function searchResultToGraphMemory(result: BrainSearchResult): GraphMemory {
+  // The current search endpoint stamps synthetic Spectral hits with query
+  // time, not memory creation time. Never present that as when it was learned.
+  // Chat hits carry their actual message timestamp and retain it.
+  const timestamp = result.source === 'memory' && result.id.startsWith('spectral:')
+    ? '' : result.timestamp;
   return {
     id: result.id,
     key: result.source === 'chat' ? `chat:${result.session_id ?? result.id}` : null,
     text: result.preview,
     description: null,
     ent: [],
-    age: ageFromTimestamp(result.timestamp),
+    age: ageFromTimestamp(timestamp),
     weight: Math.min(1, Math.max(0, result.score)),
-    timestamp: result.timestamp,
+    timestamp,
     layer: result.layer ?? null,
     why: result.why ?? null,
     // Search's "memory" bucket is not a feed-source tag. Chat provenance,
