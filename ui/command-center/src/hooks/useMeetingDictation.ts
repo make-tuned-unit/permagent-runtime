@@ -737,7 +737,7 @@ export function useMeetingDictation() {
       setTarget(null);
       setActiveSources(null);
       setError(`${message} ${recoverable
-        ? 'What was captured before it stopped is kept — save it from the recovered-recording card.'
+        ? 'The recording draft is kept — save it from the recovered-recording card. It may contain transcript segments, your notes, or capture-gap details.'
         : 'Nothing had been captured yet, so there is nothing to save.'}`);
       setState('error');
     } finally {

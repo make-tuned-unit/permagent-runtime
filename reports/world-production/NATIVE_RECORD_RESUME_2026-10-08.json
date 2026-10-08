@@ -1,0 +1,86 @@
+{
+  "setup": "Created an empty disposable project through isolated HTTP API; all recording actions are driven through native UI.",
+  "project": {
+    "id": "01a11c91-8504-7441-87d3-5120a57d27db",
+    "slug": "record-native-0876a24c70",
+    "name": "Record Native QA 2026-10-08 0876a24c70",
+    "description": "Synthetic native capture acceptance only; no external actions.",
+    "status": "active",
+    "rootPath": null,
+    "siteUrl": null,
+    "repoUrl": null,
+    "notes": "",
+    "metadataJson": {},
+    "tags": [],
+    "createdAt": "2026-10-08T17:31:01.252Z",
+    "updatedAt": "2026-10-08T17:31:01.252Z",
+    "lastOpenedAt": "2026-10-08T17:31:01.252Z"
+  },
+  "run": "0876a24c70",
+  "utc": "2026-10-08T17:45:41.509201+00:00",
+  "nativeStage": "record-r4-restored",
+  "nativeExecutableSha256": "a5c8f90fda86ef0f8f67fc8f9b7d968358d4b34e751bdcf18a06e3be0db72b37",
+  "backendSha256": "30df7a01ad109dba99420a11fc98100552877779227e51371dfea7e22898e9ae",
+  "backend": "127.0.0.1:3002; isolated record-qa-runtime",
+  "computerUse": "Native CUA accessibility observations and screenshots; exact staged app, then its running bundle identifier. Window attachment recovered this session.",
+  "passed": [
+    "Cold app while backend stopped: explicit unavailable state; guarded daemon startup then Retry reaches app content.",
+    "Record: model available with inference caveat; project selection enables Start; Cancel closes without capture.",
+    "Record scope: microphone off, system audio on, Permagent Record Practice only; description accurately names that source.",
+    "Record start with Screen Recording off: exits recording, explicit permission error, recoverable failure draft, discard leaves synthetic project with zero tasks and no meeting note observed.",
+    "Record Escape from Settings closes picker; subsequent Enter does not start capture.",
+    "Captured-audio Cobalt project: two Backlog standard tasks, unassigned; final venue commitment and cancellation retained.",
+    "Task View meeting source shows completed triage; Open triage session shows source transcript and exact two-todo JSON; Open source note retains local model provenance, full transcript and one linked memory.",
+    "View in Brain opens full saved memory outside current graph with human title and from a note label; Why this says requested full text.",
+    "Calendar unconnected Week, Month, selected future Day: later dates explicitly unavailable and THIS DATE HAS NOT BEEN CHECKED; Escape collapses and returns focus.",
+    "World native rendered scene; Observatory garden and Conservatory navigation; respective Forecaster and Grower collaborator selections.",
+    "World planning and provenance demonstrations: both correct and incorrect choices show appropriately qualified feedback.",
+    "World Water: shade and flow branches, correct and incorrect predictions, Inspect results, reset clears choices/results. Changing a prediction after inspection updates feedback immediately.",
+    "World Query, Job, Capability labels and draft fields; draft content retained across types; Capability export creates exact local Markdown and shows no job dispatched.",
+    "World Lantern night selected and native scene rendered; System appearance restored.",
+    "Reduce motion off->on persisted across Settings/World navigation; Conservatory navigation remained available; off restored.",
+    "Build terminal and browser pop-outs open native child windows and return to Build when closed. Terminal had two j tabs after return versus one before; command execution/session continuity not asserted.",
+    "Native Preferences, Persona, Memory and Appearance panels inspected; notification/source switches expose names; no credentials or permissions changed.",
+    "After explicitly stopping isolated daemon, native Home displayed Record QA offline/reconnecting and Retry; application then closed."
+  ],
+  "limitations": [
+    "No new audio played or successfully captured this session; native Record->ASR->note->triage full acceptance is blocked by OS permission. Asked user before granting; no approval received or permission changed by this agent.",
+    "After Record opened over Appearance, screenshot showed the picker but AX omitted modal controls. Escape worked. Other Record openings exposed the picker normally. Cause unconfirmed.",
+    "One noWindowsAvailable result followed Export; reattaching running bundle restored the window and exported file was independently verified. No crash claim.",
+    "Reduced-motion navigation is verified, not frame-level absence of motion; night selector/render observed, not exhaustive visual comparison.",
+    "Seeded QA root does not prove fresh onboarding. Full matrix, calendar grants, mic/voice permissions, complete walking/collision, live brief dispatch, and release/install acceptance remain open.",
+    "Staged r4 predates this session recovery wording source edit. No native rebuild claimed."
+  ],
+  "freeGiBAtReceipt": 21.20818328857422,
+  "export": {
+    "path": "/Users/j/Downloads/forum-forecaster-brief.md",
+    "bytes": 422,
+    "sha256": "9ff57ad9384d5893c83e8b5afc34917e0bc4c97b9c6bc2a6e906b15352b161e4",
+    "content": "# Capability for The Forecaster\n\nStatus: draft, not dispatched\nRequested specialist: forecaster\n\n## Request\nSynthetic QA draft: compare the two fictional venue records. Do not execute tasks or contact anyone.\n\n## Acceptance criteria\nA cited comparison that marks the Observatory route as unconfirmed.\n\n## Execution contract\nConfirm available tools and permissions. Return evidence, limitations, and any approval requests.\n"
+  },
+  "sourceValidation": {
+    "change": "Recovery copy acknowledges transcripts, typed notes or capture-gap details rather than asserting speech survived.",
+    "rawReport": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/native-resume-recovery-copy-tests-20261008.json",
+    "tests": 82,
+    "passed": 82,
+    "failed": 0,
+    "success": true,
+    "fullSuiteRerun": false
+  },
+  "shutdown": {
+    "utc": "2026-10-08T17:46:53.628381+00:00",
+    "isolatedDaemonReceipt": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/record-qa-runtime/record-review-run-20261008-172945.json",
+    "isolatedSupervisorExitCode": 0,
+    "fixtureServerExitCode": 0,
+    "ownedAppsStopped": true,
+    "testPortsStopped": [
+      3002,
+      3003,
+      5301,
+      5302,
+      5489
+    ],
+    "production3001PreservedPid": 1439,
+    "freeGiB": 21.29758071899414
+  }
+}

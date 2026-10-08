@@ -805,7 +805,7 @@ export function MeetingRecorder({ open }: { open: boolean }) {
         <div style={{ ...cardStyle(colors.borderHi, true), maxWidth: 340 }}>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: space.md }}>
             <div style={{ fontSize: textSize.caption, fontWeight: 600, color: colors.text }}>
-              Interrupted recording recovered
+              Recording draft recovered
             </div>
             {recoveredDrafts.length > 1 && (
               <span style={{ fontSize: 10, color: colors.textDim }}>
@@ -814,9 +814,9 @@ export function MeetingRecorder({ open }: { open: boolean }) {
             )}
           </div>
           <div style={{ fontSize: textSize.micro, color: colors.textDim, lineHeight: 1.5 }}>
-            A recording for "{newestDraft.projectName}" was cut off before it was
-            saved. The transcribed part survived — save it as the meeting note,
-            or let it go.
+            A recording for "{newestDraft.projectName}" ended before it was saved.
+            The draft may contain transcript segments, your notes, or capture-gap
+            details. Save it as a meeting note, or discard it.
           </div>
           {/* A failed recovery save used to set an error that nothing on screen
               could render: the button simply sprang back to "Save the
@@ -831,7 +831,7 @@ export function MeetingRecorder({ open }: { open: boolean }) {
                 setRecovering(newestDraft.startedAt);
                 const saved = await recoverDraft(newestDraft);
                 setRecovering(null);
-                if (saved) savedToast(`The recovered transcript was saved as a note on "${newestDraft.projectName}" — click to open it.`, saved);
+                if (saved) savedToast(`The recovered draft was saved as a note on "${newestDraft.projectName}" — click to open it.`, saved);
                 // `recoverDraft` reports failure by returning null (and setting
                 // `error`, rendered above) — never tick on that.
                 return saved !== null;
@@ -839,7 +839,7 @@ export function MeetingRecorder({ open }: { open: boolean }) {
               disabled={recovering === newestDraft.startedAt}
               style={{ ...btnVars('primary'), cursor: recovering ? 'default' : 'pointer' } as CSSProperties}
             >
-              {recovering === newestDraft.startedAt ? 'Saving…' : 'Save the transcript'}
+              {recovering === newestDraft.startedAt ? 'Saving…' : 'Save recovered note'}
             </Button>
             <Button colors={colors} onClick={() => dismissDraft(newestDraft)} style={btnVars('quiet')}>
               Discard

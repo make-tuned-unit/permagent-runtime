@@ -4,7 +4,7 @@ This is an independent reconciliation of existing receipts and navigation source
 
 ## Current evidence boundary
 
-- Root reports the latest full frontend run passed **3,923 tests / 486 files**. This is code validation, not screen acceptance.
+- Root reports the latest full frontend run passed **3,927 tests / 486 files**. This is code validation, not screen acceptance.
 - Root reports foreground Chrome scoped capture produced valid 45-second and 30.18-second tail WAVs; private receipt `chrome-dc232a2ce15f4f5e90458fc89ced392e/capture.json`. This supersedes older zero-PCM wording for that controlled capture only. This worker did not independently observe that run. Record UI → ASR → note → triage/cards remains open.
 - Prior browser receipts establish selected Home focus/cancel flows, project lenses, empty Grow lenses, Build history bounds/browser fallback, some Settings labeling, shared-chat opening and compact World desk interactions. They do not establish every branch.
 - Keep source changes distinct from the installed/retained native artifacts, which may predate them. Do not use a seeded review root as proof of pristine onboarding.
@@ -45,3 +45,7 @@ Prioritize current-source Record keyboard/readiness, Calendar state/tab focus, B
 - Source inventory: `components/sidebar/Sidebar.tsx`, `components/settings/SettingsView.tsx`, `lib/store.ts` and named files in the matrix.
 
 No new UI interaction, model/runtime operation, test execution or source edit was performed for this checklist.
+
+## Native continuation reconciliation
+
+[Native resume receipt](NATIVE_RECORD_RESUME_2026-10-08.json) and the final [shipping QA](SHIPPING_QA_2026-10-08.md) section add real native coverage for Record selection/cancellation/scope/permission denial, retained meeting source-to-Brain navigation, Calendar ranges/unqueried dates, World demonstration branches/brief export/night/reduced-motion navigation, and terminal/browser pop-outs. These supersede only those subcases above, not whole rows. Full native capture remains gated on Screen Recording permission; broader lifecycle/fresh-user/deeper Settings cases remain open. Recovery wording source fix passes82 targeted tests and is not embedded in the retained r4 stage.
