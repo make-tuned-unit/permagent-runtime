@@ -1,0 +1,11 @@
+{
+  "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/.hermit/rust",
+  "createdUtc": "2026-10-08T16:10:02.947482+00:00",
+  "reason": "Duplicate registry/git cache created only by this continuation\u2019s mistaken worktree Hermit test launch. Main checkout cache and all source/evidence/build outputs preserved.",
+  "files": 52600,
+  "logicalBytes": 964246967,
+  "openFiles": false,
+  "removed": true,
+  "freeBeforeGiB": 25.005172729492188,
+  "freeAfterGiB": 26.051803588867188
+}

@@ -1,0 +1,609 @@
+{
+  "method": "actual captured WAV\u2192retained ASR\u2192isolated HTTP note/triage/Brain/Kanban; NOT native UI/IPC",
+  "startedUtc": "2026-10-08T16:36:45Z",
+  "sourceTranscription": {
+    "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/record-qa-runtime/capture-evidence/chrome-dc232a2ce15f4f5e90458fc89ced392e/whisper-b24f721572a54f398726505ae8feac37.json",
+    "sha256": "fe38d9e28607a69f052576b65163bf587e0a864542e216234e17751689c854c1"
+  },
+  "sourceCapture": {
+    "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/record-qa-runtime/capture-evidence/chrome-dc232a2ce15f4f5e90458fc89ced392e/capture.json",
+    "sha256": "7e373f8111608eea60d7b60b3db1fbef6e909c466f4bf9f1ec4d29a724416315"
+  },
+  "checks": [
+    {
+      "name": "Amber Launch: identical save deduplicates",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Amber Launch: changed transcript conflicts",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Cobalt Venue: identical save deduplicates",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Cobalt Venue: changed transcript conflicts",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA captured-audio Amber Launch bdf2244c07: triage completed",
+      "passed": true,
+      "details": {
+        "id": "mt-035c32c83f1ea66a6772515dd5128737",
+        "projectId": "01a11c5f-d92a-7361-89b1-cb7322de4f41",
+        "recordingId": "synthetic-http-bdf2244c07",
+        "noteId": "mn-64fbe5a77f76c5afc2f30deedc7b5884",
+        "status": "completed",
+        "attemptCount": 1,
+        "privacyRoute": "local_only",
+        "sessionId": "20261008_12",
+        "orchestratorName": "Record QA",
+        "idempotentRecording": true,
+        "cardIds": [
+          "mc-c6f591ab8d37a8ce7018ac26f42dd93f",
+          "mc-c3333b12b91fd6030b309c4a7df29544"
+        ],
+        "truncated": false,
+        "created": false
+      }
+    },
+    {
+      "name": "Record HTTP QA captured-audio Amber Launch bdf2244c07: local-only privacy",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA captured-audio Amber Launch bdf2244c07: one saved note with complete transcript",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA captured-audio Amber Launch bdf2244c07: typed notes retained and no truncation",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA captured-audio Amber Launch bdf2244c07: final negation retained",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA captured-audio Amber Launch bdf2244c07: exactly two commitments",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA captured-audio Amber Launch bdf2244c07: no cancelled purchase/email task",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA captured-audio Amber Launch bdf2244c07: correct board and unexecuted cards",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA captured-audio Amber Launch bdf2244c07: source evidence links",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA captured-audio Amber Launch bdf2244c07: receipt/card identities agree",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA captured-audio Amber Launch bdf2244c07: Orchestrator session project context",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA captured-audio Amber Launch bdf2244c07: one durable triage row",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA captured-audio Amber Launch bdf2244c07: local model provenance",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA captured-audio Amber Launch bdf2244c07: hidden tool-free session received final transcript",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA captured-audio Amber Launch bdf2244c07: catalogue delivered full tail",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA captured-audio Amber Launch bdf2244c07: completed replay/retry keeps cards stable",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA captured-audio Amber Launch bdf2244c07: replay does not create another Orchestrator turn",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA captured-audio Cobalt Venue bdf2244c07: triage completed",
+      "passed": true,
+      "details": {
+        "id": "mt-1c8df127c4fae0fb62b02b0abbd9cf63",
+        "projectId": "01a11c5f-d93e-74d2-b2e9-e32028b1ab34",
+        "recordingId": "synthetic-http-bdf2244c07",
+        "noteId": "mn-8118b3945e7bdbf39aac4a8715278706",
+        "status": "completed",
+        "attemptCount": 1,
+        "privacyRoute": "local_only",
+        "sessionId": "20261008_13",
+        "orchestratorName": "Record QA",
+        "idempotentRecording": true,
+        "cardIds": [
+          "mc-cc5330622e9a5bdb28b089715f389951",
+          "mc-38a369cd95bec9bd0b14e29a61b75c02"
+        ],
+        "truncated": false,
+        "created": false
+      }
+    },
+    {
+      "name": "Record HTTP QA captured-audio Cobalt Venue bdf2244c07: local-only privacy",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA captured-audio Cobalt Venue bdf2244c07: one saved note with complete transcript",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA captured-audio Cobalt Venue bdf2244c07: typed notes retained and no truncation",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA captured-audio Cobalt Venue bdf2244c07: final negation retained",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA captured-audio Cobalt Venue bdf2244c07: exactly two commitments",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA captured-audio Cobalt Venue bdf2244c07: no cancelled purchase/email task",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA captured-audio Cobalt Venue bdf2244c07: correct board and unexecuted cards",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA captured-audio Cobalt Venue bdf2244c07: source evidence links",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA captured-audio Cobalt Venue bdf2244c07: receipt/card identities agree",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA captured-audio Cobalt Venue bdf2244c07: Orchestrator session project context",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA captured-audio Cobalt Venue bdf2244c07: one durable triage row",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA captured-audio Cobalt Venue bdf2244c07: local model provenance",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA captured-audio Cobalt Venue bdf2244c07: hidden tool-free session received final transcript",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA captured-audio Cobalt Venue bdf2244c07: catalogue delivered full tail",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA captured-audio Cobalt Venue bdf2244c07: completed replay/retry keeps cards stable",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA captured-audio Cobalt Venue bdf2244c07: replay does not create another Orchestrator turn",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "same recording ID remains project-bound",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "no active goals launched for either synthetic project",
+      "passed": true,
+      "details": null
+    }
+  ],
+  "tokenLogged": false,
+  "scenario": "captured-audio",
+  "configuredLocalRoute": {
+    "provider": "ollama",
+    "model": "qwen2.5:7b"
+  },
+  "recordingId": "synthetic-http-bdf2244c07",
+  "fixtureBody": "## Your notes\nSynthetic QA only. No external actions authorized.\n\n## Transcript\nI will review the accessibility checklist. The old idea to buy equipment is cancelled. Do not create a purchase task. you\nCobalt 9 Final Commitment. Confirm the venue step free route. I'm going to do it.",
+  "projects": [
+    {
+      "project": {
+        "id": "01a11c5f-d92a-7361-89b1-cb7322de4f41",
+        "name": "Record HTTP QA captured-audio Amber Launch bdf2244c07"
+      },
+      "base": "/api/projects/01a11c5f-d92a-7361-89b1-cb7322de4f41",
+      "savedNoteId": "mn-64fbe5a77f76c5afc2f30deedc7b5884",
+      "initialReceipt": {
+        "id": "mt-035c32c83f1ea66a6772515dd5128737",
+        "projectId": "01a11c5f-d92a-7361-89b1-cb7322de4f41",
+        "recordingId": "synthetic-http-bdf2244c07",
+        "noteId": "mn-64fbe5a77f76c5afc2f30deedc7b5884",
+        "status": "pending",
+        "attemptCount": 0,
+        "orchestratorName": "Record QA",
+        "idempotentRecording": true,
+        "cardIds": [],
+        "truncated": false,
+        "created": true
+      },
+      "columns": [
+        {
+          "id": "01a11c5f-d92b-7e60-9f20-c719ae13457d",
+          "projectId": "01a11c5f-d92a-7361-89b1-cb7322de4f41",
+          "name": "Backlog",
+          "position": 0,
+          "columnKind": "manual",
+          "stateBinding": null,
+          "wipLimit": null,
+          "createdAt": "2026-10-08T16:36:45.995Z"
+        },
+        {
+          "id": "01a11c5f-d92c-7a01-bb02-f0a482c5fd50",
+          "projectId": "01a11c5f-d92a-7361-89b1-cb7322de4f41",
+          "name": "Doing",
+          "position": 1,
+          "columnKind": "manual",
+          "stateBinding": null,
+          "wipLimit": null,
+          "createdAt": "2026-10-08T16:36:45.996Z"
+        },
+        {
+          "id": "01a11c5f-d92c-7a01-bb02-f0bb5db24d71",
+          "projectId": "01a11c5f-d92a-7361-89b1-cb7322de4f41",
+          "name": "Done",
+          "position": 2,
+          "columnKind": "manual",
+          "stateBinding": null,
+          "wipLimit": null,
+          "createdAt": "2026-10-08T16:36:45.996Z"
+        }
+      ],
+      "receipt": {
+        "id": "mt-035c32c83f1ea66a6772515dd5128737",
+        "projectId": "01a11c5f-d92a-7361-89b1-cb7322de4f41",
+        "recordingId": "synthetic-http-bdf2244c07",
+        "noteId": "mn-64fbe5a77f76c5afc2f30deedc7b5884",
+        "status": "completed",
+        "attemptCount": 1,
+        "privacyRoute": "local_only",
+        "sessionId": "20261008_12",
+        "orchestratorName": "Record QA",
+        "idempotentRecording": true,
+        "cardIds": [
+          "mc-c6f591ab8d37a8ce7018ac26f42dd93f",
+          "mc-c3333b12b91fd6030b309c4a7df29544"
+        ],
+        "truncated": false,
+        "created": false
+      },
+      "savedNotes": [
+        {
+          "id": "mn-64fbe5a77f76c5afc2f30deedc7b5884",
+          "project_id": "01a11c5f-d92a-7361-89b1-cb7322de4f41",
+          "title": "Synthetic Amber Launch meeting",
+          "body": "## Decisions\n- The old idea to buy equipment is cancelled.\n\n_Summary by `ollama/qwen2.5:7b`. Written on-device._\n\n## Your notes\n\nSynthetic QA only. No external actions authorized.\n\n## Transcript\n\nI will review the accessibility checklist. The old idea to buy equipment is cancelled. Do not create a purchase task. you\nCobalt 9 Final Commitment. Confirm the venue step free route. I'm going to do it.",
+          "memory_key": "note:01a11c5f-d92a-7361-89b1-cb7322de4f41:mn-64fbe5a77f76c5afc2f30deedc7b5884",
+          "created_at": "2026-10-08T16:36:46.001Z",
+          "updated_at": "2026-10-08T16:36:59.132Z",
+          "export_path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/record-qa-runtime/notes/record-http-amber-launch-bdf2244c07/2026-10-08-synthetic-amber-launch-meeting-mn-64fbe5a77f76c5afc2f30deedc7b5884.md"
+        }
+      ],
+      "cards": [
+        {
+          "id": "mc-c6f591ab8d37a8ce7018ac26f42dd93f",
+          "projectId": "01a11c5f-d92a-7361-89b1-cb7322de4f41",
+          "cardType": "standard",
+          "title": "Review the accessibility checklist",
+          "description": "you - I will review the accessibility checklist.\n\n\u2014 from meeting triage on this project",
+          "columnId": "01a11c5f-d92b-7e60-9f20-c719ae13457d",
+          "position": 0,
+          "createdBy": "henry",
+          "assignedTo": null,
+          "metadataJson": {
+            "created_by_agent": "henry",
+            "source": "meeting_triage",
+            "source_note_id": "mn-64fbe5a77f76c5afc2f30deedc7b5884",
+            "source_triage_id": "mt-035c32c83f1ea66a6772515dd5128737",
+            "source_item_key": "991ffac6b28cd69a0f7bc51fe8fbb72b387e65b49aee98e774035b842cfd496f",
+            "source_recording_id": "synthetic-http-bdf2244c07"
+          },
+          "createdAt": "2026-10-08T16:36:59.134Z",
+          "updatedAt": "2026-10-08T16:36:59.134Z",
+          "archivedAt": null
+        },
+        {
+          "id": "mc-c3333b12b91fd6030b309c4a7df29544",
+          "projectId": "01a11c5f-d92a-7361-89b1-cb7322de4f41",
+          "cardType": "standard",
+          "title": "Confirm the venue step free route",
+          "description": "Cobalt 9 Final Commitment. Confirm the venue step free route. I'm going to do it.\n\n\u2014 from meeting triage on this project",
+          "columnId": "01a11c5f-d92b-7e60-9f20-c719ae13457d",
+          "position": 1,
+          "createdBy": "henry",
+          "assignedTo": null,
+          "metadataJson": {
+            "created_by_agent": "henry",
+            "source": "meeting_triage",
+            "source_note_id": "mn-64fbe5a77f76c5afc2f30deedc7b5884",
+            "source_triage_id": "mt-035c32c83f1ea66a6772515dd5128737",
+            "source_item_key": "a298a88f76516390f3b773ed54000a5b90842c813ae20b422a90de4207f2d53e",
+            "source_recording_id": "synthetic-http-bdf2244c07"
+          },
+          "createdAt": "2026-10-08T16:36:59.135Z",
+          "updatedAt": "2026-10-08T16:36:59.135Z",
+          "archivedAt": null
+        }
+      ],
+      "sessionApi": {
+        "sessionId": "20261008_12",
+        "orchestratorName": "Record QA",
+        "projectId": "01a11c5f-d92a-7361-89b1-cb7322de4f41",
+        "recordingId": "synthetic-http-bdf2244c07",
+        "noteId": "mn-64fbe5a77f76c5afc2f30deedc7b5884",
+        "idempotentRecording": true,
+        "messageCount": 3,
+        "context": {
+          "projectId": "01a11c5f-d92a-7361-89b1-cb7322de4f41",
+          "recordingId": "synthetic-http-bdf2244c07",
+          "noteId": "mn-64fbe5a77f76c5afc2f30deedc7b5884",
+          "orchestratorName": "Record QA",
+          "idempotentRecording": true
+        }
+      },
+      "databaseProof": {
+        "triageRows": [
+          {
+            "id": "mt-035c32c83f1ea66a6772515dd5128737",
+            "status": "completed",
+            "attempt_count": 1,
+            "writeup_provider": "ollama",
+            "writeup_model": "qwen2.5:7b",
+            "writeup_privacy": "local_only",
+            "privacy_route": "local_only",
+            "session_id": "20261008_12",
+            "note_id": "mn-64fbe5a77f76c5afc2f30deedc7b5884"
+          }
+        ],
+        "session": {
+          "id": "20261008_12",
+          "name": "orchestrator-meeting-triage:01a11c5f-d92a-7361-89b1-cb7322de4f41:synthetic-http-bdf2244c07",
+          "session_type": "hidden"
+        },
+        "messageCount": 3,
+        "transcriptTailInSession": true,
+        "toolContentPresent": false,
+        "noteCatalogueOutbox": [],
+        "memoryKey": "note:01a11c5f-d92a-7361-89b1-cb7322de4f41:mn-64fbe5a77f76c5afc2f30deedc7b5884"
+      },
+      "catalogue": {
+        "delivered": true,
+        "key": "note:01a11c5f-d92a-7361-89b1-cb7322de4f41:mn-64fbe5a77f76c5afc2f30deedc7b5884",
+        "tailRetained": true
+      }
+    },
+    {
+      "project": {
+        "id": "01a11c5f-d93e-74d2-b2e9-e32028b1ab34",
+        "name": "Record HTTP QA captured-audio Cobalt Venue bdf2244c07"
+      },
+      "base": "/api/projects/01a11c5f-d93e-74d2-b2e9-e32028b1ab34",
+      "savedNoteId": "mn-8118b3945e7bdbf39aac4a8715278706",
+      "initialReceipt": {
+        "id": "mt-1c8df127c4fae0fb62b02b0abbd9cf63",
+        "projectId": "01a11c5f-d93e-74d2-b2e9-e32028b1ab34",
+        "recordingId": "synthetic-http-bdf2244c07",
+        "noteId": "mn-8118b3945e7bdbf39aac4a8715278706",
+        "status": "pending",
+        "attemptCount": 0,
+        "orchestratorName": "Record QA",
+        "idempotentRecording": true,
+        "cardIds": [],
+        "truncated": false,
+        "created": true
+      },
+      "columns": [
+        {
+          "id": "01a11c5f-d93f-7b32-984b-03c3d473cdcd",
+          "projectId": "01a11c5f-d93e-74d2-b2e9-e32028b1ab34",
+          "name": "Backlog",
+          "position": 0,
+          "columnKind": "manual",
+          "stateBinding": null,
+          "wipLimit": null,
+          "createdAt": "2026-10-08T16:36:46.015Z"
+        },
+        {
+          "id": "01a11c5f-d93f-7b32-984b-03d855262968",
+          "projectId": "01a11c5f-d93e-74d2-b2e9-e32028b1ab34",
+          "name": "Doing",
+          "position": 1,
+          "columnKind": "manual",
+          "stateBinding": null,
+          "wipLimit": null,
+          "createdAt": "2026-10-08T16:36:46.015Z"
+        },
+        {
+          "id": "01a11c5f-d93f-7b32-984b-03e33cbf323e",
+          "projectId": "01a11c5f-d93e-74d2-b2e9-e32028b1ab34",
+          "name": "Done",
+          "position": 2,
+          "columnKind": "manual",
+          "stateBinding": null,
+          "wipLimit": null,
+          "createdAt": "2026-10-08T16:36:46.015Z"
+        }
+      ],
+      "receipt": {
+        "id": "mt-1c8df127c4fae0fb62b02b0abbd9cf63",
+        "projectId": "01a11c5f-d93e-74d2-b2e9-e32028b1ab34",
+        "recordingId": "synthetic-http-bdf2244c07",
+        "noteId": "mn-8118b3945e7bdbf39aac4a8715278706",
+        "status": "completed",
+        "attemptCount": 1,
+        "privacyRoute": "local_only",
+        "sessionId": "20261008_13",
+        "orchestratorName": "Record QA",
+        "idempotentRecording": true,
+        "cardIds": [
+          "mc-cc5330622e9a5bdb28b089715f389951",
+          "mc-38a369cd95bec9bd0b14e29a61b75c02"
+        ],
+        "truncated": false,
+        "created": false
+      },
+      "savedNotes": [
+        {
+          "id": "mn-8118b3945e7bdbf39aac4a8715278706",
+          "project_id": "01a11c5f-d93e-74d2-b2e9-e32028b1ab34",
+          "title": "Synthetic Cobalt Venue meeting",
+          "body": "## Decisions\n- The old idea to buy equipment is cancelled.\n\n_Summary by `ollama/qwen2.5:7b`. Written on-device._\n\n## Your notes\n\nSynthetic QA only. No external actions authorized.\n\n## Transcript\n\nI will review the accessibility checklist. The old idea to buy equipment is cancelled. Do not create a purchase task. you\nCobalt 9 Final Commitment. Confirm the venue step free route. I'm going to do it.",
+          "memory_key": "note:01a11c5f-d93e-74d2-b2e9-e32028b1ab34:mn-8118b3945e7bdbf39aac4a8715278706",
+          "created_at": "2026-10-08T16:36:46.019Z",
+          "updated_at": "2026-10-08T16:37:05.085Z",
+          "export_path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/record-qa-runtime/notes/record-http-cobalt-venue-bdf2244c07/2026-10-08-synthetic-cobalt-venue-meeting-mn-8118b3945e7bdbf39aac4a8715278706.md"
+        }
+      ],
+      "cards": [
+        {
+          "id": "mc-cc5330622e9a5bdb28b089715f389951",
+          "projectId": "01a11c5f-d93e-74d2-b2e9-e32028b1ab34",
+          "cardType": "standard",
+          "title": "Review the accessibility checklist",
+          "description": "you - I will review the accessibility checklist.\n\n\u2014 from meeting triage on this project",
+          "columnId": "01a11c5f-d93f-7b32-984b-03c3d473cdcd",
+          "position": 0,
+          "createdBy": "henry",
+          "assignedTo": null,
+          "metadataJson": {
+            "created_by_agent": "henry",
+            "source": "meeting_triage",
+            "source_note_id": "mn-8118b3945e7bdbf39aac4a8715278706",
+            "source_triage_id": "mt-1c8df127c4fae0fb62b02b0abbd9cf63",
+            "source_item_key": "991ffac6b28cd69a0f7bc51fe8fbb72b387e65b49aee98e774035b842cfd496f",
+            "source_recording_id": "synthetic-http-bdf2244c07"
+          },
+          "createdAt": "2026-10-08T16:37:05.085Z",
+          "updatedAt": "2026-10-08T16:37:05.085Z",
+          "archivedAt": null
+        },
+        {
+          "id": "mc-38a369cd95bec9bd0b14e29a61b75c02",
+          "projectId": "01a11c5f-d93e-74d2-b2e9-e32028b1ab34",
+          "cardType": "standard",
+          "title": "Confirm the venue step free route",
+          "description": "Cobalt 9 Final Commitment. Confirm the venue step free route. I'm going to do it.\n\n\u2014 from meeting triage on this project",
+          "columnId": "01a11c5f-d93f-7b32-984b-03c3d473cdcd",
+          "position": 1,
+          "createdBy": "henry",
+          "assignedTo": null,
+          "metadataJson": {
+            "created_by_agent": "henry",
+            "source": "meeting_triage",
+            "source_note_id": "mn-8118b3945e7bdbf39aac4a8715278706",
+            "source_triage_id": "mt-1c8df127c4fae0fb62b02b0abbd9cf63",
+            "source_item_key": "a298a88f76516390f3b773ed54000a5b90842c813ae20b422a90de4207f2d53e",
+            "source_recording_id": "synthetic-http-bdf2244c07"
+          },
+          "createdAt": "2026-10-08T16:37:05.086Z",
+          "updatedAt": "2026-10-08T16:37:05.086Z",
+          "archivedAt": null
+        }
+      ],
+      "sessionApi": {
+        "sessionId": "20261008_13",
+        "orchestratorName": "Record QA",
+        "projectId": "01a11c5f-d93e-74d2-b2e9-e32028b1ab34",
+        "recordingId": "synthetic-http-bdf2244c07",
+        "noteId": "mn-8118b3945e7bdbf39aac4a8715278706",
+        "idempotentRecording": true,
+        "messageCount": 3,
+        "context": {
+          "projectId": "01a11c5f-d93e-74d2-b2e9-e32028b1ab34",
+          "recordingId": "synthetic-http-bdf2244c07",
+          "noteId": "mn-8118b3945e7bdbf39aac4a8715278706",
+          "orchestratorName": "Record QA",
+          "idempotentRecording": true
+        }
+      },
+      "databaseProof": {
+        "triageRows": [
+          {
+            "id": "mt-1c8df127c4fae0fb62b02b0abbd9cf63",
+            "status": "completed",
+            "attempt_count": 1,
+            "writeup_provider": "ollama",
+            "writeup_model": "qwen2.5:7b",
+            "writeup_privacy": "local_only",
+            "privacy_route": "local_only",
+            "session_id": "20261008_13",
+            "note_id": "mn-8118b3945e7bdbf39aac4a8715278706"
+          }
+        ],
+        "session": {
+          "id": "20261008_13",
+          "name": "orchestrator-meeting-triage:01a11c5f-d93e-74d2-b2e9-e32028b1ab34:synthetic-http-bdf2244c07",
+          "session_type": "hidden"
+        },
+        "messageCount": 3,
+        "transcriptTailInSession": true,
+        "toolContentPresent": false,
+        "noteCatalogueOutbox": [],
+        "memoryKey": "note:01a11c5f-d93e-74d2-b2e9-e32028b1ab34:mn-8118b3945e7bdbf39aac4a8715278706"
+      },
+      "catalogue": {
+        "delivered": true,
+        "key": "note:01a11c5f-d93e-74d2-b2e9-e32028b1ab34:mn-8118b3945e7bdbf39aac4a8715278706",
+        "tailRetained": true
+      }
+    }
+  ],
+  "passed": true
+}

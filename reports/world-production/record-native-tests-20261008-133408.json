@@ -1,0 +1,37 @@
+{
+  "command": [
+    "/Users/j/Documents/dev/permagent-runtime/bin/cargo",
+    "test",
+    "--manifest-path",
+    "ui/desktop/src-tauri/Cargo.toml",
+    "--locked",
+    "-j",
+    "1",
+    "system_audio",
+    "--",
+    "--nocapture"
+  ],
+  "log": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/reports/world-production/record-native-tests-20261008-133408.log",
+  "exit_code": 0,
+  "reason": null,
+  "cleanup_error": null,
+  "owned_group_stopped": true,
+  "daemon_artifact_preservation": {
+    "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/permagentd",
+    "preexisting": true,
+    "restored": true,
+    "original_sha256": "30df7a01ad109dba99420a11fc98100552877779227e51371dfea7e22898e9ae",
+    "backup": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/native-daemon-preservation/5b7ea7f3251a40879e2f5f78ec8cdab8/permagentd",
+    "status": "restored",
+    "after_build_sha256": "fb9695d479c5786dfbb2dbe887577744b97910c0cdde7ac3aac883320a3a1810",
+    "restored_sha256": "30df7a01ad109dba99420a11fc98100552877779227e51371dfea7e22898e9ae"
+  },
+  "daemon_preservation_error": null,
+  "elapsed_s": 39.93,
+  "minimum_free_gib": 26.336,
+  "startup_minimum_gib": 25,
+  "continuous_floor_gib": 20,
+  "timeout_s": 1800,
+  "staged": false,
+  "launched": false
+}

@@ -1,0 +1,26 @@
+{
+  "command": [
+    "/Users/j/.local/share/mise/installs/node/24.19.0/bin/node",
+    "node_modules/vitest/vitest.mjs",
+    "run",
+    "--pool=forks",
+    "--poolOptions.forks.minForks=1",
+    "--poolOptions.forks.maxForks=1",
+    "--reporter=json",
+    "--outputFile=/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/shipping-resume-restored-frontend-20261008.json"
+  ],
+  "exitCode": 0,
+  "minimumFreeGiB": 39.6057243347168,
+  "diskGuardStopped": false,
+  "elapsedSeconds": 322.66713225,
+  "log": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/shipping-resume-restored-frontend-20261008.log",
+  "sourceCommit": "52556637",
+  "atUtc": "2026-10-08T15:49:14.249080+00:00",
+  "success": true,
+  "numTotalTests": 3927,
+  "numPassedTests": 3927,
+  "numFailedTests": 0,
+  "numPendingTests": 0,
+  "testFiles": 486,
+  "failedFiles": []
+}

@@ -1,0 +1,20 @@
+{
+  "command": [
+    "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/scripts/build-guard.sh",
+    "--min-free-gb",
+    "25",
+    "--",
+    "/Users/j/Documents/dev/permagent-runtime/bin/cargo",
+    "fetch",
+    "--manifest-path",
+    "ui/desktop/src-tauri/Cargo.toml",
+    "--locked",
+    "--target",
+    "aarch64-apple-darwin"
+  ],
+  "exitCode": 0,
+  "reason": null,
+  "minimumFreeGiB": 27.898479461669922,
+  "elapsedSeconds": 2.0111197499999998,
+  "log": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/native-locked-fetch-20261008.log"
+}

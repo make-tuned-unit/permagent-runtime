@@ -1,6 +1,10 @@
 # Foreground Chrome capture — October 8, 2026
 
-**PASS: actual Chrome-scoped ScreenCaptureKit capture produced nonzero audio and a nonzero stop-flushed tail. ASR and the integrated Record flow are not yet passed.**
+**PASS: actual Chrome-scoped capture and local ASR preserve the tested commitments, negation and stop-flushed tail. The integrated native Record flow remains unverified.**
+
+**16:36UTC continuation:** the exact observed ASR text also passed40/40 real isolated backend checks for project-bound notes, Orchestrator context, authoritative Brain catalogue and exactly two unexecuted Kanban commitments per project. Save/retry identities are stable; no cancelled purchase task appears. [Backend acceptance receipt](isolated-meeting-http-20261008-163645-captured-audio-c7a50401.json). This closes the backend semantic pipeline using actual captured speech, including its stray phrases. Native Record controls/Tauri capture IPC remain separate and blocked on Computer Use window attachment.
+
+**15:49 UTC continuation: captured-audio ASR now passes.** Following disk recovery, the verified retained daemon ran only on isolated3002. The exact two captured WAVs were transcribed with the retained Whisper base model. [Private transcription receipt](/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/record-qa-runtime/capture-evidence/chrome-dc232a2ce15f4f5e90458fc89ced392e/whisper-b24f721572a54f398726505ae8feac37.json) records all five semantic checks passing. The first chunk retained the accessibility checklist, cancelled equipment purchase and explicit “Do not create a purchase task.” The stop-flushed tail retained “Final Commitment” and “Confirm the venue step free route.” There are short extraneous phrases (`you`, `I'm going to do it.`); this is semantic preservation, not verbatim-perfect ASR. The owned runtime was stopped normally before rebuilding. This resolves only the captured-WAV→ASR gate; native Record UI, note save, triage and Kanban acceptance remain separate.
 
 The parent drove the synthetic 55-second local WebRTC fixture through Computer Use in foreground native Chrome, approximately 14:58:54–14:59:50 UTC. This worker independently reviewed the saved receipt and recomputed hashes, WAV format/duration/amplitude, protocol checks, and capture acceptance from the retained files. No new capture, playback, permissions, device changes, inference, or daemon launch occurred during this review.
 
@@ -35,7 +39,7 @@ The fixture's49-second final cue was scheduled during the recording and a nonzer
 
 This pass covers helper CLI scope, actual signal, chunking, and stop flush. It does not cover native Record UI, Tauri start/read/stop IPC, microphone capture, duplex transcription, first-run consent UX, project selection, autosave, Orchestrator triage, Brain catalogue, or Kanban placement. Earlier HTTP and direct ASR fixtures remain separate component evidence.
 
-## Next authorized acceptance step
+## Original next step — completed at15:49UTC as recorded above
 
 At review time, isolated daemon3002 could not start under its25GiB startup guard with approximately22GiB free. Preserve the captured WAVs; do not weaken the guard or repeat capture just to work around this resource block. Once the parent can start the owned isolated daemon normally, transcribe this exact run separately:
 

@@ -1,5 +1,7 @@
 # Fresh-user Brain bootstrap — source checkpoint
 
+**Updated acceptance, October8:** the current daemon now builds; the dedicated actual-AppState integration test passes1/1; and real empty-data-root startup/restart both pass on final daemon SHA `30df7a01ad109dba99420a11fc98100552877779227e51371dfea7e22898e9ae`. Product ontology is created without manual seeding, Brain is readable/empty, and restart preserves it. [Integration receipt](FRESH_BRAIN_INTEGRATION_2026-10-08.json), [startup/restart receipt](FRESH_STARTUP_2026-10-08.json). These supersede the unrun compile/runtime status below. Fresh native onboarding, a new macOS user and signed-install acceptance remain open.
+
 Production trace: native `daemon.rs` launches `permagentd agent`; `commands/agent.rs::run` initializes logging/config, then calls `AppState::new`. Logging creates the data root through `Paths::in_state_dir("logs")`. Config initializes config.yaml but no ontology. AppState previously skipped Brain whenever brain/ or ontology.toml was absent. Searches of desktop startup, daemon commands, config and CLI startup found no earlier Brain bootstrap. Existing unit tests deliberately create brainless AppState instances.
 
 ## Change

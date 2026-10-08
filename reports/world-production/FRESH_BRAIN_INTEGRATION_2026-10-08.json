@@ -1,0 +1,70 @@
+{
+  "sourceCommit": "52556637",
+  "steps": [
+    {
+      "name": "fresh-brain-build",
+      "command": [
+        "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/scripts/build-guard.sh",
+        "--min-free-gb",
+        "25",
+        "--",
+        "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/bin/cargo",
+        "test",
+        "-p",
+        "permagent-daemon",
+        "--test",
+        "fresh_brain_bootstrap",
+        "--no-run",
+        "--locked",
+        "--message-format=json-render-diagnostics"
+      ],
+      "exitCode": 101,
+      "reason": null,
+      "minimumFreeGiB": 32.31821823120117,
+      "elapsedSeconds": 2.012111416,
+      "log": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/fresh-brain-build-20261008.log"
+    },
+    {
+      "name": "fresh-brain-build-shared-cache",
+      "command": [
+        "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/scripts/build-guard.sh",
+        "--min-free-gb",
+        "25",
+        "--",
+        "/Users/j/Documents/dev/permagent-runtime/bin/cargo",
+        "test",
+        "-p",
+        "permagent-daemon",
+        "--test",
+        "fresh_brain_bootstrap",
+        "--no-run",
+        "--locked",
+        "--message-format=json-render-diagnostics"
+      ],
+      "exitCode": 0,
+      "reason": null,
+      "minimumFreeGiB": 28.000980377197266,
+      "elapsedSeconds": 831.51987175,
+      "log": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/fresh-brain-build-shared-cache-20261008.log"
+    },
+    {
+      "name": "fresh-brain-test",
+      "command": [
+        "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/deps/fresh_brain_bootstrap-c5730bb6d49b862f",
+        "--nocapture"
+      ],
+      "exitCode": 0,
+      "reason": null,
+      "minimumFreeGiB": 27.99120330810547,
+      "elapsedSeconds": 18.093340125000054,
+      "log": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/fresh-brain-test-20261008.log"
+    }
+  ],
+  "passed": true,
+  "interruptedAttempts": [
+    {
+      "log": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/fresh-brain-build-locked-20261008.log",
+      "reason": "Owned supervisor stopped with SIGTERM after worktree Hermit launcher selected a separate registry cache; retried with main checkout launcher. Not a passing compile."
+    }
+  ]
+}

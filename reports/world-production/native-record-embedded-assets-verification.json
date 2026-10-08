@@ -6,7 +6,7 @@
   "embedded_review_csp": true,
   "frontend_api_base": "http://127.0.0.1:3002",
   "frontend_production_endpoint_assets": [],
-  "native_build_sha256": "115516efc45e965c789152b9318ed02cf2aec2dca36494742ee6bb9ffcc62ded",
+  "native_build_sha256": "e679e56a6337f947d7767ae80bd0f067ab47aa5f23f1753fbe47017510fc8d18",
   "embedded_review_identifier": true,
   "embedded_review_name": true,
   "native_asset_base": "/",
@@ -17,33 +17,33 @@
       "bytes": 1122
     },
     {
-      "path": "assets/App-CTb7gLiE.js",
-      "sha256": "1a89a1bae4d2cf92a21edbef64b55b93b2856a48e79852ed0387448e94541eec",
-      "bytes": 2511959
+      "path": "assets/App-xGVFuitp.js",
+      "sha256": "7d38dc1144a31289015c20c3fe88d3489cc8b61cc2acd285dbd3218548725c0b",
+      "bytes": 2522620
     },
     {
-      "path": "assets/ChatApp-M2Rq_Gnk.js",
-      "sha256": "93edcad24e8860273c48acce04cf57da47b7c1740a39990551ead97281c89304",
+      "path": "assets/ChatApp-B9d-svgD.js",
+      "sha256": "b25e8cb78500db1d9dde1a39b18df932c3fcc16f34786a0f41c67ac24cadca54",
       "bytes": 16434
     },
     {
-      "path": "assets/ForumAppView-B1P4U8h_.css",
-      "sha256": "764138e18060ae829ccf8553252509974a6554865a831508776e15816b2eddc7",
-      "bytes": 23087
+      "path": "assets/ForumAppView-DRMMGxPb.js",
+      "sha256": "82adb91d1a5cbcbd7c04c680f7857741438af0fb0ee189eec194c2ca67ba1a53",
+      "bytes": 279840
     },
     {
-      "path": "assets/ForumAppView-zB_-c0vI.js",
-      "sha256": "9858edc7dc79a908db534e171bc811265f5d17f6d556e1e40f58bafef61327ff",
-      "bytes": 275051
+      "path": "assets/ForumAppView-Du3q33Hk.css",
+      "sha256": "8c872b67b5781be2a4c96eed28c2c5dca96b13d3118b1a3202916881522d2766",
+      "bytes": 27008
     },
     {
-      "path": "assets/IdentityUnlinked-DrGFJiEu.js",
-      "sha256": "55a0288da9b48b0ba712b1dce1b0ab7c1834c6303115a4d46a5d7d895cf2cc2a",
+      "path": "assets/IdentityUnlinked-EL9lfNZV.js",
+      "sha256": "d8d786998f9ae4a856dd938cd36bfbde2b0c5b3f4dd8816ed2ce3df43f9c2cba",
       "bytes": 264707
     },
     {
-      "path": "assets/PaneWindowApp-Mdo0QOE1.js",
-      "sha256": "3e368b90a9346e82b5dba44a6f8bfad34680528f4ee691ebf8a63b9637a2ebba",
+      "path": "assets/PaneWindowApp-CwfrRUis.js",
+      "sha256": "5cc2f142539a133dbefc4b47ab14ada905a361fc9d4bafe583aa09a2bbe85341",
       "bytes": 2161
     },
     {
@@ -52,8 +52,8 @@
       "bytes": 5752
     },
     {
-      "path": "assets/TerminalManager-Dq83uWen.js",
-      "sha256": "ea1bbf92015b1078dcb68ec55dd971848e5eceb160d4e7d55d8383561894afd7",
+      "path": "assets/TerminalManager-DkFprjC3.js",
+      "sha256": "f96f417a4c60929e669171e6cfc097c258b8c10ded629e36fe3c9f2fdbe87800",
       "bytes": 437784
     },
     {
@@ -62,13 +62,13 @@
       "bytes": 1035
     },
     {
-      "path": "assets/VoiceOrb-BR1D4K7a.js",
-      "sha256": "cdd81c73ef5425f47eede722e81e2a7916e95c5d3c62a51e78f765bff8b688d9",
+      "path": "assets/VoiceOrb-Dtpv53BZ.js",
+      "sha256": "ba4f29f0be8f8fdb89d3df7cfda78de24ccdb54fc7439f6fd8306c328b3e945d",
       "bytes": 260765
     },
     {
-      "path": "assets/WorldView-yHg0yC_J.js",
-      "sha256": "b1f901ffe28f88047ca9a39d3d411c6ab5a9520eb4e70c85e24bc2231f8d9ad8",
+      "path": "assets/WorldView-BOuJfhpR.js",
+      "sha256": "ac5bd6409b3f00a01e54ba6d8a6ce087fee0abb06063df9256812b899e182a02",
       "bytes": 136545
     },
     {
@@ -117,8 +117,8 @@
       "bytes": 24039
     },
     {
-      "path": "assets/app-Yuc3Y74T.js",
-      "sha256": "fa1c0c5503c3199b71b2b24471b505f7aab4999be7998581eb6d45cf1d645c1f",
+      "path": "assets/app-Gi4RSmxL.js",
+      "sha256": "bca8a200bc192bfad84c9537181d66b598d1a421aa110d8f50533c5801cf1721",
       "bytes": 1350
     },
     {
@@ -257,8 +257,8 @@
       "bytes": 47255
     },
     {
-      "path": "assets/ccip-7xN1u4YO.js",
-      "sha256": "b0788b27fe8101342d0b534187849e584820c1eebc55850dcd128bb94bcf9012",
+      "path": "assets/ccip-BpmMgBTh.js",
+      "sha256": "b89186812f0b89d9e5b70bc91637527e5b644cf50cb0608a2cbe577bdbca9144",
       "bytes": 3180
     },
     {
@@ -702,14 +702,14 @@
       "bytes": 49930
     },
     {
-      "path": "assets/index-CfcOWL-p.js",
-      "sha256": "69c280226b0e3ac3d694f8f5bdf6967b4f331b7567187170e75cdee9b88d72a9",
-      "bytes": 144499
+      "path": "assets/index-CgcaXiB6.js",
+      "sha256": "e2b882a38c3cc5413c55a98a86444f1562fb7339b3fab6a12080e022c9d536bc",
+      "bytes": 195738
     },
     {
-      "path": "assets/index-DCAltwIh.js",
-      "sha256": "1a596308d5711647db035df603dba980f267688ea9f87dc7240cc5c79e65563f",
-      "bytes": 195738
+      "path": "assets/index-VUEYapRN.js",
+      "sha256": "5a8c0f54058461d0e76e016ddea520166c74e0d014581df1c5c55bdd0eb7d39a",
+      "bytes": 2229
     },
     {
       "path": "assets/index-rW7TQwqh.css",
@@ -717,9 +717,9 @@
       "bytes": 34149
     },
     {
-      "path": "assets/index-tDRV_wi5.js",
-      "sha256": "fe8759103e00bac1aa87e971d5fb5be224461453b9da3fe933db2bfe870b8148",
-      "bytes": 2229
+      "path": "assets/index-z41JTkle.js",
+      "sha256": "7639038940659a5475a70f047c6c7c96de2cf1d52b697f8568b9cb35f146625f",
+      "bytes": 144499
     },
     {
       "path": "assets/ini-BEwlwnbL.js",
@@ -1067,8 +1067,8 @@
       "bytes": 2824
     },
     {
-      "path": "assets/paneWindows-Cph1XWBk.js",
-      "sha256": "a0c8d3d9990bcc871f081a99582a9c408482721e33ae97bbca7f7fe6b14d880a",
+      "path": "assets/paneWindows-DUn7eic3.js",
+      "sha256": "a9debc1b7cd5c450a91fd44de946a68f7c6453f1005d4c53d87f8000488f0494",
       "bytes": 1478
     },
     {
@@ -1077,8 +1077,8 @@
       "bytes": 4150
     },
     {
-      "path": "assets/path-CbAEPGil.js",
-      "sha256": "c49f16cb6c3e95ebb42f0262e9ac50dbe6f55ec372b66ad63be50a81aaa04ee0",
+      "path": "assets/path-Cf7FT99E.js",
+      "sha256": "6fe3a6d9f369c9e722e2bb165efbdd3a9cdfceff1a88f1512828cfd21b4fc836",
       "bytes": 3791
     },
     {
@@ -1617,8 +1617,8 @@
       "bytes": 12007
     },
     {
-      "path": "assets/webviewWindow-Cs5M8dJ2.js",
-      "sha256": "364f0fb6f923b1667543fae037323cfd81fd2d2de557409e44fd992585d149d9",
+      "path": "assets/webviewWindow-Dh-Ai9m4.js",
+      "sha256": "c190b8b74299c8dc9d760dee552515966218eade1fd44b4161749d58e23e513d",
       "bytes": 4833
     },
     {
@@ -1637,8 +1637,8 @@
       "bytes": 55885
     },
     {
-      "path": "assets/window-CBvooHoK.js",
-      "sha256": "d7e30c366238aa0dde00988748f7b672bf234850ad20b51656e4f79a387ee8d3",
+      "path": "assets/window-CU54nN8U.js",
+      "sha256": "87d559d4d0a757d41031c947d77a7eb6cafe8c137ed3280eed9993d8b406940f",
       "bytes": 156957
     },
     {

@@ -1,0 +1,102 @@
+{
+  "binary": {
+    "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/permagentd",
+    "sha256": "30df7a01ad109dba99420a11fc98100552877779227e51371dfea7e22898e9ae"
+  },
+  "root": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/first-user-qa-20261008-163515",
+  "port": 3003,
+  "initialStateEmpty": true,
+  "method": "real daemon empty data-root startup/restart; same OS home, no native/UI acceptance",
+  "keyringDisabled": true,
+  "inheritedProviderOrCredentialEnvironment": false,
+  "serviceOverrides": [
+    "CONCIERGE_ENABLED",
+    "COUNCIL_ENABLED",
+    "GOOSE_TELEMETRY_ENABLED",
+    "OLLAMA_HOST",
+    "PERMAGENT_OLLAMA_HOST",
+    "POLYBOT_ENABLED",
+    "STEWARD_SCAN_ENABLED",
+    "STRIX_ENABLED"
+  ],
+  "phases": [
+    {
+      "phase": "fresh",
+      "checks": {
+        "noProvider": true,
+        "noModel": true,
+        "wizardIncomplete": true,
+        "dictationUnconfigured": true,
+        "brainReadable": true,
+        "brainEmpty": true,
+        "onlyProductStarterProject": true,
+        "ontologyPreserved": true,
+        "productOntology": true,
+        "unauthorizedRejected": true,
+        "foreignOriginRejected": true
+      },
+      "dictationStatus": {
+        "status": "unavailable",
+        "reason": "not_configured",
+        "model": null,
+        "inference_verified": false
+      },
+      "projectCount": 1,
+      "memoryCount": 0,
+      "unauthorizedRejectedStatus": 401,
+      "foreignOriginRejectedStatus": 403,
+      "exitCode": 0,
+      "elapsedSeconds": 7.293417416,
+      "minimumFreeGiB": 26.33236312866211,
+      "stopped": true
+    },
+    {
+      "phase": "restart",
+      "checks": {
+        "noProvider": true,
+        "noModel": true,
+        "wizardIncomplete": true,
+        "dictationUnconfigured": true,
+        "brainReadable": true,
+        "brainEmpty": true,
+        "onlyProductStarterProject": true,
+        "ontologyPreserved": true,
+        "productOntology": true,
+        "unauthorizedRejected": true,
+        "foreignOriginRejected": true
+      },
+      "dictationStatus": {
+        "status": "unavailable",
+        "reason": "not_configured",
+        "model": null,
+        "inference_verified": false
+      },
+      "projectCount": 1,
+      "memoryCount": 0,
+      "unauthorizedRejectedStatus": 401,
+      "foreignOriginRejectedStatus": 403,
+      "exitCode": 0,
+      "elapsedSeconds": 3.277605499999999,
+      "minimumFreeGiB": 26.332298278808594,
+      "stopped": true
+    }
+  ],
+  "tokenLogged": false,
+  "passed": true,
+  "privateEvidence": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/first-user-qa-20261008-163515/evidence.json",
+  "priorPassingArtifactProbe": {
+    "binary": {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/permagentd",
+      "sha256": "c45634686393914b8b1885048f84829b1b813146c6e747d2259d1ce7319b0a18"
+    },
+    "privateEvidence": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/first-user-qa-20261008-160903/evidence.json"
+  },
+  "initialHarnessFailures": {
+    "privateEvidence": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/first-user-qa-20261008-160800/evidence.json",
+    "causes": [
+      "Checker initially expected zero projects, but source and DB confirm the neutral Personal starter project is intentional.",
+      "Port bind did not initially allow TCP TIME_WAIT after owned shutdown; corrected while retaining listener refusal.",
+      "A privileged-port bind check was replaced with an unprivileged, verified unbound loopback port before any daemon launch."
+    ]
+  }
+}

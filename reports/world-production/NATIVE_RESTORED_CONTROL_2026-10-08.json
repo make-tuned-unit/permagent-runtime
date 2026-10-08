@@ -1,0 +1,13 @@
+{
+  "stagedApp": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/staged/Permagent Record Review (record-r4-restored).app",
+  "nativeControlAttempts": [
+    "Exact staged path: cgWindowNotFound",
+    "Running bundle identifier: cgWindowNotFound"
+  ],
+  "uiAcceptance": false,
+  "observedRunningInCuaInventory": true,
+  "ownedPidsStopped": [
+    49678
+  ],
+  "method": "SIGTERM to exact owned staged executable after CUA failed to return an app handle; no UI interaction inferred"
+}

@@ -1,0 +1,289 @@
+{
+  "revision": "record-r4-cached",
+  "record_review": true,
+  "review_config": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/reports/world-production/native-record-review-config.json",
+  "compiled_review_root": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/record-qa-runtime",
+  "compiled_review_port": "3002",
+  "frontend_api_base": "http://127.0.0.1:3002",
+  "lane": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006",
+  "target": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006",
+  "command": [
+    "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/scripts/build-guard.sh",
+    "--min-free-gb",
+    "25",
+    "--",
+    "/Users/j/Documents/dev/permagent-runtime/bin/node",
+    "../command-center/node_modules/@tauri-apps/cli/tauri.js",
+    "build",
+    "--debug",
+    "--no-bundle",
+    "--config",
+    "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/reports/world-production/native-record-review-config.json",
+    "--",
+    "--locked",
+    "-j",
+    "1"
+  ],
+  "log": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/reports/world-production/native-record-build-record-r4-cached-20261008-133049.log",
+  "exit_code": 0,
+  "reason": null,
+  "cleanup_error": null,
+  "owned_group_stopped": true,
+  "daemon_artifact_preservation": {
+    "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/permagentd",
+    "preexisting": true,
+    "restored": true,
+    "original_sha256": "30df7a01ad109dba99420a11fc98100552877779227e51371dfea7e22898e9ae",
+    "backup": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/native-daemon-preservation/b0bb0a0797cf4f549af1db00b998c481/permagentd",
+    "status": "restored",
+    "after_build_sha256": "fb9695d479c5786dfbb2dbe887577744b97910c0cdde7ac3aac883320a3a1810",
+    "restored_sha256": "30df7a01ad109dba99420a11fc98100552877779227e51371dfea7e22898e9ae"
+  },
+  "daemon_preservation_error": null,
+  "elapsed_s": 118.16,
+  "minimum_free_gib": 27.044,
+  "samples": [
+    {
+      "elapsed_s": 0.73,
+      "free_gib": 27.817
+    },
+    {
+      "elapsed_s": 2.74,
+      "free_gib": 27.817
+    },
+    {
+      "elapsed_s": 4.74,
+      "free_gib": 27.817
+    },
+    {
+      "elapsed_s": 6.74,
+      "free_gib": 27.817
+    },
+    {
+      "elapsed_s": 8.75,
+      "free_gib": 27.817
+    },
+    {
+      "elapsed_s": 10.76,
+      "free_gib": 27.815
+    },
+    {
+      "elapsed_s": 12.77,
+      "free_gib": 27.815
+    },
+    {
+      "elapsed_s": 14.78,
+      "free_gib": 27.815
+    },
+    {
+      "elapsed_s": 16.79,
+      "free_gib": 27.843
+    },
+    {
+      "elapsed_s": 18.8,
+      "free_gib": 27.816
+    },
+    {
+      "elapsed_s": 20.81,
+      "free_gib": 27.806
+    },
+    {
+      "elapsed_s": 22.82,
+      "free_gib": 27.783
+    },
+    {
+      "elapsed_s": 24.82,
+      "free_gib": 27.781
+    },
+    {
+      "elapsed_s": 26.83,
+      "free_gib": 27.758
+    },
+    {
+      "elapsed_s": 28.84,
+      "free_gib": 27.751
+    },
+    {
+      "elapsed_s": 30.85,
+      "free_gib": 27.741
+    },
+    {
+      "elapsed_s": 32.86,
+      "free_gib": 27.727
+    },
+    {
+      "elapsed_s": 34.87,
+      "free_gib": 27.71
+    },
+    {
+      "elapsed_s": 36.87,
+      "free_gib": 27.695
+    },
+    {
+      "elapsed_s": 38.88,
+      "free_gib": 27.677
+    },
+    {
+      "elapsed_s": 40.88,
+      "free_gib": 27.662
+    },
+    {
+      "elapsed_s": 42.89,
+      "free_gib": 27.649
+    },
+    {
+      "elapsed_s": 44.9,
+      "free_gib": 27.643
+    },
+    {
+      "elapsed_s": 46.91,
+      "free_gib": 27.631
+    },
+    {
+      "elapsed_s": 48.92,
+      "free_gib": 27.623
+    },
+    {
+      "elapsed_s": 50.93,
+      "free_gib": 27.623
+    },
+    {
+      "elapsed_s": 52.94,
+      "free_gib": 27.574
+    },
+    {
+      "elapsed_s": 54.94,
+      "free_gib": 27.519
+    },
+    {
+      "elapsed_s": 56.94,
+      "free_gib": 27.505
+    },
+    {
+      "elapsed_s": 58.95,
+      "free_gib": 27.495
+    },
+    {
+      "elapsed_s": 60.96,
+      "free_gib": 27.485
+    },
+    {
+      "elapsed_s": 62.97,
+      "free_gib": 27.456
+    },
+    {
+      "elapsed_s": 64.98,
+      "free_gib": 27.438
+    },
+    {
+      "elapsed_s": 66.99,
+      "free_gib": 27.42
+    },
+    {
+      "elapsed_s": 69.0,
+      "free_gib": 27.383
+    },
+    {
+      "elapsed_s": 71.01,
+      "free_gib": 27.367
+    },
+    {
+      "elapsed_s": 73.01,
+      "free_gib": 27.356
+    },
+    {
+      "elapsed_s": 75.02,
+      "free_gib": 27.341
+    },
+    {
+      "elapsed_s": 77.03,
+      "free_gib": 27.335
+    },
+    {
+      "elapsed_s": 79.04,
+      "free_gib": 27.319
+    },
+    {
+      "elapsed_s": 81.05,
+      "free_gib": 27.301
+    },
+    {
+      "elapsed_s": 83.06,
+      "free_gib": 27.291
+    },
+    {
+      "elapsed_s": 85.07,
+      "free_gib": 27.281
+    },
+    {
+      "elapsed_s": 87.08,
+      "free_gib": 27.254
+    },
+    {
+      "elapsed_s": 89.09,
+      "free_gib": 27.24
+    },
+    {
+      "elapsed_s": 91.09,
+      "free_gib": 27.221
+    },
+    {
+      "elapsed_s": 93.1,
+      "free_gib": 27.21
+    },
+    {
+      "elapsed_s": 95.11,
+      "free_gib": 27.201
+    },
+    {
+      "elapsed_s": 97.12,
+      "free_gib": 27.192
+    },
+    {
+      "elapsed_s": 99.13,
+      "free_gib": 27.176
+    },
+    {
+      "elapsed_s": 101.14,
+      "free_gib": 27.165
+    },
+    {
+      "elapsed_s": 103.15,
+      "free_gib": 27.149
+    },
+    {
+      "elapsed_s": 105.16,
+      "free_gib": 27.134
+    },
+    {
+      "elapsed_s": 107.17,
+      "free_gib": 27.134
+    },
+    {
+      "elapsed_s": 109.18,
+      "free_gib": 27.124
+    },
+    {
+      "elapsed_s": 111.19,
+      "free_gib": 27.123
+    },
+    {
+      "elapsed_s": 113.2,
+      "free_gib": 27.123
+    },
+    {
+      "elapsed_s": 115.2,
+      "free_gib": 27.044
+    },
+    {
+      "elapsed_s": 117.21,
+      "free_gib": 27.123
+    }
+  ],
+  "startup_minimum_gib": 25,
+  "continuous_floor_gib": 20,
+  "timeout_s": 1800,
+  "staged": false,
+  "launched": false,
+  "native_binary_sha256": "e679e56a6337f947d7767ae80bd0f067ab47aa5f23f1753fbe47017510fc8d18"
+}
