@@ -15,12 +15,12 @@ import { font, radius, space, tabularNums, textSize } from '../../../../styles/t
 import { useTheme } from '../../../../styles/useTheme';
 import type { ThemeColors } from '../../../../styles/tokens';
 import {
-  calendarColor, clockLabel, eventKey, eventsOnDay, layoutDay, monthDayChips,
+  calendarColor, clockLabel, clusterBox, eventKey, eventsOnDay, layoutDay, monthDayChips,
   monthGrid, sameDay, startOfDay, weekDays, wash,
   type CalEvent, type MonthCell,
 } from './calendarModel';
 
-export const MONTH_ROW_PX = 92;
+export const MONTH_ROW_PX = 106;
 export const HOUR_PX = 44;
 export const TIME_GUTTER_PX = 44;
 const TIME_GRID_PX = 420;
@@ -119,9 +119,11 @@ function DayNumber({ ms, isToday, dim, onClick, label }: {
 
 // ── Month ─────────────────────────────────────────────────────────────────
 
-export function MonthView({ anchorMs, nowMs, firstDay, events, onPickEvent, onPickDay }: {
+export function MonthView({ anchorMs, nowMs, firstDay, events, onPickEvent, onPickDay, roomy }: {
   anchorMs: number; nowMs: number; firstDay: number; events: readonly CalEvent[];
   onPickEvent: PickEvent; onPickDay: (dayMs: number) => void;
+  /** Wide enough for a start time in front of each title. */
+  roomy: boolean;
 }) {
   const { colors } = useTheme();
   const cells = monthGrid(anchorMs, nowMs, firstDay);
@@ -143,7 +145,7 @@ export function MonthView({ anchorMs, nowMs, firstDay, events, onPickEvent, onPi
         borderRadius: radius.sm, overflow: 'hidden',
       }}>
         {cells.map(cell => (
-          <MonthCellView key={cell.dayMs} cell={cell} events={events}
+          <MonthCellView key={cell.dayMs} cell={cell} events={events} roomy={roomy}
             onPickEvent={onPickEvent} onPickDay={onPickDay} />
         ))}
       </div>
@@ -151,8 +153,9 @@ export function MonthView({ anchorMs, nowMs, firstDay, events, onPickEvent, onPi
   );
 }
 
-function MonthCellView({ cell, events, onPickEvent, onPickDay }: {
+function MonthCellView({ cell, events, onPickEvent, onPickDay, roomy }: {
   cell: MonthCell; events: readonly CalEvent[]; onPickEvent: PickEvent; onPickDay: (d: number) => void;
+  roomy: boolean;
 }) {
   const { colors } = useTheme();
   const { shown, hidden } = monthDayChips(events, cell.dayMs, 3);
@@ -169,7 +172,7 @@ function MonthCellView({ cell, events, onPickEvent, onPickDay }: {
       }}
     >
       <DayNumber ms={cell.dayMs} isToday={cell.isToday} dim={!cell.inMonth} onClick={() => onPickDay(cell.dayMs)} />
-      {shown.map(e => <EventChip key={eventKey(e)} event={e} onPick={onPickEvent} />)}
+      {shown.map(e => <EventChip key={eventKey(e)} event={e} onPick={onPickEvent} showTime={roomy} />)}
       {hidden > 0 && (
         <button
           type="button"
@@ -179,7 +182,7 @@ function MonthCellView({ cell, events, onPickEvent, onPickDay }: {
           aria-label={`${hidden} more events, open this day`}
           style={{
             ...btnVars(colors), justifyContent: 'flex-start', paddingInline: space.sm,
-            height: CHIP_PX - space.xs, fontFamily: font.body, fontSize: textSize.micro,
+            height: CHIP_PX - space.xs, fontFamily: font.body, fontSize: textSize.micro, whiteSpace: 'nowrap',
             color: colors.textMuted, '--pa-btn-fg': colors.textMuted,
           } as CSSProperties}
         >
@@ -252,6 +255,7 @@ function TimeGrid({ days, nowMs, events, onPickEvent, scrollKey }: {
               {placed.map(p => {
                 const hue = calendarColor(p.event.calendar, colors);
                 const heightPx = Math.max(p.height / 60 * HOUR_PX - 1, 14);
+                const box = clusterBox(p.col, p.cols);
                 return (
                   <button
                     key={eventKey(p.event)}
@@ -264,13 +268,17 @@ function TimeGrid({ days, nowMs, events, onPickEvent, scrollKey }: {
                     aria-label={`${p.event.title}, ${clockLabel(p.event.startMs)} to ${clockLabel(p.event.endMs)}`}
                     onClick={e => onPickEvent(p.event, e.currentTarget)}
                     style={{
-                      ...btnVars(colors, wash(hue, 34)),
-                      '--pa-btn-bg': wash(hue, 20),
+                      ...btnVars(colors, wash(hue, 34, colors.surface)),
+                      // Opaque: blocks in a busy cluster overlap, and a see-through
+                      // fill would print one title over the other.
+                      '--pa-btn-bg': wash(hue, 22, colors.surface),
+                      boxShadow: `0 0 0 1px ${colors.surface}`,
+                      zIndex: p.col + 1,
                       position: 'absolute',
                       top: p.top / 60 * HOUR_PX,
                       height: heightPx,
-                      left: `calc(${(p.col / p.cols) * 100}% + 1px)`,
-                      width: `calc(${100 / p.cols}% - 2px)`,
+                      left: `calc(${box.left}% + 1px)`,
+                      width: `calc(${box.width}% - 2px)`,
                       flexDirection: 'column', alignItems: 'flex-start', justifyContent: 'flex-start',
                       gap: 0, padding: `${space.xxs}px ${space.sm}px`,
                       borderLeft: `3px solid ${hue}`, overflow: 'hidden',

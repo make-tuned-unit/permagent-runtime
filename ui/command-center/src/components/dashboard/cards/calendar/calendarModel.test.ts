@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  addDays, countdownLabel, fromDaemonCells, fromShellEvent, layoutDay, monthDayChips, monthGrid,
+  clusterBox, addDays, countdownLabel, fromDaemonCells, fromShellEvent, layoutDay, monthDayChips, monthGrid,
   nextUp, nextUpText, rangeFor, shiftAnchor, startOfDay, startOfWeek, upcomingEvents, weekDays,
   type CalEvent,
 } from './calendarModel';
@@ -99,6 +99,16 @@ describe('week overlap layout', () => {
     expect(p).toHaveLength(1);
     expect(p[0].top + p[0].height).toBe(24 * 60);
     expect(layoutDay([late], at(8, 0))[0]).toMatchObject({ top: 0, height: 60 });
+  });
+
+  it('places clusters: two side by side, three or more staggered but never slivers', () => {
+    expect(clusterBox(0, 1)).toEqual({ left: 0, width: 100 });
+    expect(clusterBox(1, 2)).toEqual({ left: 50, width: 50 });
+    const [a, b, c] = [0, 1, 2].map(i => clusterBox(i, 3));
+    expect(a.width).toBeGreaterThanOrEqual(56);
+    expect(a.left).toBe(0);
+    expect(b.left).toBeGreaterThan(a.left);
+    expect(c.left + c.width).toBeCloseTo(100);
   });
 
   it('gives a zero-length event a visible minimum height', () => {

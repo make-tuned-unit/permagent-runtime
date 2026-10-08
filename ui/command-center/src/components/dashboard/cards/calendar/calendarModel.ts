@@ -185,7 +185,7 @@ export function periodTitle(view: CalendarView, anchorMs: number, firstDay: numb
     return new Date(anchorMs).toLocaleDateString(loc, { month: 'long', year: 'numeric' });
   }
   if (view === 'day') {
-    return new Date(anchorMs).toLocaleDateString(loc, { weekday: 'long', month: 'short', day: 'numeric' });
+    return new Date(anchorMs).toLocaleDateString(loc, { weekday: 'short', month: 'short', day: 'numeric' });
   }
   const days = weekDays(anchorMs, firstDay);
   const a = new Date(days[0]);
@@ -255,7 +255,7 @@ export interface PlacedEvent {
   cols: number;
 }
 
-const MIN_BLOCK_MINUTES = 20;
+const MIN_BLOCK_MINUTES = 30;
 
 /**
  * Timed events for one day, laid side by side where they overlap.
@@ -357,7 +357,9 @@ export function nextUpText(n: NextUp): string {
 
 /** The theme hues a calendar can take, in the order a hash picks from them. */
 export function calendarPalette(colors: ThemeColors): string[] {
-  return [colors.cyan, colors.purpleBright, colors.success, colors.warning, colors.stale, colors.dangerStrong];
+  // No red: it is the now-line's colour and the app's alarm colour, and a
+  // calendar called "Work" should not read as a fault.
+  return [colors.cyan, colors.purpleBright, colors.success, colors.warning, colors.stale];
 }
 
 /**
@@ -375,6 +377,22 @@ export function calendarColor(name: string, colors: ThemeColors): string {
 }
 
 /** A soft wash of a hue, for chip and block fills. */
-export function wash(hue: string, percent = 18): string {
-  return `color-mix(in srgb, ${hue} ${percent}%, transparent)`;
+export function wash(hue: string, percent = 18, over = 'transparent'): string {
+  return `color-mix(in srgb, ${hue} ${percent}%, ${over})`;
+}
+
+/**
+ * Horizontal placement of a block in its overlap cluster, in percent of the
+ * day column. Two clashing events sit side by side; three or more would be
+ * slivers in a column a seventh of the card wide, so each keeps at least
+ * `MIN_CLUSTER_WIDTH` and later ones overlap the earlier ones' right edge
+ * (drawn on top, as every desktop calendar does) — columns still run left to
+ * right in the order the model assigned them.
+ */
+export const MIN_CLUSTER_WIDTH = 56;
+export function clusterBox(col: number, cols: number): { left: number; width: number } {
+  if (cols <= 1) return { left: 0, width: 100 };
+  const width = cols === 2 ? 50 : Math.max(100 / cols, MIN_CLUSTER_WIDTH);
+  const left = col * ((100 - width) / (cols - 1));
+  return { left, width };
 }

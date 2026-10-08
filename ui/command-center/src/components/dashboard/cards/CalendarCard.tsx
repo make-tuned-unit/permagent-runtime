@@ -45,6 +45,8 @@ import { EventPopover } from './calendar/EventPopover';
 export const COMPACT_BELOW_PX = 420;
 /** Day view puts its list beside the timeline from this width up. */
 const DAY_WIDE_FROM_PX = 560;
+/** Month chips carry a start time from this width up; narrower, the title wins. */
+const MONTH_TIMES_FROM_PX = 700;
 export const VIEW_STORAGE_KEY = 'permagent.dashboard.calendar.view.v1';
 const NOW_TICK_MS = 30_000;
 
@@ -223,7 +225,7 @@ export function CalendarCard({ nowMs: pinnedNow, sizeMode = 'auto', initialView 
         </div>
       )}
 
-      <NextUpStrip next={next} loading={ahead.loading && ahead.events.length === 0}
+      <NextUpStrip stacked={compact} next={next} loading={ahead.loading && ahead.events.length === 0}
         empty={ahead.source !== 'none' && ahead.events.length === 0} onPick={pick} />
 
       {compact ? (
@@ -237,7 +239,7 @@ export function CalendarCard({ nowMs: pinnedNow, sizeMode = 'auto', initialView 
           ) : null}
           {view === 'month' && (
             <MonthView anchorMs={anchor} nowMs={nowMs} firstDay={firstDay} events={main.events}
-              onPickEvent={pick} onPickDay={pickDay} />
+              onPickEvent={pick} onPickDay={pickDay} roomy={width >= MONTH_TIMES_FROM_PX} />
           )}
           {view === 'week' && (
             <WeekView anchorMs={anchor} nowMs={nowMs} firstDay={firstDay} events={main.events}
@@ -263,8 +265,8 @@ export function CalendarCard({ nowMs: pinnedNow, sizeMode = 'auto', initialView 
 }
 
 /** "Next: Standup · in 42 min · Work", re-evaluated by the card's own clock. */
-function NextUpStrip({ next, loading, empty, onPick }: {
-  next: ReturnType<typeof nextUp>; loading: boolean; empty: boolean; onPick: PickEvent;
+function NextUpStrip({ next, loading, empty, onPick, stacked }: {
+  stacked: boolean; next: ReturnType<typeof nextUp>; loading: boolean; empty: boolean; onPick: PickEvent;
 }) {
   const { colors } = useTheme();
   const base: CSSProperties = {
@@ -281,6 +283,7 @@ function NextUpStrip({ next, loading, empty, onPick }: {
     );
   }
   const hue = calendarColor(next.event.calendar, colors);
+  const titleStyle: CSSProperties = { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, flex: '0 1 auto' };
   return (
     <button
       type="button"
@@ -290,7 +293,7 @@ function NextUpStrip({ next, loading, empty, onPick }: {
       aria-label={nextUpText(next)}
       onClick={e => onPick(next.event, e.currentTarget)}
       style={{
-        ...base, width: '100%', justifyContent: 'flex-start', textAlign: 'left',
+        ...base, width: '100%', justifyContent: 'flex-start', textAlign: 'left', flexWrap: stacked ? 'wrap' : 'nowrap',
         '--pa-btn-bg': wash(hue, 14), '--pa-btn-fg': colors.text, '--pa-btn-border': 'transparent',
         '--pa-btn-bg-hover': wash(hue, 24), '--pa-btn-fg-hover': colors.text, '--pa-btn-border-hover': 'transparent',
         '--pa-btn-bg-active': wash(hue, 30), '--pa-btn-pad': `${space.md}px ${space.xl}px`,
@@ -299,9 +302,7 @@ function NextUpStrip({ next, loading, empty, onPick }: {
     >
       <span aria-hidden style={{ width: 8, height: 8, borderRadius: radius.pill, background: hue, flexShrink: 0 }} />
       <span style={{ fontWeight: 600, color: hue, flexShrink: 0 }}>{next.state === 'ongoing' ? 'Now' : 'Next'}</span>
-      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, flex: '0 1 auto' }}>
-        {next.event.title}
-      </span>
+      {!stacked && <span style={titleStyle}>{next.event.title}</span>}
       <span style={{ color: colors.textMuted, flexShrink: 0, ...tabularNums }} data-testid="calendar-countdown">
         {next.state === 'ongoing' ? (next.minutes < 1 ? 'ending now' : `ends ${countdownLabel(next.minutes)}`) : countdownLabel(next.minutes)}
         {next.state === 'upcoming' && next.minutes >= 60 ? ` · ${clockLabel(next.event.startMs)}` : ''}
@@ -311,6 +312,7 @@ function NextUpStrip({ next, loading, empty, onPick }: {
           {next.event.calendar}
         </span>
       )}
+      {stacked && <span style={{ ...titleStyle, flexBasis: '100%', order: 5 }}>{next.event.title}</span>}
     </button>
   );
 }
