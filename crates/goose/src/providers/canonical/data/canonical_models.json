@@ -1,5 +1,32 @@
 [
   {
+    "id": "anthropic/claude-haiku-5.5",
+    "name": "Claude Haiku 5.5",
+    "family": "claude-haiku",
+    "attachment": true,
+    "reasoning": true,
+    "tool_call": true,
+    "temperature": false,
+    "knowledge": "2026-06",
+    "release_date": "2026-10-07",
+    "last_updated": "2026-10-07",
+    "modalities": {
+      "input": [
+        "text",
+        "image"
+      ],
+      "output": [
+        "text"
+      ]
+    },
+    "open_weights": false,
+    "cost": {},
+    "limit": {
+      "context": 1000000,
+      "output": 128000
+    }
+  },
+  {
     "id": "anthropic/claude-opus-4.8",
     "name": "Claude Opus 4.8",
     "family": "claude-opus",

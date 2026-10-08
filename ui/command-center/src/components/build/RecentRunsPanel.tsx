@@ -14,7 +14,7 @@
  * refresh; `AsOf` says how fresh the list is.
  */
 
-import { useEffect, useState, type CSSProperties } from 'react';
+import { useEffect, useId, useState, type CSSProperties } from 'react';
 import { api, type HarnessRunView } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
 import { useTheme } from '../../styles/useTheme';
@@ -25,6 +25,7 @@ import { Chip, type ChipTone } from '../common/Chip';
 import { StateBlock } from '../common/StateBlock';
 
 const POLL_MS = 15_000;
+const PREVIEW_RUNS = 3;
 
 function statusTone(status: HarnessRunView['status']): ChipTone {
   switch (status) {
@@ -95,6 +96,8 @@ export function RecentRunsPanel() {
     | { kind: 'error' }
     | { kind: 'ready'; runs: HarnessRunView[]; fetchedAt: number }
   >({ kind: 'loading' });
+  const [showAll, setShowAll] = useState(false);
+  const listId = useId();
   const [expanded, setExpanded] = useState<string | null>(null);
 
   const load = () => {
@@ -115,12 +118,15 @@ export function RecentRunsPanel() {
   };
 
   return (
-    <div style={{
+    <div data-testid="recent-runs-panel" style={{
+      // History must never consume the working Terminal/Browser area. Even
+      // View all and long evidence stay inside this independently scrolling box.
+      display: 'flex', flexDirection: 'column', flex: '0 1 auto', minHeight: 0, maxHeight: 'min(35%, 240px)',
       margin: '10px 18px 0', borderRadius: radius.md, border: `1px solid ${colors.border}`,
       background: colors.surface, overflow: 'hidden',
     }}>
       <div style={{
-        display: 'flex', alignItems: 'center', gap: space.md,
+        display: 'flex', alignItems: 'center', gap: space.md, flexShrink: 0,
         padding: `${space.md}px ${space.xl}px`, borderBottom: `1px solid ${colors.border}`,
       }}>
         <span style={{
@@ -134,8 +140,15 @@ export function RecentRunsPanel() {
             <AsOf asOf={state.fetchedAt} prefix="Updated" />
           </span>
         )}
+        {state.kind === 'ready' && state.runs.length > PREVIEW_RUNS && (
+          <Button colors={colors} variant="bare" type="button" flashSuccess={false}
+            aria-expanded={showAll} aria-controls={listId} onClick={() => setShowAll(v => !v)}>
+            {showAll ? 'Show fewer' : `View all ${state.runs.length}`}
+          </Button>
+        )}
       </div>
 
+      <div id={listId} style={{ minHeight: 0, overflowY: 'auto', overscrollBehavior: 'contain' }}>
       {state.kind === 'loading' && (
         <div style={{ display: 'flex', flexDirection: 'column' }}>
           {[0, 1, 2].map(i => (
@@ -160,7 +173,7 @@ export function RecentRunsPanel() {
 
       {state.kind === 'ready' && state.runs.length > 0 && (
         <div style={{ display: 'flex', flexDirection: 'column' }}>
-          {state.runs.map(run => {
+          {(showAll ? state.runs : state.runs.slice(0, PREVIEW_RUNS)).map(run => {
             const isOpen = expanded === run.runId;
             return (
               <div key={run.runId} style={{ borderBottom: `1px solid ${colors.border}` }}>
@@ -222,6 +235,7 @@ export function RecentRunsPanel() {
           })}
         </div>
       )}
+      </div>
     </div>
   );
 }

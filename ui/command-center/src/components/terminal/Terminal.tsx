@@ -28,7 +28,7 @@ import { api as daemonApi } from '../../lib/api';
 import { buildCodingSessionPayload, isHarnessCommand } from './codingSession';
 import { createFollowUpDelivery, type FollowUpDelivery } from './followUpDelivery';
 import { planReplay, writeReplay, type GridMark } from './replayGeometry';
-import { FiCopy, FiSend, FiX } from 'react-icons/fi';
+import { FiCopy, FiSend, FiTerminal, FiX } from 'react-icons/fi';
 
 // ── Tauri API loader (cached, no module-level mutation) ──
 
@@ -90,7 +90,27 @@ interface TerminalProps {
   isVisible: boolean;
 }
 
-export function Terminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChange, onPtyData, cwd, initialCommand, supervisedSessionId, followUpInput, growthAction, onFollowUpSettled, isVisible }: TerminalProps) {
+/** Browser previews have no PTY bridge: do not mount native setup or consume
+ * a launch command just to discover that invoke cannot work. */
+export function Terminal(props: TerminalProps) {
+  const { colors } = useTheme();
+  if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) {
+    return (
+      <div role="status" className="flex items-center justify-center h-full" style={{ padding: space.xxl, textAlign: 'center' }}>
+        <div>
+          <FiTerminal size={40} aria-hidden="true" style={{ margin: '0 auto 12px', color: colors.textMuted }} />
+          <h3 style={{ fontFamily: font.display, fontSize: textSize.small, fontWeight: 600, color: colors.text }}>Desktop App Required</h3>
+          <p style={{ fontFamily: font.body, fontSize: textSize.caption, color: colors.textMuted, marginTop: space.sm }}>
+            The terminal requires the Permagent desktop app. Open Build in the desktop app to use a local shell.
+          </p>
+        </div>
+      </div>
+    );
+  }
+  return <NativeTerminal {...props} />;
+}
+
+function NativeTerminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChange, onPtyData, cwd, initialCommand, supervisedSessionId, followUpInput, growthAction, onFollowUpSettled, isVisible }: TerminalProps) {
   const { theme, colors } = useTheme();
   const containerRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<XTerm | null>(null);

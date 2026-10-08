@@ -18,7 +18,7 @@ use tauri::{AppHandle, Emitter, Manager};
 // Ordering matters (the parser reassembles NDJSON lines across chunks), so a
 // single forwarder thread drains an mpsc channel sequentially — never parallel
 // fire-and-forget POSTs. The daemon address/port mirror daemon.rs.
-const DAEMON_SUPERVISED_OUTPUT_URL: &str = "http://127.0.0.1:3001/terminal/supervised/output";
+// Endpoint and bearer are resolved from the same immutable native runtime target.
 /// Coalesce bursts up to this many bytes per POST so heavy output doesn't
 /// become a POST-per-4KiB-read storm.
 const TEE_COALESCE_CAP_BYTES: usize = 64 * 1024;
@@ -86,7 +86,7 @@ fn spawn_supervised_tee(
                 "eof": eof,
             });
             let send = client
-                .post(DAEMON_SUPERVISED_OUTPUT_URL)
+                .post(crate::runtime_target::target().url("/terminal/supervised/output"))
                 .bearer_auth(&token)
                 .json(&body)
                 .send();

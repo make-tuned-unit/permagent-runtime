@@ -1,0 +1,69 @@
+/* Home focus mode — one card expanded, the rest compact (homeFocus.tsx).
+   Scoped to Dashboard: every rule hangs off a `pa-home-*` class or the
+   `data-home-focus-vt` attribute `runHomeFocusTransition` sets on <html> for
+   the duration of one focus change only. */
+
+/* The expand control sits over the card's top-right corner. Quiet until the
+   card is hovered or anything inside it has focus, so it does not compete
+   with the card's own header; always shown on compact tiles (expanding is
+   their main action) and where there is no hover at all. Keyboard users get
+   it on focus — it is in the tab order whether or not it is visible. */
+.pa-home-cell .pa-home-expand {
+  opacity: 0;
+  transition: opacity var(--pa-dur-fast, 120ms) ease-out;
+}
+.pa-home-cell:hover .pa-home-expand,
+.pa-home-cell:focus-within .pa-home-expand,
+.pa-home-cell[data-presentation='compact'] .pa-home-expand,
+.pa-home-expand:focus-visible {
+  opacity: 1;
+}
+@media (hover: none) {
+  .pa-home-cell .pa-home-expand { opacity: 1; }
+}
+
+/* View-transition morph: while a focus change is in flight each cell is its
+   own transition group (name from `--pa-home-vt-name`, set per cell), so the
+   browser animates every card from its old box to its new one — the focused
+   card growing, the others shrinking out of its way. The page around them
+   (header, banners) must hold still, so the default root slide used for view
+   switches is turned off for this one kind of transition. */
+:root[data-home-focus-vt] .pa-home-cell {
+  view-transition-name: var(--pa-home-vt-name);
+}
+:root[data-home-focus-vt]::view-transition-old(root),
+:root[data-home-focus-vt]::view-transition-new(root) {
+  animation: none;
+}
+:root[data-home-focus-vt]::view-transition-group(*) {
+  animation-duration: 280ms;
+  animation-timing-function: var(--pa-ease-smooth, cubic-bezier(0.2, 0, 0, 1));
+}
+:root[data-home-focus-vt]::view-transition-old(*),
+:root[data-home-focus-vt]::view-transition-new(*) {
+  /* Cross-fade content inside the morphing box instead of stretching one
+     snapshot into the other's aspect ratio. */
+  height: 100%;
+  object-fit: cover;
+  object-position: top left;
+}
+
+/* Fallback where View Transitions are unavailable: the newly focused card
+   eases in. The app-wide Reduce Motion guards in index.css collapse this to
+   an instant change. */
+/* Opacity only: any transform on a cell makes it the containing block for
+   fixed descendants, trapping a modal a card opens inside the card. */
+@keyframes pa-home-focus-in {
+  from { opacity: 0.55; }
+  to   { opacity: 1; }
+}
+.pa-home-focus-enter {
+  animation: pa-home-focus-in 240ms var(--pa-ease-smooth, ease-out) both;
+}
+
+/* Expand sits at right:8px and is 26px wide. Reserve a header-only gutter
+   in compact/overview cards so right-aligned metadata and Calendar's date
+   cannot occupy the same space. Focused cards have a separate FocusBar. */
+.pa-home-cell[data-home-expandable] [data-home-card-heading] {
+  padding-inline-end: 28px;
+}

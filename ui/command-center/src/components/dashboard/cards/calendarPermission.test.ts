@@ -43,6 +43,9 @@ const SHELL_COMMANDS = [
   'request_calendar_access',
   'calendar_upcoming_events',
   'open_calendar_privacy_settings',
+  // The range-based Calendar card (useCalendarEvents / EventPopover).
+  'calendar_events_in_range',
+  'open_calendar_app',
 ];
 
 function purposeOf(plist: string, key: string): string {
@@ -126,7 +129,7 @@ describe('macOS calendar permission keys', () => {
     // class feature missing, calendar.rs does not compile at all.
     const cargo = readFileSync(CARGO_TOML, 'utf8');
     const eventKit = /objc2-event-kit = \{[\s\S]*?\]\s*\}/.exec(cargo)?.[0] ?? '';
-    for (const feature of ['block2', 'EKCalendar', 'EKCalendarItem', 'EKEvent', 'EKEventStore', 'EKTypes']) {
+    for (const feature of ['block2', 'EKCalendar', 'EKCalendarItem', 'EKEvent', 'EKEventStore', 'EKParticipant', 'EKTypes']) {
       expect(eventKit).toContain(`"${feature}"`);
     }
     const foundation = /objc2-foundation = \{[^}]*\}/.exec(cargo)?.[0] ?? '';

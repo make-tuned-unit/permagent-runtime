@@ -6,6 +6,7 @@
 //! Heavily "inspired" by the Candle Whisper example:
 //! https://github.com/huggingface/candle/tree/main/candle-examples/whisper
 
+use super::whisper_segments::{decoded_window, timestamp_floor, DecodedWindow};
 use crate::config::paths::Paths;
 
 pub const LOCAL_WHISPER_MODEL_CONFIG_KEY: &str = "LOCAL_WHISPER_MODEL";
@@ -347,15 +348,18 @@ impl WhisperTranscriber {
             let segment_size = usize::min(content_frames - seek, N_FRAMES);
             tracing::debug!(segment_num, segment_size, seek, "processing segment");
 
-            let segment_text_tokens =
+            let segment =
                 self.process_segment(&mel_tensor, seek, segment_size, segment_num, num_segments)?;
 
             tracing::debug!(
-                tokens_in_segment = segment_text_tokens.len(),
+                tokens_in_segment = segment.text_tokens.len(),
+                advance_frames = segment.advance_frames,
                 "segment produced tokens"
             );
-            all_text_tokens.extend(segment_text_tokens);
-            seek += segment_size;
+            all_text_tokens.extend(segment.text_tokens);
+            // Timestamp decoding may stop before the end of this window.
+            // Preserve the remaining audio instead of skipping later speech.
+            seek += segment.advance_frames;
         }
 
         tracing::debug!(
@@ -422,7 +426,7 @@ impl WhisperTranscriber {
         segment_size: usize,
         _segment_num: usize,
         _num_segments: usize,
-    ) -> Result<Vec<u32>> {
+    ) -> Result<DecodedWindow> {
         let _time_offset = (seek * 160) as f32 / 16000.0; // HOP_LENGTH = 160
         let _segment_duration = (segment_size * 160) as f32 / 16000.0;
         let mel_segment = mel_tensor.narrow(2, seek, segment_size)?;
@@ -511,20 +515,22 @@ impl WhisperTranscriber {
             "all tokens generated in segment"
         );
 
-        let segment_text_tokens: Vec<u32> = tokens[3..]
-            .iter()
-            .filter(|&&t| t != EOT_TOKEN && t < TIMESTAMP_BEGIN)
-            .copied()
-            .collect();
+        let segment = decoded_window(
+            &tokens[SAMPLE_BEGIN..],
+            segment_size,
+            TIMESTAMP_BEGIN,
+            EOT_TOKEN,
+            N_FRAMES / self.config.max_source_positions,
+        );
 
-        if segment_text_tokens.is_empty() && tokens.len() > 3 {
+        if segment.text_tokens.is_empty() && tokens.len() > 3 {
             tracing::debug!(
                 raw_tokens = ?&tokens[3..],
                 "no text tokens found after filtering (all were EOT or timestamps)"
             );
         }
 
-        Ok(segment_text_tokens)
+        Ok(segment)
     }
 
     fn apply_timestamp_rules(&self, input_logits: &Tensor, tokens: &[u32]) -> Result<Tensor> {
@@ -611,15 +617,7 @@ impl WhisperTranscriber {
             }
         }
 
-        let timestamp_tokens: Vec<u32> = sampled_tokens
-            .iter()
-            .filter(|&&t| t >= TIMESTAMP_BEGIN)
-            .cloned()
-            .collect();
-
-        if !timestamp_tokens.is_empty() {
-            let timestamp_last = timestamp_tokens.last().unwrap() + 1;
-
+        if let Some(timestamp_last) = timestamp_floor(sampled_tokens, TIMESTAMP_BEGIN) {
             for i in 0..vocab_size {
                 mask_buffer[i as usize] = if i >= TIMESTAMP_BEGIN && i < timestamp_last {
                     f32::NEG_INFINITY

@@ -9,6 +9,7 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
 import { act } from 'react-dom/test-utils';
+import { StrictMode } from 'react';
 
 vi.mock('../../../lib/api', () => ({
   api: { getCouncilLatest: vi.fn(), getCouncilReports: vi.fn() },
@@ -54,6 +55,23 @@ afterEach(() => {
   act(() => root.unmount());
   container.remove();
   vi.useRealTimers();
+});
+
+it('settles the latest report after StrictMode replays its effects', async () => {
+  getLatest.mockResolvedValue({ report: null, session: null, positions: [], openActions: 0 } as never);
+  await act(async () => { root.render(<StrictMode><CouncilCard /></StrictMode>); });
+  await settle();
+  expect(getLatest).toHaveBeenCalledTimes(2);
+  expect(container.textContent).not.toContain('Loading…');
+  expect(container.textContent).toContain('No weekly report yet');
+});
+
+it('shows a request failure after StrictMode replay instead of loading forever', async () => {
+  getLatest.mockRejectedValue(new Error('connection refused'));
+  await act(async () => { root.render(<StrictMode><CouncilCard /></StrictMode>); });
+  await settle();
+  expect(container.textContent).not.toContain('Loading…');
+  expect(container.textContent).toContain("Couldn't load the Council report");
 });
 
 it('names the failure in interface voice and offers a retry', async () => {

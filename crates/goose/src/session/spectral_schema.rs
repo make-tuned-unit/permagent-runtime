@@ -896,6 +896,7 @@ pub async fn init_spectral_db(pool: &Pool<Sqlite>) -> Result<()> {
     // Brain feed outbox + per-source status (crates/goose/src/brain_feed.rs).
     // Version-independent for the same reason as the tables above.
     crate::brain_feed::apply_schema(pool).await?;
+    crate::meeting_triage::apply_schema(pool).await?;
 
     info!(
         "Spectral schema v{} initialized successfully",

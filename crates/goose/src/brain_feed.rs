@@ -43,7 +43,7 @@
 //!   (2026-09-25 ruling — a UI-only lock on the Settings toggle is not a
 //!   guardrail), because conversations are the Brain's primary intake.
 
-use sqlx::{Pool, Row, Sqlite};
+use sqlx::{Pool, Row, Sqlite, Transaction};
 
 /// Config key: comma-separated [`FeedSource::short_name`]s whose facts must
 /// never be written to the Brain.
@@ -56,6 +56,10 @@ pub const MAX_ATTEMPTS: i64 = 5;
 /// is a caller bug, truncated on a character boundary rather than rejected.
 pub const MAX_CONTENT_CHARS: usize = 2_000;
 
+/// Project notes carry full meeting transcripts — much larger than card facts.
+/// Matches the practical note-body ceiling used elsewhere in the product (128 KiB).
+pub const MAX_NOTE_FEED_CHARS: usize = 131_072;
+
 /// Rows delivered per drain pass.
 const DRAIN_BATCH: usize = 32;
 
@@ -67,6 +71,8 @@ pub enum FeedSource {
     DecisionAsked,
     DecisionAuto,
     Card,
+    /// Project notes (`permagent.note` — matches [`crate::project_notes::NOTE_SOURCE`]).
+    Note,
     Project,
     Meeting,
     Growth,
@@ -93,12 +99,13 @@ pub enum FeedSource {
 
 impl FeedSource {
     /// Every source, in the order Settings → Memory lists them.
-    pub const ALL: [FeedSource; 19] = [
+    pub const ALL: [FeedSource; 20] = [
         FeedSource::Chat,
         FeedSource::Goal,
         FeedSource::DecisionAsked,
         FeedSource::DecisionAuto,
         FeedSource::Card,
+        FeedSource::Note,
         FeedSource::Project,
         FeedSource::Meeting,
         FeedSource::Growth,
@@ -124,6 +131,7 @@ impl FeedSource {
             FeedSource::DecisionAsked => "permagent.decision.asked",
             FeedSource::DecisionAuto => "permagent.decision.auto",
             FeedSource::Card => "permagent.card",
+            FeedSource::Note => "permagent.note",
             FeedSource::Project => "permagent.project",
             FeedSource::Meeting => "permagent.meeting",
             FeedSource::Growth => "permagent.growth",
@@ -149,6 +157,7 @@ impl FeedSource {
             FeedSource::DecisionAsked => "decision_asked",
             FeedSource::DecisionAuto => "decision_auto",
             FeedSource::Card => "card",
+            FeedSource::Note => "note",
             FeedSource::Project => "project",
             FeedSource::Meeting => "meeting",
             FeedSource::Growth => "growth",
@@ -174,6 +183,7 @@ impl FeedSource {
             FeedSource::DecisionAsked => "Decisions asked",
             FeedSource::DecisionAuto => "Decisions answered by policy or agents",
             FeedSource::Card => "Cards and tasks",
+            FeedSource::Note => "Project notes",
             FeedSource::Project => "Project briefs and strategy",
             FeedSource::Meeting => "Calendar meetings",
             FeedSource::Growth => "Growth actions and outcomes",
@@ -210,6 +220,13 @@ enum WingRef {
 /// decision keys are (colons/whitespace → `-`), so the three-part structure
 /// stays parseable. Identical inputs always yield the identical key — that is
 /// what turns a repeat feed into an upsert.
+/// Parse `note:{project_id}:{note_id}` memory keys enqueued by project notes.
+fn note_project_id_from_memory_key(memory_key: &str) -> Option<String> {
+    let rest = memory_key.strip_prefix("note:")?;
+    let (project_id, _) = rest.split_once(':')?;
+    (!project_id.is_empty()).then(|| project_id.to_string())
+}
+
 pub fn feed_key(kind: &str, id: &str, facet: &str) -> String {
     format!(
         "{kind}:{}:{facet}",
@@ -239,13 +256,29 @@ pub fn feed_remember_opts(
 
 /// Bound a fact's content on a character boundary.
 pub fn bounded_content(content: &str) -> String {
+    bounded_content_with_cap(content, MAX_CONTENT_CHARS)
+}
+
+/// Bound note catalogue content on a character boundary (full meeting bodies).
+pub fn bounded_note_content(content: &str) -> String {
+    bounded_content_with_cap(content, MAX_NOTE_FEED_CHARS)
+}
+
+fn bounded_content_with_cap(content: &str, max_chars: usize) -> String {
     let trimmed = content.trim();
-    if trimmed.chars().count() <= MAX_CONTENT_CHARS {
+    if trimmed.chars().count() <= max_chars {
         trimmed.to_string()
     } else {
-        let mut s: String = trimmed.chars().take(MAX_CONTENT_CHARS - 1).collect();
+        let mut s: String = trimmed.chars().take(max_chars - 1).collect();
         s.push('…');
         s
+    }
+}
+
+fn content_for_source(source: FeedSource, content: &str) -> String {
+    match source {
+        FeedSource::Note => bounded_note_content(content),
+        _ => bounded_content(content),
     }
 }
 
@@ -350,7 +383,7 @@ async fn resolve_wing(pool: &Pool<Sqlite>, wing: WingRef) -> Option<String> {
         WingRef::Slug(s) => Some(s),
         WingRef::Project(id) => {
             match sqlx::query_scalar::<_, String>("SELECT slug FROM projects WHERE id = ?")
-                .bind(&id)
+                .bind(id)
                 .fetch_optional(pool)
                 .await
             {
@@ -362,6 +395,102 @@ async fn resolve_wing(pool: &Pool<Sqlite>, wing: WingRef) -> Option<String> {
     }
 }
 
+async fn resolve_wing_in_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    wing: WingRef,
+) -> Result<Option<String>, String> {
+    match wing {
+        WingRef::None => Ok(None),
+        WingRef::Slug(s) => Ok(Some(s)),
+        WingRef::Project(id) => {
+            match sqlx::query_scalar::<_, String>("SELECT slug FROM projects WHERE id = ?")
+                .bind(id)
+                .fetch_optional(&mut **tx)
+                .await
+            {
+                Ok(Some(slug)) if slug == crate::session_wing::PERSONAL_SLUG => Ok(None),
+                Ok(Some(slug)) => Ok(Some(slug)),
+                Ok(None) => Ok(None),
+                Err(e) => Err(e.to_string()),
+            }
+        }
+    }
+}
+
+async fn feed_inner_in_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    source: FeedSource,
+    key: String,
+    wing: WingRef,
+    content: String,
+) -> Result<(), String> {
+    let content = content_for_source(source, &content);
+    if key.trim().is_empty() || content.is_empty() {
+        return Ok(());
+    }
+    let wing = resolve_wing_in_tx(tx, wing).await?;
+    sqlx::query(
+        "INSERT INTO brain_feed_outbox (memory_key, source, wing, content)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(memory_key) DO UPDATE SET
+           source = excluded.source,
+           wing = excluded.wing,
+           content = excluded.content,
+           revision = brain_feed_outbox.revision + 1,
+           status = 'pending',
+           attempts = 0,
+           last_error = NULL,
+           next_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+           updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')",
+    )
+    .bind(&key)
+    .bind(source.as_str())
+    .bind(wing.as_deref())
+    .bind(&content)
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Enqueue one project-scoped fact inside a caller-owned transaction. Errors
+/// propagate so the caller can roll back its durable write.
+pub async fn feed_for_project_in_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    source: FeedSource,
+    key: String,
+    project_id: &str,
+    content: String,
+) -> Result<(), String> {
+    feed_inner_in_tx(
+        tx,
+        source,
+        key,
+        WingRef::Project(project_id.to_string()),
+        content,
+    )
+    .await
+}
+
+/// Standalone enqueue with error propagation (repair / non-composed callers).
+pub async fn feed_for_project_strict(
+    pool: &Pool<Sqlite>,
+    source: FeedSource,
+    key: String,
+    project_id: &str,
+    content: String,
+) -> Result<(), String> {
+    // Acquire the writer reservation before resolving the wing. A deferred
+    // SELECT -> write upgrade can fail with SQLITE_BUSY_SNAPSHOT under WAL.
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|e| e.to_string())?;
+    feed_for_project_in_tx(&mut tx, source, key, project_id, content).await?;
+    tx.commit().await.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 async fn feed_inner(
     pool: &Pool<Sqlite>,
     source: FeedSource,
@@ -369,7 +498,7 @@ async fn feed_inner(
     wing: WingRef,
     content: String,
 ) {
-    let content = bounded_content(&content);
+    let content = content_for_source(source, &content);
     if key.trim().is_empty() || content.is_empty() {
         return;
     }
@@ -527,6 +656,7 @@ pub fn spawn_periodic_drain(brain: crate::brain_handle::SafeBrain, pool: Pool<Sq
     });
 }
 
+#[derive(Clone)]
 struct FeedJob {
     id: i64,
     memory_key: String,
@@ -599,6 +729,86 @@ pub async fn drain(
     brain: &crate::brain_handle::SafeBrain,
     pool: &Pool<Sqlite>,
 ) -> anyhow::Result<usize> {
+    let brain = brain.clone();
+    let delivery_pool = pool.clone();
+    drain_serialized(pool.clone(), move |job| {
+        let brain = brain.clone();
+        let pool = delivery_pool.clone();
+        async move { deliver_to_brain(&brain, &pool, &job).await }
+    })
+    .await
+}
+
+// Serialize across claim -> external Brain write -> receipt. Re-feeding a
+// running key makes it pending again, so SQL claim/revision guards alone do
+// not prevent two revisions from reaching Brain in reverse completion order.
+static DRAIN_GATE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+async fn drain_serialized<F, Fut>(pool: Pool<Sqlite>, deliver: F) -> anyhow::Result<usize>
+where
+    F: FnMut(FeedJob) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = anyhow::Result<()>> + Send + 'static,
+{
+    // SafeBrain writes use spawn_blocking, which cannot be aborted once
+    // running. Keep the gate in an owned worker even if its waiter cancels.
+    // No SQLite transaction is held across external delivery. Failures retain
+    // the existing durable backoff/recovery path and release the gate normally.
+    tokio::spawn(async move {
+        let _guard = DRAIN_GATE.lock().await;
+        drain_with_delivery(&pool, deliver).await
+    })
+    .await
+    .map_err(|error| anyhow::anyhow!("brain feed worker failed: {error}"))?
+}
+
+async fn deliver_to_brain(
+    brain: &crate::brain_handle::SafeBrain,
+    pool: &Pool<Sqlite>,
+    job: &FeedJob,
+) -> anyhow::Result<()> {
+    let source = FeedSource::from_tag(&job.source);
+    let opts = match source {
+        Some(FeedSource::Note) => spectral::RememberOpts {
+            source: Some(FeedSource::Note.as_str().to_string()),
+            visibility: spectral::Visibility::Private,
+            // Same episode contract as [`crate::project_notes::note_episode_id`].
+            episode_id: Some(job.memory_key.clone()),
+            wing: job.wing.clone(),
+            ..Default::default()
+        },
+        Some(s) => feed_remember_opts(s, &job.memory_key, job.wing.clone()),
+        None => spectral::RememberOpts {
+            source: Some(job.source.clone()),
+            visibility: spectral::Visibility::Private,
+            wing: job.wing.clone(),
+            ..Default::default()
+        },
+    };
+    brain
+        .remember_with(&job.memory_key, &job.content, opts)
+        .await?;
+    if source == Some(FeedSource::Note) {
+        if let Some(project_id) = note_project_id_from_memory_key(&job.memory_key) {
+            // The project link is part of delivery, not optional bookkeeping.
+            // Keep the durable job on lookup/link failure; remembering the same
+            // key and inserting the same association are idempotent on retry.
+            let mem = brain
+                .get_memory_by_key(&job.memory_key)
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("note catalogue memory missing after write"))?;
+            crate::project_association::associate_memory(pool, &project_id, &mem.id)
+                .await
+                .map_err(|error| anyhow::anyhow!("note project association failed: {error}"))?;
+        }
+    }
+    Ok(())
+}
+
+async fn drain_with_delivery<F, Fut>(pool: &Pool<Sqlite>, mut deliver: F) -> anyhow::Result<usize>
+where
+    F: FnMut(FeedJob) -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<()>>,
+{
     let disabled = disabled_sources();
     let mut delivered = 0usize;
     for _ in 0..DRAIN_BATCH {
@@ -614,19 +824,7 @@ pub async fn drain(
                 .await?;
             continue;
         }
-        let opts = match source {
-            Some(s) => feed_remember_opts(s, &job.memory_key, job.wing.clone()),
-            None => spectral::RememberOpts {
-                source: Some(job.source.clone()),
-                visibility: spectral::Visibility::Private,
-                wing: job.wing.clone(),
-                ..Default::default()
-            },
-        };
-        match brain
-            .remember_with(&job.memory_key, &job.content, opts)
-            .await
-        {
+        match deliver(job.clone()).await {
             Ok(_) => {
                 if finish_delivered(pool, job.id, job.revision, source).await? {
                     delivered += 1;
@@ -766,6 +964,256 @@ mod tests {
         .unwrap()
     }
 
+    #[tokio::test]
+    async fn strict_enqueue_waits_for_wal_writer_before_resolving_wing() {
+        let dir = tempfile::tempdir().unwrap();
+        let options = sqlx::sqlite::SqliteConnectOptions::new()
+            .filename(dir.path().join("feed.db"))
+            .create_if_missing(true)
+            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+            .busy_timeout(std::time::Duration::from_secs(2));
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(2)
+            .min_connections(2)
+            .connect_with(options)
+            .await
+            .unwrap();
+        apply_schema(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE projects (id TEXT PRIMARY KEY, slug TEXT)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO projects VALUES ('p', 'before')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let mut writer = pool.begin_with("BEGIN IMMEDIATE").await.unwrap();
+        sqlx::query("UPDATE projects SET slug = 'after' WHERE id = 'p'")
+            .execute(&mut *writer)
+            .await
+            .unwrap();
+        let enqueue = feed_for_project_strict(
+            &pool,
+            FeedSource::Note,
+            "note:p:n".into(),
+            "p",
+            "transcript".into(),
+        );
+        tokio::pin!(enqueue);
+        // A deferred reader would see the old wing, then fail its write
+        // upgrade while this independent WAL writer holds the reservation.
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), &mut enqueue)
+                .await
+                .is_err()
+        );
+        writer.commit().await.unwrap();
+        enqueue.await.unwrap();
+        let wing: String =
+            sqlx::query_scalar("SELECT wing FROM brain_feed_outbox WHERE memory_key = 'note:p:n'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(wing, "after");
+    }
+
+    #[tokio::test]
+    async fn serialized_drains_keep_newest_revision_even_when_first_waiter_is_cancelled() {
+        let pool = test_pool().await;
+        feed_for_project_strict(&pool, FeedSource::Card, "ordered".into(), "p", "raw".into())
+            .await
+            .unwrap();
+        let started = std::sync::Arc::new(tokio::sync::Notify::new());
+        let release = std::sync::Arc::new(tokio::sync::Notify::new());
+        let writes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let deliver = {
+            let started = started.clone();
+            let release = release.clone();
+            let writes = writes.clone();
+            move |job: FeedJob| {
+                let started = started.clone();
+                let release = release.clone();
+                let writes = writes.clone();
+                async move {
+                    if job.content == "raw" {
+                        started.notify_one();
+                        release.notified().await;
+                    }
+                    writes.lock().unwrap().push(job.content);
+                    Ok(())
+                }
+            }
+        };
+        let first = tokio::spawn(drain_serialized(pool.clone(), deliver.clone()));
+        started.notified().await;
+        feed_for_project_strict(
+            &pool,
+            FeedSource::Card,
+            "ordered".into(),
+            "p",
+            "enhanced".into(),
+        )
+        .await
+        .unwrap();
+        first.abort(); // Cancel the caller while its external write is pending.
+        let mut second = tokio::spawn(drain_serialized(pool.clone(), deliver));
+        let blocked = tokio::time::timeout(std::time::Duration::from_millis(100), &mut second)
+            .await
+            .is_err();
+        // Always release, including on regression, so another test cannot hang.
+        release.notify_one();
+        if blocked {
+            second.await.unwrap().unwrap();
+        }
+        assert!(blocked, "new revision overtook the in-flight old revision");
+        assert_eq!(*writes.lock().unwrap(), vec!["raw", "enhanced"]);
+        assert!(outbox(&pool).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn serialized_drain_releases_gate_after_delivery_error_and_retries_new_revision() {
+        let pool = test_pool().await;
+        feed_for_project_strict(&pool, FeedSource::Card, "retry".into(), "p", "first".into())
+            .await
+            .unwrap();
+        assert_eq!(
+            drain_serialized(pool.clone(), |_| async { anyhow::bail!("offline") })
+                .await
+                .unwrap(),
+            0
+        );
+        let status: String =
+            sqlx::query_scalar("SELECT status FROM brain_feed_outbox WHERE memory_key = 'retry'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(status, "pending");
+        // Re-feed makes a new revision immediately eligible after recovery.
+        feed_for_project_strict(
+            &pool,
+            FeedSource::Card,
+            "retry".into(),
+            "p",
+            "latest".into(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            drain_serialized(pool.clone(), |job| async move {
+                assert_eq!(job.content, "latest");
+                Ok(())
+            })
+            .await
+            .unwrap(),
+            1
+        );
+        assert!(outbox(&pool).await.is_empty());
+    }
+
+    #[tokio::test]
+    #[serial_test::serial(brain_feed_permagent_path_root)]
+    async fn note_association_failure_retains_job_and_retry_does_not_duplicate() {
+        let root = tempfile::tempdir().unwrap();
+        let root_str = root.path().display().to_string();
+        let _env = env_lock::lock_env([("PERMAGENT_PATH_ROOT", Some(root_str.as_str()))]);
+        let pool = test_pool().await;
+        sqlx::query("INSERT INTO projects VALUES ('p', 'Synthetic project', 'synthetic-project')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        crate::session::spectral_schema::apply_project_association_schema(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TRIGGER reject_note_link BEFORE INSERT ON project_memories
+             BEGIN SELECT RAISE(FAIL, 'synthetic association unavailable'); END",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let brain = crate::brain_handle::SafeBrain::new(
+            spectral::Brain::open(root.path().join("brain")).unwrap(),
+        );
+        let key = "note:p:n";
+        feed_for_project_strict(
+            &pool,
+            FeedSource::Note,
+            key.into(),
+            "p",
+            "Synthetic transcript: keep the final sentence.".into(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(drain(&brain, &pool).await.unwrap(), 0);
+        let first_memory = brain.get_memory_by_key(key).await.unwrap().unwrap();
+        let (status, attempts, error): (String, i64, String) = sqlx::query_as(
+            "SELECT status, attempts, last_error FROM brain_feed_outbox WHERE memory_key = ?",
+        )
+        .bind(key)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(status, "pending");
+        assert_eq!(attempts, 1);
+        assert!(error.contains("synthetic association unavailable"));
+        let links: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM project_memories")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(links, 0);
+        let sources = feed_status(&pool, &[]).await.unwrap();
+        let note = sources
+            .iter()
+            .find(|source| source.source == "note")
+            .unwrap();
+        assert_eq!(
+            note.count, 0,
+            "failed association must not acknowledge delivery"
+        );
+
+        sqlx::query("DROP TRIGGER reject_note_link")
+            .execute(&pool)
+            .await
+            .unwrap();
+        // Make the original failed job due without creating a replacement job.
+        sqlx::query("UPDATE brain_feed_outbox SET next_attempt_at = '1970-01-01T00:00:00.000Z' WHERE memory_key = ?")
+            .bind(key)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(drain(&brain, &pool).await.unwrap(), 1);
+        assert!(outbox(&pool).await.is_empty());
+        assert_eq!(drain(&brain, &pool).await.unwrap(), 0);
+        let recovered = brain.get_memory_by_key(key).await.unwrap().unwrap();
+        assert_eq!(recovered.id, first_memory.id);
+        let links: Vec<(String, String)> =
+            sqlx::query_as("SELECT project_id, memory_id FROM project_memories")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(links, vec![("p".into(), first_memory.id)]);
+        let brain_db = rusqlite::Connection::open_with_flags(
+            root.path().join("brain/memory.db"),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap();
+        let count: i64 = brain_db
+            .query_row(
+                "SELECT COUNT(*) FROM memories WHERE key = ?1",
+                [key],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "retry must reuse the memory already written");
+        let sources = feed_status(&pool, &[]).await.unwrap();
+        let note = sources
+            .iter()
+            .find(|source| source.source == "note")
+            .unwrap();
+        assert_eq!(note.count, 1);
+        assert!(note.last_error.is_none());
+    }
+
     #[test]
     fn keys_are_stable_and_sanitised() {
         assert_eq!(feed_key("card", "c-1", "status"), "card:c-1:status");
@@ -899,6 +1347,14 @@ mod tests {
         let b = bounded_content(&long);
         assert_eq!(b.chars().count(), MAX_CONTENT_CHARS);
         assert!(b.ends_with('…'));
+    }
+
+    #[test]
+    fn note_content_keeps_meeting_length_beyond_default_fact_cap() {
+        let long = "x".repeat(5_000);
+        let note = bounded_note_content(&long);
+        assert_eq!(note.len(), 5_000);
+        assert_eq!(bounded_content(&long).chars().count(), MAX_CONTENT_CHARS);
     }
 
     #[tokio::test]

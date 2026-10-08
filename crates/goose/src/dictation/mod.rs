@@ -1,6 +1,8 @@
 pub mod providers;
 #[cfg(feature = "local-inference")]
 pub mod whisper;
+#[cfg(feature = "local-inference")]
+mod whisper_segments;
 
 /// Self-knowledge descriptor for the meeting-notes surface (call-notes MVP 1A
 /// and after): the sidebar Record button that captures meeting speech,
@@ -20,42 +22,33 @@ pub const MEETING_DICTATION_FEATURE: crate::agents::self_knowledge::FeatureDescr
         display_name: "Meeting notes",
         category: crate::agents::self_knowledge::FeatureCategory::Surface,
         what_it_does:
-            "A Record button in the sidebar captures a meeting and writes it up as a project \
-             note. The user picks a project and confirms before anything records; a panel stays \
-             visible for the whole call showing elapsed time and live proof that each side is \
-             actually being heard. Their own microphone is always captured, and an explicit \
-             opt-in also captures this Mac's audio output — the other participants — producing a \
-             two-speaker transcript. Everything is transcribed in chunks by the LOCAL Whisper \
-             model; no audio ever leaves the machine. While the call runs the user can type into \
-             a notepad in that panel, and those fragments STEER the write-up rather than just \
-             marking where to look. On stop the note is saved immediately as raw transcript, \
-             then a background pass rewrites it into structured sections while keeping the \
-             user's own words verbatim under `## Your notes` and the full transcript under \
-             `## Transcript`, and files each action item stated in the meeting as a card on the \
-             project's kanban board. That write-up pass runs on the configured model: the full \
-             transcript and the user's notepad text are sent to it, and it is a cloud model \
-             unless a local one is configured. A recording interrupted by a crash or quit is \
-             offered back for saving the next time the app opens",
+            "The sidebar Record picker binds a recording to a project. The user selects their \
+             microphone, this Mac's system audio, or both before starting; opening the picker \
+             never starts capture. Native system capture requires the helper and macOS permission. \
+             Local Whisper transcribes captured audio in chunks. Source activity and a saved note \
+             do not prove every spoken word was captured. The user can add a notepad during the call. \
+             Saving retains the transcript and notes in the selected project, then queues durable \
+             Orchestrator triage. Its receipt reports pending/running/completed/failed/skipped. \
+             Completed triage can produce a structured write-up and relevant Kanban todos; saving \
+             alone does not prove triage completed, and extracted todos are not execution approval. \
+             The UI links the saved note, resulting board cards and triage session when available, \
+             and supports retry and interrupted-draft recovery",
         why_it_matters:
-            "When the user wants a call captured, point them at the Record button, and tell them \
-             to jot fragments in the notepad while it runs — what they type is what the write-up \
-             will argue, which is the difference between notes about them and notes for them. Be \
-             accurate about coverage: their microphone is always recorded, the other side only \
-             if they tick the box (macOS asks for Screen Recording the first time). Every word \
-             is transcribed on this machine. The write-up is not — on save the full transcript \
-             and their notepad go to the configured model, which is a cloud model unless they \
-             have set a local one; say so if they ask whether the meeting stayed private. The \
-             saved note lands in the project's Brain like any other note, so it is searchable \
-             afterwards, and its action items are already on the board — no need to offer to \
-             re-read the transcript for them",
+            "Use app_action surface record action open to reveal the picker or existing recording \
+             panel, then let the user confirm sources and Start. Explain which side is actually \
+             selected; never promise both sides from a microphone-only recording. Audio transcription \
+             stays local. Write-up and triage use configured privacy routing and may send transcript \
+             and notepad text to a cloud model when permitted; local-only must not silently fall back \
+             to cloud. Check the receipt before claiming action items exist. Open note is the saved \
+             project artifact; Open board is available for created cards. Failed/skipped triage can \
+             be retried without treating the recording as a new meeting",
         state_source: crate::agents::self_knowledge::StateSource::Static,
         teaching: &[
             crate::agents::self_knowledge::TeachingStep {
                 title: "Record the call",
                 body: "Show them the Record button in the sidebar. Explain that they choose the \
-                       project first — nothing is captured until they confirm — and that if the \
-                       other participants should be in the transcript too, they tick \"Also \
-                       record the other participants\" before starting.",
+                       project and sources first — nothing is captured until Start. Microphone \
+                       and system audio are separate choices; macOS permission may be needed.",
                 open_surface: None,
                 confirm: None,
             },
@@ -71,9 +64,9 @@ pub const MEETING_DICTATION_FEATURE: crate::agents::self_knowledge::FeatureDescr
             crate::agents::self_knowledge::TeachingStep {
                 title: "See what it wrote",
                 body: "After they stop, open the project's notes. The raw transcript is saved \
-                       first and the structured write-up replaces it a moment later — their own \
-                       words kept verbatim, the transcript kept underneath. Point out the action \
-                       items that have already appeared on the board.",
+                       first. Check the triage receipt before claiming the write-up or cards \
+                       completed. If cards were created, Open board reveals them; failed/skipped \
+                       triage offers Retry triage. Keep the transcript available for review.",
                 open_surface: Some(crate::agents::self_knowledge::SurfaceRef {
                     tab: "Projects",
                     section: None,

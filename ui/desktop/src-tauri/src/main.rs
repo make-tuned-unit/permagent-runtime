@@ -10,6 +10,7 @@ mod chrome;
 mod daemon;
 mod files;
 mod menu;
+mod runtime_target;
 mod system_audio;
 mod terminal;
 
@@ -190,8 +191,7 @@ fn raise_chat_above_main(app: tauri::AppHandle) {
 
 /// Path of the main-thread liveness heartbeat file (`~/.permagent/logs/ui-heartbeat`).
 fn heartbeat_path() -> std::path::PathBuf {
-    let home = std::env::var("HOME").unwrap_or_default();
-    std::path::PathBuf::from(home).join(".permagent/logs/ui-heartbeat")
+    runtime_target::target().root.join("logs/ui-heartbeat")
 }
 
 /// Main-thread liveness heartbeat (#562).
@@ -368,6 +368,7 @@ fn main() {
             system_audio::start_system_audio,
             system_audio::stop_system_audio,
             system_audio::system_audio_available,
+            system_audio::list_system_audio_apps,
             system_audio::read_audio_chunk,
             browser::reparent_browser,
             browser::navigate_browser,
@@ -398,6 +399,8 @@ fn main() {
             calendar::calendar_authorization_status,
             calendar::request_calendar_access,
             calendar::calendar_upcoming_events,
+            calendar::calendar_events_in_range,
+            calendar::open_calendar_app,
             calendar::open_calendar_privacy_settings,
         ])
         .setup(|app| {
@@ -407,6 +410,7 @@ fn main() {
             if let Some(main) = app.get_webview_window("main") {
                 chrome::make_window_transparent(&main);
             }
+            runtime_target::initialize(&app.config().identifier).map_err(std::io::Error::other)?;
             daemon::start_daemon(app.handle())?;
             // Auto-update check (#326/#378): on launch, ask the hosted manifest
             // if a newer signed build exists. Non-blocking, failure-tolerant —

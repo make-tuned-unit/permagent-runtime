@@ -44,10 +44,10 @@ struct NavigateAppParams {
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct AppActionParams {
-    /// The surface to act on: "chat" or "build".
+    /// The surface to act on: "chat", "build", or "record" (open picker only).
     surface: String,
     /// The action to perform within the surface. Valid pairs:
-    /// chat → open | close | detach; build → show_browser | hide_browser |
+    /// record → open (never start capture); chat → open | close | detach; build → show_browser | hide_browser |
     /// show_terminal | hide_terminal.
     action: String,
     /// Optional opaque JSON params for the action (reserved; unused today).
@@ -60,13 +60,13 @@ struct AppActionParams {
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct OpenItemParams {
-    /// The kind of item to open. Valid: "goal" (a goal card's detail modal) or
+    /// The kind of item to open. Valid: "card" (on Kanban), "goal" (goal detail) or
     /// "grow" (a project's Grow planner).
     kind: String,
     /// The project the item belongs to — REQUIRED for every kind. Get it from
     /// project_resolve (or project_list).
     project_id: String,
-    /// The goal card's id — REQUIRED when kind is "goal", ignored otherwise. Get
+    /// The card's id — REQUIRED when kind is "goal" or "card", ignored otherwise. Get
     /// it from board_summary or card_list (a card with card_type "goal").
     #[serde(default)]
     card_id: Option<String>,
@@ -125,6 +125,7 @@ fn desktop_ui_blocked(session_id: &str, target: &str) -> Option<String> {
 /// than emitting an event the frontend can't handle. The frontend dispatcher
 /// mirrors these exact strings.
 const ACTION_CATALOG: &[(&str, &[&str])] = &[
+    ("record", &["open"]),
     ("chat", &["open", "close", "detach"]),
     (
         "build",
@@ -165,7 +166,100 @@ fn action_is_valid(surface: &str, action: &str) -> bool {
 /// are reachable. (Decision/person/memory seams exist but are intentionally
 /// absent: the agent has no reliable way to reference their ids today — see the
 /// tool description.)
-const ITEM_CATALOG: &[(&str, &str)] = &[("goal", "project_id + card_id"), ("grow", "project_id")];
+const ITEM_CATALOG: &[(&str, &str)] = &[
+    ("goal", "project_id + card_id"),
+    ("card", "project_id + card_id"),
+    ("grow", "project_id"),
+];
+
+const PROJECT_SECTIONS: &[&str] = &["overview", "details", "kanban"];
+const HOME_CARD_TYPES: &[&str] = &[
+    "decisions",
+    "stats",
+    "in_flight",
+    "recent",
+    "timeline",
+    "todos",
+    "growth_results",
+    "council",
+    "calendar",
+    "today_focus",
+    "overnight_digest",
+    "fleet_kpis",
+    "stalled_pattern",
+    "project_health_grid",
+    "system_stats",
+    "weather",
+    "henry_status",
+    "job_health",
+    "finance_summary",
+    "finance_watchlist",
+    "cost_vs_outcome",
+    "people_attention",
+    "open_commitments",
+    "recent_meetings",
+    "week_headline",
+    "week_small_multiples",
+    "memory_growth",
+    "on_this_week",
+];
+const WORLD_SECTIONS: &[&str] = &[
+    "commons",
+    "gallery",
+    "maker",
+    "council_garden",
+    "observatory_garden",
+    "conservatory",
+];
+
+/// UI labels changed while the daemon catalog kept stable legacy names.
+fn navigation_alias(tab: &str) -> (&str, Option<&str>) {
+    if tab.eq_ignore_ascii_case("Home") {
+        ("Dashboard", None)
+    } else if tab.eq_ignore_ascii_case("History") {
+        ("Settings", Some("history"))
+    } else {
+        (tab, None)
+    }
+}
+
+fn validate_navigation_section(
+    tool: &str,
+    section: Option<&str>,
+    state: Option<&serde_json::Value>,
+) -> Result<(), String> {
+    let Some(section) = section else {
+        return Ok(());
+    };
+    if tool == "projects" {
+        if !PROJECT_SECTIONS.contains(&section) {
+            return Err("Projects sections: overview, details, kanban.".into());
+        }
+        if state
+            .and_then(|s| s.get("project_id"))
+            .and_then(|v| v.as_str())
+            .is_none_or(|id| id.trim().is_empty())
+        {
+            return Err(
+                "A Projects section requires state.project_id from project_resolve.".into(),
+            );
+        }
+    }
+    if tool == "dashboard" && section != "overview" && !HOME_CARD_TYPES.contains(&section) {
+        return Err(format!("Home sections: overview (collapse focus), {}. A card must already be visible in the current layout.", HOME_CARD_TYPES.join(", ")));
+    }
+    if tool == "world" && !WORLD_SECTIONS.contains(&section) {
+        return Err(format!(
+            "World sections (compact places): {}.",
+            WORLD_SECTIONS.join(", ")
+        ));
+    }
+    Ok(())
+}
+
+fn navigation_result(target: &str, reason: &str) -> String {
+    format!("Sent the navigation request for {target} to the app. Screen delivery is not confirmed; the app must be connected and host that view. {reason}")
+}
 
 fn item_kinds_list() -> String {
     ITEM_CATALOG
@@ -261,7 +355,8 @@ impl AppConductorClient {
         let catalog =
             get_global_catalog().ok_or_else(|| "App catalog not initialized".to_string())?;
 
-        let entry = catalog.find_by_name(&args.tab).ok_or_else(|| {
+        let (catalog_name, alias_section) = navigation_alias(&args.tab);
+        let entry = catalog.find_by_name(catalog_name).ok_or_else(|| {
             format!(
                 "I don't recognize the tab \"{}\". Available tabs are: {}",
                 args.tab,
@@ -277,7 +372,12 @@ impl AppConductorClient {
         // entry's own fixed section (Console-consolidation entries like
         // Sessions/Trace/Inbox are Settings sections and carry it in the
         // catalog so `navigate_app("Sessions")` lands on the right pane).
-        let section = args.section.clone().or_else(|| entry.section.clone());
+        let section = args
+            .section
+            .clone()
+            .or_else(|| alias_section.map(str::to_string))
+            .or_else(|| entry.section.clone());
+        validate_navigation_section(&entry.tool_type, section.as_deref(), args.state.as_ref())?;
 
         // Speak-then-act seam: if a transport is intercepting navigations for
         // this session (a voice turn), hand the intent off to it instead of
@@ -303,10 +403,9 @@ impl AppConductorClient {
             ));
         }
 
-        Ok(CallToolResult::success(vec![Content::text(format!(
-            "Navigating to {}. {}",
-            entry.name, args.reason
-        ))]))
+        Ok(CallToolResult::success(vec![Content::text(
+            navigation_result(&args.tab, &args.reason),
+        )]))
     }
 
     async fn handle_action(
@@ -345,7 +444,7 @@ impl AppConductorClient {
         ));
 
         Ok(CallToolResult::success(vec![Content::text(format!(
-            "Done: {} on {}. {}",
+            "Sent the {} request to the {} surface. Screen delivery is not confirmed. {}",
             args.action, args.surface, args.reason
         ))]))
     }
@@ -372,10 +471,14 @@ impl AppConductorClient {
         // Goal is the one kind that needs a second id; reject early with a
         // pointer to where the agent gets it rather than emitting an event the
         // goal-detail modal can't act on.
-        if args.kind == "goal" && args.card_id.as_deref().unwrap_or("").is_empty() {
+        if args.project_id.trim().is_empty() {
+            return Err("Opening an item needs project_id from project_resolve.".into());
+        }
+        if matches!(args.kind.as_str(), "goal" | "card")
+            && args.card_id.as_deref().unwrap_or("").trim().is_empty()
+        {
             return Err(
-                "Opening a goal needs its card_id (a card_type \"goal\" card from \
-                 board_summary / card_list) alongside the project_id."
+                "Opening a card or goal needs card_id from card_list alongside project_id."
                     .to_string(),
             );
         }
@@ -449,9 +552,17 @@ impl AppConductorClient {
                  sub-view. Call this whenever the user expresses intent to view, open, \
                  visit, or be taken to a tab. This is the ONLY way to actually change \
                  what the user sees — describing navigation in text does nothing.\n\n\
-                 To open a specific project's detail/kanban view, navigate to the \
-                 \"Projects\" tab with state: { \"project_id\": \"<uuid>\" }. Resolve \
-                 the project name first with project_resolve to get the ID.\n\n\
+                 Home is the Dashboard; History opens the records destination. \
+                 Home section overview collapses focus; a bundled card type such as calendar, \
+                 decisions, todos, today_focus or weather focuses that existing visible card. \
+                 It never adds cards, saves layouts, or exits Customize. \
+                 Settings section \"models\" opens Models. To open a project, use \
+                 tab \"Projects\", state: { \"project_id\": \"<uuid>\" }, and optionally \
+                 section \"overview\", \"details\", or \"kanban\". Resolve the id with \
+                 project_resolve first. World section selects a compact place: commons \
+                 (Arrival table), gallery (Garden archive), maker (Maker workshop), \
+                 council_garden (Observatory), observatory_garden, or conservatory. \
+                 Requests do not confirm rendering; do not claim a screen receipt.\n\n\
                  To open the People directory, navigate to the \"People\" tab. To open \
                  a specific person's detail panel, pass state: { \"person\": \"<display name>\" } \
                  (the name as observe_app surface people returned it). Do not pass emails \
@@ -466,7 +577,8 @@ impl AppConductorClient {
                  chat dock, and show/hide the Build tab's browser or terminal \
                  pane. Like navigate_app, describing the action in text does \
                  nothing — you must call this to actually change the UI.\n\n\
-                 Valid surface → action pairs: chat → open | close | detach; \
+                 Valid surface → action pairs: record → open (picker only; NEVER starts capture); \
+                 chat → open | close | detach; \
                  build → show_browser | hide_browser | show_terminal | \
                  hide_terminal. (build actions switch to the Build tab first if \
                  needed.)"
@@ -479,15 +591,16 @@ impl AppConductorClient {
                  tab. Like navigate_app/app_action, calling this is the only way to \
                  actually open the item; describing it does nothing.\n\n\
                  Valid kinds: \"goal\" — open a goal card's detail (checklist, \
-                 evidence, decisions); pass project_id AND card_id. \"grow\" — open \
+                 evidence, decisions); pass project_id AND card_id. \"card\" — open any \
+                 current card on Kanban; pass project_id AND card_id. \"grow\" — open \
                  a project's Grow planner; pass project_id.\n\n\
                  Get the ids from your own tools first: project_resolve → \
-                 project_id; board_summary or card_list → a card_type \
-                 \"goal\" card's id. This sends the open request to the app but \
+                 project_id; board_summary or card_list → the card id (kind goal \
+                 requires a card_type goal card). This sends the open request to the app but \
                  cannot confirm the open: a stale or guessed id (or no app \
                  window) changes nothing on screen, so always use CURRENT ids \
-                 from those tools. (To open a project's Kanban/Overview instead, \
-                 use navigate_app to the Projects tab with state { project_id }.)"
+                 from those tools. For an empty board or project view, use navigate_app \
+                 to Projects with state { project_id } and section kanban/overview/details."
                     .to_string(),
                 schema::<OpenItemParams>(),
             ),
@@ -557,6 +670,49 @@ impl McpClientTrait for AppConductorClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn navigation_aliases_use_existing_catalog_routes() {
+        assert_eq!(navigation_alias("Home"), ("Dashboard", None));
+        assert_eq!(navigation_alias("history"), ("Settings", Some("history")));
+        assert_eq!(navigation_alias("World"), ("World", None));
+    }
+
+    #[test]
+    fn project_lenses_require_real_project_identity_and_world_rejects_unknown_places() {
+        let state = serde_json::json!({"project_id": "p1"});
+        for lens in PROJECT_SECTIONS {
+            assert!(validate_navigation_section("projects", Some(lens), Some(&state)).is_ok());
+            assert!(validate_navigation_section("projects", Some(lens), None).is_err());
+        }
+        assert!(validate_navigation_section("projects", Some("delete"), Some(&state)).is_err());
+        for place in WORLD_SECTIONS {
+            assert!(validate_navigation_section("world", Some(place), None).is_ok());
+        }
+        assert!(validate_navigation_section("world", Some("teleport-anywhere"), None).is_err());
+    }
+
+    #[test]
+    fn home_focus_accepts_bundled_types_and_overview_only() {
+        for section in HOME_CARD_TYPES.iter().copied().chain(["overview"]) {
+            assert!(validate_navigation_section("dashboard", Some(section), None).is_ok());
+        }
+        for section in ["add_card", "customize", "unregistered_plugin", ""] {
+            assert!(validate_navigation_section("dashboard", Some(section), None).is_err());
+        }
+    }
+
+    #[test]
+    fn record_is_open_only_and_navigation_is_not_a_receipt() {
+        assert!(action_is_valid("record", "open"));
+        for action in ["start", "stop", "save", "discard", "enable_microphone"] {
+            assert!(!action_is_valid("record", action));
+        }
+        let result = navigation_result("Home", "Review your work.");
+        assert!(result.starts_with("Sent the navigation request"));
+        assert!(result.contains("not confirmed"));
+        assert!(item_is_valid("card"));
+    }
 
     #[test]
     fn valid_pairs_accepted() {
@@ -640,7 +796,7 @@ mod tests {
         // updating the dispatcher (or vice versa), the agent emits an event the
         // frontend silently drops. Keep this list in lockstep with dispatchOpenItem.
         let kinds: Vec<&str> = ITEM_CATALOG.iter().map(|(k, _)| *k).collect();
-        assert_eq!(kinds, vec!["goal", "grow"]);
+        assert_eq!(kinds, vec!["goal", "card", "grow"]);
     }
 
     #[test]

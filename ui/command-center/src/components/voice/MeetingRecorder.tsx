@@ -1,3 +1,4 @@
+import { useAppNavigationRequests, consumeNavigationRequest } from '../../lib/appNavigationRequests';
 /**
  * MeetingRecorder — the sidebar "Record" button + confirm-first project picker
  * + always-visible recording panel (call-notes MVP 1A).
@@ -33,7 +34,11 @@ import { apiFetch } from '../../lib/api';
 import { toast } from '../../lib/notifications';
 import { duration, ease, font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
-import { useMeetingDictation, formatElapsed } from '../../hooks/useMeetingDictation';
+import {
+  useMeetingDictation, formatElapsed, describeSources, appAvailability, unavailableAppMessage,
+  type MeetingDictationState, type MeetingTriageView, type RecordingSources,
+} from '../../hooks/useMeetingDictation';
+import type { SystemAudioApp } from '../../lib/systemAudio';
 import { FiChevronDown, FiMic } from 'react-icons/fi';
 import { Button } from '../common/Button';
 import { Tooltip } from '../common/Tooltip';
@@ -44,6 +49,77 @@ import type { Project } from '../projects/types';
  *  list to start a recording is friction at exactly the wrong moment. */
 const FILTER_THRESHOLD = 6;
 
+const FOCUSABLE = 'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])';
+
+/** Tabbable elements inside `root`, in DOM order. Exported for tests. */
+export function focusables(root: HTMLElement): HTMLElement[] {
+  return Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE));
+}
+
+function firstFocusable(root: HTMLElement): HTMLElement | null {
+  return focusables(root)[0] ?? null;
+}
+
+/** The picker's plain statement of what Start will record. Pure; tested. */
+export function pickerDescription(s: RecordingSources): string {
+  const local = 'The audio is transcribed on this device and never uploaded, and the transcript is saved as a note on the project you pick.';
+  const far = s.app
+    ? `${s.app.name}'s audio only`
+    : "all of this Mac's audio output (the other participants, plus anything else it plays)";
+  if (s.mic && s.system) return `Records your microphone and ${far}. ${local}`;
+  if (s.system) return `Records ${far} — not your microphone. ${local}`;
+  if (s.mic) return `Records your microphone only — not the other side of a call. ${local}`;
+  return 'Nothing is selected to record.';
+}
+
+/** What the panel can honestly claim about capture right now, naming the
+ *  sources actually recording — a system-only recording never says "you".
+ *  Pure; tested. */
+export function captureLine(sources: RecordingSources, nearHeard: number, farHeard: number): string {
+  const near = nearHeard > 0 ? 'hearing you ✓' : 'listening…';
+  const farName = sources.app?.name ?? 'system audio';
+  const far = farHeard > 0 ? `hearing ${farName} ✓` : `waiting for ${farName}…`;
+  const label = describeSources(sources);
+  if (sources.mic && sources.system) return `${label} — mic: ${near} · ${far}`;
+  if (sources.system) return `${label} — ${far}`;
+  return `${label} — ${near}`;
+}
+
+/** What the rail button will actually do. While recording it SURFACES the
+ *  panel (a misclick must never end a live meeting) — the tooltip used to say
+ *  "Stop recording and save the note", promising the one thing it won't do. */
+/** One honest line for where a saved meeting's Orchestrator triage stands.
+ *  `tone` picks the colour; nothing here claims more than the receipt says. */
+export function triageStatusLine(view: MeetingTriageView): { text: string; tone: 'muted' | 'ok' | 'danger' } {
+  const r = view.receipt;
+  if (view.unavailable && !r) return { text: "This daemon didn't report triage status for the note.", tone: 'muted' };
+  if (!r) return { text: 'Checking the triage…', tone: 'muted' };
+  const n = r.cardIds.length;
+  switch (r.status) {
+    case 'pending':
+      return { text: view.stalled ? 'Triage still queued — check again later.' : 'Triage queued for the Orchestrator.', tone: 'muted' };
+    case 'running':
+      return { text: view.stalled ? 'Triage still running — check again later.' : 'The Orchestrator is triaging the meeting…', tone: 'muted' };
+    case 'completed':
+      return {
+        text: n > 0 ? `Triage done — ${n} to-do card${n === 1 ? '' : 's'} on the board.` : 'Triage done — no to-dos found.',
+        tone: 'ok',
+      };
+    case 'failed':
+      return { text: `Triage failed${r.lastError ? `: ${r.lastError}` : '.'}`, tone: 'danger' };
+    case 'skipped':
+      // The daemon skips when no model it may use is reachable: local-only
+      // mode without a local route, or no model configured at all.
+      return { text: 'Triage skipped — no permitted model was available. Check local-only mode and your model settings.', tone: 'muted' };
+  }
+}
+
+export function recordButtonTooltip(state: MeetingDictationState): string {
+  if (state === 'recording') return 'Show the recording panel — Stop & save is there';
+  if (state === 'finishing') return 'Transcribing & saving…';
+  return 'Record a meeting to a project note';
+}
+
 export function MeetingRecorder({ open }: { open: boolean }) {
   const { colors, gradient, reduceMotion } = useTheme();
   // Hook form, so the Reduce-Transparency bridge is started by the surface
@@ -53,9 +129,11 @@ export function MeetingRecorder({ open }: { open: boolean }) {
     state, error, elapsedSeconds, failedChunks, target, hasUnsavedTranscript,
     start, stop, retrySave, discard,
     systemAudio, setSystemAudio, systemAudioError, systemAudioAvailable,
+    recordMic, setRecordMic, systemAudioApp, setSystemAudioApp, listSystemAudioApps, activeSources,
     farChunksHeard, nearChunksHeard,
     recoveredDrafts, recoverDraft, dismissDraft,
     userNotes, setUserNotes,
+    triage, retryTriage, refreshTriage, dismissTriage,
   } = useMeetingDictation();
   const [recovering, setRecovering] = useState<string | null>(null);
   // Whether this build carries the capture helper at all. Checked rather than
@@ -64,6 +142,15 @@ export function MeetingRecorder({ open }: { open: boolean }) {
   useEffect(() => { void systemAudioAvailable().then(setCanCaptureSystem); }, [systemAudioAvailable]);
 
   const [pickerOpen, setPickerOpen] = useState(false);
+  const recordOpenRequest = useAppNavigationRequests(s => s.recordOpen);
+  useEffect(() => {
+    if (!recordOpenRequest) return;
+    // Match the rail's navigation behavior. Never call start/stop or acquire media.
+    if (state === 'recording') useCommandCenter.getState().openChatDock();
+    else if (state !== 'finishing') setPickerOpen(true);
+    consumeNavigationRequest('recordOpen', recordOpenRequest);
+  }, [recordOpenRequest, state]);
+
   // The native browser webview composites above ALL DOM (the corner-cede
   // trap) — without this, the picker modal opens BEHIND an open web call.
   const pushBrowserOverlay = useCommandCenter(s => s.pushBrowserOverlay);
@@ -73,6 +160,58 @@ export function MeetingRecorder({ open }: { open: boolean }) {
     pushBrowserOverlay();
     return () => popBrowserOverlay();
   }, [pickerOpen, pushBrowserOverlay, popBrowserOverlay]);
+  // Apps the native can capture on their own: undefined while asking, null
+  // when this native cannot target an app (then only "all system audio" is
+  // offered — never a picker that would claim isolation it can't deliver).
+  const [captureApps, setCaptureApps] = useState<SystemAudioApp[] | null | undefined>(undefined);
+  useEffect(() => {
+    if (!pickerOpen || !systemAudio) return;
+    let live = true;
+    setCaptureApps(undefined);
+    // A chosen app that has gone away is KEPT, shown as unavailable, and
+    // blocks Start — never silently widened to all system audio.
+    void listSystemAudioApps().then(apps => { if (live) setCaptureApps(apps); });
+    return () => { live = false; };
+  }, [pickerOpen, systemAudio, listSystemAudioApps]);
+  const hasSource = recordMic || systemAudio;
+  const chosenApp = systemAudio ? systemAudioApp : null;
+  const chosenAppState = chosenApp ? appAvailability(chosenApp, captureApps) : 'available';
+  const canStart = hasSource && chosenAppState === 'available';
+
+  // Modal focus: move focus INTO the dialog when it opens, keep Tab inside it
+  // while open, and hand focus back to the Record button on close. Without
+  // this, focus stayed on the rail behind the scrim and keyboard/assistive
+  // users were operating a page they could not see.
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+  const returnFocusRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    if (!pickerOpen) return;
+    returnFocusRef.current = document.activeElement as HTMLElement | null;
+    const dialog = dialogRef.current;
+    const raf = requestAnimationFrame(() => {
+      if (dialog && !dialog.contains(document.activeElement)) {
+        (firstFocusable(dialog) ?? dialog).focus();
+      }
+    });
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Tab' || !dialog) return;
+      const items = focusables(dialog);
+      if (items.length === 0) { e.preventDefault(); dialog.focus(); return; }
+      const first = items[0];
+      const last = items[items.length - 1];
+      const active = document.activeElement;
+      if (e.shiftKey && (active === first || !dialog.contains(active))) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && (active === last || !dialog.contains(active))) { e.preventDefault(); first.focus(); }
+    };
+    document.addEventListener('keydown', onKey, true);
+    return () => {
+      cancelAnimationFrame(raf);
+      document.removeEventListener('keydown', onKey, true);
+      const back = returnFocusRef.current;
+      if (back && back.isConnected) back.focus();
+    };
+  }, [pickerOpen]);
+
   const [projects, setProjects] = useState<Project[] | null>(null);
   const [loadError, setLoadError] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -121,13 +260,13 @@ export function MeetingRecorder({ open }: { open: boolean }) {
 
   const handleStart = useCallback(async () => {
     const project = visibleProjects.find(p => p.id === selectedId);
-    if (!project) return;
+    if (!project || !canStart) return;
     setPickerOpen(false);
     setFilter('');
     await start({ projectId: project.id, projectName: project.name });
     // The notepad is the point of the panel — put the cursor in it.
     requestAnimationFrame(() => notepadRef.current?.focus());
-  }, [visibleProjects, selectedId, start]);
+  }, [visibleProjects, selectedId, start, canStart]);
 
   // Escape closes the picker and Enter starts with the current selection: a
   // modal you can only leave with the mouse is the one that feels stuck.
@@ -135,7 +274,10 @@ export function MeetingRecorder({ open }: { open: boolean }) {
     if (!pickerOpen) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') { e.stopPropagation(); setPickerOpen(false); setFilter(''); }
-      if (e.key === 'Enter' && selectedId) { e.preventDefault(); void handleStart(); }
+      // Not from the app list: Enter there belongs to the select itself.
+      if (e.key === 'Enter' && selectedId && (e.target as HTMLElement | null)?.tagName !== 'SELECT') {
+        e.preventDefault(); void handleStart();
+      }
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
@@ -175,9 +317,9 @@ export function MeetingRecorder({ open }: { open: boolean }) {
   const handleStop = async () => {
     const name = target?.projectName;
     const saved = await stop();
-    if (saved && name) {
-      savedToast(`Writing up the notes for "${name}" now — click to open the note.`, saved);
-    }
+    // Saved is all this claims: the Orchestrator's triage runs afterwards and
+    // reports on its own card — "writing up the notes now" read as done.
+    if (saved && name) savedToast(`Saved to "${name}" — click to open the note.`, saved);
     return saved !== null;
   };
 
@@ -242,14 +384,6 @@ export function MeetingRecorder({ open }: { open: boolean }) {
     display: 'flex', flexDirection: 'column' as const, gap: space.md,
   });
 
-  /** What the panel can honestly claim about capture right now. */
-  const captureLine = () => {
-    const near = nearChunksHeard > 0 ? 'hearing you ✓' : 'listening…';
-    if (!systemAudio) return `Your voice — ${near}`;
-    const far = farChunksHeard > 0 ? 'hearing the call ✓' : 'waiting for call audio…';
-    return `Both sides — you: ${near} · call: ${far}`;
-  };
-
   const newestDraft = recoveredDrafts[0];
 
   return (
@@ -262,11 +396,7 @@ export function MeetingRecorder({ open }: { open: boolean }) {
           the row, exactly as before. This row declares NO inline transition:
           it snaps with the rail, like every other nav row. See the margin note
           below — an inline `all` here is what used to make it jiggle. */}
-      <Tooltip content={
-        state === 'recording' ? 'Stop recording and save the note'
-          : state === 'finishing' ? 'Transcribing & saving…'
-          : 'Record a meeting to a project note'
-      } placement="right">
+      <Tooltip content={recordButtonTooltip(state)} placement="right">
         <Button
           colors={colors}
           variant="bare"
@@ -372,6 +502,9 @@ export function MeetingRecorder({ open }: { open: boolean }) {
             role="dialog"
             aria-modal="true"
             aria-label="Record a meeting"
+            aria-describedby="pa-record-sources-summary"
+            ref={dialogRef}
+            tabIndex={-1}
             style={{
               width: 380, maxWidth: `calc(100vw - ${space.huge * 2}px)`, maxHeight: '70vh',
               display: 'flex', flexDirection: 'column',
@@ -388,10 +521,8 @@ export function MeetingRecorder({ open }: { open: boolean }) {
             <div style={{ fontSize: textSize.body, fontWeight: 600, color: colors.text, marginBottom: space.xs }}>
               Record a meeting
             </div>
-            <div style={{ fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.5, marginBottom: space.lg }}>
-              {systemAudio
-                ? "Records BOTH sides — your microphone and this Mac's audio output, which is the other participants. The audio is transcribed on this device and never uploaded. Saved as a note on the project you pick."
-                : "Records your own voice from this machine's microphone (not the other side of a call), transcribes it on this device — the audio is never uploaded — and saves the transcript as a note on the project you pick when you stop."}
+            <div id="pa-record-sources-summary" style={{ fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.5, marginBottom: space.lg }}>
+              {pickerDescription({ mic: recordMic, system: systemAudio, app: systemAudio ? systemAudioApp : null })}
             </div>
 
             {/* The transcript is written up by the configured model, and that
@@ -418,26 +549,106 @@ export function MeetingRecorder({ open }: { open: boolean }) {
                 recording yourself, and it should never be a silent default.
                 macOS asks for Screen Recording the first time — that grant is
                 what makes system audio reachable at all. */}
-            {canCaptureSystem && (
+            <div role="group" aria-label="What to record" style={{ display: 'flex', flexDirection: 'column', gap: space.md, marginBottom: space.lg }}>
               <label style={{
-                display: 'flex', alignItems: 'flex-start', gap: space.md, marginBottom: space.lg,
+                display: 'flex', alignItems: 'flex-start', gap: space.md,
                 fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.5, cursor: 'pointer',
               }}>
                 <input
                   type="checkbox"
-                  checked={systemAudio}
-                  onChange={e => setSystemAudio(e.target.checked)}
+                  checked={recordMic}
+                  onChange={e => setRecordMic(e.target.checked)}
                   style={{ marginTop: space.xs / 2, accentColor: colors.cyan }}
                 />
                 <span>
-                  <span style={{ color: colors.text, fontWeight: 600 }}>Also record the other participants</span>
-                  {' '}— captures this Mac's audio output so the transcript has both
-                  sides of the call. macOS will ask for Screen Recording permission
-                  the first time. Check that everyone on the call is happy to be
-                  recorded.
+                  <span style={{ color: colors.text, fontWeight: 600 }}>Record my microphone</span>
+                  {' '}— this Mac's current input device. Turn it off to record only
+                  the call's audio.
                 </span>
               </label>
-            )}
+              {canCaptureSystem && (
+                <label style={{
+                  display: 'flex', alignItems: 'flex-start', gap: space.md,
+                  fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.5, cursor: 'pointer',
+                }}>
+                  <input
+                    type="checkbox"
+                    checked={systemAudio}
+                    onChange={e => setSystemAudio(e.target.checked)}
+                    style={{ marginTop: space.xs / 2, accentColor: colors.cyan }}
+                  />
+                  <span>
+                    <span style={{ color: colors.text, fontWeight: 600 }}>Also record the other participants</span>
+                    {' '}— captures this Mac's audio output so the transcript has both
+                    sides of the call. macOS will ask for Screen Recording permission
+                    the first time. Check that everyone on the call is happy to be
+                    recorded.
+                  </span>
+                </label>
+              )}
+              {/* Which audio. "All system audio" is everything this Mac plays
+                  — notifications, music, other tabs. A single app is offered
+                  only when the native can actually isolate one; otherwise the
+                  line says plainly that it cannot, rather than a picker that
+                  would record everything under one app's name. */}
+              {canCaptureSystem && systemAudio && (
+                captureApps === undefined ? (
+                  <div style={{ fontSize: textSize.micro, color: colors.textDim }}>Looking for apps to capture…</div>
+                ) : captureApps === null ? (
+                  chosenApp ? (
+                    <div style={{ display: 'flex', gap: space.md, alignItems: 'center', flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.5 }}>
+                        Chosen: {chosenApp.name} — can't be captured by this build.
+                      </span>
+                      <Button colors={colors} flashSuccess={false} onClick={() => setSystemAudioApp(null)} style={btnVars('quiet')}>
+                        Use all system audio
+                      </Button>
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: textSize.micro, color: colors.textDim, lineHeight: 1.5 }}>
+                      Captures all system audio. This build can't limit capture to one app.
+                    </div>
+                  )
+                ) : (
+                  <label style={{ display: 'flex', flexDirection: 'column', gap: space.xs, fontSize: textSize.micro, color: colors.textMuted }}>
+                    Capture from
+                    <select
+                      value={systemAudioApp?.bundleId ?? ''}
+                      onChange={e => {
+                        const v = e.target.value;
+                        // Re-picking the unavailable entry keeps it (still blocked).
+                        if (chosenApp && v === chosenApp.bundleId) return;
+                        setSystemAudioApp(captureApps.find(a => a.bundleId === v) ?? null);
+                      }}
+                      aria-invalid={chosenAppState === 'unavailable'}
+                      style={{
+                        padding: `${space.sm}px ${space.md}px`, borderRadius: radius.sm,
+                        background: colors.inputBg, color: colors.text,
+                        border: `1px solid ${colors.border}`, fontFamily: font.body, fontSize: textSize.caption,
+                      }}
+                    >
+                      <option value="">All system audio — everything this Mac plays</option>
+                      {captureApps.map(a => (
+                        <option key={a.bundleId} value={a.bundleId}>{a.name} only</option>
+                      ))}
+                      {chosenApp && chosenAppState === 'unavailable' && (
+                        <option value={chosenApp.bundleId}>{chosenApp.name} — not running</option>
+                      )}
+                    </select>
+                  </label>
+                )
+              )}
+              {chosenApp && chosenAppState === 'unavailable' && (
+                <div role="alert" style={{ fontSize: textSize.micro, color: colors.danger, lineHeight: 1.5 }}>
+                  {unavailableAppMessage(chosenApp, captureApps)}
+                </div>
+              )}
+              {!hasSource && (
+                <div role="alert" style={{ fontSize: textSize.micro, color: colors.danger }}>
+                  Choose at least one source to record.
+                </div>
+              )}
+            </div>
 
             {systemAudioError && (
               <div style={{
@@ -543,7 +754,7 @@ export function MeetingRecorder({ open }: { open: boolean }) {
               <Button
                 colors={colors}
                 onClick={handleStart}
-                disabled={!selectedId}
+                disabled={!selectedId || !canStart}
                 style={{
                   '--pa-btn-bg': colors.cyanSoft,
                   '--pa-btn-fg': colors.cyan,
@@ -617,6 +828,76 @@ export function MeetingRecorder({ open }: { open: boolean }) {
         document.body,
       )}
 
+      {/* The last saved meeting's triage. Two separate facts on one card: the
+          note IS saved (link to it), and the Orchestrator's triage is at
+          whatever stage its receipt says. Yields to the recovery card, and
+          only shows while idle so it never competes with a live recording. */}
+      {triage && !newestDraft && state === 'idle' && createPortal(
+        (() => {
+          const line = triageStatusLine(triage);
+          const r = triage.receipt;
+          const { projectId, projectName, noteId } = triage.meeting;
+          const canRetry = r?.status === 'failed' || r?.status === 'skipped';
+          const firstCard = r?.status === 'completed' ? r.cardIds[0] : undefined;
+          return (
+            <div role="status" style={{ ...cardStyle(colors.borderHi, true), maxWidth: 340 }}>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: space.md }}>
+                <div style={{ fontSize: textSize.caption, fontWeight: 600, color: colors.text }}>
+                  Meeting note saved
+                </div>
+                <span style={{ fontSize: textSize.micro, color: colors.textDim, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  → {projectName}
+                </span>
+              </div>
+              <div style={{
+                fontSize: textSize.micro, lineHeight: 1.5,
+                color: line.tone === 'danger' ? colors.danger : line.tone === 'ok' ? colors.text : colors.textDim,
+              }}>
+                {line.text}
+              </div>
+              {triage.error && (
+                <div style={{ fontSize: textSize.micro, color: colors.danger, lineHeight: 1.4 }}>{triage.error}</div>
+              )}
+              <div style={{ display: 'flex', gap: space.md, flexWrap: 'wrap' }}>
+                <Button
+                  colors={colors}
+                  flashSuccess={false}
+                  onClick={() => useCommandCenter.getState().focusProjectNote(projectId, noteId)}
+                  style={btnVars('quiet')}
+                >Open note</Button>
+                {firstCard && (
+                  <Button
+                    colors={colors}
+                    flashSuccess={false}
+                    onClick={() => useCommandCenter.getState().openCardOnBoard(projectId, firstCard)}
+                    style={btnVars('quiet')}
+                  >Open board</Button>
+                )}
+                {r?.sessionId && (
+                  <Button
+                    colors={colors}
+                    flashSuccess={false}
+                    onClick={() => {
+                      void useCommandCenter.getState().switchToSession(r.sessionId!)
+                        .catch(err => console.error('[record] open triage session failed:', err));
+                    }}
+                    style={btnVars('quiet')}
+                  >Open triage session</Button>
+                )}
+                {canRetry && (
+                  <Button colors={colors} onClick={retryTriage} style={btnVars('primary')}>Retry triage</Button>
+                )}
+                {triage.stalled && (
+                  <Button colors={colors} flashSuccess={false} onClick={refreshTriage} style={btnVars('quiet')}>Check again</Button>
+                )}
+                <Button colors={colors} flashSuccess={false} onClick={dismissTriage} style={btnVars('quiet')}>Dismiss</Button>
+              </div>
+            </div>
+          );
+        })(),
+        document.body,
+      )}
+
       {/* Always-visible recording / saving / error panel. Docks into the chat
           sidebar's slot when the dock is open; floats bottom-right otherwise. */}
       {(busy || state === 'error') && createPortal(
@@ -675,7 +956,7 @@ export function MeetingRecorder({ open }: { open: boolean }) {
 
           {state === 'recording' && (
             <div style={{ fontSize: 10, color: colors.textDim }}>
-              {captureLine()}
+              {activeSources && captureLine(activeSources, nearChunksHeard, farChunksHeard)}
               {' · transcribed locally on this device'}
               {failedChunks > 0 && ` · ${failedChunks} segment${failedChunks > 1 ? 's' : ''} failed to transcribe`}
             </div>
@@ -746,7 +1027,19 @@ export function MeetingRecorder({ open }: { open: boolean }) {
                 {hasUnsavedTranscript && (
                   <Button colors={colors} onClick={handleRetry} style={btnVars('primary')}>Retry save</Button>
                 )}
-                <Button colors={colors} onClick={discard} style={btnVars('quiet')}>Dismiss</Button>
+                {/* With a transcript still unsaved, Dismiss deletes it — the
+                    whole meeting — so it takes the same two steps as Discard. */}
+                {hasUnsavedTranscript ? (
+                  <Button
+                    colors={colors}
+                    onClick={() => (confirmDiscard ? discard() : setConfirmDiscard(true))}
+                    style={confirmDiscard ? btnVars('danger') : btnVars('quiet')}
+                  >
+                    {confirmDiscard ? 'Delete transcript — sure?' : 'Dismiss'}
+                  </Button>
+                ) : (
+                  <Button colors={colors} onClick={discard} style={btnVars('quiet')}>Dismiss</Button>
+                )}
               </>
             )}
           </div>

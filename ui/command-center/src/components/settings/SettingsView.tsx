@@ -1861,10 +1861,14 @@ function DevicesPanel() {
     if (typeof window !== 'undefined' && !('__TAURI_INTERNALS__' in window) && window.location.origin.startsWith('http')) {
       return window.location.origin;
     }
-    return 'http://127.0.0.1:3001';
+    return ''; // No reachable hub was established; do not invent a production endpoint.
   })();
   const usingFallbackBase = !access?.serve_url && !typedHost;
-  const remoteBase = access?.serve_url ?? (typedHost ? `http://${typedHost}:3001` : hubFallbackBase);
+  const hubPort = (() => {
+    try { return hubFallbackBase ? new URL(hubFallbackBase).port : ''; }
+    catch { return ''; }
+  })();
+  const remoteBase = access?.serve_url ?? (typedHost ? `http://${typedHost}${hubPort ? `:${hubPort}` : ''}` : hubFallbackBase);
   const pairingUrl = claim && remoteBase ? `${remoteBase}/ui/#claim=${claim.code}` : null;
   const isHub = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
   const [detail, setDetail] = useState(0); // progressive disclosure depth

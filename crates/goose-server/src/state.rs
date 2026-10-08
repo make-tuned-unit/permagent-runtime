@@ -414,8 +414,12 @@ impl AppState {
 
         // Replay the non-searchable delivery queue after startup. Spectral is
         // still the sole semantic memory/index; rows disappear on receipt.
-        if let Some(ref b) = brain {
-            if let Ok(pool) = agent_manager.session_manager().pool_clone().await {
+        if let Ok(pool) = agent_manager.session_manager().pool_clone().await {
+            if let Err(e) = permagent::meeting_triage::recover_abandoned_at_startup(&pool).await {
+                tracing::warn!(error = %e, "meeting triage startup recovery failed");
+            }
+            permagent::meeting_triage::spawn_periodic_drain(pool.clone(), brain.clone());
+            if let Some(ref b) = brain {
                 crate::brain_ops::spawn_chat_memory_outbox_drain(b.clone(), pool.clone());
                 // `brain_feed`'s own outbox mirrors the chat one but had no
                 // startup drain at all: a fact enqueued before the Brain

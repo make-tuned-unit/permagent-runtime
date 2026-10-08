@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
 import { act } from 'react';
 import { Details, ListRow, Row, Section } from './atoms';
+import { Toggle } from '../common/Toggle';
 
 let container: HTMLDivElement;
 let root: Root;
@@ -74,5 +75,24 @@ describe('ListRow', () => {
     await act(async () => { root.render(<ListRow title="Beta" />); });
     expect(container.querySelector('button')).toBeNull();
     expect(container.textContent).toContain('Beta');
+  });
+});
+
+describe('Row switch labels', () => {
+  it('names direct and nested switches from their own visible row without leaking labels', async () => {
+    await act(async () => {
+      root.render(<>
+        <Row label="Task completed"><Toggle on /></Row>
+        <Row label="Remote access"><div><Toggle on={false} disabled /></div></Row>
+        <Row label="Data sources"><Toggle on label="Enable Public Weather" /></Row>
+        <Toggle on label="Standalone switch" />
+      </>);
+    });
+    const switches = Array.from(container.querySelectorAll('[role="switch"]'));
+    expect(switches.map(el => el.getAttribute('aria-label'))).toEqual([
+      'Task completed', 'Remote access', 'Enable Public Weather', 'Standalone switch',
+    ]);
+    expect(switches.map(el => el.getAttribute('aria-checked'))).toEqual(['true', 'false', 'true', 'true']);
+    expect((switches[1] as HTMLButtonElement).disabled).toBe(true);
   });
 });

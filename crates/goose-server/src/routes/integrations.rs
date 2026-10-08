@@ -19,10 +19,7 @@ fn secrets_dir() -> std::path::PathBuf {
 }
 
 fn config_path() -> std::path::PathBuf {
-    dirs::home_dir()
-        .expect("home dir required")
-        .join(".permagent")
-        .join("config.yaml")
+    permagent::config::paths::Paths::in_config_dir("config.yaml")
 }
 
 fn ensure_secrets_dir() -> Result<(), String> {

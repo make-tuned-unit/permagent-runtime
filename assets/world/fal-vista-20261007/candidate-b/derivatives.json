@@ -1,0 +1,21 @@
+{
+  "candidate": "candidate-b",
+  "source": "assets/world/fal-vista-20261007/candidate-b/panorama.png",
+  "derivation": "21:9 source resampled to 2:1, 96-pixel symmetric meridian crossfade and 60-pixel polar convergence at 4096x2048. Not a calibrated native equirectangular capture.",
+  "artifacts": [
+    {
+      "path": "assets/world/fal-vista-20261007/candidate-b/golden-hour-panorama-4096.jpg",
+      "width": 4096,
+      "height": 2048,
+      "bytes": 1276039,
+      "sha256": "8529f0d178e8c057c5a478c511f9b89cc20ec259dc582d7c2d1a971ec91bb8bc"
+    },
+    {
+      "path": "assets/world/fal-vista-20261007/candidate-b/golden-hour-panorama-2048.jpg",
+      "width": 2048,
+      "height": 1024,
+      "bytes": 412498,
+      "sha256": "2880b2ccd898646033c8bb1518b6dc27439f78c37f906fc4e60f583fd81830f3"
+    }
+  ]
+}

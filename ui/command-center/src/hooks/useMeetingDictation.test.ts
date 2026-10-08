@@ -1,3 +1,4 @@
+/** @vitest-environment jsdom */
 import { describe, it, expect } from 'vitest';
 import {
   GAP_MARKER,
@@ -8,7 +9,73 @@ import {
   shouldFlushChunk,
   composeMeetingTranscript,
   composeMeetingBody,
+  meetingNoteBody,
+  micStartError,
+  NO_SPEECH_MARKER,
+  LAST_SAVED_TTL_MS,
+  draftRecordingId,
+  readLastSaved,
+  triagePollDelay,
+  TRIAGE_POLL_DELAYS_MS,
+  writeLastSaved,
 } from './useMeetingDictation';
+
+describe('draftRecordingId', () => {
+  const base = { projectId: 'p', projectName: 'P', startedAt: '2026-10-07T09:00:00.000Z', parts: [], farParts: [] };
+  it('uses the id minted at Start', () => {
+    expect(draftRecordingId({ ...base, recordingId: 'abc' })).toBe('abc');
+  });
+  it('derives a deterministic id for a draft written before ids existed', () => {
+    expect(draftRecordingId(base)).toBe('legacy-2026-10-07T09:00:00.000Z');
+    expect(draftRecordingId(base)).toBe(draftRecordingId({ ...base }));
+  });
+});
+
+describe('triagePollDelay', () => {
+  it('backs off and then holds at the last delay', () => {
+    expect(triagePollDelay(0)).toBe(TRIAGE_POLL_DELAYS_MS[0]);
+    expect(triagePollDelay(1)).toBeGreaterThan(triagePollDelay(0));
+    expect(triagePollDelay(999)).toBe(TRIAGE_POLL_DELAYS_MS[TRIAGE_POLL_DELAYS_MS.length - 1]);
+  });
+});
+
+describe('readLastSaved', () => {
+  it('returns a recent meeting and forgets an old one', () => {
+    localStorage.clear();
+    const savedAt = '2026-10-07T10:00:00.000Z';
+    writeLastSaved({ projectId: 'p', projectName: 'P', recordingId: 'r', noteId: 'n', savedAt });
+    const t = Date.parse(savedAt);
+    expect(readLastSaved(t + 1000)?.noteId).toBe('n');
+    expect(readLastSaved(t + LAST_SAVED_TTL_MS + 1)).toBeNull();
+  });
+});
+
+describe('meetingNoteBody', () => {
+  it('is empty only when there is neither transcript nor notes', () => {
+    expect(meetingNoteBody('', '')).toBe('');
+    expect(meetingNoteBody('', '   ')).toBe('');
+  });
+
+  it('keeps notes from a silent recording, marking the empty transcript', () => {
+    expect(meetingNoteBody('', 'ask about SOC2')).toBe(
+      `## Your notes\n\nask about SOC2\n\n## Transcript\n\n${NO_SPEECH_MARKER}`,
+    );
+  });
+
+  it('is composeMeetingBody whenever there is a transcript', () => {
+    expect(meetingNoteBody('words', 'n')).toBe(composeMeetingBody('words', 'n'));
+    expect(meetingNoteBody('words', '')).toBe('words');
+  });
+});
+
+describe('micStartError', () => {
+  it('calls only a refusal "blocked"', () => {
+    expect(micStartError(Object.assign(new Error('x'), { name: 'NotAllowedError' }))).toBe('Microphone access was blocked');
+    expect(micStartError(Object.assign(new Error('x'), { name: 'NotFoundError' }))).toBe('No microphone was found');
+    expect(micStartError(new Error('device busy'))).toBe("Couldn't start the microphone (device busy)");
+    expect(micStartError(null)).toBe("Couldn't start the microphone");
+  });
+});
 
 describe('shouldFlushChunk', () => {
   it('flushes exactly at the chunk boundary and not before', () => {

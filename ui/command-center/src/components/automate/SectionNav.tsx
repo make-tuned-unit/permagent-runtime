@@ -60,46 +60,91 @@ export function SectionNav({ items, scrollRoot }: { items: SectionNavItem[]; scr
   const material = useGlass('glass');
   const [active, setActive] = useState<string | null>(() => pickActiveSection(items, []));
   const intersectingRef = useRef<Set<string>>(new Set());
+  const jumpRef = useRef<{ id: string; top: number; reached: boolean } | null>(null);
 
   const findSection = useCallback((id: string) =>
     scrollRoot.current?.querySelector<HTMLElement>(`[data-section="${id}"]`) ?? null, [scrollRoot]);
 
-  // Whenever the section LIST changes (data loads, a section appears or
-  // disappears), recompute immediately against whatever is currently known
-  // to be in the band — not on the next scroll, which may never come.
-  useEffect(() => { setActive(pickActiveSection(items, intersectingRef.current)); }, [items]);
+  const updateActive = useCallback(() => {
+    const root = scrollRoot.current;
+    const jump = jumpRef.current;
+    if (root && jump && items.some(item => item.id === jump.id)) {
+      const atTarget = Math.abs(root.scrollTop - jump.top) <= 2;
+      if (atTarget) jump.reached = true;
+      // Keep the requested section throughout smooth scrolling and at its
+      // clamped destination, even if an earlier section still fills the band.
+      if (!jump.reached || atTarget) {
+        setActive(jump.id);
+        return;
+      }
+    }
+    jumpRef.current = null;
+    // At the end of a manual scroll, short final sections may never enter
+    // the observer's top band. The last visible section is current there.
+    if (root && root.clientHeight > 0 && root.scrollTop > 0
+      && root.scrollHeight - root.clientHeight - root.scrollTop <= 2) {
+      const bounds = root.getBoundingClientRect();
+      const lastVisible = [...items].reverse().find(item => {
+        const rect = findSection(item.id)?.getBoundingClientRect();
+        return rect && rect.top < bounds.bottom && rect.bottom > bounds.top + SECTION_NAV_OFFSET;
+      });
+      if (lastVisible) {
+        setActive(lastVisible.id);
+        return;
+      }
+    }
+    setActive(pickActiveSection(items, intersectingRef.current));
+  }, [items, scrollRoot, findSection]);
 
-  // A real scrollspy, not scroll-position arithmetic: each section is
-  // observed against a thin horizontal band starting `SECTION_NAV_OFFSET`px
-  // below the scroller's own top (clearing the sticky bar itself) and
-  // ending most of the way down the viewport, so "current" changes as a
-  // section's top crosses that line — the same behaviour a real reader's
-  // eye tracks. `root: scrollRoot.current` scopes it to the page's own
-  // scroller, not the window (this page's scroller is a nested div).
+  // Recompute when data adds/removes sections, without requiring a scroll.
+  useEffect(updateActive, [updateActive]);
+
   useEffect(() => {
     const root = scrollRoot.current;
-    if (!root || typeof IntersectionObserver === 'undefined') return;
+    if (!root) return;
     const elements = items
       .map(item => ({ id: item.id, el: findSection(item.id) }))
       .filter((x): x is { id: string; el: HTMLElement } => !!x.el);
-    if (elements.length === 0) return;
-
-    const observer = new IntersectionObserver(entries => {
+    const observer = typeof IntersectionObserver === 'undefined' ? null : new IntersectionObserver(entries => {
       for (const entry of entries) {
         const match = elements.find(x => x.el === entry.target);
         if (!match) continue;
         if (entry.isIntersecting) intersectingRef.current.add(match.id);
         else intersectingRef.current.delete(match.id);
       }
-      setActive(pickActiveSection(items, intersectingRef.current));
+      updateActive();
     }, { root, rootMargin: `-${SECTION_NAV_OFFSET}px 0px -65% 0px`, threshold: 0 });
 
-    for (const { el } of elements) observer.observe(el);
-    return () => observer.disconnect();
-  }, [scrollRoot, items, findSection]);
+    // Manual input immediately hands control back to the scrollspy, including
+    // interruptions before a smooth jump has reached its destination.
+    const releaseJump = () => { jumpRef.current = null; updateActive(); };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)) releaseJump();
+    };
+    for (const { el } of elements) observer?.observe(el);
+    root.addEventListener('scroll', updateActive, { passive: true });
+    root.addEventListener('wheel', releaseJump, { passive: true });
+    root.addEventListener('touchstart', releaseJump, { passive: true });
+    root.addEventListener('pointerdown', releaseJump, { passive: true });
+    root.addEventListener('keydown', onKeyDown);
+    return () => {
+      observer?.disconnect();
+      root.removeEventListener('scroll', updateActive);
+      root.removeEventListener('wheel', releaseJump);
+      root.removeEventListener('touchstart', releaseJump);
+      root.removeEventListener('pointerdown', releaseJump);
+      root.removeEventListener('keydown', onKeyDown);
+    };
+  }, [scrollRoot, items, findSection, updateActive]);
 
   const jump = (id: string) => {
     const el = findSection(id);
+    const root = scrollRoot.current;
+    if (!el || !root) return;
+    const desiredTop = root.scrollTop + el.getBoundingClientRect().top
+      - root.getBoundingClientRect().top - SECTION_NAV_OFFSET;
+    const top = Math.max(0, Math.min(desiredTop, root.scrollHeight - root.clientHeight));
+    jumpRef.current = { id, top, reached: Math.abs(root.scrollTop - top) <= 2 };
     // jsdom has no scrollIntoView; a real webview always does.
     el?.scrollIntoView?.({ block: 'start', behavior: getReduceMotion() ? 'auto' : 'smooth' });
     setActive(id);

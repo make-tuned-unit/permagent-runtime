@@ -30,6 +30,7 @@ import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { DetailModal } from '../common/DetailModal';
 import type { BoardColumn, Card } from './types';
+import { MeetingCardSource } from './MeetingCardSource';
 
 function fmtTime(iso: string): string {
   const t = Date.parse(iso);
@@ -247,6 +248,12 @@ export function CardDetailModal({
                   {card.description || 'No description.'}
                 </div>
               </Field>
+              {card.metadataJson?.source === 'meeting_triage' && <MeetingCardSource
+                key={`${card.id}:${projectId}`}
+                projectId={projectId}
+                metadata={card.metadataJson}
+                onNavigate={onClose}
+              />}
               <Field label="Details">
                 <MetaGrid
                   colors={colors}

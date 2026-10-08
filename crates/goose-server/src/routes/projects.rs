@@ -980,14 +980,7 @@ pub(crate) async fn save_project_document(
         ));
     }
 
-    let docs_base = dirs::home_dir()
-        .ok_or((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "no home directory".to_string(),
-        ))?
-        .join(".permagent")
-        .join("project-docs")
-        .join(&project.id);
+    let docs_base = permagent::config::paths::Paths::in_data_dir("project-docs").join(&project.id);
 
     let doc_id = uuid::Uuid::now_v7().to_string();
     let dir = docs_base.join(&doc_id);
@@ -1226,10 +1219,23 @@ struct CreateNoteRequest {
     title: Option<String>,
     body: String,
     /// Optional note kind. `"meeting"` marks a meeting transcript — after the
-    /// note lands, a background pass extracts action items onto the project's
-    /// kanban (see `extract_meeting_todos`). Absent/other kinds change nothing.
+    /// note lands, a durable Orchestrator triage pass extracts action items
+    /// onto the project's kanban (see `meeting_triage`). Absent/other kinds
+    /// change nothing.
     #[serde(default)]
     kind: Option<String>,
+    /// Client-stable recording identity — required for `kind: "meeting"`.
+    #[serde(default, rename = "recordingId")]
+    recording_id: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateNoteResponse {
+    #[serde(flatten)]
+    note: ProjectNote,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    triage: Option<permagent::meeting_triage::MeetingTriageReceipt>,
 }
 
 /// GET /api/projects/{id}/notes — notes attached to a project, newest first.
@@ -1267,7 +1273,7 @@ async fn create_project_note_handler(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     Json(req): Json<CreateNoteRequest>,
-) -> Result<Json<ProjectNote>, (StatusCode, String)> {
+) -> Result<Json<CreateNoteResponse>, (StatusCode, String)> {
     if req.body.trim().is_empty() {
         return Err((StatusCode::BAD_REQUEST, "note body is empty".to_string()));
     }
@@ -1282,361 +1288,153 @@ async fn create_project_note_handler(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
         .ok_or((StatusCode::NOT_FOUND, "Project not found".to_string()))?;
 
-    let note = project_notes::create_note_indexed(
-        &pool,
-        state.brain.as_ref(),
-        &project.id,
-        req.title.as_deref(),
-        &req.body,
-    )
-    .await
-    .map_err(|e| {
-        tracing::error!(project = %project.id, error = %e, "project note create failed");
-        (StatusCode::INTERNAL_SERVER_ERROR, e)
-    })?;
+    let is_meeting = req.kind.as_deref() == Some("meeting");
+    let (note, triage) = if is_meeting {
+        let (recording_id, idempotent_recording) =
+            permagent::meeting_triage::resolve_recording_id(req.recording_id.as_deref());
+        let saved = permagent::meeting_triage::save_meeting_note(
+            &pool,
+            state.brain.as_ref(),
+            &project.id,
+            &recording_id,
+            idempotent_recording,
+            req.title.as_deref(),
+            &req.body,
+        )
+        .await
+        .map_err(|e| match e {
+            permagent::meeting_triage::MeetingSaveError::EmptyBody => {
+                (StatusCode::BAD_REQUEST, e.message())
+            }
+            permagent::meeting_triage::MeetingSaveError::BodyConflict { .. } => {
+                (StatusCode::CONFLICT, e.message())
+            }
+            permagent::meeting_triage::MeetingSaveError::Database(msg) => {
+                tracing::error!(project = %project.id, error = %msg, "meeting note save failed");
+                (StatusCode::INTERNAL_SERVER_ERROR, msg)
+            }
+        })?;
+        (saved.note, Some(saved.triage))
+    } else {
+        let note = project_notes::create_note_indexed(
+            &pool,
+            state.brain.as_ref(),
+            &project.id,
+            req.title.as_deref(),
+            &req.body,
+        )
+        .await
+        .map_err(|e| {
+            tracing::error!(project = %project.id, error = %e, "project note create failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, e)
+        })?;
+        (note, None)
+    };
 
-    project_notes::write_note_export(
-        &project.slug,
-        &project.name,
-        &note,
-        req.kind.as_deref(),
-        None,
-    )
-    .await;
-    let note = project_notes::with_export_path(note, &project.slug);
-
-    tracing::info!(project = %project.id, note = %note.id, "project note created");
-    // #629 liveness: broadcast so other connected clients refresh the notes panel.
-    events::emit(events::project_changed(&project.id, "notes"));
-
-    // Meeting transcripts drive the kanban without being asked (ruling
-    // 2026-08-06): a background fast-model pass pulls the action items out of
-    // the transcript and files each as a card on this project's board. Spawned
-    // detached — the note is already durable, and a model failure must never
-    // affect the save.
-    if req.kind.as_deref() == Some("meeting") {
-        let pool_bg = pool.clone();
-        let project_bg = project.clone();
-        let note_body = req.body.clone();
-        let note_id = note.id.clone();
-        let brain_bg = state.brain.clone();
-        tokio::spawn(async move {
-            extract_meeting_todos(
-                &pool_bg,
-                brain_bg.as_ref(),
-                &project_bg,
-                &note_id,
-                &note_body,
+    if is_meeting {
+        if triage.as_ref().is_some_and(|t| t.created) {
+            project_notes::write_note_export(
+                &project.slug,
+                &project.name,
+                &note,
+                req.kind.as_deref(),
+                None,
             )
             .await;
-        });
-    }
-
-    Ok(Json(note))
-}
-
-/// Split a saved meeting body into (the user's own notes, the transcript).
-/// The recorder writes its notepad content under a `## Your notes` heading
-/// ahead of the transcript; a body without that heading is all transcript.
-///
-/// The two heading literals are a CROSS-LANGUAGE CONTRACT with
-/// `composeMeetingBody` in `ui/command-center/src/hooks/useMeetingDictation.ts`
-/// and are pinned by tests on both sides — changing either heading orphans the
-/// user's own words.
-fn split_meeting_body(body: &str) -> (Option<String>, String) {
-    const MARKER: &str = "## Your notes";
-    const TRANSCRIPT: &str = "## Transcript";
-    let Some(start) = body.find(MARKER) else {
-        return (None, body.to_string());
-    };
-    // `get` rather than byte-indexing: a transcript is arbitrary human speech
-    // and will carry multibyte UTF-8. These offsets come from `find`, so they
-    // ARE char boundaries — but proving that to the reader (and to clippy's
-    // string_slice lint) beats a slice that panics if the invariant ever moves.
-    let Some(after) = body.get(start + MARKER.len()..) else {
-        return (None, body.to_string());
-    };
-    match after.find(TRANSCRIPT) {
-        Some(end) => {
-            let notes = after.get(..end).unwrap_or_default().trim();
-            let rest = after
-                .get(end + TRANSCRIPT.len()..)
-                .unwrap_or_default()
-                .trim();
-            (
-                (!notes.is_empty()).then(|| notes.to_string()),
-                rest.to_string(),
-            )
         }
-        None => {
-            let notes = after.trim();
-            (
-                (!notes.is_empty()).then(|| notes.to_string()),
-                String::new(),
-            )
-        }
-    }
-}
-
-/// Normalised form used to decide whether two action items are the same one.
-/// Case and inner whitespace vary freely between two model passes over the same
-/// meeting; the words do not.
-fn todo_key(title: &str) -> String {
-    title
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_lowercase()
-}
-
-/// Drop action items already on the board, and collapse repeats within the
-/// batch. Pure so the rule is testable without a database.
-fn dedupe_new_todos(
-    existing_titles: &[String],
-    todos: Vec<(String, String)>,
-) -> Vec<(String, String)> {
-    let mut seen: std::collections::HashSet<String> =
-        existing_titles.iter().map(|t| todo_key(t)).collect();
-    todos
-        .into_iter()
-        .filter(|(title, _)| seen.insert(todo_key(title)))
-        .collect()
-}
-
-/// Extract action items from a meeting transcript and file each as a kanban
-/// card on the project. Best-effort by contract: any failure is logged, never
-/// surfaced to the note-save path. Cards are attributed `created_by: "henry"`
-/// (the DB CHECK allows no other agent author) with the true origin in
-/// metadata, and each cites the source note so the card can be traced back.
-async fn extract_meeting_todos(
-    pool: &sqlx::Pool<sqlx::Sqlite>,
-    state_brain: Option<&permagent::brain_handle::SafeBrain>,
-    project: &projects::Project,
-    note_id: &str,
-    transcript: &str,
-) {
-    let config = permagent::config::Config::global();
-    let mut plan = permagent::meeting_writeup::resolve_live_writeup_plan(config);
-    if matches!(plan, permagent::meeting_writeup::MeetingWriteupPlan::Skip) {
-        tracing::info!(
-            project = %project.id,
-            "meeting write-up skipped: meeting_writeup_local_only and no local/mesh route"
-        );
-        return;
-    }
-
-    let (user_notes, transcript_only) = split_meeting_body(transcript);
-    let context_limit = permagent::meeting_writeup::context_limit_for_plan(&plan);
-    let (prompt, truncated) = permagent::meeting_writeup::build_extraction_prompt(
-        &project.name,
-        user_notes.as_deref(),
-        &transcript_only,
-        context_limit,
-    );
-    if truncated {
-        tracing::warn!(
-            project = %project.id,
-            full_chars = transcript_only.chars().count(),
-            kept = prompt.len(),
-            "meeting transcript truncated for extraction to fit model context"
-        );
-    }
-
-    let text = match permagent::meeting_writeup::run_writeup_plan(&plan, &prompt).await {
-        Ok(text) => text,
-        Err(e) => {
-            let local_only = permagent::meeting_writeup::meeting_writeup_local_only(config);
-            let session_fallback = match (local_only, &plan) {
-                (false, permagent::meeting_writeup::MeetingWriteupPlan::ViaMesh { .. }) => {
-                    match (config.get_goose_provider(), config.get_goose_model()) {
-                        (Ok(provider), Ok(model)) => {
-                            Some(permagent::meeting_writeup::MeetingWriteupPlan::ViaSession {
-                                provider,
-                                model,
-                            })
-                        }
-                        _ => None,
-                    }
-                }
-                _ => None,
-            };
-            let Some(fallback) = session_fallback else {
-                tracing::warn!(project = %project.id, "meeting todo extraction: {e}");
-                return;
-            };
-            tracing::warn!(
-                project = %project.id,
-                "meeting local/mesh write-up failed ({e}); falling back to session provider"
-            );
-            plan = fallback;
-            match permagent::meeting_writeup::run_writeup_plan(&plan, &prompt).await {
-                Ok(text) => text,
-                Err(e) => {
-                    tracing::warn!(project = %project.id, "meeting todo extraction: {e}");
-                    return;
-                }
-            }
-        }
-    };
-    let parsed = permagent::meeting_writeup::parse_extraction_response(&text);
-
-    let provenance = match &plan {
-        permagent::meeting_writeup::MeetingWriteupPlan::ViaMesh {
-            route,
-            provider,
-            model,
-        } => permagent::meeting_writeup::provenance_for_mesh_route(provider, model, route),
-        permagent::meeting_writeup::MeetingWriteupPlan::ViaSession { provider, model } => {
-            permagent::meeting_writeup::provenance_for_session(provider, model)
-        }
-        permagent::meeting_writeup::MeetingWriteupPlan::Skip => return,
-    };
-
-    // Rewrite the note into structured form. The raw transcript is preserved
-    // BELOW the summary — provenance by structure, the markdown equivalent of
-    // Granola's black-vs-gray: the reader can always see what was actually
-    // said, and the user's own words stay verbatim in their own section.
-    if let Some(summary) = parsed
-        .as_ref()
-        .and_then(|v| v.get("summary_markdown"))
-        .and_then(|s| s.as_str())
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        let body = permagent::meeting_writeup::build_structured_body(
-            summary,
-            &provenance,
-            user_notes.as_deref(),
-            &transcript_only,
-            truncated,
-        );
-        match permagent::project_notes::update_note_body(
-            pool,
-            state_brain,
-            note_id,
-            &project.id,
-            &body,
+        permagent::meeting_triage::spawn_drain(pool.clone(), state.brain.clone());
+    } else {
+        project_notes::write_note_export(
+            &project.slug,
+            &project.name,
+            &note,
+            req.kind.as_deref(),
+            None,
         )
-        .await
-        {
-            Ok(()) => {
-                if let Ok(Some(note)) =
-                    permagent::project_notes::get_note(pool, &project.id, note_id).await
-                {
-                    permagent::project_notes::write_note_export(
-                        &project.slug,
-                        &project.name,
-                        &note,
-                        Some("meeting"),
-                        Some(&provenance),
-                    )
-                    .await;
-                }
-                events::emit(events::project_changed(&project.id, "notes"));
-            }
-            Err(e) => tracing::warn!(
-                project = %project.id,
-                "meeting note enhancement not saved (raw transcript stands): {e}"
-            ),
-        }
+        .await;
     }
+    let note = project_notes::with_export_path(note, &project.slug);
 
-    let todos: Vec<(String, String)> = (|| {
-        let v = parsed.as_ref()?;
-        Some(
-            v.get("todos")?
-                .as_array()?
-                .iter()
-                .filter_map(|t| {
-                    let title = t.get("title")?.as_str()?.trim().to_string();
-                    if title.is_empty() {
-                        return None;
-                    }
-                    let context = t
-                        .get("context")
-                        .and_then(|c| c.as_str())
-                        .unwrap_or_default()
-                        .trim()
-                        .to_string();
-                    Some((title, context))
-                })
-                .collect(),
-        )
-    })()
-    .unwrap_or_default();
-
-    if todos.is_empty() {
-        tracing::info!(project = %project.id, "meeting todo extraction: no action items found");
-        return;
-    }
-
-    // The same meeting can reach this path more than once — a crash-recovered
-    // draft saved alongside a note that was also saved live, or a user saving
-    // the same transcript twice — and the model itself sometimes states one
-    // commitment twice. Either way the user gets a board with the same card on
-    // it repeatedly, which is worse than a missing card because it looks like
-    // real work. Existing titles are read once and the batch is filtered.
-    let existing_titles: Vec<String> = permagent::cards::list_cards(pool, &project.id, None, None)
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .map(|c| c.title)
-        .collect();
-    let before = todos.len();
-    let mut todos = dedupe_new_todos(&existing_titles, todos);
-    if todos.len() < before {
-        tracing::info!(
-            project = %project.id,
-            "meeting todo extraction: {} duplicate action item(s) skipped",
-            before - todos.len()
-        );
-    }
-    // The list is model output driven by transcript text this function itself
-    // treats as untrusted, so its length is not ours to trust either. A real
-    // meeting does not produce fifty commitments; a board flooded with them is
-    // unusable, and unlike a bad card it cannot be undone in one gesture.
-    const MAX_MEETING_TODOS: usize = 20;
-    if todos.len() > MAX_MEETING_TODOS {
-        tracing::warn!(
-            project = %project.id,
-            "meeting todo extraction: {} action items capped at {MAX_MEETING_TODOS}",
-            todos.len()
-        );
-        todos.truncate(MAX_MEETING_TODOS);
-    }
-    if todos.is_empty() {
-        return;
-    }
-
-    let mut created = 0usize;
-    for (title, context) in &todos {
-        let card = permagent::cards::CreateCard {
-            project_id: project.id.clone(),
-            title: title.clone(),
-            description: Some(format!(
-                "{context}\n\n— from the meeting note on this project"
-            )),
-            card_type: None,
-            column_id: None,
-            created_by: Some("henry".to_string()),
-            metadata_json: Some(serde_json::json!({
-                "created_by_agent": "henry",
-                "source": "meeting_note",
-                "source_note_id": note_id,
-            })),
-        };
-        match permagent::cards::create_card(pool, card).await {
-            Ok(_) => created += 1,
-            Err(e) => tracing::warn!(project = %project.id, "meeting todo card failed: {e}"),
-        }
-    }
     tracing::info!(
         project = %project.id,
-        "meeting todo extraction: {created} card(s) from {} action item(s)",
-        todos.len()
+        note = %note.id,
+        meeting = is_meeting,
+        "project note created"
     );
-    // `cards::create_card` emits `project_changed(.., "cards")` per card; the
-    // client's 250ms liveness debounce coalesces the batch into one refetch.
+    events::emit(events::project_changed(&project.id, "notes"));
+
+    Ok(Json(CreateNoteResponse { note, triage }))
+}
+
+async fn get_meeting_triage_handler(
+    State(state): State<Arc<AppState>>,
+    Path((id, recording_id)): Path<(String, String)>,
+) -> Result<Json<permagent::meeting_triage::MeetingTriageReceipt>, (StatusCode, String)> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let project = projects::get_project_by_id_or_slug(&pool, &id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or((StatusCode::NOT_FOUND, "Project not found".to_string()))?;
+    let triage = permagent::meeting_triage::get_triage_receipt(&pool, &project.id, &recording_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or((
+            StatusCode::NOT_FOUND,
+            "Meeting triage not found".to_string(),
+        ))?;
+    Ok(Json(triage))
+}
+
+async fn retry_meeting_triage_handler(
+    State(state): State<Arc<AppState>>,
+    Path((id, recording_id)): Path<(String, String)>,
+) -> Result<Json<permagent::meeting_triage::MeetingTriageReceipt>, (StatusCode, String)> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let project = projects::get_project_by_id_or_slug(&pool, &id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or((StatusCode::NOT_FOUND, "Project not found".to_string()))?;
+    let triage = permagent::meeting_triage::retry_triage(&pool, &project.id, &recording_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or((
+            StatusCode::NOT_FOUND,
+            "Meeting triage not found".to_string(),
+        ))?;
+    permagent::meeting_triage::spawn_drain(pool, state.brain.clone());
+    Ok(Json(triage))
+}
+
+async fn get_meeting_triage_session_handler(
+    State(state): State<Arc<AppState>>,
+    Path((id, recording_id)): Path<(String, String)>,
+) -> Result<Json<permagent::meeting_triage::MeetingTriageSessionView>, (StatusCode, String)> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let project = projects::get_project_by_id_or_slug(&pool, &id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or((StatusCode::NOT_FOUND, "Project not found".to_string()))?;
+    let view =
+        permagent::meeting_triage::get_triage_session_view(&pool, &project.id, &recording_id)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+            .ok_or((
+                StatusCode::NOT_FOUND,
+                "Meeting triage not found".to_string(),
+            ))?;
+    Ok(Json(view))
 }
 
 /// DELETE /api/projects/{id}/notes/{note_id} — delete a note (+ best-effort
@@ -2465,6 +2263,18 @@ pub fn routes(state: Arc<AppState>) -> Router {
             delete(delete_project_note_handler),
         )
         .route(
+            "/api/projects/{id}/recordings/{recording_id}/triage",
+            get(get_meeting_triage_handler),
+        )
+        .route(
+            "/api/projects/{id}/recordings/{recording_id}/triage/retry",
+            post(retry_meeting_triage_handler),
+        )
+        .route(
+            "/api/projects/{id}/recordings/{recording_id}/triage/session",
+            get(get_meeting_triage_session_handler),
+        )
+        .route(
             "/api/projects/{id}/index-code",
             post(index_project_code_handler),
         )
@@ -2580,7 +2390,6 @@ mod tests {
 
         let traversal_name = format!("../../evil-{}", uuid::Uuid::new_v4());
         let traversal_target = test_root
-            .join(".permagent")
             .join("project-docs")
             .join(traversal_name.trim_start_matches("../../"));
         let traversal_doc = save_project_document(
@@ -2774,7 +2583,7 @@ mod tests {
     #[test]
     fn split_meeting_body_inverts_the_ui_compose() {
         let body = "## Your notes\n\npricing objections\n\n## Transcript\n\nthey said 2000";
-        let (notes, transcript) = split_meeting_body(body);
+        let (notes, transcript) = permagent::meeting_triage::split_meeting_body(body);
         assert_eq!(notes.as_deref(), Some("pricing objections"));
         assert_eq!(transcript, "they said 2000");
     }
@@ -2783,7 +2592,8 @@ mod tests {
     /// never mistaken for notes.
     #[test]
     fn split_meeting_body_without_notes_is_all_transcript() {
-        let (notes, transcript) = split_meeting_body("just the words that were said");
+        let (notes, transcript) =
+            permagent::meeting_triage::split_meeting_body("just the words that were said");
         assert!(notes.is_none());
         assert_eq!(transcript, "just the words that were said");
     }
@@ -2793,49 +2603,19 @@ mod tests {
     #[test]
     fn split_meeting_body_keeps_multiline_notes() {
         let body = "## Your notes\n\n- a\n- b??\n- c\n\n## Transcript\n\nx";
-        let (notes, _) = split_meeting_body(body);
+        let (notes, _) = permagent::meeting_triage::split_meeting_body(body);
         assert_eq!(notes.as_deref(), Some("- a\n- b??\n- c"));
     }
 
     #[test]
-    fn dedupe_new_todos_drops_items_already_on_the_board() {
-        // The same meeting reaching this path twice (a recovered draft saved
-        // alongside a live save) must not double the board.
-        let existing = vec!["Send the pricing deck".to_string()];
-        let todos = vec![
-            ("send the  pricing   deck".to_string(), "ctx".to_string()),
-            ("Book the follow-up".to_string(), "ctx".to_string()),
-        ];
-        let kept = dedupe_new_todos(&existing, todos);
-        assert_eq!(kept.len(), 1);
-        assert_eq!(kept[0].0, "Book the follow-up");
-    }
-
-    #[test]
-    fn dedupe_new_todos_collapses_repeats_within_one_batch() {
-        // A model asked for action items will sometimes state one commitment
-        // twice in different words of the same shape.
-        let todos = vec![
-            ("Draft the SOW".to_string(), "first".to_string()),
-            ("draft the SOW".to_string(), "again".to_string()),
-        ];
-        let kept = dedupe_new_todos(&[], todos);
-        assert_eq!(kept.len(), 1);
-        assert_eq!(kept[0].1, "first", "the first mention wins");
-    }
-
-    #[test]
-    fn dedupe_new_todos_keeps_distinct_items() {
-        let todos = vec![
-            ("Send the deck".to_string(), String::new()),
-            ("Send the invoice".to_string(), String::new()),
-        ];
-        assert_eq!(dedupe_new_todos(&[], todos).len(), 2);
-    }
-
-    #[test]
-    fn todo_key_ignores_case_and_whitespace_but_not_words() {
-        assert_eq!(todo_key("  Ship   the Thing "), todo_key("ship the thing"));
-        assert_ne!(todo_key("ship the thing"), todo_key("ship the other thing"));
+    fn item_key_ignores_case_and_whitespace_but_not_words() {
+        assert_eq!(
+            permagent::meeting_triage::item_key(0, "  Ship   the Thing "),
+            permagent::meeting_triage::item_key(0, "ship the thing")
+        );
+        assert_ne!(
+            permagent::meeting_triage::item_key(0, "ship the thing"),
+            permagent::meeting_triage::item_key(0, "ship the other thing")
+        );
     }
 }

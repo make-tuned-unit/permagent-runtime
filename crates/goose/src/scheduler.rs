@@ -3995,7 +3995,7 @@ async fn execute_job_inner(
                     &full_output,
                     &tool_texts,
                     &session.id,
-                    &home.join(".permagent/automation/findings"),
+                    &crate::config::paths::Paths::in_state_dir("automation/findings"),
                     &home,
                     &crate::storage_health::inuse::action::ActionProbe,
                 )
@@ -4023,11 +4023,7 @@ async fn execute_job_inner(
                     .trim();
                 match serde_json::from_str::<Vec<serde_json::Value>>(json_str) {
                     Ok(findings) => {
-                        let findings_dir = std::env::var("HOME")
-                            .map(|h| {
-                                std::path::PathBuf::from(h).join(".permagent/automation/findings")
-                            })
-                            .unwrap_or_else(|_| std::path::PathBuf::from("/tmp/findings"));
+                        let findings_dir = crate::config::paths::Paths::in_state_dir("automation/findings");
                         let _ = std::fs::create_dir_all(&findings_dir);
                         let findings_path = findings_dir.join(format!("{}.json", session.id));
                         let findings_data = serde_json::json!({

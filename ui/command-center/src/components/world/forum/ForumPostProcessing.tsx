@@ -204,7 +204,7 @@ import { ToneMappingMode } from 'postprocessing';
  *  That capture is the one confirmation still owed.
  */
 // Keep the stronger night grade; daylight foliage needs less saturation.
-const SATURATION = { day: 0.16, night: 0.5 };
+const SATURATION = { day: 0.22, night: 0.5 };
 const CONTRAST = 0.075;
 const BRIGHTNESS = -0.035;
 

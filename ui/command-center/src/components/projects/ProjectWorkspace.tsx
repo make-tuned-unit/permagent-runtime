@@ -8,6 +8,7 @@ import { ProjectOverview } from './ProjectOverview';
 import { ProjectDetails } from './ProjectDetails';
 import type { Project, ProjectLens } from './types';
 import { useCommandCenter } from '../../lib/store';
+import { useAppNavigationRequests, consumeNavigationRequest } from '../../lib/appNavigationRequests';
 
 // ── Project Workspace ───────────────────────────────────────────────────────
 //
@@ -45,6 +46,17 @@ export function ProjectWorkspace({ project, projects, onSwitchProject, onBack, o
   useEffect(() => {
     if (pendingNote && pendingNote.projectId === project.id) setLens('details');
   }, [pendingNote, project.id]);
+
+  const requestedLens = useAppNavigationRequests(s => s.projectLens);
+  useEffect(() => {
+    if (!requestedLens || requestedLens.projectId !== project.id) return;
+    // A deliberate view request wins over an older note/card deep link.
+    useCommandCenter.getState().clearPendingCardNavigation();
+    useCommandCenter.getState().clearPendingNoteNavigation();
+    setLens(requestedLens.lens);
+    consumeNavigationRequest('projectLens', requestedLens);
+  }, [requestedLens, project.id]);
+
 
   return (
     <div style={{

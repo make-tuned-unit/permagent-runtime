@@ -9,7 +9,7 @@ export function SectionTitle({ title, right }: { title: string; right?: string }
   // dashboard the CONTENT is the subject and every card repeating a large title
   // is chrome competing with data. Sized down to a quiet label.
   return (
-    <div style={{ display: 'flex', alignItems: 'baseline', marginBottom: space.lg }}>
+    <div data-home-card-heading style={{ display: 'flex', flexWrap: 'wrap', gap: space.xs, alignItems: 'baseline', marginBottom: space.lg }}>
       <h3 style={{ fontFamily: font.display, fontSize: textSize.small, fontWeight: 600, letterSpacing: '-0.005em', color: colors.text, margin: 0 }}>{title}</h3>
       {right && <span style={{ fontFamily: font.body, fontSize: 10.5, color: colors.textDim, marginLeft: 'auto' }}>{right}</span>}
     </div>

@@ -11,6 +11,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { createRoot, type Root } from 'react-dom/client';
+import { StrictMode } from 'react';
 import { act } from 'react-dom/test-utils';
 
 import { Button, FAILURE_FLASH_MS, MIN_PENDING_MS, SUCCESS_FLASH_MS } from './Button';
@@ -106,6 +107,39 @@ it('holds the pending phase for 700ms when the round trip is faster', async () =
   await advance(60);
   expect(btn().getAttribute('data-pending')).toBeNull();
   expect(btn().getAttribute('data-state')).toBe('success');
+});
+
+it('settles async actions after StrictMode effect replay and accepts the next click', async () => {
+  vi.useFakeTimers();
+  const onClick = vi.fn(() => Promise.resolve(true));
+  act(() => {
+    root.render(<StrictMode><Button colors={colors} onClick={onClick}>Save</Button></StrictMode>);
+  });
+  act(() => { btn().click(); });
+  expect(btn().disabled).toBe(true);
+  await advance(MIN_PENDING_MS + 10);
+  expect(btn().disabled).toBe(false);
+  expect(btn().getAttribute('data-state')).toBe('success');
+  await advance(SUCCESS_FLASH_MS + 10);
+  expect(btn().getAttribute('data-state')).toBeNull();
+  act(() => { btn().click(); });
+  expect(onClick).toHaveBeenCalledTimes(2);
+  await advance(MIN_PENDING_MS + 10);
+  expect(btn().disabled).toBe(false);
+});
+
+it('releases the caller-driven pending floor after StrictMode effect replay', async () => {
+  vi.useFakeTimers();
+  act(() => {
+    root.render(<StrictMode><Button colors={colors} pending>Save</Button></StrictMode>);
+  });
+  act(() => {
+    root.render(<StrictMode><Button colors={colors}>Save</Button></StrictMode>);
+  });
+  expect(btn().disabled).toBe(true);
+  await advance(MIN_PENDING_MS + 10);
+  expect(btn().disabled).toBe(false);
+  expect(btn().getAttribute('aria-busy')).toBeNull();
 });
 
 it('holds the floor on failure too, then shows the failure state (not a tick)', async () => {

@@ -25,7 +25,7 @@ export const DEFAULT_LAYOUT: DashboardLayoutData = {
   cards: reflow([
     { id: 'decisions', type: 'decisions', position: { x: 0, y: 0 }, size: { w: 5, h: 4 }, visible: true },
     { id: 'stats', type: 'stats', position: { x: 0, y: 0 }, size: { w: 5, h: 4 }, visible: true },
-    { id: 'calendar', type: 'calendar', position: { x: 0, y: 0 }, size: { w: 7, h: 4 }, visible: true },
+    { id: 'calendar', type: 'calendar', position: { x: 0, y: 0 }, size: { w: 7, h: 8 }, visible: true },
     { id: 'council', type: 'council', position: { x: 0, y: 0 }, size: { w: 12, h: 6 }, visible: true },
     { id: 'in_flight', type: 'in_flight', position: { x: 0, y: 0 }, size: { w: 12, h: 3 }, visible: true },
     { id: 'growth_results', type: 'growth_results', position: { x: 0, y: 0 }, size: { w: 12, h: 6 }, visible: true },
@@ -546,7 +546,7 @@ export function ensureCalendarCard(
     layout: {
       cards: reflow([
         ...layout.cards,
-        { id: 'calendar', type: 'calendar', position: { x: 0, y: 0 }, size: { w: 5, h: 4 }, visible: true },
+        { id: 'calendar', type: 'calendar', position: { x: 0, y: 0 }, size: { w: 7, h: 8 }, visible: true },
       ]),
     },
     changed: true,
@@ -606,6 +606,7 @@ export function compactLayoutPass(
 
 export function useLayout() {
   const [layout, setLayout] = useState<DashboardLayoutData>(DEFAULT_LAYOUT);
+  const [layoutLoaded, setLayoutLoaded] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -665,7 +666,8 @@ export function useLayout() {
           }).catch(() => { /* cosmetic; retried next load */ });
         }
       })
-      .catch(() => { /* use default */ });
+      .catch(() => { /* use default */ })
+      .finally(() => { if (!cancelled) setLayoutLoaded(true); });
     return () => { cancelled = true; };
   }, []);
 
@@ -696,5 +698,5 @@ export function useLayout() {
     return restored;
   }, []);
 
-  return { layout, setLayout, persistLayout, revertLayout };
+  return { layout, layoutLoaded, setLayout, persistLayout, revertLayout };
 }

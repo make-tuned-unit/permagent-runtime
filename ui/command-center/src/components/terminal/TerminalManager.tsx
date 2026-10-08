@@ -338,7 +338,7 @@ export const TerminalManager = forwardRef<TerminalManagerHandle, TerminalManager
   // A FAILED listing changes nothing. Treating "I could not ask" as "nothing is
   // running" would clear every id and respawn every shell.
   useEffect(() => {
-    if (detached) return;
+    if (detached || !('__TAURI_INTERNALS__' in window)) return;
     let cancelled = false;
     (async () => {
       let live: PtySessionInfo[] = [];

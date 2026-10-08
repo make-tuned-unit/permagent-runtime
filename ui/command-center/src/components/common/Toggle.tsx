@@ -29,11 +29,15 @@
  * pending phase and nothing to revert.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { ease, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Tooltip } from './Tooltip';
+
+/** Visible label inherited from a containing settings row, including through
+ * layout wrappers. A caller's explicit label always takes precedence. */
+export const ToggleLabelContext = createContext<string | undefined>(undefined);
 
 /** `false` means "it failed" — the same signal `Button` takes. */
 export type ToggleOutcome = void | boolean;
@@ -48,7 +52,7 @@ export interface ToggleProps {
   /** A message the caller owns, rendered where the switch puts its own — for
    *  the failures only the caller can name ("Saved, but could not re-read it"). */
   error?: string | null;
-  /** Accessible name. A bare switch with no adjacent label needs one. */
+  /** Accessible name. Required outside a row that supplies ToggleLabelContext. */
   label?: string;
 }
 
@@ -58,13 +62,17 @@ function isThenable(v: unknown): v is Promise<unknown> {
 
 export function Toggle({ on, onChange, disabled = false, disabledReason, label, error }: ToggleProps) {
   const { colors } = useTheme();
+  const rowLabel = useContext(ToggleLabelContext);
   /** The position the user asked for, held only until the write settles. */
   const [desired, setDesired] = useState<boolean | null>(null);
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
   const live = useRef(true);
 
-  useEffect(() => () => { live.current = false; }, []);
+  useEffect(() => {
+    live.current = true;
+    return () => { live.current = false; };
+  }, []);
 
   const flip = useCallback(() => {
     if (disabled || busy || !onChange) return;
@@ -103,7 +111,7 @@ export function Toggle({ on, onChange, disabled = false, disabledReason, label, 
       type="button"
       role="switch"
       aria-checked={shown}
-      aria-label={label}
+      aria-label={label ?? rowLabel}
       aria-busy={busy || undefined}
       data-pending={busy ? 'true' : undefined}
       disabled={disabled}

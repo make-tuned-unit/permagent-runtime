@@ -74,6 +74,7 @@ pub mod lessons;
 pub mod logging;
 pub mod market_data;
 pub mod mcp_utils;
+pub mod meeting_triage;
 pub mod meeting_writeup;
 pub mod mesh;
 pub mod model;

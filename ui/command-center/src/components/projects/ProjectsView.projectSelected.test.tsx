@@ -62,17 +62,19 @@ let container: HTMLDivElement;
 let root: Root;
 
 beforeEach(() => {
+  (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {};
   storage = {};
-  invoke.mockClear();
+  invoke.mockReset().mockResolvedValue(undefined);
   apiFetchMock.mockReset();
   serveProjects([project('p1', 'permagent', 'Permagent')]);
-  useCommandCenter.setState({ pendingProjectNavigation: null, workspaces: [] });
+  useCommandCenter.setState({ pendingProjectNavigation: null, currentProjectId: null, workspaces: [] });
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
 });
 
 afterEach(() => {
+  delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__;
   act(() => root.unmount());
   container.remove();
 });
@@ -83,6 +85,25 @@ async function renderView() {
 }
 
 describe('project_selected — session id (or its explicit absence)', () => {
+  it('opens a project in the browser without attempting the native activity signal', async () => {
+    delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__;
+    await renderView();
+    const card = container.querySelector('[aria-label="Open project Permagent"]') as HTMLElement;
+    await act(async () => { card.click(); });
+    expect(useCommandCenter.getState().currentProjectId).toBe('p1');
+    expect(invoke.mock.calls.some(([cmd]) => cmd === 'emit_activity')).toBe(false);
+  });
+
+  it('contains a rejected native activity signal without undoing project navigation', async () => {
+    invoke.mockImplementation(cmd => cmd === 'emit_activity'
+      ? Promise.reject(new Error('native bridge unavailable')) : Promise.resolve());
+    await renderView();
+    const card = container.querySelector('[aria-label="Open project Permagent"]') as HTMLElement;
+    await act(async () => { card.click(); });
+    expect(useCommandCenter.getState().currentProjectId).toBe('p1');
+    expect(invoke).toHaveBeenCalledWith('emit_activity', expect.any(Object));
+  });
+
   it('opening a project board with no chat session sends session_id: null explicitly', async () => {
     await renderView();
 

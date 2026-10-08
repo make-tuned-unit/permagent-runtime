@@ -709,6 +709,10 @@ impl SelfKnowledgeBuilder {
             }
         }
 
+        if !scoped {
+            out.push_str(include_str!("app_navigation.md"));
+        }
+
         // ── Guardrails ──
         // Deterministic constraints the agent is subject to. Surfacing them is a
         // correctness requirement: a guard the agent can't describe is a bug.
@@ -1636,6 +1640,8 @@ mod tests {
         assert!(brief.contains("## Tools you can call"));
         assert!(brief.contains("## Background workers"));
         assert!(brief.contains("## Surfaces the user can see"));
+        assert!(brief.contains("## App map and navigation boundaries"));
+        assert!(brief.contains("It never starts or stops recording"));
         // A representative tool, both workers, both surfaces are visible.
         assert!(brief.contains("**Analyze**"));
         assert!(brief.contains("**Scheduler**"));
@@ -3115,7 +3121,8 @@ mod tests {
             "a scoped session must not pay for the worker inventory"
         );
         assert!(
-            !brief.contains("## Surfaces the user can see"),
+            !brief.contains("## Surfaces the user can see")
+                && !brief.contains("## App map and navigation boundaries"),
             "a scoped session must not pay for the surface inventory"
         );
         assert!(

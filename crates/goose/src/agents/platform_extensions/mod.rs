@@ -259,7 +259,12 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 display_name: "Dashboard",
                 description: "Read the live cards on the user's Home dashboard (read_dashboard) — \
                               local weather, system stats, today's calendar — the same numbers \
-                              they are looking at",
+                              they are looking at. Browse available layouts (list_dashboard_templates), \
+                              compare a template or custom card arrangement with the current layout \
+                              without saving it (preview_dashboard_layout), then persist the previewed \
+                              layout after the user's approval (apply_dashboard_layout). Restore the \
+                              previous layout with revert_dashboard_layout; this is one level of undo \
+                              that can toggle back to the layout just replaced",
                 default_enabled: true,
                 unprefixed_tools: true,
                 hidden: false,

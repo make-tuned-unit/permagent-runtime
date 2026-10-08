@@ -139,9 +139,8 @@ export function MemoriesPanel({ project }: { project: Project }) {
       {status === 'ready' && memories.length > 0 && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: space.sm }}>
           {memories.map(m => (
-            <Tooltip content="Open in Brain">
+            <Tooltip key={m.id} content="Open in Brain">
               <button
-                key={m.id}
                 onClick={() => openInBrain(m)}
                 style={{
                   textAlign: 'left', width: '100%', cursor: 'pointer',

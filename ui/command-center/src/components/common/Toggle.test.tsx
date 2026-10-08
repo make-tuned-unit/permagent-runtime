@@ -15,6 +15,7 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
 import { act } from 'react-dom/test-utils';
+import { StrictMode, useState } from 'react';
 
 import { Toggle } from './Toggle';
 
@@ -138,4 +139,29 @@ it('carries the reason it cannot be pressed', () => {
 it('renders a caller-owned message in the same place as its own', () => {
   act(() => { root.render(<Toggle on error="Saved, but could not re-read it." />); });
   expect(container.textContent).toContain('Saved, but could not re-read it.');
+});
+
+it.each(['fulfilled', 'rejected'] as const)('recovers after a %s async write under StrictMode effect replay', async outcome => {
+  const d = deferred<void>();
+  function ControlledToggle() {
+    const [on, setOn] = useState(false);
+    return <Toggle on={on} label="Remote access" onChange={async next => {
+      await d.promise;
+      setOn(next);
+    }} />;
+  }
+  act(() => { root.render(<StrictMode><ControlledToggle /></StrictMode>); });
+  await act(async () => { sw().click(); });
+  expect(sw().getAttribute('aria-checked')).toBe('true');
+  expect(sw().getAttribute('aria-busy')).toBe('true');
+  await act(async () => {
+    if (outcome === 'fulfilled') d.resolve();
+    else d.reject(new Error('write refused'));
+    await d.promise.catch(() => {});
+  });
+  await flush();
+  expect(sw().getAttribute('aria-busy')).toBeNull();
+  expect(sw().getAttribute('data-pending')).toBeNull();
+  expect(sw().getAttribute('aria-checked')).toBe(outcome === 'fulfilled' ? 'true' : 'false');
+  expect(container.textContent?.includes('write refused')).toBe(outcome === 'rejected');
 });

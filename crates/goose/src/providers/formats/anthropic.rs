@@ -42,9 +42,17 @@ macro_rules! string_enum {
 string_enum!(ThinkingType { Adaptive => "adaptive", Enabled => "enabled", Disabled => "disabled" });
 string_enum!(ThinkingEffort { Low => "low", Medium => "medium", High => "high", Max => "max" });
 
+// Haiku 5.5 is a fixed model ID; vendor prefixes are supported without
+// accidentally treating a future version or an invented date alias as equivalent.
+fn is_haiku_55(model_name: &str) -> bool {
+    model_name.to_ascii_lowercase().rsplit(['/', '.']).next() == Some("claude-haiku-5-5")
+}
+
 pub fn supports_adaptive_thinking(model_name: &str) -> bool {
     let lower = model_name.to_lowercase();
-    lower.contains("claude-opus-4-6") || lower.contains("claude-sonnet-4-6")
+    lower.contains("claude-opus-4-6")
+        || lower.contains("claude-sonnet-4-6")
+        || is_haiku_55(model_name)
 }
 
 pub fn thinking_type(model_config: &ModelConfig) -> ThinkingType {
@@ -68,6 +76,11 @@ pub fn thinking_type(model_config: &ModelConfig) -> ThinkingType {
                 model_config.model_name
             );
             return ThinkingType::Disabled;
+        }
+        // Haiku 5.5 rejects manual budget_tokens, including inherited legacy
+        // preferences. Preserve the request for thinking using adaptive mode.
+        if tt == ThinkingType::Enabled && is_haiku_55(&model_config.model_name) {
+            return ThinkingType::Adaptive;
         }
         return tt;
     }
@@ -720,12 +733,17 @@ pub fn get_usage(data: &Value) -> Result<Usage> {
 }
 
 pub fn thinking_effort(model_config: &ModelConfig) -> ThinkingEffort {
+    let default = if is_haiku_55(&model_config.model_name) {
+        ThinkingEffort::Medium
+    } else {
+        ThinkingEffort::High
+    };
     match model_config.get_config_param::<String>("effort", "CLAUDE_THINKING_EFFORT") {
         Some(s) => s.parse().unwrap_or_else(|e| {
-            tracing::warn!("{e}, defaulting to 'high'");
-            ThinkingEffort::High
+            tracing::warn!("{e}, using the model default effort");
+            default
         }),
-        None => ThinkingEffort::High,
+        None => default,
     }
 }
 
@@ -830,7 +848,13 @@ fn apply_thinking_config(payload: &mut Value, model_config: &ModelConfig, max_to
                 }),
             );
         }
-        ThinkingType::Disabled => {}
+        ThinkingType::Disabled => {
+            // Omission enables adaptive thinking on Haiku 5.5. Honour explicit
+            // opt-out rather than silently turning it back on server-side.
+            if is_haiku_55(&model_config.model_name) {
+                obj.insert("thinking".to_string(), json!({"type": "disabled"}));
+            }
+        }
     }
 }
 
@@ -911,7 +935,13 @@ pub fn create_request_split(
     };
     let system_spec = format_system_parts(system_for_spec, read_only_files);
 
-    let max_tokens = model_config.max_output_tokens();
+    // Messages API ceiling; never raise an existing reservation/output cap.
+    // https://platform.claude.com/docs/en/models/haiku-5-5/overview
+    let max_tokens = if is_haiku_55(&model_config.model_name) {
+        model_config.max_output_tokens().min(128_000)
+    } else {
+        model_config.max_output_tokens()
+    };
     let mut payload = json!({
         "model": model_config.model_name,
         "messages": anthropic_messages,
@@ -936,7 +966,12 @@ pub fn create_request_split(
             .insert("tools".to_string(), json!(tool_specs));
     }
 
-    if let Some(temp) = model_config.temperature {
+    // Haiku 5.5 rejects non-default sampling values. top_p/top_k are not
+    // forwarded by this formatter; omit temperature for this model as well.
+    if let Some(temp) = model_config
+        .temperature
+        .filter(|_| !is_haiku_55(&model_config.model_name))
+    {
         payload
             .as_object_mut()
             .unwrap()
@@ -1471,6 +1506,75 @@ mod tests {
         assert_eq!(usage.cache_read_input_tokens, Some(5000));
         assert_eq!(usage.cache_write_input_tokens, Some(10000));
 
+        Ok(())
+    }
+
+    #[test]
+    fn haiku_55_defaults_to_adaptive_medium_and_omits_sampling() -> Result<()> {
+        let _guard = env_lock::lock_env([
+            ("CLAUDE_THINKING_TYPE", None::<&str>),
+            ("CLAUDE_THINKING_EFFORT", None::<&str>),
+            ("CLAUDE_THINKING_ENABLED", None::<&str>),
+        ]);
+        let mut config = cfg("claude-haiku-5-5");
+        config.temperature = Some(0.2);
+        config.max_tokens = Some(4096);
+        config.request_params = Some(std::collections::HashMap::from([
+            ("top_p".to_string(), json!(0.5)),
+            ("top_k".to_string(), json!(20)),
+        ]));
+        let payload = create_request(
+            &config,
+            "system",
+            &[Message::user().with_text("Hello")],
+            &[],
+        )?;
+        assert_eq!(payload["thinking"], json!({"type":"adaptive"}));
+        assert_eq!(payload["output_config"]["effort"], "medium");
+        assert_eq!(payload["max_tokens"], 4096);
+        for field in ["temperature", "top_p", "top_k"] {
+            assert!(payload.get(field).is_none(), "must omit {field}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn haiku_55_converts_legacy_budget_and_preserves_explicit_disable() -> Result<()> {
+        let _guard = env_lock::lock_env([
+            ("CLAUDE_THINKING_TYPE", None::<&str>),
+            ("CLAUDE_THINKING_EFFORT", None::<&str>),
+            ("CLAUDE_THINKING_ENABLED", None::<&str>),
+        ]);
+        let messages = [Message::user().with_text("Hello")];
+        let mut config = cfg_with_thinking("claude-haiku-5-5", "enabled");
+        config.max_tokens = Some(200_000);
+        let payload = create_request(&config, "system", &messages, &[])?;
+        assert_eq!(payload["thinking"], json!({"type":"adaptive"}));
+        assert_eq!(payload["max_tokens"], 128_000);
+        let disabled = create_request(
+            &cfg_with_thinking("claude-haiku-5-5", "disabled"),
+            "system",
+            &messages,
+            &[],
+        )?;
+        assert_eq!(disabled["thinking"], json!({"type":"disabled"}));
+        let old = create_request(
+            &cfg_with_thinking("claude-haiku-4-5", "disabled"),
+            "system",
+            &messages,
+            &[],
+        )?;
+        assert!(old.get("thinking").is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn haiku_55_signature_only_thinking_round_trips() -> Result<()> {
+        let response = json!({"content":[{"type":"thinking","thinking":"","signature":"opaque-signature"},{"type":"text","text":"Done"}]});
+        let message = response_to_message(&response)?;
+        let replay = format_messages(&[message]);
+        assert_eq!(replay[0]["content"][0]["signature"], "opaque-signature");
+        assert_eq!(replay[0]["content"][0]["thinking"], "");
         Ok(())
     }
 

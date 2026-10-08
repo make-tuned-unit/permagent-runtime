@@ -80,6 +80,7 @@ let container: HTMLDivElement;
 let root: Root;
 
 beforeEach(() => {
+  (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {};
   vi.useFakeTimers();
   invocations.length = 0;
   replayData = '';
@@ -100,6 +101,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__;
   act(() => root.unmount());
   container.remove();
   vi.useRealTimers();

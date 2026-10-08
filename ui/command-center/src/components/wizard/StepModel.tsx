@@ -96,6 +96,10 @@ export function StepModel({ initialChoice, onDone }: Props) {
           title="Decide later" detail="Look around first. Your agent can't reply until a model is connected." />
       </div>
 
+      {!providers && !loadError && (
+        <StatusLine tone="info">Loading available providers…</StatusLine>
+      )}
+
       {loadError && (
         <StatusLine tone="error">
           Couldn't load the provider list ({loadError}).{' '}

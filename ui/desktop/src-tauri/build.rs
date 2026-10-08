@@ -1,3 +1,7 @@
+#[allow(dead_code)]
+#[path = "src/runtime_target.rs"]
+mod runtime_target;
+
 use std::{env, fs, path::Path};
 
 // A cached web build uses /ui/; the native custom protocol serves dist at /.
@@ -53,6 +57,33 @@ fn validate_native_assets() {
 }
 
 fn main() {
+    for name in [
+        "PERMAGENT_REVIEW_ROOT",
+        "PERMAGENT_REVIEW_PORT",
+        "VITE_DAEMON_URL",
+    ] {
+        println!("cargo:rerun-if-env-changed={name}");
+    }
+    let root = env::var("PERMAGENT_REVIEW_ROOT").ok();
+    let port = env::var("PERMAGENT_REVIEW_PORT").ok();
+    let home = env::var("HOME").expect("HOME is required for build target validation");
+    let target = runtime_target::RuntimeTarget::parse(
+        root.as_deref(),
+        port.as_deref(),
+        env::var("PROFILE").as_deref() == Ok("debug"),
+        Path::new(&home),
+    )
+    .expect("invalid native review build target");
+    if target.review {
+        target
+            .validate_review_root()
+            .expect("invalid isolated review root");
+        assert_eq!(
+            env::var("VITE_DAEMON_URL").ok().as_deref(),
+            Some(target.base_url().as_str()),
+            "review frontend API target must match native target during the build"
+        );
+    }
     validate_native_assets();
     tauri_build::build()
 }

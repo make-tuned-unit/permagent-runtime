@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
+import { useEffect, useState, useCallback, useRef, useMemo, useId } from 'react';
 import type { CSSProperties } from 'react';
 import { FiChevronRight, FiFolder, FiMessageSquare, FiSearch } from 'react-icons/fi';
 import { concentric, duration, ease, font, radius, space, textSize } from '../../styles/tokens';
@@ -2663,6 +2663,7 @@ finding, loading, onAction, onRecheck }: { finding: Finding; loading: boolean; o
 function NewAutomationModal({
 onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
   const { colors } = useTheme();
+  const fieldId = useId();
   const pushOverlay = useCommandCenter(s => s.pushBrowserOverlay);
   const popOverlay = useCommandCenter(s => s.popBrowserOverlay);
   useEffect(() => { pushOverlay(); return () => { popOverlay(); }; }, [pushOverlay, popOverlay]);
@@ -2740,15 +2741,15 @@ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
     >
       <>
 
-        <label style={{ fontSize: textSize.caption, fontWeight: 600, color: colors.textMuted, display: 'block', marginBottom: space.sm }}>What should we call this?</label>
-        <input value={name} onChange={e => setName(e.target.value)} placeholder="e.g., Weekly Cleanup" style={{
+        <label htmlFor={`${fieldId}-name`} style={{ fontSize: textSize.caption, fontWeight: 600, color: colors.textMuted, display: 'block', marginBottom: space.sm }}>What should we call this?</label>
+        <input id={`${fieldId}-name`} value={name} onChange={e => setName(e.target.value)} placeholder="e.g., Weekly Cleanup" style={{
           width: '100%', padding: `${space.md}px ${space.xl}px`, borderRadius: radius.sm, background: colors.surface,
           border: `1px solid ${colors.border}`, color: colors.text, fontSize: textSize.small, fontFamily: font.body,
           outline: 'none', marginBottom: space.xxl, boxSizing: 'border-box',
         }} />
 
-        <label style={{ fontSize: textSize.caption, fontWeight: 600, color: colors.textMuted, display: 'block', marginBottom: space.sm }}>What should the agent do?</label>
-        <textarea value={prompt} onChange={e => setPrompt(e.target.value)}
+        <label htmlFor={`${fieldId}-task`} style={{ fontSize: textSize.caption, fontWeight: 600, color: colors.textMuted, display: 'block', marginBottom: space.sm }}>What should the agent do?</label>
+        <textarea id={`${fieldId}-task`} value={prompt} onChange={e => setPrompt(e.target.value)}
           placeholder="Scan my Downloads folder for files older than 30 days..." rows={4} style={{
             width: '100%', padding: `${space.md}px ${space.xl}px`, borderRadius: radius.sm, background: colors.surface,
             border: `1px solid ${colors.border}`, color: colors.text, fontSize: textSize.small, fontFamily: font.body,
@@ -2796,7 +2797,7 @@ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
             </div>
             {selectedPreset === CRON_PRESETS.length - 1 && (
               <div style={{ marginBottom: space.xl }}>
-                <input value={customCron} onChange={e => setCustomCron(e.target.value)} placeholder="0 9 * * 1-5" style={{ ...fieldStyle, fontFamily: font.mono }} />
+                <input aria-label="Custom cron expression" value={customCron} onChange={e => setCustomCron(e.target.value)} placeholder="0 9 * * 1-5" style={{ ...fieldStyle, fontFamily: font.mono }} />
                 {customCron.trim() && <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: space.xs, fontFamily: font.mono }}>Preview: {cronToEnglish(customCron)}</div>}
               </div>
             )}
@@ -2805,14 +2806,14 @@ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
 
         {kind === 'once' && (
           <div style={{ marginBottom: space.xl }}>
-            <input type="datetime-local" value={atLocal} onChange={e => setAtLocal(e.target.value)} style={{ ...fieldStyle, fontFamily: font.mono }} />
+            <input aria-label="Run date and time" type="datetime-local" value={atLocal} onChange={e => setAtLocal(e.target.value)} style={{ ...fieldStyle, fontFamily: font.mono }} />
           </div>
         )}
 
         {kind === 'interval' && (
           <div style={{ display: 'flex', gap: space.md, marginBottom: space.xl }}>
-            <input type="number" min={1} value={intervalValue} onChange={e => setIntervalValue(e.target.value)} style={{ ...fieldStyle, width: 100 }} />
-            <select value={intervalUnit} onChange={e => setIntervalUnit(e.target.value as typeof intervalUnit)} style={{ ...fieldStyle, flex: 1 }}>
+            <input aria-label="Interval amount" type="number" min={1} value={intervalValue} onChange={e => setIntervalValue(e.target.value)} style={{ ...fieldStyle, width: 100 }} />
+            <select aria-label="Interval unit" value={intervalUnit} onChange={e => setIntervalUnit(e.target.value as typeof intervalUnit)} style={{ ...fieldStyle, flex: 1 }}>
               <option value="minutes">minutes</option>
               <option value="hours">hours</option>
               <option value="days">days</option>
@@ -2822,13 +2823,13 @@ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
 
         {kind !== 'interval' && (
           <div style={{ marginBottom: space.xl }}>
-            <label style={{ fontSize: textSize.caption, fontWeight: 600, color: colors.textMuted, display: 'block', marginBottom: space.sm }}>Timezone (optional)</label>
-            <input value={tz} onChange={e => setTz(e.target.value)} placeholder="UTC, +05:30, -08:00" style={{ ...fieldStyle, fontFamily: font.mono }} />
+            <label htmlFor={`${fieldId}-timezone`} style={{ fontSize: textSize.caption, fontWeight: 600, color: colors.textMuted, display: 'block', marginBottom: space.sm }}>Timezone (optional)</label>
+            <input id={`${fieldId}-timezone`} value={tz} onChange={e => setTz(e.target.value)} placeholder="UTC, +05:30, -08:00" style={{ ...fieldStyle, fontFamily: font.mono }} />
           </div>
         )}
 
-        <label style={{ fontSize: textSize.caption, fontWeight: 600, color: colors.textMuted, display: 'block', marginBottom: space.sm }}>Retries on failure</label>
-        <input type="number" min={0} max={10} value={maxRetries} onChange={e => setMaxRetries(e.target.value)} style={{ ...fieldStyle, marginBottom: space.xs }} />
+        <label htmlFor={`${fieldId}-retries`} style={{ fontSize: textSize.caption, fontWeight: 600, color: colors.textMuted, display: 'block', marginBottom: space.sm }}>Retries on failure</label>
+        <input id={`${fieldId}-retries`} type="number" min={0} max={10} value={maxRetries} onChange={e => setMaxRetries(e.target.value)} style={{ ...fieldStyle, marginBottom: space.xs }} />
         <div style={{ fontSize: textSize.micro, color: colors.textDim, marginBottom: space.xxl }}>0 = no retry. If retries are exhausted, the job is escalated to your Decision Inbox.</div>
 
       </>

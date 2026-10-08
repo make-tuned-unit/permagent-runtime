@@ -69,11 +69,7 @@ async fn upload_handler(
         return Err(StatusCode::NOT_FOUND);
     }
 
-    let uploads_base = dirs::home_dir()
-        .ok_or(StatusCode::INTERNAL_SERVER_ERROR)?
-        .join(".permagent")
-        .join("uploads")
-        .join(&session_id);
+    let uploads_base = permagent::config::paths::Paths::in_data_dir("uploads").join(&session_id);
 
     let mut results = Vec::new();
 

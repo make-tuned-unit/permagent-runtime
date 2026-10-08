@@ -301,10 +301,11 @@
 .forum-conversation {
   min-width:0}
 
-.forum-agent-portrait { display:flex; align-items:center; border-left:2px solid; background:var(--forum-bg); border-radius:var(--forum-radius); margin-bottom:18px; padding:8px 12px; gap:10px; }
-.forum-agent-portrait .hero-agent-portrait { width:220px; height:260px; flex-shrink:0; }
+.forum-agent-portrait { display:flex; flex-direction:column; align-items:stretch; border-left:2px solid; background:var(--forum-bg); border-radius:var(--forum-radius); margin-bottom:18px; padding:8px 12px; gap:10px; }
+.forum-agent-portrait .hero-agent-portrait { width:220px; max-width:100%; height:260px; flex-shrink:0; align-self:center; }
+.forum-agent-portrait > div:last-child { min-width:0; }
 .hero-agent-portrait canvas { display:block; }
-.forum-agent-portrait .eyebrow { line-height:1.6; font-size:9px; }
+.forum-agent-portrait .eyebrow { line-height:1.6; font-size:9px; letter-spacing:.08em; }
 .forum-agent-portrait h3 { font-size:18px; margin:6px 0; }
 .forum-character b { font-size:12px; font-weight:500; }
 .forum-character .forum-voice { border-left:1px solid var(--forum-bronze); padding-left:12px; font-size:12px; }
@@ -712,7 +713,7 @@
 .forum-shell[data-habitat=true] .forum-brand h1 { font-size:20px!important; line-height:26px!important; letter-spacing:-.01em; margin:4px 0 0; }
 .forum-shell[data-habitat=true] .forum-brand p { display:none; }
 .forum-shell[data-habitat=true] .forum-location,.forum-shell[data-habitat=true] .forum-live,.forum-shell[data-habitat=true] .forum-controls { display:none; }
-.forum-shell[data-habitat=true] .forum-lane-left { max-width:300px; bottom:170px; gap:12px; }
+.forum-shell[data-habitat=true] .forum-lane-left { max-width:338px; bottom:22px; gap:12px; --forum-gutter:22px; }
 .forum-shell[data-habitat=true] .forum-auth-notice.habitat-auth { padding:12px!important; font-size:12px; background:var(--forum-panel)!important; }
 .habitat-auth-toggle { margin-left:12px; background:none; border:0; color:var(--forum-accent); cursor:pointer; text-decoration:underline; }
 .forum-shell[data-habitat=true] .forum-rail-list { background:var(--forum-glass); backdrop-filter:var(--forum-blur); -webkit-backdrop-filter:var(--forum-blur); box-shadow:var(--forum-shadow); border-radius:0 12px 12px 0; }
@@ -722,7 +723,11 @@
 .habitat-view-tools .pa-btn { font-size:12px; line-height:16px; min-height:32px; --pa-btn-pad:8px 12px; }
 .habitat-view-tools > .pa-btn:last-child { margin-left:4px; }
 /* Compact collaborators card (~310×135 idle): earlier denser hierarchy, ThemeColors. */
-.habitat-agent-dock { position:absolute; bottom:22px; left:22px; width:310px; max-width:calc(100% - 48px); max-height:calc(100% - 180px); overflow-y:auto; z-index:5; padding:10px 12px 8px; font-size:11px; pointer-events:auto; }
+/* The collaborator card shares the Places flex lane, so expanded Movement
+   and Work feed content take space instead of covering the final place.
+   Its own scroll area leaves room for the rail on short windows. */
+.forum-lane-left > .habitat-agent-dock { flex:0 1 auto; min-height:0; max-height:50%; }
+.habitat-agent-dock { width:310px; overflow-y:auto; box-sizing:border-box; padding:10px 12px 8px; font-size:11px; pointer-events:auto; }
 .habitat-agent-heading { display:flex; align-items:center; gap:8px; }
 .habitat-agent-emblem { width:28px; height:28px; flex-shrink:0; display:grid; place-items:center; overflow:hidden; border-radius:50%; border:1px solid var(--identity, var(--forum-border-hi)); color:var(--identity, var(--forum-accent)); background:var(--forum-accent-soft); }
 .habitat-agent-emblem .hero-agent-portrait { width:28px; height:28px; }
@@ -776,14 +781,15 @@
 .orchestrator-transcript b { color:var(--forum-accent); font-size:11px; }
 .orchestrator-transcript p { white-space:pre-wrap; line-height:1.5; margin:4px 0 12px; }
 @media(max-width:900px) {
-  .habitat-agent-dock { width:300px; left:16px; bottom:16px; }
+  .habitat-agent-dock { width:300px; }
+  .forum-shell[data-habitat=true] .forum-lane-left { bottom:16px; --forum-gutter:16px; }
   .forum-shell .habitat-view-tools { right:16px; top:16px; }
   .habitat-view-tools .pa-btn { --pa-btn-pad:8px; }
 }
 @media(max-width:620px) {
   .forum-shell .habitat-view-tools { top:100px; }
   .forum-shell[data-habitat=true] .forum-lane-left { max-width:260px; }
-  .habitat-agent-dock { bottom:88px; left:16px; max-height:calc(100% - 250px); }
+  .forum-shell[data-habitat=true] .forum-lane-left { bottom:88px; }
 }
 
 /* A toolbar rests as a whole; an individual faded action reads as disabled. */

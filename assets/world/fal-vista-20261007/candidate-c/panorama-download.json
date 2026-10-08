@@ -1,0 +1,8 @@
+{
+  "path": "panorama.png",
+  "request_id": "01a118d4-d690-77b3-8614-2677d2cb6906",
+  "url": "https://v3b.fal.media/files/b/0aad7d52/y-KsGDusHKOXebLk43hrv_jziaYJ17.png",
+  "bytes": 5965735,
+  "sha256": "9be4ce492dfa5ad58a56d53a91a6c152e9063561a76f8b8f1b033e317262172e",
+  "method": "Verified HTTPS; public DNS answer provided to curl per request when system DNS fails; signed queries omitted from ledger"
+}

@@ -39,6 +39,11 @@ export default defineConfig({
       '/events': { target: 'http://localhost:3001', ws: true, changeOrigin: true },
       '/config': { target: 'http://localhost:3001', changeOrigin: true },
       '/status': { target: 'http://localhost:3001', changeOrigin: true },
+      // Settings service/gateway status uses daemon HTTP routes, including
+      // their subroutes for explicit connect/disconnect actions.
+      '/integrations': { target: 'http://localhost:3001', changeOrigin: true },
+      '/gateway': { target: 'http://localhost:3001', changeOrigin: true },
+      '/tunnel': { target: 'http://localhost:3001', changeOrigin: true },
       // Missing from the proxy list, so under `base: '/ui/'` these fell
       // through to Vite's own handler and 404'd — the Automate tab showed
       // "Couldn't load automations. Unknown error" in `npm run dev`, which

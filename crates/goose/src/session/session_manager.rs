@@ -2925,6 +2925,10 @@ impl SessionStorage {
                     // current stamp still gets them without a numbered step.
                     crate::brain_feed::apply_schema(&self.pool).await?;
 
+                    // Existing installations also need the durable meeting queue;
+                    // init_spectral_db only runs for a brand-new database.
+                    crate::meeting_triage::apply_schema(&self.pool).await?;
+
                     // Version-independent: people.archived_at (non-person
                     // bridge row archival). Additive + idempotent.
                     spectral_schema::apply_people_archived_column(&self.pool).await?;
@@ -10104,6 +10108,53 @@ mod tests {
                 .accumulated_total_tokens,
             None
         );
+    }
+}
+
+#[cfg(test)]
+mod meeting_triage_boot_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn existing_database_installs_meeting_triage_before_note_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = SessionManager::new(dir.path().to_path_buf());
+        let pool = manager.pool_clone().await.unwrap();
+        // Model an installation created before the meeting queue existed.
+        sqlx::query("DROP TABLE meeting_triage_items")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DROP TABLE meeting_triage")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+        drop(manager);
+
+        let reopened = SessionManager::new(dir.path().to_path_buf());
+        let pool = reopened.pool_clone().await.unwrap();
+        let saved = crate::meeting_triage::save_meeting_note(
+            &pool,
+            None,
+            crate::projects::PERSONAL_PROJECT_ID,
+            "upgrade-recording",
+            true,
+            Some("Upgrade meeting"),
+            "We agreed to document the migration.",
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            saved.triage.status,
+            crate::meeting_triage::TriageStatus::Pending
+        );
+        assert_eq!(saved.triage.note_id, saved.note.id);
+        let item_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM meeting_triage_items")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(item_count, 0);
     }
 }
 

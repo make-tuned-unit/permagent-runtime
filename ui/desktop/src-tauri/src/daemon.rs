@@ -39,7 +39,7 @@ use tauri_plugin_shell::ShellExt;
 
 /// Where the daemon serves. Mirrors goose-server's defaults (configuration.rs
 /// `default_host`/`default_port`) and the launchd plist's explicit flags.
-const DAEMON_ADDR: &str = "127.0.0.1:3001";
+// The production target remains 127.0.0.1:3001; review targets are compile-time only.
 
 /// How long to wait for an externally-managed daemon (unchanged behavior).
 const EXTERNAL_WAIT_SECS: u64 = 10;
@@ -106,6 +106,17 @@ enum PollOutcome {
 /// spawn the bundled sidecar. Never returns `Err` for a missing/unhealthy
 /// daemon — the app must still open so the failure is visible and diagnosable.
 pub fn start_daemon(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
+    if crate::runtime_target::target().review {
+        // Review daemons are launched explicitly with a fresh Paths root by the
+        // coordinator. Never consult production launchd or spawn a bundled fallback.
+        if !wait_for_daemon(EXTERNAL_WAIT_SECS) {
+            surface_daemon_failure(
+                app,
+                "isolated review backend is unavailable; start its explicitly configured daemon",
+            );
+        }
+        return Ok(());
+    }
     if is_daemon_running() {
         eprintln!("[permagent-app] daemon detected on :3001");
         return Ok(());
@@ -255,6 +266,9 @@ fn supervise_sidecar(app: tauri::AppHandle, spawned: SpawnedDaemon) {
 /// bounded grace period and a SIGKILL backstop. No-op when the daemon is
 /// launchd/user-managed (we never stored a child).
 pub fn stop_daemon(_app: &tauri::AppHandle) {
+    if crate::runtime_target::target().review {
+        return;
+    }
     // Tell the supervisor this exit is intentional before we signal the child,
     // or it would race us and start a replacement as the app quits.
     SHUTTING_DOWN.store(true, Ordering::SeqCst);
@@ -284,6 +298,9 @@ pub fn stop_daemon(_app: &tauri::AppHandle) {
 /// Spawn the bundled `permagentd` sidecar with launchd-plist-parity args/env
 /// and start a reader task that mirrors its output to the sidecar log.
 fn spawn_sidecar(app: &tauri::AppHandle) -> Result<SpawnedDaemon, Box<dyn std::error::Error>> {
+    if crate::runtime_target::target().review {
+        return Err("review mode never spawns a bundled daemon".into());
+    }
     if SPAWN_ATTEMPTED.swap(true, Ordering::SeqCst) {
         return Err("sidecar spawn already attempted this run".into());
     }
@@ -431,7 +448,7 @@ fn poll_until(
 /// startup), so this is a faithful health probe.
 fn is_daemon_running() -> bool {
     std::net::TcpStream::connect_timeout(
-        &DAEMON_ADDR.parse().unwrap(),
+        &crate::runtime_target::target().address().parse().unwrap(),
         std::time::Duration::from_millis(50),
     )
     .is_ok()
@@ -509,11 +526,7 @@ pub async fn get_daemon_token() -> Result<String, String> {
 /// Synchronous core of [`get_daemon_token`] — also used by the supervised-
 /// session tee (`terminal.rs`), which runs on a plain thread.
 pub fn read_daemon_token() -> Result<String, String> {
-    let home = std::env::var("HOME").map_err(|_| "HOME not set".to_string())?;
-    let token_path = std::path::PathBuf::from(home)
-        .join(".permagent")
-        .join("secrets")
-        .join("daemon_token.json");
+    let token_path = crate::runtime_target::target().token_path();
 
     let content = std::fs::read_to_string(&token_path)
         .map_err(|e| format!("Failed to read daemon token: {}", e))?;

@@ -15,7 +15,7 @@
 //! [`NOTE_SOURCE`], description-less write, Librarian enrichment) is enforced in
 //! exactly one place.
 
-use sqlx::{Pool, Row, Sqlite};
+use sqlx::{Pool, Row, Sqlite, Transaction};
 use std::path::{Path, PathBuf};
 
 use crate::config::paths::Paths;
@@ -200,6 +200,112 @@ pub async fn create_note_indexed_with_id(
     insert_note(pool, note_id, project_id, title, body, stored_memory_key).await
 }
 
+/// Insert a note row inside a caller-owned transaction (no Brain side effects).
+pub async fn insert_note_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: &str,
+    project_id: &str,
+    title: Option<&str>,
+    body: &str,
+    memory_key: Option<&str>,
+) -> Result<(), String> {
+    sqlx::query(
+        "INSERT INTO project_notes (id, project_id, title, body, memory_key) \
+         VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(id)
+    .bind(project_id)
+    .bind(title)
+    .bind(body)
+    .bind(memory_key)
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Enqueue a note catalogue row inside a caller-owned transaction.
+pub async fn enqueue_note_catalogue_in_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    project_id: &str,
+    note_id: &str,
+    title: Option<&str>,
+    body: &str,
+) -> Result<String, String> {
+    let memory_key = format!("note:{}:{}", project_id, note_id);
+    let content = note_memory_content(title, body);
+    crate::brain_feed::feed_for_project_in_tx(
+        tx,
+        crate::brain_feed::FeedSource::Note,
+        memory_key.clone(),
+        project_id,
+        content,
+    )
+    .await?;
+    Ok(memory_key)
+}
+
+/// Enqueue a note for durable Brain catalogue delivery (standalone txn).
+pub async fn enqueue_note_catalogue(
+    pool: &Pool<Sqlite>,
+    project_id: &str,
+    note_id: &str,
+    title: Option<&str>,
+    body: &str,
+) -> Result<String, String> {
+    let memory_key = format!("note:{}:{}", project_id, note_id);
+    let content = note_memory_content(title, body);
+    crate::brain_feed::feed_for_project_strict(
+        pool,
+        crate::brain_feed::FeedSource::Note,
+        memory_key.clone(),
+        project_id,
+        content,
+    )
+    .await?;
+    Ok(memory_key)
+}
+
+/// Repair or initial enqueue; optionally nudge an immediate outbox drain.
+pub async fn index_note_in_brain(
+    pool: &Pool<Sqlite>,
+    brain: Option<&crate::brain_handle::SafeBrain>,
+    project_id: &str,
+    note_id: &str,
+    title: Option<&str>,
+    body: &str,
+) -> Result<String, String> {
+    let memory_key = enqueue_note_catalogue(pool, project_id, note_id, title, body).await?;
+    if let Some(brain) = brain {
+        crate::brain_feed::spawn_drain(brain.clone(), pool.clone());
+    }
+    Ok(memory_key)
+}
+
+/// Update note body inside a caller-owned transaction (no Brain side effects).
+pub async fn update_note_body_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    note_id: &str,
+    project_id: &str,
+    body: &str,
+) -> Result<(), String> {
+    let body = body.trim();
+    if body.is_empty() {
+        return Err("note body is empty".to_string());
+    }
+    sqlx::query(
+        "UPDATE project_notes SET body = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') \
+         WHERE id = ? AND project_id = ?",
+    )
+    .bind(body)
+    .bind(note_id)
+    .bind(project_id)
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Attach the permagent-owned markdown export path for API responses.
 pub fn with_export_path(mut note: ProjectNote, project_slug: &str) -> ProjectNote {
     note.export_path = Some(
@@ -221,9 +327,36 @@ pub fn note_filename_slug(note: &ProjectNote) -> String {
         .unwrap_or_else(|| note.id.chars().take(8).collect())
 }
 
-/// Permagent-owned export path: `notes/<project-slug>/<YYYY-MM-DD>-<note-slug>.md`.
+/// Permagent-owned export path: `notes/<project-slug>/<YYYY-MM-DD>-<note-slug>-<note-id>.md`.
 pub fn note_export_path(project_slug: &str, note: &ProjectNote) -> PathBuf {
-    note_export_path_in(&Paths::in_state_dir("notes"), project_slug, note)
+    existing_note_export_path_in(&Paths::in_state_dir("notes"), project_slug, note)
+}
+
+fn existing_note_export_path_in(
+    notes_root: &Path,
+    project_slug: &str,
+    note: &ProjectNote,
+) -> PathBuf {
+    let unique = note_export_path_in(notes_root, project_slug, note);
+    if !unique.exists() {
+        let date = note.created_at.get(..10).unwrap_or("unknown-date");
+        let legacy = notes_root
+            .join(project_slug)
+            .join(format!("{date}-{}.md", note_filename_slug(note)));
+        // Old exports did not record the note ID. Retain their links only
+        // when the full body matches; same-title neighbors must not share a
+        // link to a different transcript. New writes always use the ID path.
+        if let Ok(markdown) = std::fs::read_to_string(&legacy) {
+            if markdown.starts_with("---\n")
+                && markdown
+                    .split_once("\n---\n\n")
+                    .is_some_and(|(_, body)| body == note.body)
+            {
+                return legacy;
+            }
+        }
+    }
+    unique
 }
 
 pub(crate) fn note_export_path_in(
@@ -235,7 +368,7 @@ pub(crate) fn note_export_path_in(
     let slug = note_filename_slug(note);
     notes_root
         .join(project_slug)
-        .join(format!("{date}-{slug}.md"))
+        .join(format!("{date}-{slug}-{}.md", note.id))
 }
 
 fn yaml_escape(value: &str) -> String {
@@ -273,16 +406,18 @@ pub fn render_note_markdown(
             "writeup_provider: {}\nwriteup_model: {}\nwriteup_privacy: {}\n",
             yaml_escape(&p.provider),
             yaml_escape(&p.model),
-            yaml_escape(match p.privacy {
-                crate::meeting_writeup::WriteupPrivacy::LocalOnly => "local_only",
-                crate::meeting_writeup::WriteupPrivacy::TrustedPool => "trusted_pool",
-                crate::meeting_writeup::WriteupPrivacy::CloudSession => "cloud_session",
-            }),
+            yaml_escape(crate::meeting_writeup::writeup_privacy_tag(p.privacy)),
         ));
     }
     frontmatter.push_str("---\n\n");
     format!("{frontmatter}{}", note.body)
 }
+
+// Both HTTP saves and the periodic triage worker publish through this gate.
+// The initial meeting snapshot is create-only: a late raw export must never
+// replace the enhanced export. Holding the gate across the existence check and
+// write also prevents a raw write already in flight from finishing last.
+static NOTE_EXPORT_GATE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 async fn write_note_export_inner(
     notes_root: &Path,
@@ -293,6 +428,15 @@ async fn write_note_export_inner(
     provenance: Option<&WriteupProvenance>,
 ) -> Result<PathBuf, String> {
     let path = note_export_path_in(notes_root, project_slug, note);
+    let _guard = NOTE_EXPORT_GATE.lock().await;
+    if kind == Some("meeting") && provenance.is_none() {
+        match tokio::fs::metadata(&path).await {
+            Ok(metadata) if metadata.is_file() => return Ok(path),
+            Ok(_) => return Err("export path is not a regular file".to_string()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("read export metadata: {error}")),
+        }
+    }
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent)
             .await
@@ -476,6 +620,24 @@ pub async fn get_note(
     .await
     .map_err(|e| e.to_string())?;
 
+    Ok(row.as_ref().map(row_to_note))
+}
+
+/// Read the canonical note while the caller holds its write reservation.
+pub(crate) async fn get_note_in_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    project_id: &str,
+    note_id: &str,
+) -> Result<Option<ProjectNote>, String> {
+    let row = sqlx::query(
+        "SELECT id, project_id, title, body, memory_key, created_at, updated_at
+         FROM project_notes WHERE id = ? AND project_id = ?",
+    )
+    .bind(note_id)
+    .bind(project_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| e.to_string())?;
     Ok(row.as_ref().map(row_to_note))
 }
 
@@ -753,6 +915,105 @@ mod tests {
             .unwrap();
     }
 
+    #[tokio::test]
+    async fn exports_distinguish_same_day_titles_and_untitled_id_prefixes() {
+        let pool = test_pool().await;
+        let project = a_project(&pool, "Export identities").await;
+        let root = tempfile::tempdir().unwrap();
+        for title in [Some("Standup"), None] {
+            // The old untitled fallback used only the first eight ID chars.
+            let suffix = if title.is_some() { "1" } else { "2" };
+            let mut first = insert_note(
+                &pool,
+                &format!("mn-aaaaaaaa0001{suffix}"),
+                &project,
+                title,
+                "first transcript",
+                None,
+            )
+            .await
+            .unwrap();
+            let mut second = insert_note(
+                &pool,
+                &format!("mn-aaaaaaaa0002{suffix}"),
+                &project,
+                title,
+                "second transcript",
+                None,
+            )
+            .await
+            .unwrap();
+            first.created_at = "2026-10-08T00:00:00Z".into();
+            second.created_at = first.created_at.clone();
+            let legacy = root
+                .path()
+                .join("identity")
+                .join(format!("2026-10-08-{}.md", note_filename_slug(&first)));
+            std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+            std::fs::write(
+                &legacy,
+                render_note_markdown("Export identities", &first, Some("meeting"), None),
+            )
+            .unwrap();
+            assert_eq!(
+                existing_note_export_path_in(root.path(), "identity", &first),
+                legacy
+            );
+            assert_ne!(
+                existing_note_export_path_in(root.path(), "identity", &second),
+                legacy
+            );
+            let first_path = write_note_export_to_root(
+                root.path(),
+                "identity",
+                "Export identities",
+                &first,
+                Some("meeting"),
+                None,
+            )
+            .await
+            .unwrap();
+            let second_path = write_note_export_to_root(
+                root.path(),
+                "identity",
+                "Export identities",
+                &second,
+                Some("meeting"),
+                None,
+            )
+            .await
+            .unwrap();
+            assert_ne!(first_path, second_path);
+            assert!(tokio::fs::read_to_string(&first_path)
+                .await
+                .unwrap()
+                .contains("first transcript"));
+            assert!(tokio::fs::read_to_string(&second_path)
+                .await
+                .unwrap()
+                .contains("second transcript"));
+            first.body = "Enhanced first transcript".into();
+            let provenance = crate::meeting_writeup::provenance_unknown();
+            assert_eq!(
+                write_note_export_to_root(
+                    root.path(),
+                    "identity",
+                    "Export identities",
+                    &first,
+                    Some("meeting"),
+                    Some(&provenance)
+                )
+                .await
+                .unwrap(),
+                first_path
+            );
+            assert!(tokio::fs::read_to_string(second_path)
+                .await
+                .unwrap()
+                .contains("second transcript"));
+        }
+    }
+
     /// Guard 5: markdown export exists after save and is rewritten after write-up.
     #[tokio::test]
     async fn guard_markdown_export_written_on_save_and_rewrite() {
@@ -805,6 +1066,78 @@ mod tests {
         assert!(structured_text.contains("writeup_provider: ollama"));
         assert!(structured_text.contains("## Summary"));
         assert!(structured_text.contains("raw transcript only"));
+    }
+
+    /// The periodic worker may finish before the HTTP route exports its raw
+    /// snapshot. Both that ordering and overlapping publication keep the summary.
+    #[tokio::test]
+    async fn meeting_export_never_regresses_to_late_raw_snapshot() {
+        let pool = test_pool().await;
+        let project_id = a_project(&pool, "Export race").await;
+        let raw = insert_note(
+            &pool,
+            "note-export-race",
+            &project_id,
+            Some("Standup"),
+            "original transcript",
+            None,
+        )
+        .await
+        .unwrap();
+        let mut enhanced = raw.clone();
+        enhanced.body = "## Summary\n\nShip Friday\n\n## Transcript\n\noriginal transcript".into();
+        let provenance = WriteupProvenance {
+            provider: "ollama".into(),
+            model: "qwen3".into(),
+            privacy: crate::meeting_writeup::WriteupPrivacy::LocalOnly,
+        };
+        let root = tempfile::tempdir().unwrap();
+        let path = write_note_export_to_root(
+            root.path(),
+            "race",
+            "Export race",
+            &enhanced,
+            Some("meeting"),
+            Some(&provenance),
+        )
+        .await
+        .unwrap();
+        let expected = tokio::fs::read(&path).await.unwrap();
+        write_note_export_to_root(
+            root.path(),
+            "race",
+            "Export race",
+            &raw,
+            Some("meeting"),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(tokio::fs::read(&path).await.unwrap(), expected);
+
+        // Remove the file to exercise two publishers from the initial state.
+        tokio::fs::remove_file(&path).await.unwrap();
+        let (raw_result, enhanced_result) = tokio::join!(
+            write_note_export_to_root(
+                root.path(),
+                "race",
+                "Export race",
+                &raw,
+                Some("meeting"),
+                None
+            ),
+            write_note_export_to_root(
+                root.path(),
+                "race",
+                "Export race",
+                &enhanced,
+                Some("meeting"),
+                Some(&provenance),
+            ),
+        );
+        raw_result.unwrap();
+        enhanced_result.unwrap();
+        assert_eq!(tokio::fs::read(&path).await.unwrap(), expected);
     }
 
     /// Guard 6: a failed file write leaves the note saved (export errors do not propagate).

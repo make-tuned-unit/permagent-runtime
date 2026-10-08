@@ -133,6 +133,23 @@ async function chooseAcmeAndTest(keyText: string) {
 }
 
 describe('WizardShell', () => {
+  it('announces provider discovery and preserves Decide later when the local default arrives', async () => {
+    let resolveProviders!: (value: ReturnType<typeof providers>) => void;
+    m.getProviders.mockReturnValue(new Promise<ReturnType<typeof providers>>(resolve => { resolveProviders = resolve; }));
+    await start();
+    await submit();
+    expect(Array.from(container.querySelectorAll('[role="status"]')).some(el => el.textContent === 'Loading available providers…')).toBe(true);
+    expect(radio('local')).toBeNull();
+    await click(radio('later'));
+    await act(async () => { resolveProviders(providers({}, 'ollama')); });
+    await flush();
+    expect(text()).not.toContain('Loading available providers…');
+    expect(radio('local')).not.toBeNull();
+    expect(radio('later').checked).toBe(true);
+    expect(primaryLabel()).toBe('Continue without a model');
+    expect(m.setProvider).not.toHaveBeenCalled();
+  });
+
   it('hosted key: rejected key blocks, a working key is proved live, and setup saves the persona', async () => {
     await start();
     expect(progress()).toBe('Step 1 of 6 · Welcome');

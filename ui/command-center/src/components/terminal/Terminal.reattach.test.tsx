@@ -99,6 +99,7 @@ let container: HTMLDivElement;
 let root: Root;
 
 beforeEach(() => {
+  (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {};
   invocations.length = 0;
   termLog.length = 0;
   replayResponse = { data: 'replayed scrollback', seq: 7 };
@@ -119,6 +120,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__;
   act(() => root.unmount());
   container.remove();
 });

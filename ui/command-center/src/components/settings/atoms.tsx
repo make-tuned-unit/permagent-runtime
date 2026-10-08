@@ -3,6 +3,7 @@ import type { CSSProperties } from 'react';
 import { font, radius, space, textSize, type } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
+import { ToggleLabelContext } from '../common/Toggle';
 
 /**
  * The Settings visual language, in one file.
@@ -225,7 +226,9 @@ export function Row({ label, hint, children, onClick, dim }: {
         <div style={{ fontSize: textSize.small, fontWeight: 500, color: colors.text }}>{label}</div>
         {hint && <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: space.xs, lineHeight: 1.45 }}>{hint}</div>}
       </div>
-      <div className="pa-set-row-control">{children}</div>
+      <div className="pa-set-row-control">
+        <ToggleLabelContext.Provider value={label}>{children}</ToggleLabelContext.Provider>
+      </div>
     </div>
   );
 }

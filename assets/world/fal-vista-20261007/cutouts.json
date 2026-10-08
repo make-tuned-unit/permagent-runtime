@@ -1,0 +1,93 @@
+{
+  "method": "Sharp deterministic alpha extraction from inspected black/white matte, edge unpremultiplication, atlas grid cropped out. Original images preserved.",
+  "artifacts": [
+    {
+      "name": "cliff-waterfall",
+      "path": "assets/world/fal-vista-20261007/threshold-cards/cliff-waterfall.png",
+      "width": 2048,
+      "height": 1374,
+      "bytes": 4075391,
+      "sha256": "15ae20bef5516222bb6912506bbcc0c7c781e3c75f309177ac9a004f7523ab3a",
+      "alpha_zero_fraction": 0.5338641170851528,
+      "alpha_opaque_fraction": 0.30568929391830424,
+      "background": "black"
+    },
+    {
+      "name": "floating-islet",
+      "path": "assets/world/fal-vista-20261007/threshold-cards/floating-islet.png",
+      "width": 2048,
+      "height": 1374,
+      "bytes": 3557244,
+      "sha256": "da071743bc9a923833718a9459da3e6cc4315e399254d0bf79c589fa0b07a0b4",
+      "alpha_zero_fraction": 0.6108384222616449,
+      "alpha_opaque_fraction": 0.280946156864083,
+      "background": "black"
+    },
+    {
+      "name": "vines",
+      "path": "assets/world/fal-vista-20261007/botanical/cutouts/vines.png",
+      "width": 1024,
+      "height": 1031,
+      "bytes": 839985,
+      "sha256": "af2226278f4ee59b447d556ec53482ca042278000238809a279b11c664101b30",
+      "alpha_zero_fraction": 0.7673848963385063,
+      "alpha_opaque_fraction": 0.2027982162342386,
+      "background": "white"
+    },
+    {
+      "name": "canopy",
+      "path": "assets/world/fal-vista-20261007/botanical/cutouts/canopy.png",
+      "width": 1024,
+      "height": 1031,
+      "bytes": 1662597,
+      "sha256": "3c5082abe53802886f583bf04d2489daf50af55aa14433aef9b49fec370e6c79",
+      "alpha_zero_fraction": 0.5100744119786615,
+      "alpha_opaque_fraction": 0.4769347493331717,
+      "background": "white"
+    },
+    {
+      "name": "fern",
+      "path": "assets/world/fal-vista-20261007/botanical/cutouts/fern.png",
+      "width": 1024,
+      "height": 1031,
+      "bytes": 1005913,
+      "sha256": "149b50db5e3c35c5bce15e94d827fcf440663e1da7b65111c63bf92c7d22e158",
+      "alpha_zero_fraction": 0.7187765215809894,
+      "alpha_opaque_fraction": 0.2549727964354995,
+      "background": "white"
+    },
+    {
+      "name": "flowers",
+      "path": "assets/world/fal-vista-20261007/botanical/cutouts/flowers.png",
+      "width": 1024,
+      "height": 1031,
+      "bytes": 1017498,
+      "sha256": "49b9bf93d821147d5c7d0506ed95d4f2cb4a10c3557819b8e7f252ec84dc2a70",
+      "alpha_zero_fraction": 0.71328844871484,
+      "alpha_opaque_fraction": 0.2533900263700291,
+      "background": "white"
+    },
+    {
+      "name": "moss",
+      "path": "assets/world/fal-vista-20261007/botanical/cutouts/moss.png",
+      "width": 1024,
+      "height": 1031,
+      "bytes": 932615,
+      "sha256": "db71249d02f6496385a8688c9d5463e0ededb08a0624e7154ea6e19df38f847b",
+      "alpha_zero_fraction": 0.7282627227812803,
+      "alpha_opaque_fraction": 0.26152836293646947,
+      "background": "white"
+    },
+    {
+      "name": "vines-alt",
+      "path": "assets/world/fal-vista-20261007/botanical/cutouts/vines-alt.png",
+      "width": 1024,
+      "height": 1031,
+      "bytes": 965630,
+      "sha256": "f085a55f5478febce9fa5c4ffdf7bf95b381ac77227cabbfb953ac3f4298e6d4",
+      "alpha_zero_fraction": 0.728177474842386,
+      "alpha_opaque_fraction": 0.25115653037099905,
+      "background": "white"
+    }
+  ]
+}

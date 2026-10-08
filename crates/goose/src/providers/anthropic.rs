@@ -35,6 +35,7 @@ pub const ANTHROPIC_DEFAULT_MODEL: &str = "claude-sonnet-5";
 const ANTHROPIC_DEFAULT_FAST_MODEL: &str = "claude-haiku-4-5";
 const ANTHROPIC_KNOWN_MODELS: &[&str] = &[
     // Frontier / current generation
+    "claude-haiku-5-5",
     "claude-fable-5",
     "claude-opus-4-8",
     "claude-sonnet-5",
@@ -206,7 +207,14 @@ impl ProviderDef for AnthropicProvider {
     fn metadata() -> ProviderMetadata {
         let models: Vec<ModelInfo> = ANTHROPIC_KNOWN_MODELS
             .iter()
-            .map(|&model_name| ModelInfo::new(model_name, 200_000))
+            .map(|&model_name| {
+                let context = if model_name == "claude-haiku-5-5" {
+                    1_000_000
+                } else {
+                    200_000
+                };
+                ModelInfo::new(model_name, context)
+            })
             .collect();
 
         ProviderMetadata::with_models(
@@ -428,5 +436,35 @@ impl Provider for AnthropicProvider {
             .stream_split(model_config, session_id, system, messages, tools)
             .await?;
         collect_stream(stream).await
+    }
+}
+
+#[cfg(test)]
+mod haiku_55_tests {
+    use super::*;
+
+    #[test]
+    fn haiku_55_catalogue_has_one_million_context_without_changing_defaults() {
+        let metadata = AnthropicProvider::metadata();
+        let model = metadata
+            .known_models
+            .iter()
+            .find(|m| m.name == "claude-haiku-5-5")
+            .unwrap();
+        assert_eq!(model.context_limit, 1_000_000);
+        assert_eq!(metadata.default_model, "claude-sonnet-5");
+        assert_eq!(ANTHROPIC_DEFAULT_FAST_MODEL, "claude-haiku-4-5");
+        let config = ModelConfig {
+            model_name: "claude-haiku-5-5".to_string(),
+            ..Default::default()
+        }
+        .with_canonical_limits("anthropic");
+        assert_eq!(config.context_limit(), 1_000_000);
+        assert_eq!(config.max_output_tokens(), 128_000);
+        assert!(config.is_reasoning_model());
+        assert_eq!(
+            super::super::model_family::ModelFamily::resolve("anthropic", "claude-haiku-5-5"),
+            super::super::model_family::ModelFamily::Anthropic
+        );
     }
 }

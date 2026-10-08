@@ -41,9 +41,12 @@ function isProject(value: unknown): value is Project {
  * ActivityEvent shape — never fabricate an id.
  */
 function emitProjectSelected(project: Project, sessionId: string | null = null) {
+  // Project navigation also works in the browser; this optional native
+  // activity signal does not. Importing the JS package alone is not a bridge.
+  if (typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window)) return;
   import('@tauri-apps/api/core')
     .then(({ invoke }) => {
-      invoke('emit_activity', {
+      return invoke('emit_activity', {
         event_type: 'project_selected',
         source_surface: 'project_picker',
         payload: { project_id: project.id, project_name: project.name },
@@ -51,7 +54,7 @@ function emitProjectSelected(project: Project, sessionId: string | null = null) 
         project_id: `project:${project.slug}`,
       });
     })
-    .catch(() => { /* not in Tauri context */ });
+    .catch(() => { /* best-effort activity must not break project navigation */ });
 }
 
 export function ProjectsView() {

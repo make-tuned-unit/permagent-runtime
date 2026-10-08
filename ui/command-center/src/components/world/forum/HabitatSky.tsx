@@ -1,8 +1,19 @@
-import { Suspense, useEffect, useMemo } from 'react';
+import { Suspense, useEffect, useMemo, useRef } from 'react';
 import { useTexture } from '@react-three/drei';
-import { BackSide, Color, SRGBColorSpace, Vector3 } from 'three';
+import { useFrame, useThree } from '@react-three/fiber';
+import { BackSide, Color, DoubleSide, Group, LinearFilter, SRGBColorSpace, Vector3 } from 'three';
 import { createCelestialBodies, SKY_RENDER_ORDER } from './ForumSky';
 import { GardenAssetBoundary } from './GardenAssetBoundary';
+import { getReduceMotion } from '../../../styles/tokens';
+import {
+  HABITAT_DAY_PANORAMA_URLS,
+  HABITAT_HORIZON_CARDS,
+  HABITAT_PANORAMA_ROTATION_Y,
+  HABITAT_SUN_DIR,
+  HABITAT_VISTA_ASSETS,
+  habitatVistaAssetUrl,
+  type HabitatHorizonCard,
+} from './habitatVista';
 
 const celestialNoise = `
 float hash(vec3 p){return fract(sin(dot(p,vec3(127.1,311.7,74.7)))*43758.5453);}
@@ -37,52 +48,198 @@ void main(){
   gl_FragColor=vec4(base*(.04+.95*sqrt(light))+vec3(.004,.009,.016),1.);
 }`;
 
-/** A texture failure leaves a quiet sky and the habitat fully usable. */
+const proceduralDayUniforms = {
+  uHorizon: { value: new Color('#FFE3BE') },
+  uZenith: { value: new Color('#1A3D6B') },
+  uSunGlow: { value: new Color('#FFD9A0') },
+  uSun: { value: HABITAT_SUN_DIR.clone() },
+  uLandWarm: { value: new Color('#8B7355') },
+  uWater: { value: new Color('#5A9AAA') },
+  uHaze: { value: new Color('#C8D8E4') },
+};
+
+const proceduralDayFragment = `
+uniform vec3 uHorizon;uniform vec3 uZenith;uniform vec3 uSunGlow;uniform vec3 uSun;
+uniform vec3 uLandWarm;uniform vec3 uWater;uniform vec3 uHaze;
+varying vec3 direction;
+float hash(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}
+float noise(vec2 p){vec2 i=floor(p),f=fract(p);f=f*f*(3.-2.*f);
+ return mix(mix(hash(i),hash(i+vec2(1,0)),f.x),mix(hash(i+vec2(0,1)),hash(i+vec2(1,1)),f.x),f.y);}
+void main(){
+ vec3 d=normalize(direction);
+ float height=pow(clamp(d.y,0.,1.),.28);
+ vec3 color=mix(uHorizon,uZenith,height);
+ float sun=pow(max(dot(d,normalize(uSun)),0.),6.);
+ color+=uSunGlow*sun*.58;
+ if(d.y<.12){
+   float below=smoothstep(.12,-.08,d.y);
+   float ridge=noise(vec2(atan(d.x,d.z)*2.2,d.y*18.))*.55+noise(vec2(d.x*8.,d.z*8.))*.45;
+   float land=smoothstep(.35,.78,ridge);
+   float waterBand=smoothstep(.18,.42,abs(d.z+.35))*smoothstep(.08,.22,-d.y);
+   vec3 terrain=mix(uWater,uLandWarm,land);
+   color=mix(color,terrain,below*.82);
+   color=mix(color,uHaze,below*waterBand*.45);
+ }
+ gl_FragColor=vec4(color,1.);
+}`;
+
+function ProceduralDaySky() {
+  const uniforms = useMemo(() => ({
+    uHorizon: { value: proceduralDayUniforms.uHorizon.value.clone() },
+    uZenith: { value: proceduralDayUniforms.uZenith.value.clone() },
+    uSunGlow: { value: proceduralDayUniforms.uSunGlow.value.clone() },
+    uSun: { value: HABITAT_SUN_DIR.clone() },
+    uLandWarm: { value: proceduralDayUniforms.uLandWarm.value.clone() },
+    uWater: { value: proceduralDayUniforms.uWater.value.clone() },
+    uHaze: { value: proceduralDayUniforms.uHaze.value.clone() },
+  }), []);
+  return <mesh renderOrder={SKY_RENDER_ORDER.dome}>
+    <sphereGeometry args={[4480, 48, 32]}/>
+    <shaderMaterial side={BackSide} depthWrite={false} toneMapped={false} uniforms={uniforms}
+      vertexShader={`varying vec3 direction;void main(){direction=position;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}`}
+      fragmentShader={proceduralDayFragment}/>
+  </mesh>;
+}
+
 function GaiaSurveyFallback() {
   return <mesh renderOrder={SKY_RENDER_ORDER.dome}>
-    <sphereGeometry args={[4480,32,16]}/>
+    <sphereGeometry args={[4480, 32, 16]}/>
     <meshBasicMaterial color="#010208" side={BackSide} depthWrite={false} toneMapped={false} fog={false}/>
   </mesh>;
 }
 
-/** One owned texture clone; never dispose Drei's cached source. */
-function GaiaSurveyBackdrop({appearance}:{appearance:'day'|'night'}) {
-  const source=useTexture(`${import.meta.env.BASE_URL}world/astronomy/gaia-edr3-milky-way.webp`);
-  const map=useMemo(()=>{const t=source.clone();t.colorSpace=SRGBColorSpace;t.needsUpdate=true;return t;},[source]);
-  useEffect(()=>()=>map.dispose(),[map]);
-  // Local garden lighting does not create an atmosphere around the station.
-  const strength=appearance==='night'?.13:.09;
-  const tint=useMemo(()=>new Color(strength,strength,strength),[strength]);
-  return <mesh renderOrder={SKY_RENDER_ORDER.dome} rotation={[.22,1.98,.18]}>
-    <sphereGeometry args={[4480,64,32]}/>
-    <meshBasicMaterial map={map} color={tint} onBeforeCompile={shader=>{
-      // A mild mip bias resolves the dense survey stars at display scale.
-      // It preserves the source image and avoids a coarse, scintillating grain field.
-      shader.fragmentShader=shader.fragmentShader.replace('#include <map_fragment>', `
+function GaiaSurveyBackdrop({ appearance }: { appearance: 'day' | 'night' }) {
+  const source = useTexture(`${import.meta.env.BASE_URL}world/astronomy/gaia-edr3-milky-way.webp`);
+  const map = useMemo(() => { const t = source.clone(); t.colorSpace = SRGBColorSpace; t.needsUpdate = true; return t; }, [source]);
+  useEffect(() => () => map.dispose(), [map]);
+  const strength = appearance === 'night' ? .13 : .09;
+  const tint = useMemo(() => new Color(strength, strength, strength), [strength]);
+  return <mesh renderOrder={SKY_RENDER_ORDER.dome} rotation={[.22, 1.98, .18]}>
+    <sphereGeometry args={[4480, 64, 32]}/>
+    <meshBasicMaterial map={map} color={tint} onBeforeCompile={shader => {
+      shader.fragmentShader = shader.fragmentShader.replace('#include <map_fragment>', `
         #ifdef USE_MAP
           vec4 sampledDiffuseColor = texture2D(map, vMapUv, 1.8);
           diffuseColor *= sampledDiffuseColor;
         #endif
       `);
-    }} customProgramCacheKey={()=>'gaia-survey-filter-v1'} side={BackSide} depthWrite={false} toneMapped={false} fog={false}/>
+    }} customProgramCacheKey={() => 'gaia-survey-filter-v1'} side={BackSide} depthWrite={false} toneMapped={false} fog={false}/>
   </mesh>;
 }
 
-export function HabitatSky({appearance}:{appearance:'day'|'night'}) {
-  const bodies=useMemo(()=>{
-    const b=createCelestialBodies();
-    b.gasGiant.position.set(190,285,-1050);b.gasGiant.scale.setScalar(1.75);
-    b.gasGiant.material.fragmentShader=planetFragment;
-    b.gasGiant.material.uniforms.uLight.value=new Vector3(-.92,.27,.18).normalize();
-    b.moon.position.set(-420,430,-1200);b.moon.material.fragmentShader=moonFragment;
-    b.moon.material.uniforms.uLight.value=new Vector3(-.8,.3,.25).normalize();return b;
-  },[]);
-  useEffect(()=>()=>Object.values(bodies).forEach(b=>{b.geometry.dispose();b.material.dispose();}),[bodies]);
-  const fallback=<GaiaSurveyFallback/>;
-  return <>
-    <GardenAssetBoundary onFailure={()=>{}} fallback={fallback}>
-      <Suspense fallback={fallback}><GaiaSurveyBackdrop appearance={appearance}/></Suspense>
+function PanoramaDome({ url }: { url: string }) {
+  const source = useTexture(url);
+  const map = useMemo(() => {
+    const t = source.clone();
+    t.colorSpace = SRGBColorSpace;
+    t.generateMipmaps = false;
+    t.minFilter = t.magFilter = LinearFilter;
+    t.needsUpdate = true;
+    return t;
+  }, [source]);
+  useEffect(() => () => map.dispose(), [map]);
+  return <mesh renderOrder={SKY_RENDER_ORDER.dome} rotation={[0, HABITAT_PANORAMA_ROTATION_Y, 0]}>
+    <sphereGeometry args={[4480, 64, 32]}/>
+    <meshBasicMaterial map={map} side={BackSide} depthWrite={false} toneMapped={false} fog={false}/>
+  </mesh>;
+}
+
+function PanoramaWithFallback() {
+  const procedural = <><ProceduralDaySky/><HabitatCelestialBodies/>      <mesh position={HABITAT_SUN_DIR.clone().multiplyScalar(760)}>
+        <sphereGeometry args={[5.2, 24, 16]}/>
+        <meshBasicMaterial color="#FFF0CE" fog={false} toneMapped={false}/>
+      </mesh></>;
+  return <GardenAssetBoundary onFailure={() => {}} fallback={
+    <GardenAssetBoundary onFailure={() => {}} fallback={procedural}>
+      <Suspense fallback={procedural}><PanoramaDome url={HABITAT_DAY_PANORAMA_URLS[1]}/></Suspense>
     </GardenAssetBoundary>
-    <primitive object={bodies.gasGiant} dispose={null}/><primitive object={bodies.moon} dispose={null}/>
+  }>
+    <Suspense fallback={
+      <GardenAssetBoundary onFailure={() => {}} fallback={procedural}>
+        <Suspense fallback={procedural}><PanoramaDome url={HABITAT_DAY_PANORAMA_URLS[1]}/></Suspense>
+      </GardenAssetBoundary>
+    }>
+      <PanoramaDome url={HABITAT_DAY_PANORAMA_URLS[0]}/>
+    </Suspense>
+  </GardenAssetBoundary>;
+}
+
+function TexturedHorizonCard({ card }: { card: HabitatHorizonCard }) {
+  const url = habitatVistaAssetUrl(HABITAT_VISTA_ASSETS.cards[card.kind]);
+  const texture = useTexture(url);
+  const map = useMemo(() => {
+    const t = texture.clone();
+    t.colorSpace = SRGBColorSpace;
+    t.needsUpdate = true;
+    return t;
+  }, [texture]);
+  useEffect(() => () => map.dispose(), [map]);
+  return <CardMesh card={card} map={map}/>;
+}
+
+function CardMesh({ card, map }: { card: HabitatHorizonCard; map: import('three').Texture }) {
+  const group = useRef<Group>(null);
+  const origin = useMemo(() => new Vector3(...card.position), [card.position]);
+  const { camera } = useThree();
+  useFrame(() => {
+    if (!group.current) return;
+    if (getReduceMotion()) {
+      group.current.position.set(0, 0, 0);
+      return;
+    }
+    group.current.position.set(
+      (camera.position.x - origin.x) * card.parallax,
+      0,
+      (camera.position.z - origin.z) * card.parallax,
+    );
+  });
+  return <group position={origin}>
+    <group ref={group}>
+      <mesh rotation={[0, card.rotationY, 0]} renderOrder={SKY_RENDER_ORDER.bodies - 10}>
+        <planeGeometry args={[card.width, card.height]}/>
+        <meshBasicMaterial map={map} transparent alphaTest={0.08} depthWrite={false} toneMapped={false} side={DoubleSide}/>
+      </mesh>
+    </group>
+  </group>;
+}
+
+function HorizonCard({ card }: { card: HabitatHorizonCard }) {
+  // Missing optional cutouts should leave the distant panorama unobstructed.
+  // Flat procedural stand-ins read as enormous rectangular walls in overview.
+  const fallback = null;
+  return <GardenAssetBoundary onFailure={() => {}} fallback={fallback}>
+    <Suspense fallback={fallback}><TexturedHorizonCard card={card}/></Suspense>
+  </GardenAssetBoundary>;
+}
+
+function HabitatCelestialBodies() {
+  const bodies = useMemo(() => {
+    const b = createCelestialBodies();
+    b.gasGiant.position.set(190, 285, -1050);
+    b.gasGiant.scale.setScalar(1.75);
+    b.gasGiant.material.fragmentShader = planetFragment;
+    b.gasGiant.material.uniforms.uLight.value = HABITAT_SUN_DIR.clone();
+    b.moon.position.set(-420, 430, -1200);
+    b.moon.material.fragmentShader = moonFragment;
+    b.moon.material.uniforms.uLight.value = new Vector3(-.8, .3, .25).normalize();
+    return b;
+  }, []);
+  useEffect(() => () => Object.values(bodies).forEach(b => { b.geometry.dispose(); b.material.dispose(); }), [bodies]);
+  return <>
+    <primitive object={bodies.gasGiant} dispose={null}/>
+    <primitive object={bodies.moon} dispose={null}/>
+  </>;
+}
+
+export function HabitatSky({ appearance }: { appearance: 'day' | 'night' }) {
+  const nightFallback = <GaiaSurveyFallback/>;
+  return <>
+    {appearance === 'day' ? <>
+      <PanoramaWithFallback/>
+      {HABITAT_HORIZON_CARDS.map(card => <HorizonCard key={card.id} card={card}/>)}
+    </> : <GardenAssetBoundary onFailure={() => {}} fallback={nightFallback}>
+      <Suspense fallback={nightFallback}><GaiaSurveyBackdrop appearance={appearance}/></Suspense>
+    </GardenAssetBoundary>}
+    {appearance === 'night' && <HabitatCelestialBodies/>}
   </>;
 }

@@ -13,6 +13,7 @@ import { OvernightDigestCard } from './OvernightDigestCard';
 import { FleetKpisCard } from './FleetKpisCard';
 import { StalledPatternCard } from './StalledPatternCard';
 import { ProjectHealthGridCard } from './ProjectHealthGridCard';
+import { CalendarCard } from './CalendarCard';
 
 /**
  * Dashboard card registration mechanism (issue #182).
@@ -83,16 +84,40 @@ export interface CardManifest {
   autoHeight?: boolean;
 }
 
+/** A named size a card can be dropped into (grid units: 12 columns, 60px rows). */
+export interface CardSizePreset {
+  id: string;
+  label: string;
+  w: number;
+  h: number;
+}
+
 export interface CardRegistryEntry {
   component: ComponentType<any>;
   name: string;
   description: string;
   defaultSize: { w: number; h: number };
+  /** Sizes the Layouts gallery / Customize can offer, smallest first. A card
+   *  that draws differently by size (Calendar) declares where it changes. */
+  sizePresets?: CardSizePreset[];
   /** Present for manifest cards; drives the ManifestCard renderer. */
   manifest?: CardManifest;
   /** Provenance for the picker's "from …" indicator. Absent ⇒ first-party. */
   source?: string;
 }
+
+/**
+ * Calendar sizes on Home. The card is minimised there — today's date, "Next
+ * up" and today's list — at every size, and expands into focus (full width)
+ * for the Day / Week / Month calendar; these presets set how much room the
+ * minimised card takes. Outside Home the card still switches on its measured
+ * width (`COMPACT_BELOW_PX` in CalendarCard.tsx).
+ */
+export const CALENDAR_SIZE_PRESETS: CardSizePreset[] = [
+  { id: 'compact', label: 'Compact — next up and today', w: 4, h: 4 },
+  { id: 'medium', label: 'Medium — today at a glance, expands to the full calendar', w: 7, h: 8 },
+  { id: 'large', label: 'Large — full width, expands to the full calendar', w: 12, h: 9 },
+];
 
 /**
  * First-party code cards. Adding one here is still the path for a bespoke,
@@ -112,6 +137,10 @@ export const CARD_REGISTRY: Record<string, CardRegistryEntry> = {
   todos:     { component: TodosCard,    name: 'To-dos',          description: 'Dated cards from every board, soonest first', defaultSize: { w: 5, h: 6 } },
   growth_results: { component: GrowthResultsCard, name: 'Growth', description: 'Growth actions across all projects — trendline and per-project performance', defaultSize: { w: 12, h: 6 } },
   council: { component: CouncilCard, name: 'Council', description: 'Weekly debate across your connected models, with actions in the Decision Inbox', defaultSize: { w: 12, h: 6 } },
+  // Calendar is a first-party code card (not the daemon's manifest): it needs
+  // its own state — view, period, popover — and merge order puts this entry
+  // ahead of the manifest of the same type, so existing layouts pick it up.
+  calendar: { component: CalendarCard, name: 'Calendar', description: 'Day, week and month calendar with your next event up top', defaultSize: { w: 7, h: 8 }, sizePresets: CALENDAR_SIZE_PRESETS },
   // dagK home-templates lane — Morning Briefing + Operator Command Center's
   // new synthesis cards (HOME_TEMPLATES_RESEARCH.md §3). henry_status and
   // job_health are daemon-served MANIFEST cards instead (see

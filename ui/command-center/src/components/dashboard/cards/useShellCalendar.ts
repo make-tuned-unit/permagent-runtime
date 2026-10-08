@@ -61,7 +61,16 @@ export interface ShellCalendar {
  * @param enabled only the Calendar card turns this on; every other manifest
  *   card calls the hook (rules of hooks) and gets an inert result.
  */
-export function useShellCalendar(enabled: boolean, refreshSeconds?: number): ShellCalendar {
+export function useShellCalendar(
+  enabled: boolean,
+  refreshSeconds?: number,
+  /**
+   * Read today's events with every status refresh. The range-based Calendar
+   * card turns this off: it asks `calendar_events_in_range` for its own window
+   * and only needs this hook for the access state and the two actions.
+   */
+  loadToday = true,
+): ShellCalendar {
   const [inDesktopApp] = useState(detectDesktopApp);
   const [status, setStatus] = useState<CalendarAuthStatus | null>(null);
   const [events, setEvents] = useState<ShellCalendarEvent[]>([]);
@@ -97,14 +106,14 @@ export function useShellCalendar(enabled: boolean, refreshSeconds?: number): She
     if (!alive.current) return next;
     setStatus(next);
     if (next === 'fullAccess') {
-      await loadEvents();
+      if (loadToday) await loadEvents();
     } else {
       // Access revoked in System Settings while the app was open: the events
       // we already hold are no longer ours to show.
       setEvents([]);
     }
     return next;
-  }, [loadEvents]);
+  }, [loadEvents, loadToday]);
 
   useEffect(() => {
     alive.current = true;
@@ -139,14 +148,14 @@ export function useShellCalendar(enabled: boolean, refreshSeconds?: number): She
       if (!alive.current) return next === 'fullAccess';
       setStatus(next);
       if (next === 'writeOnly') setFullAccessAsked(true);
-      if (next === 'fullAccess') await loadEvents();
+      if (next === 'fullAccess' && loadToday) await loadEvents();
       return next === 'fullAccess';
     } catch {
       return false;
     } finally {
       requesting.current = false;
     }
-  }, [active, loadEvents, refresh]);
+  }, [active, loadEvents, loadToday, refresh]);
 
   const openSettings = useCallback(async () => {
     if (!active) return false;

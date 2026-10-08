@@ -211,3 +211,33 @@ it('R5: "Agents at work" never says "all resting" while a schedule the daemon sa
   expect(container.textContent).not.toContain('all resting');
   expect(container.textContent).toContain('1 active');
 });
+
+it('labels the new automation fields and conditional schedule controls without creating a job', async () => {
+  await act(async () => { root.render(<AutomateView />); });
+  await settle();
+  const create = [...container.querySelectorAll('button')].find(b => b.textContent?.includes('+ Create'))!;
+  act(() => create.click());
+  const dialog = document.querySelector('[role="dialog"]')!;
+  for (const [text, tag] of [
+    ['What should we call this?', 'INPUT'], ['What should the agent do?', 'TEXTAREA'],
+    ['Timezone (optional)', 'INPUT'], ['Retries on failure', 'INPUT'],
+  ]) {
+    const label = [...dialog.querySelectorAll('label')].find(l => l.textContent === text)!;
+    expect(label.control?.tagName, text).toBe(tag);
+    expect(label.control?.id).toBe(label.htmlFor);
+  }
+  const choose = (text: string) => {
+    act(() => [...dialog.querySelectorAll('button')].find(b => b.textContent === text)!.click());
+  };
+  choose('One-time');
+  expect(dialog.querySelector('input[type="datetime-local"]')?.getAttribute('aria-label')).toBe('Run date and time');
+  choose('Interval');
+  expect(dialog.querySelector('input[min="1"]')?.getAttribute('aria-label')).toBe('Interval amount');
+  expect(dialog.querySelector('select')?.getAttribute('aria-label')).toBe('Interval unit');
+  choose('Recurring');
+  const presets = dialog.querySelectorAll<HTMLInputElement>('input[type="radio"]');
+  const custom = presets[presets.length - 1];
+  act(() => custom.click());
+  expect(dialog.querySelector('input[placeholder="0 9 * * 1-5"]')?.getAttribute('aria-label')).toBe('Custom cron expression');
+  expect(vi.mocked(apiFetch).mock.calls.some(([url]) => url === '/schedule/create')).toBe(false);
+});

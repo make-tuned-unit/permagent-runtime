@@ -1,0 +1,58 @@
+{
+  "source_request_id": "01a118d4-d655-7e12-b8af-ac822b4df790",
+  "candidate": "candidate-a",
+  "sun_uv": [
+    0.35,
+    0.47
+  ],
+  "recommended_rotation_y": -2.006,
+  "recommended_sun_direction": [
+    -0.977,
+    0.094,
+    0.191
+  ],
+  "derivation": "21:9 source resampled to 2:1, 96-pixel symmetric meridian crossfade and 60-pixel polar convergence at 4096x2048. Not a calibrated native equirectangular capture.",
+  "artifacts": [
+    {
+      "path": "ui/command-center/public/world/vista/golden-hour-panorama-4096.jpg",
+      "width": 4096,
+      "height": 2048,
+      "bytes": 1323490,
+      "sha256": "4a01dc8418fef6c1f4449f8188b7a2f5c1ed4b8f7ab6c62877d7bb5d937aab8e"
+    },
+    {
+      "path": "ui/command-center/public/world/vista/golden-hour-panorama-2048.jpg",
+      "width": 2048,
+      "height": 1024,
+      "bytes": 420835,
+      "sha256": "9f2163a53415cca842a023e7b2c2aba58490baf59d9e81ebe76c238b1ce59108"
+    }
+  ],
+  "inspection": "Scenic lower hemisphere and treated meridian preview inspected; native perspective/performance review remains coordinator-owned.",
+  "cards": [
+    {
+      "name": "cliff-waterfall",
+      "path": "ui/command-center/public/world/vista/cards/cliff-waterfall.png",
+      "width": 2048,
+      "height": 1374,
+      "hasAlpha": true,
+      "bytes": 4798584,
+      "sha256": "ea056c05b28969e3dbc4adc62a9f65d959c1a7c1ab009a6e7322266b72a0ac95",
+      "alpha_zero_fraction": 0.48110202306222705,
+      "alpha_opaque_fraction": 0.06000137884370451,
+      "method": "FAL Ideogram semantic background removal; resized to 2048 wide preserving true alpha"
+    },
+    {
+      "name": "floating-islet",
+      "path": "ui/command-center/public/world/vista/cards/floating-islet.png",
+      "width": 2048,
+      "height": 1374,
+      "hasAlpha": true,
+      "bytes": 4166932,
+      "sha256": "ea58795b9eda217fb6e88227b3463874ebb483b32c000a4ad2e19a0aca8a89cd",
+      "alpha_zero_fraction": 0.5824292667394468,
+      "alpha_opaque_fraction": 0.04032051719432314,
+      "method": "FAL Ideogram semantic background removal; resized to 2048 wide preserving true alpha"
+    }
+  ]
+}

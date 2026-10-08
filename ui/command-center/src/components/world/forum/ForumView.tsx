@@ -1,3 +1,4 @@
+import { useAppNavigationRequests, consumeNavigationRequest } from '../../../lib/appNavigationRequests';
 import { HabitatScene, HabitatLighting, HabitatNavigation } from './HabitatScene';
 import { OrchestratorConversation } from './OrchestratorConversation';
 import { commandHabitatAgent } from './habitatMotion';
@@ -345,6 +346,19 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
   const [hovered, setHovered] = useState<string | null>(null);
   const [tab, setTab] = useState('meet');
   const [lesson, setLesson] = useState(0);
+  const requestedPlace = useAppNavigationRequests(s => s.worldPlace);
+  useEffect(() => {
+    if (!requestedPlace || !onPanel) return;
+    // This contract names the compact habitat, even when returning from campus.
+    if (!compact) { setCompact(true); return; }
+    if (HABITAT_PLACES.some(place => place.id === requestedPlace.placeId)) {
+      setFlying(false);
+      setConversation(false);
+      selectDistrict(requestedPlace.placeId);
+    }
+    consumeNavigationRequest('worldPlace', requestedPlace);
+  }, [requestedPlace, onPanel, compact]);
+
   const [brief, setBrief] = useState('');
   const [criteria, setCriteria] = useState('');
   const [kind, setKind] = useState('Query');
@@ -506,6 +520,11 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
         </div>
       )}
       {!cards.isDismissed('hints') && <div className="forum-controls"><DismissCard label="the control hints" onDismiss={()=>cards.dismiss('hints')} />{agoraOpen ? (walking ? 'Arrow keys walk · Walk back through the ring or press Esc to return to the forum' : 'Drag to orbit · Esc or Return to the Forum') : flying ? 'Arrow keys fly · Space climb · C descend · Shift boost · land on a terrace, then E to step out · Esc overview' : walking ? 'Arrow keys walk · Shift faster · Mouse / drag to look · E inspect nearby agent / archive · Esc overview' : 'Drag to orbit · Scroll to explore · Select a place or walk from this place'}</div>}
+      {compact && !deskOpen && !walking && !conversation && <HabitatAgentDock selected={selected} name={configuredName||'Your orchestrator'} directing={directing===selected} following={follow===selected}
+        onSelect={selectAndFocusAgent}
+        onDirect={()=>{setDirecting(v=>v===selected?null:selected);}}
+        onFollow={()=>{setFollow(v=>v===selected?null:selected);setOverview(false);setFocusAgent(prev=>nextAgentFocus(prev,selected));}}
+        onConversation={sitWithOrchestrator} onInspect={()=>{setDeskOpen(true);setTab('meet');}} onBrief={()=>{setDeskOpen(true);setKind('Job');setTab('task');}} />}
       </div>
       {meshPrompt && walking && !agoraOpen && <div className="forum-gate-prompt" role="status">E · Enter the MESH</div>}
       {!compact && <div className="forum-desk-toggle">
@@ -521,11 +540,7 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
           {deskOpen ? 'Hide the desk' : 'Show the desk'}
         </Button>
       </div>}
-      {compact && !deskOpen && !walking && !conversation && <HabitatAgentDock selected={selected} name={configuredName||'Your orchestrator'} directing={directing===selected} following={follow===selected}
-        onSelect={selectAndFocusAgent}
-        onDirect={()=>{setDirecting(v=>v===selected?null:selected);}}
-        onFollow={()=>{setFollow(v=>v===selected?null:selected);setOverview(false);setFocusAgent(prev=>nextAgentFocus(prev,selected));}}
-        onConversation={sitWithOrchestrator} onInspect={()=>{setDeskOpen(true);setTab('meet');}} onBrief={()=>{setDeskOpen(true);setKind('Job');setTab('task');}} />}
+
       {conversation && <OrchestratorConversation name={configuredName || 'Your orchestrator'} onLeave={leaveTable} />}
       {walking && <div className="forum-crosshair" aria-hidden="true">+</div>}
       {walking && interactionPrompt && !agoraOpen && <div className="forum-interaction-prompt" role="status">{interactionPrompt}</div>}

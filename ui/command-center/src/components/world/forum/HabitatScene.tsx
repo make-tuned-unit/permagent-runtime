@@ -12,6 +12,7 @@ import { HabitatSky } from './HabitatSky';
 import { HabitatWater } from './HabitatWater';
 import type { ForumDistrict } from './districts';
 import { getReduceMotion } from '../../../styles/tokens';
+import { HABITAT_SUN_DIR } from './habitatVista';
 
 export function HabitatScene({directing,onDirected}:{directing:string|null;onDirected:(point:Point3,ok:boolean)=>void}){
   const ground=useMemo(()=>terrainGeometry(),[]);
@@ -23,15 +24,25 @@ export function HabitatScene({directing,onDirected}:{directing:string|null;onDir
     <Suspense fallback={null}><HabitatArchitecture/></Suspense><HabitatPlanting/><HabitatWater/>
   </group>;
 }
-export function HabitatLighting({appearance}:{appearance:'day'|'night'}){const day=appearance==='day';const sunTarget=useMemo(()=>{const target=new Object3D();target.position.set(1,0,-20);return target;},[]);return <>
-  <HabitatSky appearance={appearance}/><color attach="background" args={['#010208']}/>
-  <hemisphereLight args={[day?'#adc9d8':'#89a5c3','#62553e',day?.95:.95]}/>
-  <primitive object={sunTarget}/><directionalLight target={sunTarget} position={[-20,32,-10]} color={day?'#ffd197':'#ffdbaa'} intensity={day?3.6:2.1} castShadow shadow-mapSize={[2048,2048]} shadow-camera-left={-38} shadow-camera-right={38} shadow-camera-top={42} shadow-camera-bottom={-42} shadow-normalBias={.025}/>
-  <directionalLight position={[5,8,14]} color="#b9d5e6" intensity={day?.65:.7}/>
-  <pointLight position={[4,7,-43]} color="#c3dce9" intensity={day?6:11} distance={21} decay={2}/>
-  <pointLight position={[-3,2.7,3]} color="#ffd199" intensity={day?6:15} distance={10} decay={2}/>
-  <pointLight position={[-10,5.6,-19]} color="#ffcf97" intensity={day?5:20} distance={11} decay={2}/>
-  <pointLight position={[10,5.7,-19]} color="#ffd4a1" intensity={day?3:20} distance={10} decay={2}/>
+export function HabitatLighting({appearance}:{appearance:'day'|'night'}){
+  const day=appearance==='day';
+  const sunTarget=useMemo(()=>{const target=new Object3D();target.position.set(1,0,-20);return target;},[]);
+  const sunPosition=useMemo(()=>HABITAT_SUN_DIR.clone().multiplyScalar(52).add(sunTarget.position),[]);
+  return <>
+  <HabitatSky appearance={appearance}/>
+  <color attach="background" args={[day?'#2A1E14':'#010208']}/>
+  {day
+    ? <fogExp2 attach="fog" args={['#C4D2DC', .0021]}/>
+    : <fog attach="fog" args={['#010208', 180, 480]}/>}
+  <hemisphereLight args={[day?'#E8C99A':'#89a5c3', day?'#3D5A66':'#62553e', day?1.05:.95]}/>
+  <primitive object={sunTarget}/>
+  <directionalLight target={sunTarget} position={day?sunPosition.toArray():[-20,32,-10]} color={day?'#FFC882':'#ffdbaa'} intensity={day?3.85:2.1}
+    castShadow shadow-mapSize={[2048,2048]} shadow-camera-left={-38} shadow-camera-right={38} shadow-camera-top={42} shadow-camera-bottom={-42} shadow-normalBias={day?.028:.025}/>
+  <directionalLight position={[8,10,18]} color={day?'#7AB8C4':'#b9d5e6'} intensity={day?.58:.7}/>
+  <pointLight position={[4,7,-43]} color={day?'#A8C8D8':'#c3dce9'} intensity={day?5:11} distance={21} decay={2}/>
+  <pointLight position={[-3,2.7,3]} color="#ffd199" intensity={day?5.5:15} distance={10} decay={2}/>
+  <pointLight position={[-10,5.6,-19]} color="#ffcf97" intensity={day?4.5:20} distance={11} decay={2}/>
+  <pointLight position={[10,5.7,-19]} color="#ffd4a1" intensity={day?2.8:20} distance={10} decay={2}/>
 </>;}
 export function HabitatNavigation({district,focusAgent,overview,follow,conversation=false}:{district:ForumDistrict;focusAgent:{id:string;revision:number}|null;overview:boolean;follow:string|null;conversation?:boolean}){
   const camera=useThree(s=>s.camera),controls=useRef<React.ComponentRef<typeof OrbitControls>>(null),last=useRef<Vector3|null>(null);

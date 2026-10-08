@@ -5,6 +5,7 @@ import { copyText } from '../lib/clipboard';
 import { wireEventType } from '../lib/wireEvent';
 import { appendTraceRecord, claimTraceEventId, globalFrameToRecord } from '../lib/traceEvents';
 import { useCommandCenter, navigateToTool } from '../lib/store';
+import { requestProjectLens, requestWorldPlace, requestRecordOpen, requestHomeFocus, isHomeSection, PROJECT_LENSES, WORLD_PLACE_IDS } from '../lib/appNavigationRequests';
 import { panelForSection } from '../components/settings/sections';
 import type { ActivePanel } from '../lib/store';
 import { createChatWindow } from '../lib/chatWindow';
@@ -22,7 +23,7 @@ import { applyLivenessFrame } from '../lib/livenessSync';
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
 /** Payload of an `app_navigate` frame (daemon WS bus and cross-window Tauri event). */
-type NavigatePayload = {
+export type NavigatePayload = {
   tool_type?: string;
   panel_type?: string;
   section?: string;
@@ -57,7 +58,10 @@ function dispatchAppAction(
   if (!surface || !action) return;
   const s = useCommandCenter.getState();
 
-  if (surface === 'chat') {
+  if (surface === 'record') {
+    if (action !== 'open') return;
+    requestRecordOpen();
+  } else if (surface === 'chat') {
     if (action === 'open') s.openChatDock();
     else if (action === 'close') s.closeChatDock();
     else if (action === 'detach') {
@@ -104,6 +108,9 @@ export function dispatchOpenItem(payload: {
     // (the daemon rejects this too, but guard the direct/cross-window path).
     if (!card_id) return;
     s.openGoalDetail(project_id, card_id);
+  } else if (kind === 'card') {
+    if (!card_id) return;
+    s.openCardOnBoard(project_id, card_id);
   } else if (kind === 'grow') {
     s.growProject(project_id);
   } else {
@@ -141,6 +148,43 @@ const LEGACY_OVERLAY_SECTIONS: Record<string, string> = {
   trace: 'activity',
   governance: 'spend',
 };
+
+/** Route a live intent. Returning true means queued locally, not rendered/acknowledged. */
+export function dispatchNavigate(payload: NavigatePayload): boolean {
+  const { tool_type, panel_type, section, state, reason } = payload ?? {};
+  if (!tool_type) return false;
+  const s = useCommandCenter.getState();
+  if (panel_type === 'overlay') {
+    const legacySection = LEGACY_OVERLAY_SECTIONS[tool_type];
+    const target = section ?? legacySection;
+    if (target) s.setPendingSettingsSection(target);
+    s.dismissInAppBrowser();
+    s.setActivePanel(legacySection || (tool_type === 'settings' && target)
+      ? panelForSection(target) : tool_type as ActivePanel);
+  } else if (VALID_TOOL_TYPES.has(tool_type)) {
+    // Reject an unsupported section before changing views. No invented deep links.
+    if (section && tool_type === 'projects' &&
+      (!state?.project_id || !(PROJECT_LENSES as readonly string[]).includes(section))) return false;
+    if (section && tool_type === 'world' && !(WORLD_PLACE_IDS as readonly string[]).includes(section)) return false;
+    if (section && tool_type === 'dashboard' && !isHomeSection(section)) return false;
+    const ws = s.workspaces.find(w => hasToolType(w.layoutJson, tool_type));
+    if (!ws) return false;
+    if (tool_type !== 'build') s.dismissInAppBrowser();
+    s.setActivePanel('chat');
+    s.switchWorkspace(ws.id);
+    if (tool_type === 'projects' && state?.project_id) {
+      s.setPendingProjectNavigation(state.project_id);
+      if (section) requestProjectLens(state.project_id, section);
+    }
+    if (tool_type === 'world' && section) requestWorldPlace(section);
+    if (tool_type === 'dashboard' && section) requestHomeFocus(section);
+    if (tool_type === 'people' && (state?.entity_uuid || state?.person)) {
+      s.setPendingPersonNavigation({ entity_uuid: state.entity_uuid, person: state.person });
+    }
+  } else return false;
+  if (reason) showNavigationCue(reason);
+  return true;
+}
 
 /**
  * Record a global `/events` frame into the trace buffer (`store.events`) with
@@ -266,101 +310,16 @@ export function hydrateHarnessOnGlobalConnection(): void {
  * but never acted on — see {@link shouldActOnFrame}.
  */
 export function useAppNavigate() {
-  const switchWorkspace = useCommandCenter(s => s.switchWorkspace);
-  const setActivePanel = useCommandCenter(s => s.setActivePanel);
-  const workspaces = useCommandCenter(s => s.workspaces);
-  const setPendingProjectNavigation = useCommandCenter(s => s.setPendingProjectNavigation);
-  const setPendingPersonNavigation = useCommandCenter(s => s.setPendingPersonNavigation);
-  const setPendingSettingsSection = useCommandCenter(s => s.setPendingSettingsSection);
   const setPendingTerminalLaunch = useCommandCenter(s => s.setPendingTerminalLaunch);
   const { theme } = useTheme();
 
   // Keep refs so the WebSocket callback always sees latest state
   const themeRef = useRef(theme);
   themeRef.current = theme;
-  const workspacesRef = useRef(workspaces);
-  workspacesRef.current = workspaces;
-  const switchWorkspaceRef = useRef(switchWorkspace);
-  switchWorkspaceRef.current = switchWorkspace;
-  const setActivePanelRef = useRef(setActivePanel);
-  setActivePanelRef.current = setActivePanel;
-  const setPendingProjectNavigationRef = useRef(setPendingProjectNavigation);
-  setPendingProjectNavigationRef.current = setPendingProjectNavigation;
-  const setPendingPersonNavigationRef = useRef(setPendingPersonNavigation);
-  setPendingPersonNavigationRef.current = setPendingPersonNavigation;
-  const setPendingSettingsSectionRef = useRef(setPendingSettingsSection);
-  setPendingSettingsSectionRef.current = setPendingSettingsSection;
   const setPendingTerminalLaunchRef = useRef(setPendingTerminalLaunch);
   setPendingTerminalLaunchRef.current = setPendingTerminalLaunch;
 
-  // Shared navigation logic — used by both the daemon WS bus and the
-  // cross-window Tauri event (the chat window's "Open Brain" button).
-  const navigate = (payload: NavigatePayload) => {
-    const { tool_type, panel_type, section, state, reason } = payload ?? {};
-    if (!tool_type) return;
-
-    if (tool_type !== 'build') {
-      useCommandCenter.getState().dismissInAppBrowser();
-    }
-
-    if (panel_type === 'overlay') {
-      // Console-consolidation compatibility (2026-08): the old standalone
-      // overlays are Settings sections now. A current daemon's catalog already
-      // sends tool_type:'settings' + the section, but an older daemon (or a
-      // stale replay) may still say 'sessions'/'inbox'/'trace'/'governance' —
-      // map those to their Settings home instead of setting a dead panel.
-      const legacySection = LEGACY_OVERLAY_SECTIONS[tool_type];
-      if (legacySection) {
-        // All four of these are History's segments now, so `panelForSection`
-        // sends them to the destination rather than through Settings — but
-        // the SECTION still rides along, because History reads it to pick the
-        // segment and "governance" landing on Sessions instead of Spend is
-        // the same dropped-deep-link bug in nicer clothes.
-        const target = section ?? legacySection;
-        setPendingSettingsSectionRef.current(target);
-        setActivePanelRef.current(panelForSection(target));
-      } else {
-        // Deep-link into a sub-section (e.g. Settings → Devices). The target
-        // overlay reads pendingSettingsSection on mount. Without this the
-        // daemon-forwarded `section` was dropped and every deep-link fell to
-        // the default.
-        if (section) setPendingSettingsSectionRef.current(section);
-        // A "Settings -> <pane>" deep link whose pane is one of History's
-        // records opens History. The daemon's catalog still says 'settings'
-        // for all of them and is not versioned, so the redirect has to happen
-        // on this side.
-        setActivePanelRef.current(
-          tool_type === 'settings' && section
-            ? panelForSection(section)
-            : (tool_type as ActivePanel),
-        );
-      }
-    } else if (VALID_TOOL_TYPES.has(tool_type)) {
-      // Find workspace containing this tool type
-      const ws = workspacesRef.current.find(w => hasToolType(w.layoutJson, tool_type));
-      if (ws) {
-        // Close any overlay first
-        setActivePanelRef.current('chat');
-        switchWorkspaceRef.current(ws.id);
-
-        // If navigating to projects with a specific project_id, queue drill-in
-        if (tool_type === 'projects' && state?.project_id) {
-          setPendingProjectNavigationRef.current(state.project_id);
-        }
-        if (tool_type === 'people' && (state?.entity_uuid || state?.person)) {
-          setPendingPersonNavigationRef.current({
-            entity_uuid: state.entity_uuid,
-            person: state.person,
-          });
-        }
-      }
-    }
-
-    // Show brief navigation cue
-    if (reason) {
-      showNavigationCue(reason);
-    }
-  };
+  const navigate = dispatchNavigate;
   const navigateRef = useRef(navigate);
   navigateRef.current = navigate;
 

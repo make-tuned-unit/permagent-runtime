@@ -1,3 +1,4 @@
+import { useAppNavigationRequests, consumeNavigationRequest } from '../../lib/appNavigationRequests';
 import { FiEdit2, FiX, FiPlus, FiRotateCcw, FiCornerRightDown } from 'react-icons/fi';
 
 import { concentric, duration, ease, font, radius, space, textSize } from '../../styles/tokens';
@@ -32,6 +33,10 @@ import { useDashboardLayoutPreviewEvent, clearDashboardLayoutPreview } from './d
 
 import { Tooltip } from '../common/Tooltip';
 import { pressable } from '../common/pressable';
+import {
+  CardPresentationProvider, ExpandCardButton, FocusBar, supportsFocusMorph, useHomeFocus,
+  type CardPresentation,
+} from './homeFocus';
 type SaveState = 'idle' | 'saving' | 'saved' | 'error';
 
 function persistAndNotify(
@@ -48,6 +53,13 @@ function persistAndNotify(
 
 const ROW_HEIGHT = 60;
 const GAP = space.xxl;
+/** Height of a compact tile while another card is focused: three of the
+ *  old grid rows — room for a card's heading and its first few rows, which
+ *  its own scroll body continues below. */
+const COMPACT_TILE_PX = 3 * ROW_HEIGHT + 2 * GAP;
+/** Compact tiles are this many columns wide where the grid allows it (four
+ *  to a row), wider where `minSpanForWidth` says that would be too narrow. */
+const COMPACT_TILE_SPAN = 3;
 
 export function Dashboard() {
   const { gradient, colors, reduceMotion } = useTheme();
@@ -62,7 +74,7 @@ export function Dashboard() {
   // the goal subscription above — the card must not fetch per render.
   const dueTodos = useDueTodos();
   const todosProps = useMemo(() => ({ todos: dueTodos }), [dueTodos]);
-  const { layout, persistLayout, revertLayout } = useLayout();
+  const { layout, layoutLoaded, persistLayout, revertLayout } = useLayout();
   // Rendered registry = first-party code cards + daemon-served manifest cards.
   const { registry, status: registryStatus } = useCardRegistry();
   const [isEditMode, setIsEditMode] = useState(false);
@@ -105,7 +117,52 @@ export function Dashboard() {
   const cellObservers = useRef<Map<string, ResizeObserver>>(new Map());
   const cellRefFns = useRef<Map<string, (el: HTMLDivElement | null) => void>>(new Map());
 
+  // Focus mode (homeFocus.tsx): one card expanded, the rest compact. Display
+  // only — never persisted. Customize turns it off.
+  const rootRef = useRef<HTMLDivElement>(null);
+  const getCell = useCallback((id: string) => cardRefs.current.get(id), []);
+  const visibleIds = layout.cards.filter(c => c.visible).map(c => c.id);
+  const { focusedId, expand, collapse } = useHomeFocus({
+    ids: visibleIds, disabled: isEditMode, rootRef, getCell,
+  });
+  const focusMode = focusedId !== null && !isEditMode;
+  const requestedFocus = useAppNavigationRequests(s => s.homeFocus);
+  const [navigationNotice, setNavigationNotice] = useState<string | null>(null);
+  useEffect(() => {
+    // Wait for the real layout and grid; never focus an initial DEFAULT_LAYOUT card.
+    if (!requestedFocus || !layoutLoaded || loading || !data) return;
+    // Bundled code cards and collapse do not depend on the manifest request.
+    // Wait only when the requested renderer could still arrive from it.
+    if (!isEditMode && requestedFocus.section !== 'overview' && !registry[requestedFocus.section] && registryStatus === 'loading') return;
+    const section = requestedFocus.section;
+    if (isEditMode) {
+      setNavigationNotice('Finish Customize before focusing a Home card. Your layout was not changed.');
+    } else if (section === 'overview') {
+      setNavigationNotice(null);
+      collapse();
+    } else {
+      const card = layout.cards.find(c => c.visible && c.type === section);
+      if (!card || !registry[section]) {
+        setNavigationNotice(`The ${registry[section]?.name ?? section} card is not available in this Home layout. No card was added.`);
+      } else {
+        setNavigationNotice(null);
+        expand(card.id);
+      }
+    }
+    consumeNavigationRequest('homeFocus', requestedFocus);
+  }, [requestedFocus, layoutLoaded, loading, data, registryStatus, isEditMode, layout.cards, registry, expand, collapse]);
+
+  // While focused, cells are drawn at focus/compact sizes that say nothing
+  // about their overview height — measuring them would feed the masonry
+  // spans (whose settle state only ever grows once frozen) heights they will
+  // not have again. Measurement pauses, and the settle state starts fresh
+  // when the overview comes back.
+  const focusActive = useRef(false);
+  if (focusActive.current && !focusMode) spanSettle.current.clear();
+  focusActive.current = focusMode;
+
   const measureCard = useCallback((id: string, heightPx: number) => {
+    if (focusActive.current) return;
     pendingHeights.current.set(id, heightPx);
     if (flushHandle.current != null) return;
     flushHandle.current = requestAnimationFrame(() => {
@@ -359,16 +416,20 @@ export function Dashboard() {
   // 'decisions' (Needs You) is the same kind of card: a short stack of lines with
   // no scroller. With six lines its natural height passes the h:4 cap and the
   // clip cut off "Review →" (QA Q11), so it is drawn at its content's height.
-  const growsToFit = (type: string) => registry[type]?.manifest?.layout === 'compact' || type === 'decisions';
+  // 'calendar' draws its views at their own fixed heights (a month grid is
+  // six rows tall) and scrolls the time grid itself, so an h cap would slice it.
+  const growsToFit = (type: string) => registry[type]?.manifest?.layout === 'compact' || type === 'decisions' || type === 'calendar';
   visibleCards.forEach(c => configuredHeights.current.set(c.id, growsToFit(c.type) ? Math.max(c.size.h, 12) : c.size.h));
 
   return (
     <div
+      ref={rootRef}
       style={{
         width: '100%', height: '100%', display: 'flex', flexDirection: 'column',
         background: gradient.workspace,
       }}
     >
+      {navigationNotice && <div role="status" style={{ padding: `${space.sm}px ${space.xl}px`, fontFamily: font.body, fontSize: textSize.small, color: colors.textMuted }}>{navigationNotice}</div>}
       {/* Home had no title at all — the one view of the four that never named
           itself, and its controls were sticky INSIDE the scroller. Both now
           match every other view. */}
@@ -503,7 +564,10 @@ export function Dashboard() {
           // SPAN (no explicit start), so the browser's own dense packing
           // decides where it lands, backfilling a shorter neighbour's leftover
           // tracks instead of leaving them reserved underneath it.
-          gridAutoRows: isEditMode ? ROW_HEIGHT : MASONRY_ROW_UNIT,
+          // Focus mode leaves masonry: the focused card takes the full width
+          // at its full height and the compact tiles a fixed one, so plain
+          // content-sized rows are exact and need no measured spans.
+          gridAutoRows: isEditMode ? ROW_HEIGHT : focusMode ? 'auto' : MASONRY_ROW_UNIT,
           gridAutoFlow: isEditMode ? 'row' : 'row dense',
           gap: GAP,
           touchAction: isEditMode ? 'none' : 'auto',
@@ -531,13 +595,31 @@ export function Dashboard() {
           // — the same ceiling `spanForContent` would cap it at, so a card
           // never flashes at a single row before its first real measurement.
           const contentSpan = spans[card.id] ?? spanForContent(0, h, MASONRY_ROW_UNIT, GAP, ROW_HEIGHT);
+          const presentation: CardPresentation = !focusMode ? 'overview' : focusedId === card.id ? 'focused' : 'compact';
+          const name = entry?.name ?? card.type;
+          const cellId = `home-card-${index}`;
+          // Focus-mode geometry, drawn without explicit starts so the dense
+          // flow packs the compact tiles under the focused card (CSS `order`
+          // lifts it to the top without reordering the DOM or the layout).
+          const focusGeometry: CSSProperties | null = presentation === 'focused'
+            ? { gridColumn: '1 / -1', gridRow: 'auto', order: -1, maxHeight: undefined, display: 'flex', flexDirection: 'column' }
+            : presentation === 'compact'
+              ? { gridColumn: `span ${Math.max(COMPACT_TILE_SPAN, minSpanForWidth(gridWidth, GAP, 220))}`, gridRow: 'auto', height: COMPACT_TILE_PX, maxHeight: undefined }
+              : null;
           return (
             <div
               key={card.id}
+              id={cellId}
               data-testid={`dashboard-cell-${card.id}`}
+              data-presentation={presentation}
+              data-home-expandable={!isEditMode && presentation !== 'focused' && Component ? '' : undefined}
+              className={`pa-home-cell${presentation === 'focused' && !supportsFocusMorph() ? ' pa-home-focus-enter' : ''}`}
+              role={presentation === 'focused' ? 'region' : undefined}
+              aria-label={presentation === 'focused' ? `${name}, expanded` : undefined}
               ref={getCellRef(card.id)}
               onPointerDown={isEditMode && !resizeId ? (e) => handlePointerDown(card.id, e) : undefined}
               style={{
+                '--pa-home-vt-name': `pa-home-cell-${index}`,
                 gridColumn: `${x + 1} / span ${w}`,
                 // Customize: explicit start AND span, on the fixed ROW_HEIGHT
                 // grid above — the resize grip drags `h` directly, so this
@@ -596,11 +678,29 @@ export function Dashboard() {
                 minHeight: 0,
                 overflow: 'hidden',
                 userSelect: isEditMode ? 'none' : 'auto',
-              }}
+                ...focusGeometry,
+              } as CSSProperties}
             >
-              {Component
-                ? <Component {...props} />
-                : <MissingCard type={card.type} status={registryStatus} />}
+              {presentation === 'focused' && (
+                <FocusBar name={name} cellId={cellId} onCollapse={collapse} />
+              )}
+              <CardPresentationProvider value={{ presentation, expand: () => expand(card.id), collapse }}>
+                {/* Keep the card mounted as its presentation changes. In
+                    overview/compact, contents preserves its original box and
+                    height:100% sizing against the cell. ResizeObserver
+                    measures the real outer cell, never this boxless wrapper.
+                    Focus needs a flex body below the focus bar. */}
+                <div data-home-card-body="" style={presentation === 'focused'
+                  ? { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }
+                  : { display: 'contents' }}>
+                  {Component
+                    ? <Component {...props} />
+                    : <MissingCard type={card.type} status={registryStatus} />}
+                </div>
+              </CardPresentationProvider>
+              {!isEditMode && presentation !== 'focused' && Component && (
+                <ExpandCardButton name={name} cellId={cellId} onExpand={() => expand(card.id)} />
+              )}
               {isEditMode && (
                 <RemoveButton
                   disabled={!canRemove}

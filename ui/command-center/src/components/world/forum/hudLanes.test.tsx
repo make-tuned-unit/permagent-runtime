@@ -76,6 +76,27 @@ describe('the forum HUD lays each corner out as one column', () => {
     expect(order).toEqual(['forum-auth-notice', 'forum-brand', 'forum-rail', 'forum-location', 'forum-live', 'forum-controls']);
   });
 
+  it('keeps compact collaborators below Places in the same scroll-constrained lane', () => {
+    act(() => root.unmount());
+    window.history.replaceState({}, '', '/');
+    localStorage.setItem('permagent.forum.desk', 'closed');
+    act(() => { root = createRoot(host); root.render(<ForumView />); });
+    const dock = host.querySelector('.habitat-agent-dock');
+    expect(dock).not.toBeNull();
+    const lane = laneOf('.forum-rail')!;
+    expect(dock!.parentElement).toBe(lane);
+    const children = [...lane.children];
+    expect(children.indexOf(dock!)).toBeGreaterThan(children.indexOf(host.querySelector('.forum-rail')!));
+    expect(ruleBodies('.forum-lane-left > .habitat-agent-dock').join(';')).toMatch(/max-height:\s*50%/);
+    expect(ruleBodies('.habitat-agent-dock').join(';')).toMatch(/overflow-y:\s*auto/);
+    expect(ruleBodies('.forum-rail-list').join(';')).toMatch(/overflow-y:\s*auto/);
+    for (const { selector, body } of rules()) {
+      if (subjectClass(selector) === 'habitat-agent-dock') {
+        expect(body, selector).not.toMatch(/position:\s*(absolute|fixed)|(?:^|;)\s*(top|left|right|bottom)\s*:/);
+      }
+    }
+  });
+
   it('keeps the skiff and Walk in one right-hand lane', () => {
     const lane = laneOf('.forum-fly');
     expect(lane?.classList.contains('forum-lane-right')).toBe(true);

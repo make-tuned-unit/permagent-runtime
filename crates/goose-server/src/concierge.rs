@@ -63,12 +63,11 @@ struct Budget {
 
 impl Budget {
     fn path() -> Option<PathBuf> {
-        std::env::var_os("HOME").map(|h| {
-            PathBuf::from(h)
-                .join(".permagent")
-                .join("concierge-state.json")
-        })
+        Some(permagent::config::paths::Paths::in_state_dir(
+            "concierge-state.json",
+        ))
     }
+
     fn load() -> Self {
         Self::path()
             .and_then(|p| std::fs::read_to_string(p).ok())
@@ -397,6 +396,15 @@ fn parse_message_metadata(id: &str, thread_id: &str, json: &str) -> Option<Inbox
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn budget_state_uses_isolated_data_root() {
+        let root = crate::test_support::test_root();
+        let _guard = env_lock::lock_env([("PERMAGENT_PATH_ROOT", Some(root.to_str().unwrap()))]);
+        let path = super::Budget::path().expect("budget path");
+        assert_eq!(path, root.join("concierge-state.json"));
+        assert!(!path.starts_with(dirs::home_dir().unwrap().join(".permagent")));
+    }
+
     use super::*;
     use permagent::decision_inbox::escalate::{DecisionKind, InMemoryDecisionSink};
 

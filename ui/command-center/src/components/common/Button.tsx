@@ -191,10 +191,15 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
   const floorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const propPendingSince = useRef<number | null>(null);
 
-  useEffect(() => () => {
-    live.current = false;
-    if (timer.current) clearTimeout(timer.current);
-    if (floorTimer.current) clearTimeout(floorTimer.current);
+  useEffect(() => {
+    // StrictMode replays setup after cleanup without recreating this ref.
+    // Restore liveness so a completed action can release its pending state.
+    live.current = true;
+    return () => {
+      live.current = false;
+      if (timer.current) clearTimeout(timer.current);
+      if (floorTimer.current) clearTimeout(floorTimer.current);
+    };
   }, []);
 
   const propPending = Boolean(pending ?? false);

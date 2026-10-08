@@ -78,10 +78,32 @@ function GardenPlanting({texture}:{texture?:Texture}) {
       }
       details.tube(points,.007,stem);
     }
+    // Terrace-edge ground cover and extra hanging strands frame the vista
+    // without narrowing the main circulation lanes.
+    const moss=material('#4a5f3a');
+    for(const [x,z,scale] of [[-14.2,6,.9],[-14.4,0,.85],[-14.1,-8,.95],[14.2,4,.88],[14.3,-2,.92],[14.1,-10,.86],[-6,-26,.78],[6,-26,.82]] as [number,number,number][]){
+      for(let i=0;i<14;i++){
+        const a=i*2.4+random(),r=.22+random()*.28;
+        const px=x+Math.cos(a)*r, pz=z+Math.sin(a)*r*scale;
+        clump(px,habitatHeight(pz)+.38,pz,.55+random()*.25,i%2===0);
+        if(i%3===0)for(let j=0;j<4;j++)addLeaf(px,habitatHeight(pz)+.55+j*.08,pz,.16+random()*.08,a+j,1.35+random()*.35);
+      }
+      details.sphere([x,habitatHeight(z)+.12,z],[.55*scale,.08,.48*scale],moss);
+    }
+    for(let i=0;i<12;i++){
+      const side=i%2===0?-1:1,x=side*(14.35+random()*.15),z=-4-i*2.1,drop=.55+random()*.85;
+      const points:[number,number,number][]=[[x,3.55,z]];
+      for(let j=1;j<=8;j++){
+        const t=j/8,px=x+Math.sin(t*5+i)*.09,pz=z+Math.sin(t*2.5)*.06,y=3.55-drop*t;
+        points.push([px,y,pz]);
+        if(j>2)addLeaf(px,y,pz,.14+random()*.07,i+t,1.05+random()*.5);
+      }
+      details.tube(points,.006,stem);
+    }
     const mesh = new InstancedMesh(geometry,leaf,matrices.length);mesh.name='Layered living garden';mesh.castShadow=true;mesh.receiveShadow=true;
     matrices.forEach((o,i)=>{mesh.setMatrixAt(i,o.matrix);mesh.setColorAt(i,colors[i]);});mesh.computeBoundingSphere();
     const group = new Group();group.name='Five-form planted habitat';group.userData.readableForms=[...HABITAT_PLANT_FORMS];group.add(mesh,details.finish('Garden stems, vines and flowering accents'));group.traverse(o=>{if(o instanceof Mesh)o.castShadow=false;});
-    return {group,geometry,map,materials:[leaf,stem,petal,pollen]};
+    return {group,geometry,map,materials:[leaf,stem,petal,pollen,moss]};
   },[texture]);
   useEffect(()=>()=>{finishDetails(built.group);built.materials.forEach(m=>m.dispose());built.map?.dispose();},[built]);
   return <primitive object={built.group} dispose={null}/>;

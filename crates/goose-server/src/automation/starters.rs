@@ -127,16 +127,15 @@ fn sync_starter_assets(
 }
 
 fn disabled_starters_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    PathBuf::from(home)
-        .join(".permagent")
-        .join("automation")
-        .join("disabled_starters.json")
+    permagent::config::paths::Paths::in_state_dir("automation/disabled_starters.json")
 }
 
 fn load_disabled_starters() -> Vec<String> {
-    let path = disabled_starters_path();
-    std::fs::read_to_string(&path)
+    load_disabled_starters_at(&disabled_starters_path())
+}
+
+fn load_disabled_starters_at(path: &std::path::Path) -> Vec<String> {
+    std::fs::read_to_string(path)
         .ok()
         .and_then(|content| serde_json::from_str(&content).ok())
         .unwrap_or_default()
@@ -147,8 +146,11 @@ fn load_disabled_starters() -> Vec<String> {
 /// a swallowed error here meant a deleted starter automation silently
 /// resurrected on reboot (bug-sweep wave 1).
 pub fn record_starter_deletion(starter_id: &str) -> Result<(), String> {
-    let path = disabled_starters_path();
-    let mut disabled = load_disabled_starters();
+    record_starter_deletion_at(starter_id, &disabled_starters_path())
+}
+
+fn record_starter_deletion_at(starter_id: &str, path: &std::path::Path) -> Result<(), String> {
+    let mut disabled = load_disabled_starters_at(path);
     if disabled.contains(&starter_id.to_string()) {
         return Ok(());
     }
@@ -600,29 +602,23 @@ mod tests {
 
     #[test]
     fn record_starter_deletion_persists_and_dedupes() {
-        // `TEST_ROOT` sets HOME when it is first touched, and that happens
-        // OUTSIDE any env guard (test_support.rs) — a test initialising it
-        // while this guard is held would move HOME between the write below and
-        // the read that checks it, and the tombstone would read back empty.
-        // Forcing it here means it is already initialised for everyone.
-        let _ = crate::test_support::test_root();
-        let home = TempDir::new().unwrap();
-        let _guard = env_lock::lock_env([("HOME", Some(home.path().to_str().unwrap()))]);
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("automation/disabled_starters.json");
 
-        record_starter_deletion("storage-insights").unwrap();
+        record_starter_deletion_at("storage-insights", &path).unwrap();
         assert_eq!(
-            load_disabled_starters(),
+            load_disabled_starters_at(&path),
             vec!["storage-insights".to_string()]
         );
 
         // Duplicate is a no-op, second id appends; no temp artifact remains.
-        record_starter_deletion("storage-insights").unwrap();
-        record_starter_deletion("git-steward").unwrap();
+        record_starter_deletion_at("storage-insights", &path).unwrap();
+        record_starter_deletion_at("git-steward", &path).unwrap();
         assert_eq!(
-            load_disabled_starters(),
+            load_disabled_starters_at(&path),
             vec!["storage-insights".to_string(), "git-steward".to_string()]
         );
-        let dir = disabled_starters_path();
+        let dir = path.clone();
         let dir = dir.parent().unwrap();
         assert!(!dir.join(".disabled_starters.json.tmp").exists());
     }
@@ -631,28 +627,22 @@ mod tests {
     #[cfg(unix)]
     fn record_starter_deletion_surfaces_write_failure() {
         use std::os::unix::fs::PermissionsExt;
-        // `TEST_ROOT` sets HOME when it is first touched, and that happens
-        // OUTSIDE any env guard (test_support.rs) — a test initialising it
-        // while this guard is held would move HOME between the write below and
-        // the read that checks it, and the tombstone would read back empty.
-        // Forcing it here means it is already initialised for everyone.
-        let _ = crate::test_support::test_root();
-        let home = TempDir::new().unwrap();
-        let _guard = env_lock::lock_env([("HOME", Some(home.path().to_str().unwrap()))]);
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("automation/disabled_starters.json");
 
         // Pre-create the automation dir read-only so the tombstone write fails.
-        let dir = disabled_starters_path();
+        let dir = path.clone();
         let dir = dir.parent().unwrap().to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
 
-        let err = record_starter_deletion("storage-insights")
+        let err = record_starter_deletion_at("storage-insights", &path)
             .expect_err("read-only tombstone dir must surface as an error, not a silent drop");
         assert!(err.contains("disabled_starters"), "{}", err);
 
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
         // Nothing was recorded — the caller keeps the schedule and can retry.
-        assert!(load_disabled_starters().is_empty());
+        assert!(load_disabled_starters_at(&path).is_empty());
     }
 
     #[test]
@@ -1189,17 +1179,11 @@ mod tests {
 
     #[tokio::test]
     async fn model_review_preserves_pause_and_customization() {
-        // Reconciliation reads the tombstone list under $HOME and writes starter
-        // files under the path root, and env vars are process-wide: without this
-        // lock the test raced `record_starter_deletion_persists_and_dedupes`,
-        // which points HOME at its own tempdir while it writes and reads back.
+        // Tombstones and starter files both follow the isolated path root.
         let _ = crate::test_support::test_root();
         let tmp = TempDir::new().unwrap();
-        let home = TempDir::new().unwrap();
-        let _guard = env_lock::lock_env([
-            ("HOME", Some(home.path().to_str().unwrap())),
-            ("PERMAGENT_PATH_ROOT", Some(tmp.path().to_str().unwrap())),
-        ]);
+        let _guard =
+            env_lock::lock_env([("PERMAGENT_PATH_ROOT", Some(tmp.path().to_str().unwrap()))]);
         let path = tmp.path().join("model_review.yaml");
         let edited = format!("{}# custom note\n", MODEL_REVIEW_YAML);
         std::fs::write(&path, &edited).unwrap();

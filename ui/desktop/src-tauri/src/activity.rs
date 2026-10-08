@@ -7,11 +7,7 @@
 use serde::{Deserialize, Serialize};
 
 fn read_daemon_token() -> Option<String> {
-    let home = std::env::var("HOME").ok()?;
-    let path = std::path::PathBuf::from(home).join(".permagent/secrets/daemon_token.json");
-    let content = std::fs::read_to_string(path).ok()?;
-    let parsed: serde_json::Value = serde_json::from_str(&content).ok()?;
-    parsed.get("token")?.as_str().map(|s| s.to_string())
+    crate::daemon::read_daemon_token().ok()
 }
 
 #[derive(Serialize)]
@@ -60,7 +56,7 @@ pub async fn emit_activity(
 
     let client = reqwest::Client::new();
     let resp = client
-        .post("http://127.0.0.1:3001/activity/emit")
+        .post(crate::runtime_target::target().url("/activity/emit"))
         .bearer_auth(&token)
         .json(&event)
         .send()

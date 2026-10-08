@@ -106,16 +106,11 @@ struct BrowserDownloadFinishedPayload {
 }
 
 fn inbox_dir() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_default();
-    PathBuf::from(home).join(".permagent/inbox")
+    crate::runtime_target::target().root.join("inbox")
 }
 
 fn read_daemon_token() -> Option<String> {
-    let home = std::env::var("HOME").ok()?;
-    let path = PathBuf::from(home).join(".permagent/secrets/daemon_token.json");
-    let content = std::fs::read_to_string(path).ok()?;
-    let parsed: serde_json::Value = serde_json::from_str(&content).ok()?;
-    parsed.get("token")?.as_str().map(|s| s.to_string())
+    crate::daemon::read_daemon_token().ok()
 }
 
 /// Strip any path components and unsafe characters from a suggested filename.
@@ -233,7 +228,7 @@ async fn record_inbox_file(pending: PendingInboxDownload) -> Result<(), String> 
 
     let client = reqwest::Client::new();
     let resp = client
-        .post("http://127.0.0.1:3001/api/inbox")
+        .post(crate::runtime_target::target().url("/api/inbox"))
         .bearer_auth(&token)
         .json(&body)
         .send()
@@ -1111,7 +1106,10 @@ pub async fn navigate_browser(
 fn guard_browser_url(raw: &str) -> Result<url::Url, String> {
     let parsed: url::Url = raw.parse().map_err(|e| format!("Invalid URL: {e}"))?;
     if !matches!(parsed.scheme(), "http" | "https") {
-        return Err(format!("Only http(s) browser URLs are allowed, got {}", parsed.scheme()));
+        return Err(format!(
+            "Only http(s) browser URLs are allowed, got {}",
+            parsed.scheme()
+        ));
     }
     Ok(parsed)
 }
@@ -1154,7 +1152,11 @@ pub async fn close_browser(app: AppHandle, webview_id: String) -> Result<(), Str
     let Some(webview) = app.get_webview(&webview_id) else {
         // The native child is already gone; forgetting the stale registry
         // entry is the only safe cleanup in this case.
-        app.state::<BrowserSessions>().0.lock().unwrap().remove(&webview_id);
+        app.state::<BrowserSessions>()
+            .0
+            .lock()
+            .unwrap()
+            .remove(&webview_id);
         eprintln!("[permagent-app] browser close: {webview_id} already absent");
         return Ok(());
     };
@@ -1169,7 +1171,11 @@ pub async fn close_browser(app: AppHandle, webview_id: String) -> Result<(), Str
     );
     match webview.close() {
         Ok(()) => {
-            app.state::<BrowserSessions>().0.lock().unwrap().remove(&webview_id);
+            app.state::<BrowserSessions>()
+                .0
+                .lock()
+                .unwrap()
+                .remove(&webview_id);
             eprintln!("[permagent-app] browser close: {webview_id} media stop requested and webview closed");
             Ok(())
         }
@@ -2007,8 +2013,15 @@ mod tests {
     #[test]
     fn browser_navigation_accepts_only_http_schemes() {
         assert!(guard_browser_url("https://example.com/thread").is_ok());
-        for unsafe_url in ["javascript:alert(1)", "file:///etc/passwd", "data:text/html,hi"] {
-            assert!(guard_browser_url(unsafe_url).is_err(), "accepted {unsafe_url}");
+        for unsafe_url in [
+            "javascript:alert(1)",
+            "file:///etc/passwd",
+            "data:text/html,hi",
+        ] {
+            assert!(
+                guard_browser_url(unsafe_url).is_err(),
+                "accepted {unsafe_url}"
+            );
         }
     }
 
@@ -2029,7 +2042,10 @@ mod tests {
             .find(".remove(&webview_id)")
             .map(|p| p + close_pos)
             .unwrap();
-        assert!(remove_pos > close_pos, "registry was forgotten before close");
+        assert!(
+            remove_pos > close_pos,
+            "registry was forgotten before close"
+        );
     }
 
     #[test]

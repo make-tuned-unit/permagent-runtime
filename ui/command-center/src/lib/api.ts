@@ -824,6 +824,28 @@ export interface ProviderCheckResult {
   note: string | null;
 }
 
+/** Durable Orchestrator triage of one recorded meeting (`meeting_triage`). */
+export type MeetingTriageStatus = 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
+
+export interface MeetingTriageReceipt {
+  id: string;
+  projectId: string;
+  recordingId: string;
+  noteId: string;
+  status: MeetingTriageStatus;
+  attemptCount: number;
+  lastError?: string;
+  /** local_only / trusted_pool / cloud_session / skipped */
+  privacyRoute?: string;
+  /** The dedicated hidden session the triage ran in, once it has one. */
+  sessionId?: string;
+  /** Kanban cards this triage materialized. */
+  cardIds: string[];
+  truncated: boolean;
+  /** True when this save created the row (false on an idempotent replay). */
+  created: boolean;
+}
+
 export async function apiFetch<T>(endpoint: string, options?: RequestInit): Promise<T> {
   return apiFetchOnce<T>(endpoint, options, true);
 }
@@ -2445,12 +2467,31 @@ export const api = {
     apiFetch<ProjectNote[]>(`/api/projects/${encodeURIComponent(projectId)}/notes`),
 
   /** Create a note on a project. The backend indexes its text into the Brain
-   *  (best-effort) and returns the saved note. */
-  createProjectNote: (projectId: string, note: { title?: string; body: string; kind?: 'meeting' }) =>
-    apiFetch<ProjectNote>(`/api/projects/${encodeURIComponent(projectId)}/notes`, {
-      method: 'POST',
-      body: JSON.stringify(note),
-    }),
+   *  (best-effort) and returns the saved note. A meeting note carries the
+   *  recording's stable `recordingId`: the save is idempotent on it (a retry
+   *  after a lost response returns the same note), and the response adds the
+   *  durable triage receipt. Older daemons omit `triage`. */
+  createProjectNote: (
+    projectId: string,
+    note: { title?: string; body: string; kind?: 'meeting'; recordingId?: string },
+  ) =>
+    apiFetch<ProjectNote & { triage?: MeetingTriageReceipt }>(
+      `/api/projects/${encodeURIComponent(projectId)}/notes`,
+      { method: 'POST', body: JSON.stringify(note) },
+    ),
+
+  /** The Orchestrator triage receipt for one recorded meeting (404 if none). */
+  getMeetingTriage: (projectId: string, recordingId: string) =>
+    apiFetch<MeetingTriageReceipt>(
+      `/api/projects/${encodeURIComponent(projectId)}/recordings/${encodeURIComponent(recordingId)}/triage`,
+    ),
+
+  /** Re-queue a failed or skipped meeting triage. */
+  retryMeetingTriage: (projectId: string, recordingId: string) =>
+    apiFetch<MeetingTriageReceipt>(
+      `/api/projects/${encodeURIComponent(projectId)}/recordings/${encodeURIComponent(recordingId)}/triage/retry`,
+      { method: 'POST' },
+    ),
 
   /** Delete a project note (and best-effort disassociate its Brain memory). */
   deleteProjectNote: (projectId: string, noteId: string) =>

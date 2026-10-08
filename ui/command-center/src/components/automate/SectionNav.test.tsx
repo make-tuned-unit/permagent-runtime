@@ -183,3 +183,61 @@ describe('scroll-spy wiring (QA 2026-09-25: nav stuck on "Automations" at scroll
       .toContain('Learned');
   });
 });
+
+it.each([false, true])('keeps a clamped Learned jump current and resumes manual tracking (reduced motion: %s)', reducedMotion => {
+  localStorage.setItem('permagent-reduce-motion', String(reducedMotion));
+  let callback: IntersectionObserverCallback;
+  vi.stubGlobal('IntersectionObserver', class {
+    constructor(cb: IntersectionObserverCallback) { callback = cb; }
+    observe() {}
+    disconnect() {}
+  });
+  try {
+    const items = [
+      { id: 'automations', label: 'Automations' },
+      { id: 'learned', label: 'Learned' },
+      { id: 'installed', label: 'Installed' },
+    ];
+    act(() => root.render(<Harness items={items} />));
+    const scroller = container.querySelector('[data-testid="scroll-root"]') as HTMLElement;
+    Object.defineProperties(scroller, {
+      clientHeight: { value: 600 }, scrollHeight: { value: 1600 },
+    });
+    scroller.getBoundingClientRect = () => ({ top: 0, bottom: 600 }) as DOMRect;
+    for (const [id, top, bottom] of [
+      ['automations', 100, 1270], ['learned', 1300, 1450], ['installed', 1480, 1580],
+    ] as const) {
+      const section = container.querySelector(`[data-section="${id}"]`) as HTMLElement;
+      section.getBoundingClientRect = () => ({ top: top - scroller.scrollTop, bottom: bottom - scroller.scrollTop }) as DOMRect;
+    }
+    const learned = container.querySelector('[data-section="learned"]') as HTMLElement;
+    learned.scrollIntoView = vi.fn();
+    const reportAutomationsInBand = () => callback([
+      { target: container.querySelector('[data-section="automations"]'), isIntersecting: true } as IntersectionObserverEntry,
+    ], {} as IntersectionObserver);
+    const current = () => container.querySelector('[aria-current="true"]')?.textContent;
+    act(reportAutomationsInBand);
+    act(() => [...container.querySelectorAll('button')].find(b => b.textContent === 'Learned')!.click());
+    expect(learned.scrollIntoView).toHaveBeenCalledWith({ block: 'start', behavior: reducedMotion ? 'auto' : 'smooth' });
+    // The preceding section remains in the band during smooth movement.
+    act(() => { scroller.scrollTop = 500; scroller.dispatchEvent(new Event('scroll')); reportAutomationsInBand(); });
+    expect(current()).toBe('Learned');
+    // Browser clamps 1244 to maxScroll=1000; Learned stays below the band.
+    act(() => { scroller.scrollTop = 1000; scroller.dispatchEvent(new Event('scroll')); reportAutomationsInBand(); });
+    expect(current()).toBe('Learned');
+    // Manual scrolling takes over, including at bottom without any IO change.
+    act(() => { scroller.dispatchEvent(new WheelEvent('wheel')); scroller.scrollTop = 800; scroller.dispatchEvent(new Event('scroll')); });
+    expect(current()).toBe('Automations');
+    act(() => { scroller.scrollTop = 1000; scroller.dispatchEvent(new Event('scroll')); });
+    expect(current()).toBe('Installed');
+    // Keyboard input also interrupts a jump before its destination is reached.
+    scroller.scrollTop = 0;
+    act(() => [...container.querySelectorAll('button')].find(b => b.textContent === 'Learned')!.click());
+    expect(current()).toBe('Learned');
+    act(() => scroller.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageUp', bubbles: true })));
+    expect(current()).toBe('Automations');
+  } finally {
+    localStorage.removeItem('permagent-reduce-motion');
+    vi.unstubAllGlobals();
+  }
+});

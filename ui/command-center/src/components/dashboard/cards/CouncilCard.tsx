@@ -51,7 +51,11 @@ export function CouncilCard() {
   const [viewing, setViewing] = useState<CouncilLatest | null>(null);
   const pastId = useId();
 
-  useEffect(() => () => { live.current = false; }, []);
+  useEffect(() => {
+    // StrictMode replays setup after cleanup on the same component instance.
+    live.current = true;
+    return () => { live.current = false; };
+  }, []);
 
   // A daemon that can't be reached is not a Council with nothing to say, so
   // the failure names itself and hands back a way to try again rather than
