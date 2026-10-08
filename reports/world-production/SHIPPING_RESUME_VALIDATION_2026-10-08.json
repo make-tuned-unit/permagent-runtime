@@ -1,0 +1,52 @@
+[
+  {
+    "name": "typecheck",
+    "command": [
+      "/Users/j/.local/share/mise/installs/node/24.19.0/bin/node",
+      "node_modules/typescript/bin/tsc",
+      "--noEmit"
+    ],
+    "exitCode": 2,
+    "minimumFreeGiB": 21.672252655029297,
+    "diskGuardStopped": false,
+    "elapsedSeconds": 12.025279916,
+    "log": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/shipping-resume-typecheck-20261008.log",
+    "sourceCommit": "dee84a3145a5dca8c638fb00995c4fca8c316892",
+    "atUtc": "2026-10-08T15:36:18.309953+00:00"
+  },
+  {
+    "name": "typecheck-fixed",
+    "command": [
+      "/Users/j/.local/share/mise/installs/node/24.19.0/bin/node",
+      "node_modules/typescript/bin/tsc",
+      "--noEmit"
+    ],
+    "exitCode": 0,
+    "minimumFreeGiB": 21.41619873046875,
+    "diskGuardStopped": false,
+    "elapsedSeconds": 14.034215042000001,
+    "log": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/shipping-resume-typecheck-fixed-20261008.log",
+    "source": "dee84a31 plus BrainList entity formatter fix",
+    "atUtc": "2026-10-08T15:37:35.931113+00:00"
+  },
+  {
+    "name": "frontend-fixed",
+    "command": [
+      "/Users/j/.local/share/mise/installs/node/24.19.0/bin/node",
+      "node_modules/vitest/vitest.mjs",
+      "run",
+      "--pool=forks",
+      "--poolOptions.forks.minForks=1",
+      "--poolOptions.forks.maxForks=1",
+      "--reporter=json",
+      "--outputFile=/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/shipping-resume-frontend-fixed-20261008.json"
+    ],
+    "exitCode": -15,
+    "minimumFreeGiB": 19.86874008178711,
+    "diskGuardStopped": true,
+    "elapsedSeconds": 32.079312792,
+    "log": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/shipping-resume-frontend-fixed-20261008.log",
+    "source": "dee84a31 plus BrainList entity formatter fix",
+    "atUtc": "2026-10-08T15:38:08.011994+00:00"
+  }
+]

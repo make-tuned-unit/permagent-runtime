@@ -636,7 +636,7 @@ function EntityRow({ entity, stats, selected, onClick }: {
   const typeColor = typeAccent(entity.type, colors);
   const meta = [
     stats && stats.memories > 0 ? `${stats.memories} ${stats.memories === 1 ? 'memory' : 'memories'}` : null,
-    stats?.updatedAt ? `updated ${formatDate(stats.updatedAt)}` : null,
+    stats?.updatedAt ? `updated ${formatMemoryDate(stats.updatedAt)}` : null,
   ].filter(Boolean).join(' · ');
 
   return (
