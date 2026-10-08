@@ -1,0 +1,24 @@
+{
+  "command": [
+    "/Users/j/Documents/dev/permagent-runtime/bin/cargo",
+    "test",
+    "--manifest-path",
+    "ui/desktop/src-tauri/Cargo.toml",
+    "--locked",
+    "-j",
+    "1",
+    "runtime_target::tests",
+    "--",
+    "--nocapture"
+  ],
+  "log": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/reports/world-production/record-native-tests-20261007-223106.log",
+  "exit_code": 0,
+  "reason": null,
+  "elapsed_s": 2.01,
+  "minimum_free_gib": 31.728,
+  "startup_minimum_gib": 25,
+  "continuous_floor_gib": 20,
+  "timeout_s": 1800,
+  "staged": false,
+  "launched": false
+}

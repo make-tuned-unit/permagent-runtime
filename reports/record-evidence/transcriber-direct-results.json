@@ -1,0 +1,26 @@
+[
+  {
+    "cue": "mic_open",
+    "expected": "Synthetic microphone test, amber seven. For Record QA, I will draft the launch checklist by Friday. The launch is not approved. Do not send any email.",
+    "observed": "Synthetic Microphone Test, Amber 7, for Record QA, I will draft the launch checklist by Friday.",
+    "elapsedSeconds": 1.719,
+    "sha256": "6c0020c1d3c5f0b6fa417e7be4d1fa764545369e451e82b762525efc0352f5e6",
+    "method": "local daemon multipart file; NOT native capture"
+  },
+  {
+    "cue": "far_open",
+    "expected": "Synthetic remote participant, cobalt nine. I will review the accessibility checklist. The old idea to buy equipment is cancelled. Do not create a purchase task.",
+    "observed": "synthetic remote participant, cobalt 9, I will review the accessibility checklist.",
+    "elapsedSeconds": 0.246,
+    "sha256": "b4d3a23a835bdb2d5e1249f701ffc26c1fc66c4f9cd6a0f593a5796e6b10a92d",
+    "method": "local daemon multipart file; NOT native capture"
+  },
+  {
+    "cue": "far_tail",
+    "expected": "Cobalt nine final commitment: confirm the venue step free route.",
+    "observed": "the Bould-9 Final Commitment, confirm the venue-step-free route.",
+    "elapsedSeconds": 0.208,
+    "sha256": "5b031422135c64d6ce7d814931becb0b67a30bf6dfc526f014158eed30f8e882",
+    "method": "local daemon multipart file; NOT native capture"
+  }
+]

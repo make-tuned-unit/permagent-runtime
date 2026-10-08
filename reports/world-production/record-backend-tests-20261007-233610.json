@@ -1,0 +1,19 @@
+{
+  "command": [
+    "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/scripts/test-daemon.sh",
+    "--lib",
+    "routes::projects"
+  ],
+  "log": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/reports/world-production/record-backend-tests-20261007-233610.log",
+  "exit_code": 130,
+  "reason": "KeyboardInterrupt: Signal 15",
+  "cleanup_error": null,
+  "owned_group_stopped": true,
+  "elapsed_s": 117.26,
+  "minimum_free_gib": 24.367,
+  "startup_minimum_gib": 25,
+  "continuous_floor_gib": 20,
+  "timeout_s": 1800,
+  "staged": false,
+  "launched": false
+}

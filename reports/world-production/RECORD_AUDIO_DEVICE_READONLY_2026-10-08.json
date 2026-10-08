@@ -1,0 +1,92 @@
+{
+  "observedAtUTC": "2026-10-08T03:07:34.044629+00:00",
+  "method": "Read-only AudioObjectGetPropertyData/Size via CoreAudio; no set, tap, recording, permission, UI or profile access",
+  "devices": [
+    {
+      "role": "dOut",
+      "objectID": 96,
+      "name": "External Headphones",
+      "transport": "bltn",
+      "alive": 1,
+      "runningSomewhere": 0,
+      "outputControls": [
+        {
+          "element": 0,
+          "volumeScalar": 0.312542587518692,
+          "mute": 0
+        },
+        {
+          "element": 1,
+          "volumeScalar": {
+            "unavailableOSStatus": 2003332927
+          },
+          "mute": {
+            "unavailableOSStatus": 2003332927
+          }
+        },
+        {
+          "element": 2,
+          "volumeScalar": {
+            "unavailableOSStatus": 2003332927
+          },
+          "mute": {
+            "unavailableOSStatus": 2003332927
+          }
+        }
+      ]
+    },
+    {
+      "role": "sOut",
+      "objectID": 96,
+      "name": "External Headphones",
+      "transport": "bltn",
+      "alive": 1,
+      "runningSomewhere": 0,
+      "outputControls": [
+        {
+          "element": 0,
+          "volumeScalar": 0.312542587518692,
+          "mute": 0
+        },
+        {
+          "element": 1,
+          "volumeScalar": {
+            "unavailableOSStatus": 2003332927
+          },
+          "mute": {
+            "unavailableOSStatus": 2003332927
+          }
+        },
+        {
+          "element": 2,
+          "volumeScalar": {
+            "unavailableOSStatus": 2003332927
+          },
+          "mute": {
+            "unavailableOSStatus": 2003332927
+          }
+        }
+      ]
+    }
+  ],
+  "chromeProcessObjects": [
+    {
+      "objectID": 118,
+      "bundleID": "com.google.Chrome",
+      "pid": 726,
+      "runningOutput": 0
+    },
+    {
+      "objectID": 119,
+      "bundleID": "com.google.Chrome.helper",
+      "pid": 66550,
+      "runningOutput": 0
+    },
+    {
+      "objectID": 120,
+      "bundleID": "com.google.Chrome.helper",
+      "pid": 66551,
+      "runningOutput": 0
+    }
+  ]
+}

@@ -1,0 +1,602 @@
+{
+  "method": "synthetic HTTP backend acceptance, NOT native capture",
+  "url": "http://127.0.0.1:3002",
+  "startedUtc": "2026-10-08T02:50:35Z",
+  "checks": [
+    {
+      "name": "Amber Launch: identical save deduplicates",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Amber Launch: changed transcript conflicts",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Cobalt Venue: identical save deduplicates",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Cobalt Venue: changed transcript conflicts",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA paraphrase-a Amber Launch 59d9d217d8: triage completed",
+      "passed": true,
+      "details": {
+        "id": "mt-3154979a5c9dc5d74fd97969f99a7a93",
+        "projectId": "01a1196b-784e-7f30-b066-ae582452c488",
+        "recordingId": "synthetic-http-59d9d217d8",
+        "noteId": "mn-1067b957df6dbc94788190ee63023461",
+        "status": "completed",
+        "attemptCount": 1,
+        "privacyRoute": "local_only",
+        "sessionId": "20261008_6",
+        "orchestratorName": "Aria",
+        "idempotentRecording": true,
+        "cardIds": [
+          "mc-8c60f5ab5b258622b846e9286d485fbe",
+          "mc-cf70975daa13a3116d295ff922951d70"
+        ],
+        "truncated": false,
+        "created": false
+      }
+    },
+    {
+      "name": "Record HTTP QA paraphrase-a Amber Launch 59d9d217d8: local-only privacy",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA paraphrase-a Amber Launch 59d9d217d8: one saved note with complete transcript",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA paraphrase-a Amber Launch 59d9d217d8: typed notes retained and no truncation",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA paraphrase-a Amber Launch 59d9d217d8: final negation retained",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA paraphrase-a Amber Launch 59d9d217d8: exactly two commitments",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA paraphrase-a Amber Launch 59d9d217d8: no cancelled purchase/email task",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA paraphrase-a Amber Launch 59d9d217d8: correct board and unexecuted cards",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA paraphrase-a Amber Launch 59d9d217d8: source evidence links",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA paraphrase-a Amber Launch 59d9d217d8: receipt/card identities agree",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA paraphrase-a Amber Launch 59d9d217d8: Orchestrator session project context",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA paraphrase-a Amber Launch 59d9d217d8: one durable triage row",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA paraphrase-a Amber Launch 59d9d217d8: local model provenance",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA paraphrase-a Amber Launch 59d9d217d8: hidden tool-free session received final transcript",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA paraphrase-a Amber Launch 59d9d217d8: catalogue delivered full tail",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA paraphrase-a Amber Launch 59d9d217d8: completed replay/retry keeps cards stable",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA paraphrase-a Amber Launch 59d9d217d8: replay does not create another Orchestrator turn",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA paraphrase-a Cobalt Venue 59d9d217d8: triage completed",
+      "passed": true,
+      "details": {
+        "id": "mt-b3b74702f3343fdd44c383f9a1f286e4",
+        "projectId": "01a1196b-7876-7d61-b673-1ba50dbf6535",
+        "recordingId": "synthetic-http-59d9d217d8",
+        "noteId": "mn-0e94824e1686e99b48a2e16391aeaabc",
+        "status": "completed",
+        "attemptCount": 1,
+        "privacyRoute": "local_only",
+        "sessionId": "20261008_7",
+        "orchestratorName": "Aria",
+        "idempotentRecording": true,
+        "cardIds": [
+          "mc-d8a03dce82fd35713ab7b479d0fd0653",
+          "mc-d300157efe4ebbea3c7965b04ded8649"
+        ],
+        "truncated": false,
+        "created": false
+      }
+    },
+    {
+      "name": "Record HTTP QA paraphrase-a Cobalt Venue 59d9d217d8: local-only privacy",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA paraphrase-a Cobalt Venue 59d9d217d8: one saved note with complete transcript",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA paraphrase-a Cobalt Venue 59d9d217d8: typed notes retained and no truncation",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA paraphrase-a Cobalt Venue 59d9d217d8: final negation retained",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA paraphrase-a Cobalt Venue 59d9d217d8: exactly two commitments",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA paraphrase-a Cobalt Venue 59d9d217d8: no cancelled purchase/email task",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA paraphrase-a Cobalt Venue 59d9d217d8: correct board and unexecuted cards",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA paraphrase-a Cobalt Venue 59d9d217d8: source evidence links",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA paraphrase-a Cobalt Venue 59d9d217d8: receipt/card identities agree",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA paraphrase-a Cobalt Venue 59d9d217d8: Orchestrator session project context",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA paraphrase-a Cobalt Venue 59d9d217d8: one durable triage row",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA paraphrase-a Cobalt Venue 59d9d217d8: local model provenance",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA paraphrase-a Cobalt Venue 59d9d217d8: hidden tool-free session received final transcript",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA paraphrase-a Cobalt Venue 59d9d217d8: catalogue delivered full tail",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA paraphrase-a Cobalt Venue 59d9d217d8: completed replay/retry keeps cards stable",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "Record HTTP QA paraphrase-a Cobalt Venue 59d9d217d8: replay does not create another Orchestrator turn",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "same recording ID remains project-bound",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "no active goals launched for either synthetic project",
+      "passed": true,
+      "details": null
+    }
+  ],
+  "tokenLogged": false,
+  "scenario": "paraphrase-a",
+  "configuredLocalRoute": {
+    "provider": "ollama",
+    "model": "qwen2.5:7b"
+  },
+  "recordingId": "synthetic-http-59d9d217d8",
+  "fixtureBody": "## Your notes\nSynthetic QA only. No external actions authorized.\n\n## Transcript\n[00:03] Riley: I'll put together the internal amber launch checklist for Friday.\n[00:17] Morgan: The earlier equipment order is off; nobody should purchase it. Keep email out of scope: don't contact anyone outside this project. That restriction does not cancel our internal planning work.\n[00:51] Morgan: My remaining action is to verify the venue's step-free route on the plan by Tuesday.",
+  "projects": [
+    {
+      "project": {
+        "id": "01a1196b-784e-7f30-b066-ae582452c488",
+        "name": "Record HTTP QA paraphrase-a Amber Launch 59d9d217d8"
+      },
+      "base": "/api/projects/01a1196b-784e-7f30-b066-ae582452c488",
+      "savedNoteId": "mn-1067b957df6dbc94788190ee63023461",
+      "initialReceipt": {
+        "id": "mt-3154979a5c9dc5d74fd97969f99a7a93",
+        "projectId": "01a1196b-784e-7f30-b066-ae582452c488",
+        "recordingId": "synthetic-http-59d9d217d8",
+        "noteId": "mn-1067b957df6dbc94788190ee63023461",
+        "status": "pending",
+        "attemptCount": 0,
+        "orchestratorName": "Aria",
+        "idempotentRecording": true,
+        "cardIds": [],
+        "truncated": false,
+        "created": true
+      },
+      "columns": [
+        {
+          "id": "01a1196b-784f-7d82-8e83-c5808871d444",
+          "projectId": "01a1196b-784e-7f30-b066-ae582452c488",
+          "name": "Backlog",
+          "position": 0,
+          "columnKind": "manual",
+          "stateBinding": null,
+          "wipLimit": null,
+          "createdAt": "2026-10-08T02:50:35.983Z"
+        },
+        {
+          "id": "01a1196b-784f-7d82-8e83-c59f93e63faf",
+          "projectId": "01a1196b-784e-7f30-b066-ae582452c488",
+          "name": "Doing",
+          "position": 1,
+          "columnKind": "manual",
+          "stateBinding": null,
+          "wipLimit": null,
+          "createdAt": "2026-10-08T02:50:35.983Z"
+        },
+        {
+          "id": "01a1196b-7850-7232-a84b-af1b591328ab",
+          "projectId": "01a1196b-784e-7f30-b066-ae582452c488",
+          "name": "Done",
+          "position": 2,
+          "columnKind": "manual",
+          "stateBinding": null,
+          "wipLimit": null,
+          "createdAt": "2026-10-08T02:50:35.984Z"
+        }
+      ],
+      "receipt": {
+        "id": "mt-3154979a5c9dc5d74fd97969f99a7a93",
+        "projectId": "01a1196b-784e-7f30-b066-ae582452c488",
+        "recordingId": "synthetic-http-59d9d217d8",
+        "noteId": "mn-1067b957df6dbc94788190ee63023461",
+        "status": "completed",
+        "attemptCount": 1,
+        "privacyRoute": "local_only",
+        "sessionId": "20261008_6",
+        "orchestratorName": "Aria",
+        "idempotentRecording": true,
+        "cardIds": [
+          "mc-8c60f5ab5b258622b846e9286d485fbe",
+          "mc-cf70975daa13a3116d295ff922951d70"
+        ],
+        "truncated": false,
+        "created": false
+      },
+      "savedNotes": [
+        {
+          "id": "mn-1067b957df6dbc94788190ee63023461",
+          "project_id": "01a1196b-784e-7f30-b066-ae582452c488",
+          "title": "Synthetic Amber Launch meeting",
+          "body": "## Decisions\n- Synthetic QA only.\n- No external actions authorized.\n\n_Summary by `ollama/qwen2.5:7b`. Written on-device._\n\n## Your notes\n\nSynthetic QA only. No external actions authorized.\n\n## Transcript\n\n[00:03] Riley: I'll put together the internal amber launch checklist for Friday.\n[00:17] Morgan: The earlier equipment order is off; nobody should purchase it. Keep email out of scope: don't contact anyone outside this project. That restriction does not cancel our internal planning work.\n[00:51] Morgan: My remaining action is to verify the venue's step-free route on the plan by Tuesday.",
+          "memory_key": "note:01a1196b-784e-7f30-b066-ae582452c488:mn-1067b957df6dbc94788190ee63023461",
+          "created_at": "2026-10-08T02:50:35.998Z",
+          "updated_at": "2026-10-08T02:50:43.149Z",
+          "export_path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/record-qa-runtime/notes/record-http-amber-launch-59d9d217d8/2026-10-08-synthetic-amber-launch-meeting-mn-1067b957df6dbc94788190ee63023461.md"
+        }
+      ],
+      "cards": [
+        {
+          "id": "mc-8c60f5ab5b258622b846e9286d485fbe",
+          "projectId": "01a1196b-784e-7f30-b066-ae582452c488",
+          "cardType": "standard",
+          "title": "Put together the internal amber launch checklist",
+          "description": "Riley, by Friday\n\n\u2014 from meeting triage on this project",
+          "columnId": "01a1196b-784f-7d82-8e83-c5808871d444",
+          "position": 0,
+          "createdBy": "henry",
+          "assignedTo": null,
+          "metadataJson": {
+            "created_by_agent": "henry",
+            "source": "meeting_triage",
+            "source_note_id": "mn-1067b957df6dbc94788190ee63023461",
+            "source_triage_id": "mt-3154979a5c9dc5d74fd97969f99a7a93",
+            "source_item_key": "7720019e2efd40cc0e143248a2e76c86eaf150db803801b027e5f5ad2e0bf6ae",
+            "source_recording_id": "synthetic-http-59d9d217d8"
+          },
+          "createdAt": "2026-10-08T02:50:43.150Z",
+          "updatedAt": "2026-10-08T02:50:43.150Z",
+          "archivedAt": null
+        },
+        {
+          "id": "mc-cf70975daa13a3116d295ff922951d70",
+          "projectId": "01a1196b-784e-7f30-b066-ae582452c488",
+          "cardType": "standard",
+          "title": "Verify the venue's step-free route on the plan",
+          "description": "Morgan, by Tuesday\n\n\u2014 from meeting triage on this project",
+          "columnId": "01a1196b-784f-7d82-8e83-c5808871d444",
+          "position": 1,
+          "createdBy": "henry",
+          "assignedTo": null,
+          "metadataJson": {
+            "created_by_agent": "henry",
+            "source": "meeting_triage",
+            "source_note_id": "mn-1067b957df6dbc94788190ee63023461",
+            "source_triage_id": "mt-3154979a5c9dc5d74fd97969f99a7a93",
+            "source_item_key": "5cbabeff7ef75df207b70329076b779dec947f975a635233823eb6dd9e634cac",
+            "source_recording_id": "synthetic-http-59d9d217d8"
+          },
+          "createdAt": "2026-10-08T02:50:43.150Z",
+          "updatedAt": "2026-10-08T02:50:43.150Z",
+          "archivedAt": null
+        }
+      ],
+      "sessionApi": {
+        "sessionId": "20261008_6",
+        "orchestratorName": "Aria",
+        "projectId": "01a1196b-784e-7f30-b066-ae582452c488",
+        "recordingId": "synthetic-http-59d9d217d8",
+        "noteId": "mn-1067b957df6dbc94788190ee63023461",
+        "idempotentRecording": true,
+        "messageCount": 3,
+        "context": {
+          "projectId": "01a1196b-784e-7f30-b066-ae582452c488",
+          "recordingId": "synthetic-http-59d9d217d8",
+          "noteId": "mn-1067b957df6dbc94788190ee63023461",
+          "orchestratorName": "Aria",
+          "idempotentRecording": true
+        }
+      },
+      "databaseProof": {
+        "triageRows": [
+          {
+            "id": "mt-3154979a5c9dc5d74fd97969f99a7a93",
+            "status": "completed",
+            "attempt_count": 1,
+            "writeup_provider": "ollama",
+            "writeup_model": "qwen2.5:7b",
+            "writeup_privacy": "local_only",
+            "privacy_route": "local_only",
+            "session_id": "20261008_6",
+            "note_id": "mn-1067b957df6dbc94788190ee63023461"
+          }
+        ],
+        "session": {
+          "id": "20261008_6",
+          "name": "orchestrator-meeting-triage:01a1196b-784e-7f30-b066-ae582452c488:synthetic-http-59d9d217d8",
+          "session_type": "hidden"
+        },
+        "messageCount": 3,
+        "transcriptTailInSession": true,
+        "toolContentPresent": false,
+        "noteCatalogueOutbox": [],
+        "memoryKey": "note:01a1196b-784e-7f30-b066-ae582452c488:mn-1067b957df6dbc94788190ee63023461"
+      },
+      "catalogue": {
+        "delivered": true,
+        "key": "note:01a1196b-784e-7f30-b066-ae582452c488:mn-1067b957df6dbc94788190ee63023461",
+        "tailRetained": true
+      }
+    },
+    {
+      "project": {
+        "id": "01a1196b-7876-7d61-b673-1ba50dbf6535",
+        "name": "Record HTTP QA paraphrase-a Cobalt Venue 59d9d217d8"
+      },
+      "base": "/api/projects/01a1196b-7876-7d61-b673-1ba50dbf6535",
+      "savedNoteId": "mn-0e94824e1686e99b48a2e16391aeaabc",
+      "initialReceipt": {
+        "id": "mt-b3b74702f3343fdd44c383f9a1f286e4",
+        "projectId": "01a1196b-7876-7d61-b673-1ba50dbf6535",
+        "recordingId": "synthetic-http-59d9d217d8",
+        "noteId": "mn-0e94824e1686e99b48a2e16391aeaabc",
+        "status": "pending",
+        "attemptCount": 0,
+        "orchestratorName": "Aria",
+        "idempotentRecording": true,
+        "cardIds": [],
+        "truncated": false,
+        "created": true
+      },
+      "columns": [
+        {
+          "id": "01a1196b-7877-7481-97db-66b943757eb1",
+          "projectId": "01a1196b-7876-7d61-b673-1ba50dbf6535",
+          "name": "Backlog",
+          "position": 0,
+          "columnKind": "manual",
+          "stateBinding": null,
+          "wipLimit": null,
+          "createdAt": "2026-10-08T02:50:36.023Z"
+        },
+        {
+          "id": "01a1196b-7877-7481-97db-66cd51d8f71d",
+          "projectId": "01a1196b-7876-7d61-b673-1ba50dbf6535",
+          "name": "Doing",
+          "position": 1,
+          "columnKind": "manual",
+          "stateBinding": null,
+          "wipLimit": null,
+          "createdAt": "2026-10-08T02:50:36.023Z"
+        },
+        {
+          "id": "01a1196b-7877-7481-97db-66d1c97a91e2",
+          "projectId": "01a1196b-7876-7d61-b673-1ba50dbf6535",
+          "name": "Done",
+          "position": 2,
+          "columnKind": "manual",
+          "stateBinding": null,
+          "wipLimit": null,
+          "createdAt": "2026-10-08T02:50:36.024Z"
+        }
+      ],
+      "receipt": {
+        "id": "mt-b3b74702f3343fdd44c383f9a1f286e4",
+        "projectId": "01a1196b-7876-7d61-b673-1ba50dbf6535",
+        "recordingId": "synthetic-http-59d9d217d8",
+        "noteId": "mn-0e94824e1686e99b48a2e16391aeaabc",
+        "status": "completed",
+        "attemptCount": 1,
+        "privacyRoute": "local_only",
+        "sessionId": "20261008_7",
+        "orchestratorName": "Aria",
+        "idempotentRecording": true,
+        "cardIds": [
+          "mc-d8a03dce82fd35713ab7b479d0fd0653",
+          "mc-d300157efe4ebbea3c7965b04ded8649"
+        ],
+        "truncated": false,
+        "created": false
+      },
+      "savedNotes": [
+        {
+          "id": "mn-0e94824e1686e99b48a2e16391aeaabc",
+          "project_id": "01a1196b-7876-7d61-b673-1ba50dbf6535",
+          "title": "Synthetic Cobalt Venue meeting",
+          "body": "## Decisions\n- Synthetic QA only.\n- No external actions authorized.\n\n_Summary by `ollama/qwen2.5:7b`. Written on-device._\n\n## Your notes\n\nSynthetic QA only. No external actions authorized.\n\n## Transcript\n\n[00:03] Riley: I'll put together the internal amber launch checklist for Friday.\n[00:17] Morgan: The earlier equipment order is off; nobody should purchase it. Keep email out of scope: don't contact anyone outside this project. That restriction does not cancel our internal planning work.\n[00:51] Morgan: My remaining action is to verify the venue's step-free route on the plan by Tuesday.",
+          "memory_key": "note:01a1196b-7876-7d61-b673-1ba50dbf6535:mn-0e94824e1686e99b48a2e16391aeaabc",
+          "created_at": "2026-10-08T02:50:36.037Z",
+          "updated_at": "2026-10-08T02:50:51.406Z",
+          "export_path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/record-qa-runtime/notes/record-http-cobalt-venue-59d9d217d8/2026-10-08-synthetic-cobalt-venue-meeting-mn-0e94824e1686e99b48a2e16391aeaabc.md"
+        }
+      ],
+      "cards": [
+        {
+          "id": "mc-d8a03dce82fd35713ab7b479d0fd0653",
+          "projectId": "01a1196b-7876-7d61-b673-1ba50dbf6535",
+          "cardType": "standard",
+          "title": "Put together the internal amber launch checklist for Friday",
+          "description": "Riley: I'll put together the internal amber launch checklist for Friday.\n\n\u2014 from meeting triage on this project",
+          "columnId": "01a1196b-7877-7481-97db-66b943757eb1",
+          "position": 0,
+          "createdBy": "henry",
+          "assignedTo": null,
+          "metadataJson": {
+            "created_by_agent": "henry",
+            "source": "meeting_triage",
+            "source_note_id": "mn-0e94824e1686e99b48a2e16391aeaabc",
+            "source_triage_id": "mt-b3b74702f3343fdd44c383f9a1f286e4",
+            "source_item_key": "265340dbed02a95e2bcd0b5c8b65a50fb415efc44bc5bb6bd683c216555bb14c",
+            "source_recording_id": "synthetic-http-59d9d217d8"
+          },
+          "createdAt": "2026-10-08T02:50:51.406Z",
+          "updatedAt": "2026-10-08T02:50:51.406Z",
+          "archivedAt": null
+        },
+        {
+          "id": "mc-d300157efe4ebbea3c7965b04ded8649",
+          "projectId": "01a1196b-7876-7d61-b673-1ba50dbf6535",
+          "cardType": "standard",
+          "title": "Verify the venue's step-free route on the plan by Tuesday",
+          "description": "Morgan: My remaining action is to verify the venue's step-free route on the plan by Tuesday.\n\n\u2014 from meeting triage on this project",
+          "columnId": "01a1196b-7877-7481-97db-66b943757eb1",
+          "position": 1,
+          "createdBy": "henry",
+          "assignedTo": null,
+          "metadataJson": {
+            "created_by_agent": "henry",
+            "source": "meeting_triage",
+            "source_note_id": "mn-0e94824e1686e99b48a2e16391aeaabc",
+            "source_triage_id": "mt-b3b74702f3343fdd44c383f9a1f286e4",
+            "source_item_key": "372e3a7109a13f9b16ec1a6e1dfe2068fc16ee5fdd9ed0dfffa9ff3e91b859da",
+            "source_recording_id": "synthetic-http-59d9d217d8"
+          },
+          "createdAt": "2026-10-08T02:50:51.407Z",
+          "updatedAt": "2026-10-08T02:50:51.407Z",
+          "archivedAt": null
+        }
+      ],
+      "sessionApi": {
+        "sessionId": "20261008_7",
+        "orchestratorName": "Aria",
+        "projectId": "01a1196b-7876-7d61-b673-1ba50dbf6535",
+        "recordingId": "synthetic-http-59d9d217d8",
+        "noteId": "mn-0e94824e1686e99b48a2e16391aeaabc",
+        "idempotentRecording": true,
+        "messageCount": 3,
+        "context": {
+          "projectId": "01a1196b-7876-7d61-b673-1ba50dbf6535",
+          "recordingId": "synthetic-http-59d9d217d8",
+          "noteId": "mn-0e94824e1686e99b48a2e16391aeaabc",
+          "orchestratorName": "Aria",
+          "idempotentRecording": true
+        }
+      },
+      "databaseProof": {
+        "triageRows": [
+          {
+            "id": "mt-b3b74702f3343fdd44c383f9a1f286e4",
+            "status": "completed",
+            "attempt_count": 1,
+            "writeup_provider": "ollama",
+            "writeup_model": "qwen2.5:7b",
+            "writeup_privacy": "local_only",
+            "privacy_route": "local_only",
+            "session_id": "20261008_7",
+            "note_id": "mn-0e94824e1686e99b48a2e16391aeaabc"
+          }
+        ],
+        "session": {
+          "id": "20261008_7",
+          "name": "orchestrator-meeting-triage:01a1196b-7876-7d61-b673-1ba50dbf6535:synthetic-http-59d9d217d8",
+          "session_type": "hidden"
+        },
+        "messageCount": 3,
+        "transcriptTailInSession": true,
+        "toolContentPresent": false,
+        "noteCatalogueOutbox": [],
+        "memoryKey": "note:01a1196b-7876-7d61-b673-1ba50dbf6535:mn-0e94824e1686e99b48a2e16391aeaabc"
+      },
+      "catalogue": {
+        "delivered": true,
+        "key": "note:01a1196b-7876-7d61-b673-1ba50dbf6535:mn-0e94824e1686e99b48a2e16391aeaabc",
+        "tailRetained": true
+      }
+    }
+  ],
+  "passed": true
+}

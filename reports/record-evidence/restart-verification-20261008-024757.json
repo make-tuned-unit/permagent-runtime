@@ -1,0 +1,376 @@
+{
+  "verified_at": "2026-10-08T02:47:57.953987+00:00",
+  "baseline": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/reports/record-evidence/restart-baseline-20261007.json",
+  "baseline_sha256": "6600eed7c6355ee86193cc363d26cde48a36f681cf3621bd28c35bcd443e6d0c",
+  "isolated_root": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/record-qa-runtime",
+  "method": "two SQLite mode=ro/query_only snapshot transactions; no daemon/API calls or mutations",
+  "prior_triages": [
+    {
+      "id": "mt-3de39270f313f0dfd855335ac4649012",
+      "unchanged_baseline_fields": true,
+      "row": {
+        "id": "mt-3de39270f313f0dfd855335ac4649012",
+        "status": "completed",
+        "attempt_count": 1,
+        "card_ids_json": "[\"mc-091cf5459056839137cf268754087c53\"]",
+        "note_id": "mn-a657d2a48264d51e78f69754c23d4d6a",
+        "project_id": "01a11937-7ef7-7fd0-9652-1ff4cd64ee4b",
+        "recording_id": "synthetic-http-281d103e14"
+      },
+      "project_recording_row_count": 1
+    },
+    {
+      "id": "mt-45e64083e671874805beb06c97a54826",
+      "unchanged_baseline_fields": true,
+      "row": {
+        "id": "mt-45e64083e671874805beb06c97a54826",
+        "status": "completed",
+        "attempt_count": 1,
+        "card_ids_json": "[\"mc-5b412f7bb0d08ee76913c835253d8d12\"]",
+        "note_id": "mn-d2748f839eeee991aef58d3952f82dc7",
+        "project_id": "01a11937-7fb5-7191-b260-f67eb5326cf4",
+        "recording_id": "synthetic-http-281d103e14"
+      },
+      "project_recording_row_count": 1
+    },
+    {
+      "id": "mt-9f102f14a490ec278ad742cf2a65b3ad",
+      "unchanged_baseline_fields": true,
+      "row": {
+        "id": "mt-9f102f14a490ec278ad742cf2a65b3ad",
+        "status": "completed",
+        "attempt_count": 1,
+        "card_ids_json": "[\"mc-572e6fd0c3e385100251485eaf247357\",\"mc-8d3d08cb540f286217cc0e8674135c72\"]",
+        "note_id": "mn-548027db1a6d11b10821a0362275a271",
+        "project_id": "01a11937-05c6-7d70-87ad-670c2ffae12f",
+        "recording_id": "synthetic-http-bc6557c005"
+      },
+      "project_recording_row_count": 1
+    }
+  ],
+  "catalogue": [
+    {
+      "key": "card:mc-091cf5459056839137cf268754087c53:created",
+      "prior_status": "pending",
+      "remaining_outbox": [],
+      "exact_memory_count": 1,
+      "id": "b6cb1360bda5ebf0",
+      "source": "permagent.card",
+      "wing": "record-http-amber-launch-281d103e14",
+      "visibility": "private",
+      "episode_id": "feed-episode:card:mc-091cf5459056839137cf268754087c53:created",
+      "content_sha256": "9d1c32849aea7dd67f42798611b00c5029c9cea8ce56289c5c708a5b2b092070",
+      "expected_project_slug": "record-http-amber-launch-281d103e14"
+    },
+    {
+      "key": "card:mc-572e6fd0c3e385100251485eaf247357:created",
+      "prior_status": "pending",
+      "remaining_outbox": [],
+      "exact_memory_count": 1,
+      "id": "3247a6a18ef9fc6c",
+      "source": "permagent.card",
+      "wing": "record-http-amber-launch-bc6557c005",
+      "visibility": "private",
+      "episode_id": "feed-episode:card:mc-572e6fd0c3e385100251485eaf247357:created",
+      "content_sha256": "a24bea8f31fbfab73e26131ecb539a5b066476d509cdb33d92a3b0b4feeebfd6",
+      "expected_project_slug": "record-http-amber-launch-bc6557c005"
+    },
+    {
+      "key": "card:mc-5b412f7bb0d08ee76913c835253d8d12:created",
+      "prior_status": "pending",
+      "remaining_outbox": [],
+      "exact_memory_count": 1,
+      "id": "dd88f33759f616dc",
+      "source": "permagent.card",
+      "wing": "record-http-cobalt-venue-281d103e14",
+      "visibility": "private",
+      "episode_id": "feed-episode:card:mc-5b412f7bb0d08ee76913c835253d8d12:created",
+      "content_sha256": "904bc3dbe43e96fc747d332d5dacb5c313dbdaf332e7884d2b94f30bf9ebde3a",
+      "expected_project_slug": "record-http-cobalt-venue-281d103e14"
+    },
+    {
+      "key": "card:mc-8d3d08cb540f286217cc0e8674135c72:created",
+      "prior_status": "pending",
+      "remaining_outbox": [],
+      "exact_memory_count": 1,
+      "id": "60f7a7873794fcc4",
+      "source": "permagent.card",
+      "wing": "record-http-amber-launch-bc6557c005",
+      "visibility": "private",
+      "episode_id": "feed-episode:card:mc-8d3d08cb540f286217cc0e8674135c72:created",
+      "content_sha256": "9607bce0c32b06089a9fb18314e462b7e23de9915895b969c4bef41d0e76b94c",
+      "expected_project_slug": "record-http-amber-launch-bc6557c005"
+    },
+    {
+      "key": "note:01a11937-05c6-7d70-87ad-670c2ffae12f:mn-548027db1a6d11b10821a0362275a271",
+      "prior_status": "pending",
+      "remaining_outbox": [],
+      "exact_memory_count": 1,
+      "id": "fc6c26a69dfcf3f0",
+      "source": "permagent.note",
+      "wing": "record-http-amber-launch-bc6557c005",
+      "visibility": "private",
+      "episode_id": "ep-fc6c26a69dfcf3f0",
+      "content_sha256": "f745daeca96f8654d95e5b2b8316083e5ad4255cdd015e1fb5365f007298b9e5",
+      "project_association_count": 0,
+      "saved_note_body_in_catalogue": true,
+      "expected_project_slug": "record-http-amber-launch-bc6557c005"
+    },
+    {
+      "key": "note:01a11937-7ef7-7fd0-9652-1ff4cd64ee4b:mn-a657d2a48264d51e78f69754c23d4d6a",
+      "prior_status": "pending",
+      "remaining_outbox": [],
+      "exact_memory_count": 1,
+      "id": "4d38bb308bdd57ad",
+      "source": "permagent.note",
+      "wing": "record-http-amber-launch-281d103e14",
+      "visibility": "private",
+      "episode_id": "ep-4d38bb308bdd57ad",
+      "content_sha256": "0a0680f1e40ba1b224c94978d2568ea6c74f818e2ff2c65f728381a31f622cbc",
+      "project_association_count": 0,
+      "saved_note_body_in_catalogue": true,
+      "expected_project_slug": "record-http-amber-launch-281d103e14"
+    },
+    {
+      "key": "note:01a11937-7fb5-7191-b260-f67eb5326cf4:mn-d2748f839eeee991aef58d3952f82dc7",
+      "prior_status": "pending",
+      "remaining_outbox": [],
+      "exact_memory_count": 1,
+      "id": "f9d30b518c0c2d50",
+      "source": "permagent.note",
+      "wing": "record-http-cobalt-venue-281d103e14",
+      "visibility": "private",
+      "episode_id": "ep-f9d30b518c0c2d50",
+      "content_sha256": "8fbc46f3ffc7182ffddb0d8c7472051f9568ebfe89f6ca6a20c4f7b5a46fc667",
+      "project_association_count": 0,
+      "saved_note_body_in_catalogue": true,
+      "expected_project_slug": "record-http-cobalt-venue-281d103e14"
+    },
+    {
+      "key": "watcher_insight:01a11937-7ef7-7fd0-9652-1ff4cd64ee4b:2026-10-08T01:54:37.470894+00:00",
+      "prior_status": "pending",
+      "remaining_outbox": [],
+      "exact_memory_count": 1,
+      "id": "2e0524cb4b3e15e8",
+      "source": "permagent.watcher_insight",
+      "wing": "record-http-amber-launch-281d103e14",
+      "visibility": "private",
+      "episode_id": "feed-episode:watcher_insight:01a11937-7ef7-7fd0-9652-1ff4cd64ee4b:2026-10-08T01:54:37.470894+00:00",
+      "content_sha256": "1da1f5c4af6fbab25882003580f7cac24c4582c3c2ba778681298e850e5f6606",
+      "expected_project_slug": "record-http-amber-launch-281d103e14"
+    }
+  ],
+  "checks": [
+    {
+      "name": "prior triage preserved mt-3de39270f313f0dfd855335ac4649012",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "prior triage preserved mt-45e64083e671874805beb06c97a54826",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "prior triage preserved mt-9f102f14a490ec278ad742cf2a65b3ad",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "prior projects retain exactly four baseline cards",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "prior projects retain exactly three baseline notes",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "card source/project preserved mc-091cf5459056839137cf268754087c53",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "card source/project preserved mc-572e6fd0c3e385100251485eaf247357",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "card source/project preserved mc-5b412f7bb0d08ee76913c835253d8d12",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "card source/project preserved mc-8d3d08cb540f286217cc0e8674135c72",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "catalogue correct project wing card:mc-091cf5459056839137cf268754087c53:created",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "catalogue source/privacy card:mc-091cf5459056839137cf268754087c53:created",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "baseline outbox delivered exactly once card:mc-091cf5459056839137cf268754087c53:created",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "catalogue correct project wing card:mc-572e6fd0c3e385100251485eaf247357:created",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "catalogue source/privacy card:mc-572e6fd0c3e385100251485eaf247357:created",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "baseline outbox delivered exactly once card:mc-572e6fd0c3e385100251485eaf247357:created",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "catalogue correct project wing card:mc-5b412f7bb0d08ee76913c835253d8d12:created",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "catalogue source/privacy card:mc-5b412f7bb0d08ee76913c835253d8d12:created",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "baseline outbox delivered exactly once card:mc-5b412f7bb0d08ee76913c835253d8d12:created",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "catalogue correct project wing card:mc-8d3d08cb540f286217cc0e8674135c72:created",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "catalogue source/privacy card:mc-8d3d08cb540f286217cc0e8674135c72:created",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "baseline outbox delivered exactly once card:mc-8d3d08cb540f286217cc0e8674135c72:created",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "note project association/catalogue body mn-548027db1a6d11b10821a0362275a271",
+      "passed": false,
+      "details": null
+    },
+    {
+      "name": "catalogue correct project wing note:01a11937-05c6-7d70-87ad-670c2ffae12f:mn-548027db1a6d11b10821a0362275a271",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "catalogue source/privacy note:01a11937-05c6-7d70-87ad-670c2ffae12f:mn-548027db1a6d11b10821a0362275a271",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "baseline outbox delivered exactly once note:01a11937-05c6-7d70-87ad-670c2ffae12f:mn-548027db1a6d11b10821a0362275a271",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "note project association/catalogue body mn-a657d2a48264d51e78f69754c23d4d6a",
+      "passed": false,
+      "details": null
+    },
+    {
+      "name": "catalogue correct project wing note:01a11937-7ef7-7fd0-9652-1ff4cd64ee4b:mn-a657d2a48264d51e78f69754c23d4d6a",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "catalogue source/privacy note:01a11937-7ef7-7fd0-9652-1ff4cd64ee4b:mn-a657d2a48264d51e78f69754c23d4d6a",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "baseline outbox delivered exactly once note:01a11937-7ef7-7fd0-9652-1ff4cd64ee4b:mn-a657d2a48264d51e78f69754c23d4d6a",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "note project association/catalogue body mn-d2748f839eeee991aef58d3952f82dc7",
+      "passed": false,
+      "details": null
+    },
+    {
+      "name": "catalogue correct project wing note:01a11937-7fb5-7191-b260-f67eb5326cf4:mn-d2748f839eeee991aef58d3952f82dc7",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "catalogue source/privacy note:01a11937-7fb5-7191-b260-f67eb5326cf4:mn-d2748f839eeee991aef58d3952f82dc7",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "baseline outbox delivered exactly once note:01a11937-7fb5-7191-b260-f67eb5326cf4:mn-d2748f839eeee991aef58d3952f82dc7",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "catalogue correct project wing watcher_insight:01a11937-7ef7-7fd0-9652-1ff4cd64ee4b:2026-10-08T01:54:37.470894+00:00",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "catalogue source/privacy watcher_insight:01a11937-7ef7-7fd0-9652-1ff4cd64ee4b:2026-10-08T01:54:37.470894+00:00",
+      "passed": true,
+      "details": null
+    },
+    {
+      "name": "baseline outbox delivered exactly once watcher_insight:01a11937-7ef7-7fd0-9652-1ff4cd64ee4b:2026-10-08T01:54:37.470894+00:00",
+      "passed": true,
+      "details": null
+    }
+  ],
+  "prior_card_ids": [
+    "mc-091cf5459056839137cf268754087c53",
+    "mc-572e6fd0c3e385100251485eaf247357",
+    "mc-5b412f7bb0d08ee76913c835253d8d12",
+    "mc-8d3d08cb540f286217cc0e8674135c72"
+  ],
+  "prior_notes": [
+    {
+      "id": "mn-548027db1a6d11b10821a0362275a271",
+      "project_id": "01a11937-05c6-7d70-87ad-670c2ffae12f",
+      "current_body_sha256": "9700326c60d85e9247c2445c564dc7a30f8b09a8c2ba238d6e88e8d567ac1baa"
+    },
+    {
+      "id": "mn-a657d2a48264d51e78f69754c23d4d6a",
+      "project_id": "01a11937-7ef7-7fd0-9652-1ff4cd64ee4b",
+      "current_body_sha256": "f79070801e2a4f9e7e599739600b0f680293de494de3820ecfbd7b1864c7f627"
+    },
+    {
+      "id": "mn-d2748f839eeee991aef58d3952f82dc7",
+      "project_id": "01a11937-7fb5-7191-b260-f67eb5326cf4",
+      "current_body_sha256": "ac102127c33f485dfb2c6cd4c338f98b72005d3127eca43b37558c9daa3efe4b"
+    }
+  ],
+  "newer_qa_rows_excluded_from_baseline_comparison": {
+    "triages": [],
+    "total_current_triages": 3,
+    "total_current_cards": 6,
+    "total_current_notes": 4
+  },
+  "current_outbox_counts": [],
+  "passed": false
+}

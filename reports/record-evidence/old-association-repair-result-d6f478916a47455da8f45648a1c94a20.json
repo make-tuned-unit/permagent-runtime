@@ -1,0 +1,149 @@
+{
+  "mode": "three exact idempotent note-save replays, no inference request",
+  "daemonSha256": "fba7150c0a3fbeaa1a028ef1466d673cb0dad06d8709a77cfc1153e5ff2098df",
+  "plan": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/reports/record-evidence/old-association-repair-plan-a58edcf981584933b18e8e0d3080a597.json",
+  "before": [
+    {
+      "triageId": "mt-3de39270f313f0dfd855335ac4649012",
+      "projectId": "01a11937-7ef7-7fd0-9652-1ff4cd64ee4b",
+      "noteId": "mn-a657d2a48264d51e78f69754c23d4d6a",
+      "recordingId": "synthetic-http-281d103e14",
+      "source": "isolated-meeting-http-20261008-015348.json",
+      "payloadSha256": "8e7eb8d00412ab72b70c7174bb8c017865a85ec924b3e0b3565f0783c87774c6",
+      "originalBodySha256": "0fc7e2a8781015fd8f926ee9e9afc498c25870baf1ac042ca494f7f5d3b60979",
+      "stableStateSha256": "16a536b3eda2e65746e30ad00ff4a8a8f4c280f581396767b0ee32c772e2b284",
+      "noteCount": 1,
+      "cardIds": [
+        "mc-091cf5459056839137cf268754087c53"
+      ],
+      "messageCount": 3,
+      "memoryKey": "note:01a11937-7ef7-7fd0-9652-1ff4cd64ee4b:mn-a657d2a48264d51e78f69754c23d4d6a",
+      "memoryCount": 1,
+      "associationCount": 0,
+      "fullSavedBodyCatalogued": true,
+      "outbox": []
+    },
+    {
+      "triageId": "mt-45e64083e671874805beb06c97a54826",
+      "projectId": "01a11937-7fb5-7191-b260-f67eb5326cf4",
+      "noteId": "mn-d2748f839eeee991aef58d3952f82dc7",
+      "recordingId": "synthetic-http-281d103e14",
+      "source": "isolated-meeting-http-20261008-015348.json",
+      "payloadSha256": "3ecc0b8d06c3da5d75724f0bd81d8b8cdcdad9f842b7f610604be93f1776e9bb",
+      "originalBodySha256": "0fc7e2a8781015fd8f926ee9e9afc498c25870baf1ac042ca494f7f5d3b60979",
+      "stableStateSha256": "5b349ca00e540bff875dfa6cfab9f1a0ca0476a6dd4d0a58bbd8a58ae9edb7ea",
+      "noteCount": 1,
+      "cardIds": [
+        "mc-5b412f7bb0d08ee76913c835253d8d12"
+      ],
+      "messageCount": 3,
+      "memoryKey": "note:01a11937-7fb5-7191-b260-f67eb5326cf4:mn-d2748f839eeee991aef58d3952f82dc7",
+      "memoryCount": 1,
+      "associationCount": 0,
+      "fullSavedBodyCatalogued": true,
+      "outbox": []
+    },
+    {
+      "triageId": "mt-9f102f14a490ec278ad742cf2a65b3ad",
+      "projectId": "01a11937-05c6-7d70-87ad-670c2ffae12f",
+      "noteId": "mn-548027db1a6d11b10821a0362275a271",
+      "recordingId": "synthetic-http-bc6557c005",
+      "source": "isolated-meeting-http-20261008-015317.json",
+      "payloadSha256": "87751595313415168b73c04866b7c419bee1ecdb75226e3109b65ffaab412386",
+      "originalBodySha256": "0fc7e2a8781015fd8f926ee9e9afc498c25870baf1ac042ca494f7f5d3b60979",
+      "stableStateSha256": "15ecf231879c7f53a82295d23042577a6e9ee768981f7a9f99056406d70a8c6a",
+      "noteCount": 1,
+      "cardIds": [
+        "mc-572e6fd0c3e385100251485eaf247357",
+        "mc-8d3d08cb540f286217cc0e8674135c72"
+      ],
+      "messageCount": 3,
+      "memoryKey": "note:01a11937-05c6-7d70-87ad-670c2ffae12f:mn-548027db1a6d11b10821a0362275a271",
+      "memoryCount": 1,
+      "associationCount": 0,
+      "fullSavedBodyCatalogued": true,
+      "outbox": []
+    }
+  ],
+  "responses": [
+    {
+      "noteId": "mn-a657d2a48264d51e78f69754c23d4d6a",
+      "triageId": "mt-3de39270f313f0dfd855335ac4649012",
+      "identityPassed": true
+    },
+    {
+      "noteId": "mn-d2748f839eeee991aef58d3952f82dc7",
+      "triageId": "mt-45e64083e671874805beb06c97a54826",
+      "identityPassed": true
+    },
+    {
+      "noteId": "mn-548027db1a6d11b10821a0362275a271",
+      "triageId": "mt-9f102f14a490ec278ad742cf2a65b3ad",
+      "identityPassed": true
+    }
+  ],
+  "passed": true,
+  "after": [
+    {
+      "triageId": "mt-3de39270f313f0dfd855335ac4649012",
+      "projectId": "01a11937-7ef7-7fd0-9652-1ff4cd64ee4b",
+      "noteId": "mn-a657d2a48264d51e78f69754c23d4d6a",
+      "recordingId": "synthetic-http-281d103e14",
+      "source": "isolated-meeting-http-20261008-015348.json",
+      "payloadSha256": "8e7eb8d00412ab72b70c7174bb8c017865a85ec924b3e0b3565f0783c87774c6",
+      "originalBodySha256": "0fc7e2a8781015fd8f926ee9e9afc498c25870baf1ac042ca494f7f5d3b60979",
+      "stableStateSha256": "16a536b3eda2e65746e30ad00ff4a8a8f4c280f581396767b0ee32c772e2b284",
+      "noteCount": 1,
+      "cardIds": [
+        "mc-091cf5459056839137cf268754087c53"
+      ],
+      "messageCount": 3,
+      "memoryKey": "note:01a11937-7ef7-7fd0-9652-1ff4cd64ee4b:mn-a657d2a48264d51e78f69754c23d4d6a",
+      "memoryCount": 1,
+      "associationCount": 1,
+      "fullSavedBodyCatalogued": true,
+      "outbox": []
+    },
+    {
+      "triageId": "mt-45e64083e671874805beb06c97a54826",
+      "projectId": "01a11937-7fb5-7191-b260-f67eb5326cf4",
+      "noteId": "mn-d2748f839eeee991aef58d3952f82dc7",
+      "recordingId": "synthetic-http-281d103e14",
+      "source": "isolated-meeting-http-20261008-015348.json",
+      "payloadSha256": "3ecc0b8d06c3da5d75724f0bd81d8b8cdcdad9f842b7f610604be93f1776e9bb",
+      "originalBodySha256": "0fc7e2a8781015fd8f926ee9e9afc498c25870baf1ac042ca494f7f5d3b60979",
+      "stableStateSha256": "5b349ca00e540bff875dfa6cfab9f1a0ca0476a6dd4d0a58bbd8a58ae9edb7ea",
+      "noteCount": 1,
+      "cardIds": [
+        "mc-5b412f7bb0d08ee76913c835253d8d12"
+      ],
+      "messageCount": 3,
+      "memoryKey": "note:01a11937-7fb5-7191-b260-f67eb5326cf4:mn-d2748f839eeee991aef58d3952f82dc7",
+      "memoryCount": 1,
+      "associationCount": 1,
+      "fullSavedBodyCatalogued": true,
+      "outbox": []
+    },
+    {
+      "triageId": "mt-9f102f14a490ec278ad742cf2a65b3ad",
+      "projectId": "01a11937-05c6-7d70-87ad-670c2ffae12f",
+      "noteId": "mn-548027db1a6d11b10821a0362275a271",
+      "recordingId": "synthetic-http-bc6557c005",
+      "source": "isolated-meeting-http-20261008-015317.json",
+      "payloadSha256": "87751595313415168b73c04866b7c419bee1ecdb75226e3109b65ffaab412386",
+      "originalBodySha256": "0fc7e2a8781015fd8f926ee9e9afc498c25870baf1ac042ca494f7f5d3b60979",
+      "stableStateSha256": "15ecf231879c7f53a82295d23042577a6e9ee768981f7a9f99056406d70a8c6a",
+      "noteCount": 1,
+      "cardIds": [
+        "mc-572e6fd0c3e385100251485eaf247357",
+        "mc-8d3d08cb540f286217cc0e8674135c72"
+      ],
+      "messageCount": 3,
+      "memoryKey": "note:01a11937-05c6-7d70-87ad-670c2ffae12f:mn-548027db1a6d11b10821a0362275a271",
+      "memoryCount": 1,
+      "associationCount": 1,
+      "fullSavedBodyCatalogued": true,
+      "outbox": []
+    }
+  ]
+}

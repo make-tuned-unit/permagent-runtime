@@ -1,0 +1,21 @@
+{
+  "command": [
+    "/Users/j/Documents/dev/permagent-runtime/bin/cargo",
+    "test",
+    "-p",
+    "permagent",
+    "meeting_triage",
+    "--lib",
+    "--locked"
+  ],
+  "log": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/reports/world-production/record-backend-tests-20261007-215839.log",
+  "exit_code": 1,
+  "reason": "PermissionError: [Errno 1] Operation not permitted",
+  "elapsed_s": 1800.93,
+  "minimum_free_gib": 24.376,
+  "startup_minimum_gib": 25,
+  "continuous_floor_gib": 20,
+  "timeout_s": 1800,
+  "staged": false,
+  "launched": false
+}

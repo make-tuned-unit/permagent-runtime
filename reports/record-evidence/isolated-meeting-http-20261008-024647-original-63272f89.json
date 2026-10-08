@@ -1,0 +1,20 @@
+{
+  "method": "synthetic HTTP backend acceptance, NOT native capture",
+  "url": "http://127.0.0.1:3002",
+  "startedUtc": "2026-10-08T02:46:47Z",
+  "checks": [],
+  "tokenLogged": false,
+  "scenario": "original",
+  "configuredLocalRoute": {
+    "provider": "ollama",
+    "model": "qwen2.5:7b"
+  },
+  "recordingId": "synthetic-http-0c36047c33",
+  "fixtureBody": "## Your notes\nSynthetic QA only. No external actions authorized.\n\n## Transcript\n[00:02] Riley: This is a synthetic meeting for Record acceptance. I will draft the amber launch checklist by Friday.\n[00:14] Morgan: The equipment purchase is cancelled. Do not buy equipment. Do not send any email. The launch is not approved.\n[00:49] Morgan: Final commitment: Morgan will confirm the venue step-free route by Tuesday.",
+  "projects": [],
+  "error": {
+    "category": "KeyError",
+    "message": "'triage'"
+  },
+  "passed": false
+}

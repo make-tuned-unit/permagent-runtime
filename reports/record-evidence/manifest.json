@@ -1,0 +1,247 @@
+{
+  "schema": 1,
+  "title": "Permagent synthetic Record regression fixture",
+  "generated_with": {
+    "say": "macOS installed voices, file output only",
+    "ffmpeg": "ffmpeg version 9.0.1 Copyright (c) 2000-2026 the FFmpeg developers"
+  },
+  "privacy": "No microphone, camera, external server, account, STUN or TURN is used. Playback only starts after the operator clicks Start. Captions are expected fixture text, never transcription results.",
+  "scenarios": [
+    {
+      "id": "mic-smoke",
+      "label": "Microphone smoke \u00b7 20 seconds",
+      "duration": 20,
+      "cue_ids": [
+        "mic_open"
+      ],
+      "instructions": "Turn OFF Also record the other participants in Permagent. This fixture plays a synthetic near voice through the receiver speaker. A physical microphone can capture it acoustically. This is not isolated duplex capture.",
+      "expected": [
+        "amber seven",
+        "draft the launch checklist by Friday",
+        "launch not approved",
+        "no email"
+      ]
+    },
+    {
+      "id": "far",
+      "label": "Far-side practice call \u00b7 55 seconds",
+      "duration": 55,
+      "cue_ids": [
+        "far_open",
+        "far_tail"
+      ],
+      "instructions": "Turn ON Also record the other participants. Keep the physical microphone quiet. Synthetic remote audio traverses WebRTC before playback. Check the final commitment at 49 seconds survives Stop & save.",
+      "expected": [
+        "cobalt nine",
+        "review accessibility checklist",
+        "purchase cancelled",
+        "confirm venue step-free route after 49 seconds"
+      ]
+    },
+    {
+      "id": "duplex",
+      "label": "Two-participant practice \u00b7 100 seconds",
+      "duration": 100,
+      "cue_ids": [
+        "duplex_near_open",
+        "duplex_far_open",
+        "duplex_near_mid",
+        "duplex_far_mid",
+        "duplex_overlap",
+        "duplex_far_late",
+        "duplex_near_late",
+        "duplex_tail"
+      ],
+      "instructions": "Two synthetic participants traverse WebRTC. Both audible outputs share this Mac system mix. Speaker playback may also enter the microphone: this is an echo/attribution stress test, not proof of isolated near/far capture. Use established separate audio routing for clean duplex acceptance.",
+      "expected": [
+        "draft launch checklist",
+        "review accessibility checklist",
+        "practice demo Tuesday",
+        "42 dollars fictional budget",
+        "no purchase / no email / no launch approval",
+        "confirm venue route at 96 seconds",
+        "typed note preserved"
+      ]
+    }
+  ],
+  "cues": [
+    {
+      "id": "mic_open",
+      "side": "near",
+      "at_seconds": 2,
+      "duration_seconds": 8.955167,
+      "end_seconds": 10.955167,
+      "voice": "Samantha",
+      "rate_wpm": 190,
+      "script": "Synthetic microphone test, amber seven. For Record QA, I will draft the launch checklist by Friday. The launch is not approved. Do not send any email.",
+      "url": "assets/mic_open.wav",
+      "sha256": "6c0020c1d3c5f0b6fa417e7be4d1fa764545369e451e82b762525efc0352f5e6",
+      "bytes": 429926,
+      "sample_rate": 24000,
+      "channels": 1,
+      "encoding": "PCM signed 16-bit little-endian WAV"
+    },
+    {
+      "id": "far_open",
+      "side": "far",
+      "at_seconds": 3,
+      "duration_seconds": 10.043833,
+      "end_seconds": 13.043833,
+      "voice": "Daniel",
+      "rate_wpm": 190,
+      "script": "Synthetic remote participant, cobalt nine. I will review the accessibility checklist. The old idea to buy equipment is cancelled. Do not create a purchase task.",
+      "url": "assets/far_open.wav",
+      "sha256": "b4d3a23a835bdb2d5e1249f701ffc26c1fc66c4f9cd6a0f593a5796e6b10a92d",
+      "bytes": 482182,
+      "sample_rate": 24000,
+      "channels": 1,
+      "encoding": "PCM signed 16-bit little-endian WAV"
+    },
+    {
+      "id": "far_tail",
+      "side": "far",
+      "at_seconds": 49,
+      "duration_seconds": 3.803375,
+      "end_seconds": 52.803375,
+      "voice": "Daniel",
+      "rate_wpm": 190,
+      "script": "Cobalt nine final commitment: confirm the venue step free route.",
+      "url": "assets/far_tail.wav",
+      "sha256": "5b031422135c64d6ce7d814931becb0b67a30bf6dfc526f014158eed30f8e882",
+      "bytes": 182640,
+      "sample_rate": 24000,
+      "channels": 1,
+      "encoding": "PCM signed 16-bit little-endian WAV"
+    },
+    {
+      "id": "duplex_near_open",
+      "side": "near",
+      "at_seconds": 3,
+      "duration_seconds": 6.400958,
+      "end_seconds": 9.400958,
+      "voice": "Samantha",
+      "rate_wpm": 190,
+      "script": "Synthetic practice call, amber seven. I will draft the launch checklist by Friday. This is only a recording test.",
+      "url": "assets/duplex_near_open.wav",
+      "sha256": "f02b733142be7a094be8c1a2c5776411545bcc770d57b930bc24bf0c3cca9230",
+      "bytes": 307324,
+      "sample_rate": 24000,
+      "channels": 1,
+      "encoding": "PCM signed 16-bit little-endian WAV"
+    },
+    {
+      "id": "duplex_far_open",
+      "side": "far",
+      "at_seconds": 17,
+      "duration_seconds": 5.557208,
+      "end_seconds": 22.557208,
+      "voice": "Daniel",
+      "rate_wpm": 190,
+      "script": "Cobalt nine here. I will review the accessibility checklist. We have not approved the launch.",
+      "url": "assets/duplex_far_open.wav",
+      "sha256": "a1c129f39915f38c07cca34f49117711e843ffbcdf323678af7ee922a98fd8ee",
+      "bytes": 266824,
+      "sample_rate": 24000,
+      "channels": 1,
+      "encoding": "PCM signed 16-bit little-endian WAV"
+    },
+    {
+      "id": "duplex_near_mid",
+      "side": "near",
+      "at_seconds": 33,
+      "duration_seconds": 6.134,
+      "end_seconds": 39.134,
+      "voice": "Samantha",
+      "rate_wpm": 190,
+      "script": "We decided the practice demo is on Tuesday. The example budget is forty two dollars. Do not send email.",
+      "url": "assets/duplex_near_mid.wav",
+      "sha256": "c450834446990821591e6a3941bc8b7332aa153e2cacfd7e1ec0574643140e3a",
+      "bytes": 294510,
+      "sample_rate": 24000,
+      "channels": 1,
+      "encoding": "PCM signed 16-bit little-endian WAV"
+    },
+    {
+      "id": "duplex_far_mid",
+      "side": "far",
+      "at_seconds": 44,
+      "duration_seconds": 4.981792,
+      "end_seconds": 48.981792,
+      "voice": "Daniel",
+      "rate_wpm": 190,
+      "script": "The purchase idea is cancelled. We still need to ask which room has a step free entrance.",
+      "url": "assets/duplex_far_mid.wav",
+      "sha256": "d56fb379699bbfe43829e138ac266b093d9238b03ba34e1f9a9932c7de1414ab",
+      "bytes": 239204,
+      "sample_rate": 24000,
+      "channels": 1,
+      "encoding": "PCM signed 16-bit little-endian WAV"
+    },
+    {
+      "id": "duplex_overlap",
+      "side": "near",
+      "at_seconds": 48,
+      "duration_seconds": 3.051042,
+      "end_seconds": 51.051042,
+      "voice": "Samantha",
+      "rate_wpm": 190,
+      "script": "Amber seven agrees: no purchase and no launch approval.",
+      "url": "assets/duplex_overlap.wav",
+      "sha256": "5eab90fbb547854d954d7e0feaba426ecbdae43cd34d8133ccf5f02d04004f1d",
+      "bytes": 146528,
+      "sample_rate": 24000,
+      "channels": 1,
+      "encoding": "PCM signed 16-bit little-endian WAV"
+    },
+    {
+      "id": "duplex_far_late",
+      "side": "far",
+      "at_seconds": 67,
+      "duration_seconds": 5.855042,
+      "end_seconds": 72.855042,
+      "voice": "Daniel",
+      "rate_wpm": 190,
+      "script": "Record QA is the only project for these practice notes. This is not a request to execute the tasks.",
+      "url": "assets/duplex_far_late.wav",
+      "sha256": "6de941d27eb6ec55ff8645079a7120d63176017923338141dd1d18095b5fcf65",
+      "bytes": 281120,
+      "sample_rate": 24000,
+      "channels": 1,
+      "encoding": "PCM signed 16-bit little-endian WAV"
+    },
+    {
+      "id": "duplex_near_late",
+      "side": "near",
+      "at_seconds": 82,
+      "duration_seconds": 4.173708,
+      "end_seconds": 86.173708,
+      "voice": "Samantha",
+      "rate_wpm": 190,
+      "script": "My typed note says accessibility and venue route matter. Keep that note verbatim.",
+      "url": "assets/duplex_near_late.wav",
+      "sha256": "0c95e5836096d3d26d450163c60b68a5210a8c7d5c900c0901804c70c23b5295",
+      "bytes": 200416,
+      "sample_rate": 24000,
+      "channels": 1,
+      "encoding": "PCM signed 16-bit little-endian WAV"
+    },
+    {
+      "id": "duplex_tail",
+      "side": "far",
+      "at_seconds": 96,
+      "duration_seconds": 2.422292,
+      "end_seconds": 98.422292,
+      "voice": "Daniel",
+      "rate_wpm": 190,
+      "script": "Cobalt nine: confirm the venue route.",
+      "url": "assets/duplex_tail.wav",
+      "sha256": "5aac78de96f05a25eae1a4295fa2f4e1ebf0323818c46470f5ea74467dff9a1f",
+      "bytes": 116348,
+      "sample_rate": 24000,
+      "channels": 1,
+      "encoding": "PCM signed 16-bit little-endian WAV"
+    }
+  ],
+  "typed_note": "accessibility + venue route matter; no launch approval, no purchase, no email",
+  "expected_card_policy": "Only catalogue and add stated commitments to the disposable Record QA project. Do not execute tasks, send emails or buy anything."
+}

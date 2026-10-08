@@ -1,0 +1,72 @@
+{
+  "method": "synthetic HTTP backend acceptance, NOT native capture",
+  "url": "http://127.0.0.1:3002",
+  "startedUtc": "2026-10-08T01:53:17Z",
+  "checks": [],
+  "tokenLogged": false,
+  "recordingId": "synthetic-http-bc6557c005",
+  "fixtureBody": "## Your notes\nSynthetic QA only. No external actions authorized.\n\n## Transcript\n[00:02] Riley: This is a synthetic meeting for Record acceptance. I will draft the amber launch checklist by Friday.\n[00:14] Morgan: The equipment purchase is cancelled. Do not buy equipment. Do not send any email. The launch is not approved.\n[00:49] Morgan: Final commitment: Morgan will confirm the venue step-free route by Tuesday.",
+  "projects": [
+    {
+      "project": {
+        "id": "01a11937-05c6-7d70-87ad-670c2ffae12f",
+        "name": "Record HTTP QA Amber Launch bc6557c005"
+      },
+      "base": "/api/projects/01a11937-05c6-7d70-87ad-670c2ffae12f",
+      "payload": {
+        "title": "Synthetic Amber Launch meeting",
+        "body": "## Your notes\nSynthetic QA only. No external actions authorized.\n\n## Transcript\n[00:02] Riley: This is a synthetic meeting for Record acceptance. I will draft the amber launch checklist by Friday.\n[00:14] Morgan: The equipment purchase is cancelled. Do not buy equipment. Do not send any email. The launch is not approved.\n[00:49] Morgan: Final commitment: Morgan will confirm the venue step-free route by Tuesday.",
+        "kind": "meeting",
+        "recordingId": "synthetic-http-bc6557c005"
+      },
+      "savedNoteId": "mn-548027db1a6d11b10821a0362275a271",
+      "initialReceipt": {
+        "id": "mt-9f102f14a490ec278ad742cf2a65b3ad",
+        "projectId": "01a11937-05c6-7d70-87ad-670c2ffae12f",
+        "recordingId": "synthetic-http-bc6557c005",
+        "noteId": "mn-548027db1a6d11b10821a0362275a271",
+        "status": "pending",
+        "attemptCount": 0,
+        "orchestratorName": "Aria",
+        "idempotentRecording": true,
+        "cardIds": [],
+        "truncated": false,
+        "created": true
+      },
+      "columns": [
+        {
+          "id": "01a11937-05ca-7760-b1a4-9b52f242c108",
+          "projectId": "01a11937-05c6-7d70-87ad-670c2ffae12f",
+          "name": "Backlog",
+          "position": 0,
+          "columnKind": "manual",
+          "stateBinding": null,
+          "wipLimit": null,
+          "createdAt": "2026-10-08T01:53:18.794Z"
+        },
+        {
+          "id": "01a11937-05cb-7251-8045-fef9456e4056",
+          "projectId": "01a11937-05c6-7d70-87ad-670c2ffae12f",
+          "name": "Doing",
+          "position": 1,
+          "columnKind": "manual",
+          "stateBinding": null,
+          "wipLimit": null,
+          "createdAt": "2026-10-08T01:53:18.795Z"
+        },
+        {
+          "id": "01a11937-05cb-7251-8045-ff043fcdea39",
+          "projectId": "01a11937-05c6-7d70-87ad-670c2ffae12f",
+          "name": "Done",
+          "position": 2,
+          "columnKind": "manual",
+          "stateBinding": null,
+          "wipLimit": null,
+          "createdAt": "2026-10-08T01:53:18.795Z"
+        }
+      ]
+    }
+  ],
+  "error": "'Request' object has no attribute 'method'",
+  "passed": false
+}

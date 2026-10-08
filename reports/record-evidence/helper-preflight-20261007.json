@@ -1,0 +1,8 @@
+{
+  "helper": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/permagent-audiocap-preflight-review",
+  "sha256": "490f4e56bda9a67ce96b2a62aa441f1ae2fc099a07c531ec38a3bd0c30cfc701",
+  "preflight_exit_code": 0,
+  "preflight_stdout": "",
+  "preflight_stderr": "PREFLIGHT PERMAGENT_AUDIOCAP_EXISTING_PERMISSION_V1 granted\n",
+  "capture_started": false
+}

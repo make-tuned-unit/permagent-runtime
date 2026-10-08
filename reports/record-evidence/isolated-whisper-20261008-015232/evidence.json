@@ -1,0 +1,53 @@
+{
+  "method": "direct synthetic 16k mono WAV upload, NOT native capture",
+  "url": "http://127.0.0.1:3002",
+  "modelSha256": "7073e51db7ab02b38cc4fceeac39adc2d7a19beb98badf66aa708f4f0ac71aa9",
+  "tokenLogged": false,
+  "results": [
+    {
+      "cue": "mic_open",
+      "expected": "Synthetic microphone test, amber seven. For Record QA, I will draft the launch checklist by Friday. The launch is not approved. Do not send any email.",
+      "sourceSha256": "6c0020c1d3c5f0b6fa417e7be4d1fa764545369e451e82b762525efc0352f5e6",
+      "durationSeconds": 8.9551875,
+      "uploadedSha256": "fade8a2cb16528d0181d150dbf20b6f1dfe71d2684139178d7475a40f323491a",
+      "elapsedSeconds": 20.381,
+      "observed": "Synthetic Microphone Test, Amber 7, for Record QA, I will draft the launch checklist by Friday. The launch is not approved, do not send any email.",
+      "checks": {
+        "commitment": true,
+        "launch_negation": true,
+        "no_email": true
+      },
+      "passed": true
+    },
+    {
+      "cue": "far_open",
+      "expected": "Synthetic remote participant, cobalt nine. I will review the accessibility checklist. The old idea to buy equipment is cancelled. Do not create a purchase task.",
+      "sourceSha256": "b4d3a23a835bdb2d5e1249f701ffc26c1fc66c4f9cd6a0f593a5796e6b10a92d",
+      "durationSeconds": 10.043875,
+      "uploadedSha256": "fc8bdcf81772f168171ec224eba6425b3b184a17b1f9dd94f56523380d2e95a1",
+      "elapsedSeconds": 1.905,
+      "observed": "synthetic remote participant, cobalt 9, I will review the accessibility checklist. The old idea to buy equipment is cancelled, do not create a purchase task.",
+      "checks": {
+        "commitment": true,
+        "cancelled_purchase": true,
+        "no_purchase_task": true
+      },
+      "passed": true
+    },
+    {
+      "cue": "far_tail",
+      "expected": "Cobalt nine final commitment: confirm the venue step free route.",
+      "sourceSha256": "5b031422135c64d6ce7d814931becb0b67a30bf6dfc526f014158eed30f8e882",
+      "durationSeconds": 3.803375,
+      "uploadedSha256": "f0c506bdb90f1981a4c8377fa163715305ea7c8b2ac11b32f59d1119c576d764",
+      "elapsedSeconds": 0.802,
+      "observed": "the Bould-9 Final Commitment, confirm the venue step-free route.",
+      "checks": {
+        "final_commitment": true,
+        "venue_tail": true
+      },
+      "passed": true
+    }
+  ],
+  "passed": true
+}

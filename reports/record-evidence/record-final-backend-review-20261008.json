@@ -1,0 +1,160 @@
+{
+  "verifiedUtc": "2026-10-08T03:04:01.425484+00:00",
+  "method": "read-only evidence and two SQLite query_only snapshots; no API calls, inference, or runtime mutation",
+  "httpReceipts": [
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/reports/record-evidence/isolated-meeting-http-20261008-024958-original-f9995b62.json",
+      "sha256": "80ab36811a7609984779dc5080cbe6cc9a150c21dc9991942284d90adc6fbc46",
+      "passed": true,
+      "checks": 40,
+      "failedChecks": []
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/reports/record-evidence/isolated-meeting-http-20261008-025035-paraphrase-a-9ce86708.json",
+      "sha256": "e2d717a35f0ac48ebf2f6f29c3ae1389fe5863ba7d95c4a4c6dc847cc44bd502",
+      "passed": true,
+      "checks": 40,
+      "failedChecks": []
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/reports/record-evidence/isolated-meeting-http-20261008-025302-paraphrase-b-5fd0216b.json",
+      "sha256": "737b03f037847b273d0fccbb4e9c21b68eed36133ece08a2034c6d75aee2f4fe",
+      "passed": true,
+      "checks": 40,
+      "failedChecks": []
+    }
+  ],
+  "projectAssociations": [
+    {
+      "projectId": "01a1196a-e857-7761-b6bd-1d9a12ccb304",
+      "noteId": "mn-e079208d7ce2abe3cd29d2f72267a351",
+      "memoryKey": "note:01a1196a-e857-7761-b6bd-1d9a12ccb304:mn-e079208d7ce2abe3cd29d2f72267a351",
+      "memoryCount": 1,
+      "associationCount": 1,
+      "passed": true
+    },
+    {
+      "projectId": "01a1196a-e880-7022-873b-d08fc056863b",
+      "noteId": "mn-7721a2ced7637c4a21f5aa3163cc6546",
+      "memoryKey": "note:01a1196a-e880-7022-873b-d08fc056863b:mn-7721a2ced7637c4a21f5aa3163cc6546",
+      "memoryCount": 1,
+      "associationCount": 1,
+      "passed": true
+    },
+    {
+      "projectId": "01a1196b-784e-7f30-b066-ae582452c488",
+      "noteId": "mn-1067b957df6dbc94788190ee63023461",
+      "memoryKey": "note:01a1196b-784e-7f30-b066-ae582452c488:mn-1067b957df6dbc94788190ee63023461",
+      "memoryCount": 1,
+      "associationCount": 1,
+      "passed": true
+    },
+    {
+      "projectId": "01a1196b-7876-7d61-b673-1ba50dbf6535",
+      "noteId": "mn-0e94824e1686e99b48a2e16391aeaabc",
+      "memoryKey": "note:01a1196b-7876-7d61-b673-1ba50dbf6535:mn-0e94824e1686e99b48a2e16391aeaabc",
+      "memoryCount": 1,
+      "associationCount": 1,
+      "passed": true
+    },
+    {
+      "projectId": "01a1196d-b5c3-73c1-a386-bb2d8041f4b5",
+      "noteId": "mn-6ea08cfb477b5ccb74596104c5be506d",
+      "memoryKey": "note:01a1196d-b5c3-73c1-a386-bb2d8041f4b5:mn-6ea08cfb477b5ccb74596104c5be506d",
+      "memoryCount": 1,
+      "associationCount": 1,
+      "passed": true
+    },
+    {
+      "projectId": "01a1196d-b5eb-7d53-a498-e6c5f75b222d",
+      "noteId": "mn-320b8b9b170eb3516af34af5e528b86c",
+      "memoryKey": "note:01a1196d-b5eb-7d53-a498-e6c5f75b222d:mn-320b8b9b170eb3516af34af5e528b86c",
+      "memoryCount": 1,
+      "associationCount": 1,
+      "passed": true
+    }
+  ],
+  "captures": [
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/record-qa-runtime/capture-evidence/chrome-272dc6f4655f4ce3925981ac4b38802e/capture.json",
+      "helperSha256": "490f4e56bda9a67ce96b2a62aa441f1ae2fc099a07c531ec38a3bd0c30cfc701",
+      "capturePassed": false,
+      "ready": true,
+      "sourceVerified": true,
+      "exitCode": 0,
+      "readersJoined": true,
+      "error": null,
+      "chunks": [
+        {
+          "durationSeconds": 45.0,
+          "peak": 0,
+          "rms": 0.0,
+          "afterStopSignal": false
+        },
+        {
+          "durationSeconds": 30.22,
+          "peak": 0,
+          "rms": 0.0,
+          "afterStopSignal": true
+        }
+      ]
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/record-qa-runtime/capture-evidence/chrome-44e18d46f3824db386f6d784ab9a06e4/capture.json",
+      "helperSha256": "bde9c66f1259b244a293620b258ab9dacd15617d8a1c819be0e4de9402934db7",
+      "capturePassed": false,
+      "ready": true,
+      "sourceVerified": true,
+      "exitCode": 0,
+      "readersJoined": true,
+      "error": null,
+      "chunks": [
+        {
+          "durationSeconds": 45.0,
+          "peak": 0,
+          "rms": 0.0,
+          "afterStopSignal": false
+        },
+        {
+          "durationSeconds": 30.04,
+          "peak": 0,
+          "rms": 0.0,
+          "afterStopSignal": true
+        }
+      ]
+    }
+  ],
+  "reviewConclusion": {
+    "backend": "No additional confirmed severe backend defect found in this bounded source/evidence review. The association acknowledgement defect is fixed in source and its real database regression passed, but the running HTTP-tested daemon predates that final patch.",
+    "associationRegressionLog": "reports/world-production/record-backend-tests-20261007-235901.log",
+    "associationRegression": "1 passed; 0 failed; temporary SafeBrain/SQLite failure then retry without duplicate memory/link",
+    "capture": "Unresolved acceptance blocker separate from CUA window availability: two actual app-scoped helper runs emitted only zero-amplitude PCM. Correct SOURCE/READY and final flush prove lifecycle/protocol, not usable audio. Cause remains unproven.",
+    "nativeUi": "Full Record lifecycle, real mic plus far-side call, native IPC/frontend assembly/save and interruption recovery have not passed integrated Computer Use acceptance.",
+    "historicalData": "Three older completed synthetic triages retained notes/cards/catalogue content but lacked project association after the obsolete installed sidecar drained their backlog. Repair via original idempotent recording payload remains pending in this review.",
+    "coverageLimits": [
+      "120 checks cover three short paraphrases across six selected projects, not arbitrary meeting accuracy, long calls, diarization or every failure mode.",
+      "The backend routes tasks to the project selected by the recording; this does not prove autonomous cross-project inference.",
+      "Cards are deliberately unassigned and unexecuted; owner/deadline text is not structured task scheduling.",
+      "The direct Whisper upload fixtures passed three synthetic clips with negation/final-tail cues, but do not validate recording device capture.",
+      "Build/test preservation is unit-tested with temporary artifacts and fake processes; no real native build was run after the tooling patch."
+    ]
+  },
+  "subsequentOldAssociationRecovery": {
+    "verifiedUtc": "2026-10-08T03:18:03.208960+00:00",
+    "receipt": "reports/record-evidence/old-association-repair-result-d6f478916a47455da8f45648a1c94a20.json",
+    "receiptSha256": "65eb05cd7cf641e18e02b7ef4f0f2ec50dbd77405cb3404b63109f3085056efa",
+    "daemonSha256": "fba7150c0a3fbeaa1a028ef1466d673cb0dad06d8709a77cfc1153e5ff2098df",
+    "passed": true,
+    "authorizedRequests": 3,
+    "method": "original-payload immutable-hash validation then idempotent meeting-save replay, scoped read-only before/after verification",
+    "projectLinksRepaired": 3,
+    "unchangedTriages": 3,
+    "unchangedNotes": 3,
+    "unchangedCards": 4,
+    "unchangedSessionMessages": 9,
+    "exactOneCatalogueMemoryPerNote": true,
+    "fullEnhancedBodiesRetained": true,
+    "allThreeNoteOutboxesEmpty": true,
+    "scope": "Only the three historical baseline projects. Concurrent new QA projects excluded. Earlier review conclusions retained as historical evidence."
+  }
+}

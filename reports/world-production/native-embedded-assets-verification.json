@@ -1,63 +1,38 @@
 {
-  "native_build_sha256": "b174c9275d390a151e624553b66d8c308578ae1f7592c3093c73c7a34dc7e998",
+  "native_build_sha256": "7102f0b9f6f1de92be39d32e43a9d4f2a7bce001190dabbf4d84b579bcbeafd0",
   "embedded_review_identifier": true,
   "embedded_review_name": true,
   "native_asset_base": "/",
   "verified_exact_dist_assets": [
     {
-      "path": "assets/App-CMEY9UZS.js",
-      "sha256": "291cf626a14d4fe6f6e364367944b105b1278710d097a072920300cd991425d9",
-      "bytes": 1264012
+      "path": "assets/App-DZlDimIq.js",
+      "sha256": "b6d06520e4330f95101aef6fb0a28d388206c35df21b9c84f8da32b8f97b0fc2",
+      "bytes": 2482143
     },
     {
-      "path": "assets/Button-BZRZQ4R5.js",
-      "sha256": "d166ad68b2c8b854535dd17abde65dd5f5852a72cadc3715cf13a69da1b5a343",
-      "bytes": 77459
+      "path": "assets/ChatApp-CTu4DeEb.js",
+      "sha256": "8fda268934d376a3a90bb88975fdc5582ba6b76d33b82999e0815bdccc1c1b4e",
+      "bytes": 16434
     },
     {
-      "path": "assets/ChatApp-BBuEe7o3.js",
-      "sha256": "8bf9b4781d2c1dfd108bd892fe283a3892a1da554cab492b3a3a044065a59a16",
-      "bytes": 16493
+      "path": "assets/ForumAppView-B1LVPWf6.css",
+      "sha256": "ed951924a090bef3ee3706bf253a12c145680edc5b57b1eb1d6298cf844e59ed",
+      "bytes": 23076
     },
     {
-      "path": "assets/CyborgTest-DDO1Vooi.js",
-      "sha256": "e5755cd50a71a695b2918e5f2c429863734673eb4ff19a368ff49246af22b452",
-      "bytes": 13341
+      "path": "assets/ForumAppView-N8jpx5Qx.js",
+      "sha256": "01f89baab2f7092986e75c6ff01c26a7ed7a9edd99fa9f463f871d17460925f7",
+      "bytes": 276336
     },
     {
-      "path": "assets/ForumAppView-BKmXFjHg.js",
-      "sha256": "552adda69013116eef786bbea4e9946ba1aa0a066191be8d7290854fc43ccf02",
-      "bytes": 261484
+      "path": "assets/IdentityUnlinked-CLPPkd-A.js",
+      "sha256": "1239da350189d3f2affff5987c81587f708028e76caf128ce87ffc8aea9ed048",
+      "bytes": 264707
     },
     {
-      "path": "assets/ForumAppView-Bt9dH_Op.css",
-      "sha256": "aeeeeb5d2209d366c2da62966b208a04f7fcd806615d1f9209b17e82c2e154cd",
-      "bytes": 22231
-    },
-    {
-      "path": "assets/OrbitControls-C4dvb15l.js",
-      "sha256": "a3fb14f20f86941aa9725e6fc053d3ec7905d9892765231bc8c0ab674127bd57",
-      "bytes": 886937
-    },
-    {
-      "path": "assets/PaneWindowApp-DM9ELD9i.js",
-      "sha256": "c9c0be804ae29a0c774f5f62d5b3073ca77502e67f4ac24f6ee9a69ecab3d413",
-      "bytes": 2308
-    },
-    {
-      "path": "assets/ProviderModelPicker-BmjTOWzL.js",
-      "sha256": "b1cc1e814ed21565fb6ad3406b22cda710bc52059eb946316d25b98de268ee4a",
-      "bytes": 48838
-    },
-    {
-      "path": "assets/Stargate-1Cla06r9.js",
-      "sha256": "b37e7636a92379a0ad36831e92591fb489c7cd4b22470d0488081ebd7b4cdcb9",
-      "bytes": 6290
-    },
-    {
-      "path": "assets/StargateTest-DFP5mXOg.js",
-      "sha256": "5b65128cb8445137e49a57f0df197e59f6485e6824f5dbf55547f380b4d85cc7",
-      "bytes": 1247
+      "path": "assets/PaneWindowApp-D04M41mY.js",
+      "sha256": "e790942fd43145da1bcce8ee09c9c33d8d5d5796dcf0763bb277b656cd5f3f29",
+      "bytes": 2161
     },
     {
       "path": "assets/TerminalManager-9CEnUXvW.css",
@@ -65,9 +40,14 @@
       "bytes": 5752
     },
     {
-      "path": "assets/TerminalManager-D0tyRqFr.js",
-      "sha256": "b763ee16df6e6047b8be339f08328617c7f2627760b15683690dc73b51912fde",
-      "bytes": 436129
+      "path": "assets/TerminalManager-BKz_UyTe.js",
+      "sha256": "969e25832ef5a0f641f82e7628d068c20553667790393020a0b01218801c3c2e",
+      "bytes": 437061
+    },
+    {
+      "path": "assets/VoiceOrb-B9-imPf0.js",
+      "sha256": "af61553bbe94591043ca62f4c0225de87899addf5a9e6826069b9518c296c310",
+      "bytes": 260765
     },
     {
       "path": "assets/VoiceOrb-B9Z7D9kT.css",
@@ -75,14 +55,9 @@
       "bytes": 1035
     },
     {
-      "path": "assets/VoiceOrb-teHovlrh.js",
-      "sha256": "c89da298d6aa6d3ddef0ea52a2938ed8bb26439d0672e3960f64e259d6d1f93d",
-      "bytes": 260985
-    },
-    {
-      "path": "assets/WorldView-C_EDnqb-.js",
-      "sha256": "70ff42d33ea0665ce380591d2dba436eff2f46f273e5c547a684f5e9da533121",
-      "bytes": 130451
+      "path": "assets/WorldView-Biafhotf.js",
+      "sha256": "db58dec8b4f193e59c82e7210bec7023abb25f79af44eb4886f15cf304d2ac74",
+      "bytes": 136545
     },
     {
       "path": "assets/abap-BdImnpbu.js",
@@ -130,9 +105,9 @@
       "bytes": 24039
     },
     {
-      "path": "assets/app-CAxynJ95.js",
-      "sha256": "86f5b9188eb1f89281849547f50712f6b4b2d57a7f0999e60a86f6126d26fad0",
-      "bytes": 1373
+      "path": "assets/app-BpU86nWW.js",
+      "sha256": "7011ecb4a9b5a2701a9146f0acd7156b665c84809dbb6f83fe4ce1a26d77b013",
+      "bytes": 1350
     },
     {
       "path": "assets/applescript-Co6uUVPk.js",
@@ -270,9 +245,9 @@
       "bytes": 47255
     },
     {
-      "path": "assets/ccip-Bb7Jhy8y.js",
-      "sha256": "68936b3b7bafa6aa9ac03dff83de8a292842e64e0a12068a27875ff23d9d202a",
-      "bytes": 3442
+      "path": "assets/ccip-B83m2R5E.js",
+      "sha256": "0c12c149025964db1dfd41d8a8c030bc152834834c5d37302967f40ed833ec70",
+      "bytes": 3180
     },
     {
       "path": "assets/clarity-D53aC0YG.js",
@@ -318,11 +293,6 @@
       "path": "assets/coq-DkFqJrB1.js",
       "sha256": "142db296843c6d3167305b3c9da4abee5ac6bf9c901947299e0853fce02216f3",
       "bytes": 5526
-    },
-    {
-      "path": "assets/core-DhEqZVGG.js",
-      "sha256": "8261a5e51510afea7347ee6c40e783127639b88b158982711196012d6d50ceb3",
-      "bytes": 2441
     },
     {
       "path": "assets/cpp-CofmeUqb.js",
@@ -715,44 +685,34 @@
       "bytes": 2648
     },
     {
-      "path": "assets/identityStore-C6WICo42.js",
-      "sha256": "1aca587e4f7775ebe05b17bdfa0cad5d043f0e5aa7a036f2dd7a0265b83d5fa9",
-      "bytes": 540690
-    },
-    {
       "path": "assets/imba-DGztddWO.js",
       "sha256": "73402caea94e54100c970c652577abf4995f79310e7528744b46a37227057e35",
       "bytes": 49930
     },
     {
-      "path": "assets/index-Bo3hHm2A.js",
-      "sha256": "68c26d2243093984372ce3f02a74237c2bc7093fa2d9f39867be7fef07a09cd1",
-      "bytes": 195865
+      "path": "assets/index-ADzQG2Vd.js",
+      "sha256": "674315066fd17d68f84431df485c071a68d7b2ca1fe42fe8b362e9e64153a901",
+      "bytes": 2229
     },
     {
-      "path": "assets/index-Bwqv-ILf.css",
-      "sha256": "cf0b7f574f28b9ec3cf17bccdbd69f5c62bf8fcd6977105ac14cbe86297f06cb",
-      "bytes": 34130
+      "path": "assets/index-BBJ1dAob.js",
+      "sha256": "6b7529612a5532884c246f12429b4b889f423dbf7d09638ec942d97052864a94",
+      "bytes": 144471
     },
     {
-      "path": "assets/index-Cm0B3diT.js",
-      "sha256": "a6c407e2dce00938b6ac1d13d268f0c71f2e9ffd1027954ffdb8024b4cb71a44",
-      "bytes": 144921
+      "path": "assets/index-DY4dJJ0T.js",
+      "sha256": "55f4b1a796c8c8124c791b0fa0e8a19ac906c6d1d49c99aa5d3c4de5bac4570f",
+      "bytes": 195738
     },
     {
-      "path": "assets/index-F3_Uwzbp.js",
-      "sha256": "969d4bac4348b48c0aa7888a9ba528727dd4885a4beb25e285b5a4ec433b758f",
-      "bytes": 2214
+      "path": "assets/index-rW7TQwqh.css",
+      "sha256": "0696ec32e25b20b87196791c152774481e315982737fec2f916f148fb8bc23c7",
+      "bytes": 34149
     },
     {
       "path": "assets/ini-BEwlwnbL.js",
       "sha256": "7830e62a2a96e22c418b5a1e52ba15545ece3c5684346dd50fc174a60b3c225f",
       "bytes": 1525
-    },
-    {
-      "path": "assets/instancing-CUUqqdyk.js",
-      "sha256": "fdfacc4eab3fec0134d3c4a0c66b0cb131e65cd553bc50d8ed85f6ca3b82519e",
-      "bytes": 686
     },
     {
       "path": "assets/java-CylS5w8V.js",
@@ -1095,14 +1055,9 @@
       "bytes": 2824
     },
     {
-      "path": "assets/palette-f0DEDhWg.js",
-      "sha256": "878a627d294b9d0383df2a166889a2bb567ccbef6f63611fa4429fa66334520e",
-      "bytes": 630
-    },
-    {
-      "path": "assets/paneWindows-ByoxUU21.js",
-      "sha256": "dfeda1a8ed7ad0bf2837ae78155829bdd9393c5c427ae3c30de4ea1bc5dafd59",
-      "bytes": 1515
+      "path": "assets/paneWindows-DJkB2HiX.js",
+      "sha256": "9e796dcb54f589b1664ae93728aea268c2c514018de3f4278733efd4793804f7",
+      "bytes": 1478
     },
     {
       "path": "assets/pascal-D93ZcfNL.js",
@@ -1110,9 +1065,9 @@
       "bytes": 4150
     },
     {
-      "path": "assets/path-DpyQXOHZ.js",
-      "sha256": "48fd803aef77740a84066e242113e709745b174698a4b07f0cd0be7a28ccf71a",
-      "bytes": 3766
+      "path": "assets/path-IJJlDA_Y.js",
+      "sha256": "7580768d10ea11a21d546365f65ac60929f3fc997df5b12521b6c1f818aed8dd",
+      "bytes": 3791
     },
     {
       "path": "assets/perl-NvoQZIq0.js",
@@ -1520,11 +1475,6 @@
       "bytes": 9669
     },
     {
-      "path": "assets/tokens-B2HVmq71.js",
-      "sha256": "6c21ea478779a13fb0d37f4b3b4cf97e9c2595d48cb62330dce62ea33c24be31",
-      "bytes": 10802
-    },
-    {
       "path": "assets/tokyo-night-hegEt444.js",
       "sha256": "e00a860ce7f328571e523246063124ac104fd16c7c4a1939985c04e2912dc8dc",
       "bytes": 35665
@@ -1655,9 +1605,9 @@
       "bytes": 12007
     },
     {
-      "path": "assets/webviewWindow-CyKH0wgN.js",
-      "sha256": "8c7c36b8b1718d5839d6f1bcbb1bbd091b44d265073d031099fdafe42518e46b",
-      "bytes": 4837
+      "path": "assets/webviewWindow-uEuDe6fv.js",
+      "sha256": "eb0d627ca25eaaccbdd4b09e0acf874bfbc15aca5614faa42d0337075daca10a",
+      "bytes": 4833
     },
     {
       "path": "assets/wenyan-BV7otONQ.js",
@@ -1675,9 +1625,9 @@
       "bytes": 55885
     },
     {
-      "path": "assets/window-DNEYcgYm.js",
-      "sha256": "1b081283e8a15a2b3289a46b26d2fc8eaf244c2e1cd3a6a070d28c65dc6b0df0",
-      "bytes": 15670
+      "path": "assets/window-DLcVXhDc.js",
+      "sha256": "530773bbeb94e63e5acf893245bedead79bb036a7ff79e45e66ac55acf50975f",
+      "bytes": 155909
     },
     {
       "path": "assets/wit-5i3qLPDT.js",
@@ -2935,129 +2885,14 @@
       "bytes": 112860
     },
     {
+      "path": "world/fal-vista-20261007/manifest.json",
+      "sha256": "58a2635ce39ffa26f374f52006d5cbbd30aee3e966c3ff30933c28b90796454b",
+      "bytes": 676
+    },
+    {
       "path": "world/forum-bird.glb",
       "sha256": "efcfed66e135bc71481ebcb17dc4f5a7d18abdde773985bce1216dd13f048c08",
       "bytes": 20788
-    },
-    {
-      "path": "world/forum-characters/council.glb",
-      "sha256": "d617f57a20e90751417012793e1c9af42b5e0488dd9eb14f9c206ff4bb4c99c4",
-      "bytes": 455716
-    },
-    {
-      "path": "world/forum-characters/council.png",
-      "sha256": "8fcc03f763fb0fdcf9d11b6e36170a7cc0b97e454579996f9f24356e3d16152c",
-      "bytes": 129431
-    },
-    {
-      "path": "world/forum-characters/financier.glb",
-      "sha256": "2ea33078645efb9d254046e38c89a4812aadd0a8af296c78f3a32c4f5604630a",
-      "bytes": 407532
-    },
-    {
-      "path": "world/forum-characters/financier.png",
-      "sha256": "4ea3adf98a74effeeabc4fcc2eb45614570e101b543639468d26c2a4fdd35bb8",
-      "bytes": 125016
-    },
-    {
-      "path": "world/forum-characters/forecaster.glb",
-      "sha256": "f50971202dee87c8434e9da3f65fed50332fc9aeb475d852815599a31aea913b",
-      "bytes": 451360
-    },
-    {
-      "path": "world/forum-characters/forecaster.png",
-      "sha256": "458e2ae21b9bb79da9816647b7f81257b3ec791f4f4906af6d26c74b6c4e5e18",
-      "bytes": 128936
-    },
-    {
-      "path": "world/forum-characters/growth_measurement.glb",
-      "sha256": "50f213f04bda2fcfb5c4576b56fbafba705df2ab8346b0f65ab5333448138661",
-      "bytes": 447248
-    },
-    {
-      "path": "world/forum-characters/growth_measurement.png",
-      "sha256": "cedd6578de929c6e100722137169568cb8d08c41376a995c2334d741ca455681",
-      "bytes": 131441
-    },
-    {
-      "path": "world/forum-characters/henry.glb",
-      "sha256": "6b678bdef888f30114e651183583e1040c7149351d036217a941598efe690654",
-      "bytes": 407524
-    },
-    {
-      "path": "world/forum-characters/henry.png",
-      "sha256": "ef969aa0d424f6b7719f753223c618106bae02d0fcde3de7b37cd4e7bafb7c66",
-      "bytes": 124312
-    },
-    {
-      "path": "world/forum-characters/librarian.glb",
-      "sha256": "a740ccffcedd1727d8868baadb1f2eaf35fe8fcff3e09e824e517c3b8b5a3a12",
-      "bytes": 533136
-    },
-    {
-      "path": "world/forum-characters/librarian.png",
-      "sha256": "2f39b5931fb6f86af7e114f294704ff4ccc52f06b2686de6d38833d5bb39a514",
-      "bytes": 128987
-    },
-    {
-      "path": "world/forum-characters/picker.glb",
-      "sha256": "029ccce3b8c8fda2a4ffd37eb8ce6b483f17fc9626ace7a10c4dd8b8fc43f65b",
-      "bytes": 387980
-    },
-    {
-      "path": "world/forum-characters/picker.png",
-      "sha256": "2a15ee3043524d24f99eab38aaf86f6d2734ba922d5ab1ef3cc3c1f50825fc5c",
-      "bytes": 126307
-    },
-    {
-      "path": "world/forum-characters/polybot.glb",
-      "sha256": "d16e86064d26cf675af8ce0ceba521be5c642e8dae5caf14016024a06934ac93",
-      "bytes": 433036
-    },
-    {
-      "path": "world/forum-characters/polybot.png",
-      "sha256": "40c356e1452abcb74ee858e4d419a6b0725eb1e5c3f316f1bb23ce2632c4e6be",
-      "bytes": 124300
-    },
-    {
-      "path": "world/forum-characters/reader.glb",
-      "sha256": "db635b022df60bd21a7064d0a8a27462c7f3de1914c14aa54a534db6d1fb440e",
-      "bytes": 357356
-    },
-    {
-      "path": "world/forum-characters/reader.png",
-      "sha256": "4d0295e45e1ec61bc4a64178d5716b82aa8acf7dfa10e1f70f75c8fdda2487c6",
-      "bytes": 123014
-    },
-    {
-      "path": "world/forum-characters/steward.glb",
-      "sha256": "4a7e7a69a3240b945a74a720f744cde12fbe3870fcd1d664efc3b4898d302979",
-      "bytes": 407324
-    },
-    {
-      "path": "world/forum-characters/steward.png",
-      "sha256": "74c48003adf7d3920fd619337b6eab07b9aeac3f4f5736d55bf9597ed09538a0",
-      "bytes": 121002
-    },
-    {
-      "path": "world/forum-characters/strix.glb",
-      "sha256": "fc6f59f66c648b298c748a5ef569f504cbfbec92345e2b036c96996f1feba527",
-      "bytes": 430628
-    },
-    {
-      "path": "world/forum-characters/strix.png",
-      "sha256": "4a57c22f05643e4539e33c20cfe547b4be2ae4c49c377691010ca8b72e523e17",
-      "bytes": 132606
-    },
-    {
-      "path": "world/forum-characters/watcher.glb",
-      "sha256": "048e3fe11a52adacfa47bb7ac412457f6f403e3b3052d7b8031be0496cf7b42a",
-      "bytes": 384408
-    },
-    {
-      "path": "world/forum-characters/watcher.png",
-      "sha256": "7b02d2c6bbfda9eecbae238fcc824ebee694a1938adfd77428c477163e7ed93e",
-      "bytes": 128660
     },
     {
       "path": "world/forum-ship.glb",

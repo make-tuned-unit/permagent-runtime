@@ -1,0 +1,14 @@
+[
+  {
+    "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/staged/Permagent World Review.app",
+    "pid": 13222,
+    "logicalBytes": 1009243722,
+    "reason": "obsolete reproducible review bundle; current r2 retained"
+  },
+  {
+    "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/staged/Permagent Record Review.app",
+    "pid": 71582,
+    "logicalBytes": 1020326845,
+    "reason": "obsolete reproducible review bundle; current r2 retained"
+  }
+]

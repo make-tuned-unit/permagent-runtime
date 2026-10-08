@@ -1,0 +1,23 @@
+{
+  "command": [
+    "/Users/j/Documents/dev/permagent-runtime/bin/cargo",
+    "test",
+    "-p",
+    "permagent",
+    "brain_feed::tests::note_association_failure_retains_job_and_retry_does_not_duplicate",
+    "--lib",
+    "--locked"
+  ],
+  "log": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/reports/world-production/record-backend-tests-20261007-235901.log",
+  "exit_code": 0,
+  "reason": null,
+  "cleanup_error": null,
+  "owned_group_stopped": false,
+  "elapsed_s": 300.76,
+  "minimum_free_gib": 21.965,
+  "startup_minimum_gib": 25,
+  "continuous_floor_gib": 20,
+  "timeout_s": 1800,
+  "staged": false,
+  "launched": false
+}

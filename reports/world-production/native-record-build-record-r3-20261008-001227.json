@@ -1,0 +1,149 @@
+{
+  "revision": "record-r3",
+  "record_review": true,
+  "review_config": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/reports/world-production/native-record-review-config.json",
+  "compiled_review_root": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/record-qa-runtime",
+  "compiled_review_port": "3002",
+  "frontend_api_base": "http://127.0.0.1:3002",
+  "lane": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006",
+  "target": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006",
+  "command": [
+    "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/scripts/build-guard.sh",
+    "--min-free-gb",
+    "25",
+    "--",
+    "/Users/j/Documents/dev/permagent-runtime/bin/node",
+    "../command-center/node_modules/@tauri-apps/cli/tauri.js",
+    "build",
+    "--debug",
+    "--no-bundle",
+    "--config",
+    "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/reports/world-production/native-record-review-config.json",
+    "--",
+    "--locked",
+    "-j",
+    "1"
+  ],
+  "log": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/reports/world-production/native-record-build-record-r3-20261008-001227.log",
+  "exit_code": 0,
+  "reason": null,
+  "cleanup_error": null,
+  "owned_group_stopped": true,
+  "daemon_artifact_preservation": {
+    "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/permagentd",
+    "preexisting": true,
+    "restored": true,
+    "original_sha256": "fba7150c0a3fbeaa1a028ef1466d673cb0dad06d8709a77cfc1153e5ff2098df",
+    "backup": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/native-daemon-preservation/3665319600b7434ba27d0cce06f37eb5/permagentd",
+    "status": "restored",
+    "after_build_sha256": "fb9695d479c5786dfbb2dbe887577744b97910c0cdde7ac3aac883320a3a1810",
+    "restored_sha256": "fba7150c0a3fbeaa1a028ef1466d673cb0dad06d8709a77cfc1153e5ff2098df"
+  },
+  "daemon_preservation_error": null,
+  "elapsed_s": 48.29,
+  "minimum_free_gib": 23.247,
+  "samples": [
+    {
+      "elapsed_s": 1.05,
+      "free_gib": 25.353
+    },
+    {
+      "elapsed_s": 3.05,
+      "free_gib": 25.349
+    },
+    {
+      "elapsed_s": 5.06,
+      "free_gib": 25.35
+    },
+    {
+      "elapsed_s": 7.06,
+      "free_gib": 24.349
+    },
+    {
+      "elapsed_s": 9.07,
+      "free_gib": 24.348
+    },
+    {
+      "elapsed_s": 11.08,
+      "free_gib": 24.347
+    },
+    {
+      "elapsed_s": 13.09,
+      "free_gib": 24.347
+    },
+    {
+      "elapsed_s": 15.09,
+      "free_gib": 24.347
+    },
+    {
+      "elapsed_s": 17.1,
+      "free_gib": 24.345
+    },
+    {
+      "elapsed_s": 19.11,
+      "free_gib": 24.355
+    },
+    {
+      "elapsed_s": 21.12,
+      "free_gib": 23.355
+    },
+    {
+      "elapsed_s": 23.13,
+      "free_gib": 23.354
+    },
+    {
+      "elapsed_s": 25.14,
+      "free_gib": 23.354
+    },
+    {
+      "elapsed_s": 27.14,
+      "free_gib": 23.357
+    },
+    {
+      "elapsed_s": 29.14,
+      "free_gib": 23.343
+    },
+    {
+      "elapsed_s": 31.15,
+      "free_gib": 23.342
+    },
+    {
+      "elapsed_s": 33.16,
+      "free_gib": 23.343
+    },
+    {
+      "elapsed_s": 35.17,
+      "free_gib": 23.342
+    },
+    {
+      "elapsed_s": 37.17,
+      "free_gib": 23.34
+    },
+    {
+      "elapsed_s": 39.18,
+      "free_gib": 23.34
+    },
+    {
+      "elapsed_s": 41.19,
+      "free_gib": 23.339
+    },
+    {
+      "elapsed_s": 43.19,
+      "free_gib": 23.261
+    },
+    {
+      "elapsed_s": 45.2,
+      "free_gib": 23.247
+    },
+    {
+      "elapsed_s": 47.2,
+      "free_gib": 23.325
+    }
+  ],
+  "startup_minimum_gib": 25,
+  "continuous_floor_gib": 20,
+  "timeout_s": 1800,
+  "staged": false,
+  "launched": false,
+  "native_binary_sha256": "115516efc45e965c789152b9318ed02cf2aec2dca36494742ee6bb9ffcc62ded"
+}

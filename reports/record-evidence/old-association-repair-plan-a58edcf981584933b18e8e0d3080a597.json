@@ -1,0 +1,90 @@
+{
+  "mode": "read-only plan; zero API calls",
+  "root": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/record-qa-runtime",
+  "url": "http://127.0.0.1:3002",
+  "inputs": {
+    "restart-baseline-20261007.json": "6600eed7c6355ee86193cc363d26cde48a36f681cf3621bd28c35bcd443e6d0c",
+    "isolated-meeting-http-20261008-015317.json": "60ea1de3019faa3c5348457dd87ff13eae3efbc892020ffb176174840c8004f7",
+    "isolated-meeting-http-20261008-015348.json": "6c8b2c71ab39f3a843915611364c8b78a3393e796df5457338e13da3066c423f"
+  },
+  "before": [
+    {
+      "triageId": "mt-3de39270f313f0dfd855335ac4649012",
+      "projectId": "01a11937-7ef7-7fd0-9652-1ff4cd64ee4b",
+      "noteId": "mn-a657d2a48264d51e78f69754c23d4d6a",
+      "recordingId": "synthetic-http-281d103e14",
+      "source": "isolated-meeting-http-20261008-015348.json",
+      "payloadSha256": "8e7eb8d00412ab72b70c7174bb8c017865a85ec924b3e0b3565f0783c87774c6",
+      "originalBodySha256": "0fc7e2a8781015fd8f926ee9e9afc498c25870baf1ac042ca494f7f5d3b60979",
+      "stableStateSha256": "16a536b3eda2e65746e30ad00ff4a8a8f4c280f581396767b0ee32c772e2b284",
+      "noteCount": 1,
+      "cardIds": [
+        "mc-091cf5459056839137cf268754087c53"
+      ],
+      "messageCount": 3,
+      "memoryKey": "note:01a11937-7ef7-7fd0-9652-1ff4cd64ee4b:mn-a657d2a48264d51e78f69754c23d4d6a",
+      "memoryCount": 1,
+      "associationCount": 0,
+      "fullSavedBodyCatalogued": true,
+      "outbox": []
+    },
+    {
+      "triageId": "mt-45e64083e671874805beb06c97a54826",
+      "projectId": "01a11937-7fb5-7191-b260-f67eb5326cf4",
+      "noteId": "mn-d2748f839eeee991aef58d3952f82dc7",
+      "recordingId": "synthetic-http-281d103e14",
+      "source": "isolated-meeting-http-20261008-015348.json",
+      "payloadSha256": "3ecc0b8d06c3da5d75724f0bd81d8b8cdcdad9f842b7f610604be93f1776e9bb",
+      "originalBodySha256": "0fc7e2a8781015fd8f926ee9e9afc498c25870baf1ac042ca494f7f5d3b60979",
+      "stableStateSha256": "5b349ca00e540bff875dfa6cfab9f1a0ca0476a6dd4d0a58bbd8a58ae9edb7ea",
+      "noteCount": 1,
+      "cardIds": [
+        "mc-5b412f7bb0d08ee76913c835253d8d12"
+      ],
+      "messageCount": 3,
+      "memoryKey": "note:01a11937-7fb5-7191-b260-f67eb5326cf4:mn-d2748f839eeee991aef58d3952f82dc7",
+      "memoryCount": 1,
+      "associationCount": 0,
+      "fullSavedBodyCatalogued": true,
+      "outbox": []
+    },
+    {
+      "triageId": "mt-9f102f14a490ec278ad742cf2a65b3ad",
+      "projectId": "01a11937-05c6-7d70-87ad-670c2ffae12f",
+      "noteId": "mn-548027db1a6d11b10821a0362275a271",
+      "recordingId": "synthetic-http-bc6557c005",
+      "source": "isolated-meeting-http-20261008-015317.json",
+      "payloadSha256": "87751595313415168b73c04866b7c419bee1ecdb75226e3109b65ffaab412386",
+      "originalBodySha256": "0fc7e2a8781015fd8f926ee9e9afc498c25870baf1ac042ca494f7f5d3b60979",
+      "stableStateSha256": "15ecf231879c7f53a82295d23042577a6e9ee768981f7a9f99056406d70a8c6a",
+      "noteCount": 1,
+      "cardIds": [
+        "mc-572e6fd0c3e385100251485eaf247357",
+        "mc-8d3d08cb540f286217cc0e8674135c72"
+      ],
+      "messageCount": 3,
+      "memoryKey": "note:01a11937-05c6-7d70-87ad-670c2ffae12f:mn-548027db1a6d11b10821a0362275a271",
+      "memoryCount": 1,
+      "associationCount": 0,
+      "fullSavedBodyCatalogued": true,
+      "outbox": []
+    }
+  ],
+  "requests": [
+    {
+      "method": "POST",
+      "path": "/api/projects/01a11937-7ef7-7fd0-9652-1ff4cd64ee4b/notes",
+      "payloadSha256": "8e7eb8d00412ab72b70c7174bb8c017865a85ec924b3e0b3565f0783c87774c6"
+    },
+    {
+      "method": "POST",
+      "path": "/api/projects/01a11937-7fb5-7191-b260-f67eb5326cf4/notes",
+      "payloadSha256": "3ecc0b8d06c3da5d75724f0bd81d8b8cdcdad9f842b7f610604be93f1776e9bb"
+    },
+    {
+      "method": "POST",
+      "path": "/api/projects/01a11937-05c6-7d70-87ad-670c2ffae12f/notes",
+      "payloadSha256": "87751595313415168b73c04866b7c419bee1ecdb75226e3109b65ffaab412386"
+    }
+  ]
+}

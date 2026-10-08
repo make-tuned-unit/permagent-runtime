@@ -1,0 +1,27 @@
+{
+  "identifier": "ai.permagent.record-review-20261007",
+  "root": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/record-qa-runtime",
+  "host": "127.0.0.1",
+  "port": 3002,
+  "frontend_api_base": "http://127.0.0.1:3002",
+  "native_compile_env": {
+    "PERMAGENT_REVIEW_ROOT": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/record-qa-runtime",
+    "PERMAGENT_REVIEW_PORT": "3002",
+    "VITE_DAEMON_URL": "http://127.0.0.1:3002"
+  },
+  "daemon_lifecycle": "external only; coordinator-owned process group",
+  "suggested_stage_name": "Permagent Record Review.app",
+  "daemon_env": {
+    "PERMAGENT_PATH_ROOT": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/record-qa-runtime",
+    "PERMAGENT_DISABLE_KEYRING": "1"
+  },
+  "daemon_args": [
+    "agent",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "3002"
+  ],
+  "launched": false,
+  "staged": false
+}

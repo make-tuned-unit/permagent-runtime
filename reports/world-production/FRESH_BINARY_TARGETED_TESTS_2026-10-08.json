@@ -1,0 +1,221 @@
+{
+  "binary": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/deps/permagent-9b37c58c9d9d9d6c",
+  "binarySha256": "3337504ef0dab070663ed8edfdca72a6da3f849d91c59bcbc3f72141a9c77cd1",
+  "binaryMtimeUTC": "2026-10-08T02:26:31.116283+00:00",
+  "scope": "Fresh root core build; direct binary tests, no Cargo/recompile. Sequential filters, one test thread, 60-second timeout per filter.",
+  "listExitCode": 0,
+  "filters": {
+    "brain_feed": [
+      "brain_feed::tests::chat_cannot_be_disabled_even_when_listed: test",
+      "brain_feed::tests::content_is_bounded_on_char_boundary: test",
+      "brain_feed::tests::disabled_list_parses_short_names: test",
+      "brain_feed::tests::disabled_sources_reads_live_not_cached_at_boot: test",
+      "brain_feed::tests::feed_for_project_resolves_slug_and_skips_personal: test",
+      "brain_feed::tests::feed_on_a_pool_without_the_table_is_silent: test",
+      "brain_feed::tests::feed_without_brain_queues_and_never_errors: test",
+      "brain_feed::tests::keys_are_stable_and_sanitised: test",
+      "brain_feed::tests::no_source_is_the_prunable_activity_class: test",
+      "brain_feed::tests::note_content_keeps_meeting_length_beyond_default_fact_cap: test",
+      "brain_feed::tests::owner_source_is_wired_into_all_and_round_trips_by_tag: test",
+      "brain_feed::tests::redundant_redelivery_of_an_already_completed_job_does_not_double_count: test",
+      "brain_feed::tests::remember_opts_carry_the_source_tag: test",
+      "brain_feed::tests::repeat_feed_of_same_key_upserts: test",
+      "brain_feed::tests::serialized_drain_releases_gate_after_delivery_error_and_retries_new_revision: test",
+      "brain_feed::tests::serialized_drains_keep_newest_revision_even_when_first_waiter_is_cancelled: test",
+      "brain_feed::tests::spawn_periodic_drain_delivers_a_backlog_with_no_feed_call: test",
+      "brain_feed::tests::status_lists_every_source_with_counts_and_errors: test",
+      "brain_feed::tests::strict_enqueue_waits_for_wal_writer_before_resolving_wing: test"
+    ],
+    "project_notes": [
+      "project_notes::tests::create_note_indexed_brainless_persists_row: test",
+      "project_notes::tests::deleting_project_cascades_notes: test",
+      "project_notes::tests::exports_distinguish_same_day_titles_and_untitled_id_prefixes: test",
+      "project_notes::tests::get_and_delete_are_project_scoped: test",
+      "project_notes::tests::guard_export_failure_does_not_block_note_save: test",
+      "project_notes::tests::guard_export_file_nonempty_and_contains_transcript: test",
+      "project_notes::tests::guard_markdown_export_written_on_save_and_rewrite: test",
+      "project_notes::tests::insert_and_list_back: test",
+      "project_notes::tests::meeting_export_never_regresses_to_late_raw_snapshot: test",
+      "project_notes::tests::migration_is_idempotent: test",
+      "project_notes::tests::note_memory_content_shapes: test",
+      "project_notes::tests::note_without_a_resolvable_project_stays_unwinged: test",
+      "project_notes::tests::note_writes_share_one_stable_episode: test",
+      "project_notes::tests::note_written_into_its_project_wing: test",
+      "project_notes::tests::resolve_note_wing_looks_up_slug_skips_personal_and_falls_back: test",
+      "project_notes::tests::titleless_note_roundtrips: test"
+    ],
+    "haiku_55": [
+      "providers::anthropic::haiku_55_tests::haiku_55_catalogue_has_one_million_context_without_changing_defaults: test",
+      "providers::formats::anthropic::tests::haiku_55_converts_legacy_budget_and_preserves_explicit_disable: test",
+      "providers::formats::anthropic::tests::haiku_55_defaults_to_adaptive_medium_and_omits_sampling: test",
+      "providers::formats::anthropic::tests::haiku_55_signature_only_thinking_round_trips: test"
+    ],
+    "app_conductor": [
+      "agents::platform_extensions::app_conductor::tests::catalog_lists_names_every_surface: test",
+      "agents::platform_extensions::app_conductor::tests::clipboard_body_rejects_oversized: test",
+      "agents::platform_extensions::app_conductor::tests::clipboard_body_trims_and_rejects_empty: test",
+      "agents::platform_extensions::app_conductor::tests::desktop_ui_blocked_on_iphone_voice: test",
+      "agents::platform_extensions::app_conductor::tests::home_focus_accepts_bundled_types_and_overview_only: test",
+      "agents::platform_extensions::app_conductor::tests::item_catalog_matches_frontend_dispatcher_one_to_one: test",
+      "agents::platform_extensions::app_conductor::tests::item_kinds_list_names_every_kind_and_its_ids: test",
+      "agents::platform_extensions::app_conductor::tests::navigation_aliases_use_existing_catalog_routes: test",
+      "agents::platform_extensions::app_conductor::tests::open_item_result_is_honest_about_delivery: test",
+      "agents::platform_extensions::app_conductor::tests::open_item_result_names_both_ids_for_goal: test",
+      "agents::platform_extensions::app_conductor::tests::project_lenses_require_real_project_identity_and_world_rejects_unknown_places: test",
+      "agents::platform_extensions::app_conductor::tests::record_is_open_only_and_navigation_is_not_a_receipt: test",
+      "agents::platform_extensions::app_conductor::tests::unknown_item_kinds_rejected: test",
+      "agents::platform_extensions::app_conductor::tests::unknown_pairs_rejected: test",
+      "agents::platform_extensions::app_conductor::tests::valid_item_kinds_accepted: test",
+      "agents::platform_extensions::app_conductor::tests::valid_pairs_accepted: test"
+    ],
+    "whisper_segments": [
+      "dictation::whisper_segments::tests::adjacent_utterances_can_start_at_previous_end_but_must_end_later: test",
+      "dictation::whisper_segments::tests::incomplete_window_revisits_tail_instead_of_losing_later_commitment: test",
+      "dictation::whisper_segments::tests::invalid_or_missing_timestamps_cannot_stall_or_exceed_window: test",
+      "dictation::whisper_segments::tests::terminal_timestamp_finishes_window_without_duplicate_replay: test"
+    ],
+    "self_knowledge": [
+      "agents::self_knowledge::teachable::tests::cost_optimizer_is_teachable: test",
+      "agents::self_knowledge::teachable::tests::council_is_teachable_like_the_guard: test",
+      "agents::self_knowledge::teachable::tests::every_teachable_id_is_a_real_descriptor: test",
+      "agents::self_knowledge::teachable::tests::every_teachable_tab_is_a_known_catalog_tab: test",
+      "agents::self_knowledge::teachable::tests::learn_next_excludes_engaged_and_preserves_value_order: test",
+      "agents::self_knowledge::teachable::tests::offer_gate_respects_cooldown_and_unused: test",
+      "agents::self_knowledge::teachable::tests::teachable_ids_are_unique: test",
+      "agents::self_knowledge::tests::a_static_feature_never_confirms_against_a_live_status_line: test",
+      "agents::self_knowledge::tests::brief_renders_every_category: test",
+      "agents::self_knowledge::tests::brief_withholds_exactly_the_experimental_workers: test",
+      "agents::self_knowledge::tests::briefings_distinguish_unreadable_from_empty_from_present: test",
+      "agents::self_knowledge::tests::coding_harness_capabilities_are_discoverable_and_teachable: test",
+      "agents::self_knowledge::tests::completeness_guard_catches_a_dropped_open_item: test",
+      "agents::self_knowledge::tests::completeness_guard_catches_a_dropped_search_memory: test",
+      "agents::self_knowledge::tests::concierge_descriptor_hidden_when_flag_off: test",
+      "agents::self_knowledge::tests::concierge_descriptor_shown_when_flag_on: test",
+      "agents::self_knowledge::tests::config_backed_flags_reach_the_brief_only_through_the_builder: test",
+      "agents::self_knowledge::tests::council_descriptor_hidden_when_flag_off: test",
+      "agents::self_knowledge::tests::council_descriptor_shown_when_flag_on: test",
+      "agents::self_knowledge::tests::declared_extensions_also_scope_out_workers_and_surfaces: test",
+      "agents::self_knowledge::tests::declared_extensions_scope_the_tool_inventory_and_exclude_the_rest: test",
+      "agents::self_knowledge::tests::descriptor_audit_dump: test",
+      "agents::self_knowledge::tests::descriptor_display_names_are_unique_in_the_brief: test",
+      "agents::self_knowledge::tests::descriptor_ids_are_unique_across_registries: test",
+      "agents::self_knowledge::tests::descriptor_prose_names_only_real_tools: test",
+      "agents::self_knowledge::tests::dispatchable_workers_from_config_reports_engine_pending_without_probing: test",
+      "agents::self_knowledge::tests::dispatchable_workers_render_when_present_and_omit_when_empty: test",
+      "agents::self_knowledge::tests::dynamic_tool_inventories_match_constructed_clients: test",
+      "agents::self_knowledge::tests::every_gate_key_resolves_from_feature_flags: test",
+      "agents::self_knowledge::tests::every_known_surface_has_a_descriptor: test",
+      "agents::self_knowledge::tests::every_known_worker_has_a_descriptor: test",
+      "agents::self_knowledge::tests::gate_ids_match_the_descriptors_that_own_them: test",
+      "agents::self_knowledge::tests::gate_set_is_exactly_the_features_pane_set: test",
+      "agents::self_knowledge::tests::gated_and_always_described_workers_report_their_off_state: test",
+      "agents::self_knowledge::tests::grow_post_flow_is_in_self_knowledge: test",
+      "agents::self_knowledge::tests::guardrails_have_descriptors_and_render: test",
+      "agents::self_knowledge::tests::librarian_is_not_double_listed_as_a_tool: test",
+      "agents::self_knowledge::tests::no_declared_extensions_keeps_the_full_product_contract_inventory: test",
+      "agents::self_knowledge::tests::no_user_facing_goose_branding_leak: test",
+      "agents::self_knowledge::tests::orchestrator_self_describes_goal_orchestration_and_decision_inbox: test",
+      "agents::self_knowledge::tests::paired_descriptors_do_not_contradict: test",
+      "agents::self_knowledge::tests::phantom_guard_catches_the_list_projects_phantom: test",
+      "agents::self_knowledge::tests::playbook_descriptor_hidden_when_flag_off: test",
+      "agents::self_knowledge::tests::playbook_descriptor_shown_when_flag_on: test",
+      "agents::self_knowledge::tests::scoped_inventory_points_the_model_at_the_main_agent: test",
+      "agents::self_knowledge::tests::steward_gate_key_is_the_key_the_descriptor_names: test",
+      "agents::self_knowledge::tests::the_brief_says_what_configure_can_and_cannot_change: test",
+      "agents::self_knowledge::tests::tool_descriptions_name_every_callable_tool: test",
+      "agents::self_knowledge::tests::unknown_feature_has_no_lesson: test",
+      "agents::self_knowledge::tests::v1_lessons_have_authored_steps: test",
+      "agents::self_knowledge::tests::workers_are_queryable_surfaces_are_static: test",
+      "agents::self_knowledge::usage::tests::activity_maps_only_to_real_capability_ids: test",
+      "agents::self_knowledge::usage::tests::expected_surfaces_are_covered: test",
+      "agents::self_knowledge::usage::tests::legacy_usage_ids_hydrate_under_new_ids_and_merge: test",
+      "agents::self_knowledge::usage::tests::mark_taught_engages_and_sets_flag: test",
+      "agents::self_knowledge::usage::tests::mark_used_round_trips_and_accumulates: test",
+      "agents::self_knowledge::usage::tests::new_events_engage_their_feature_and_drop_from_learn_next: test",
+      "agents::self_knowledge::usage::tests::serde_round_trip_is_the_hydrate_contract: test",
+      "sovereignty::tests::self_knowledge_descriptor_narrates_the_boundary: test"
+    ]
+  },
+  "excludedTests": [
+    {
+      "name": "agents::self_knowledge::tests::dynamic_tool_inventories_match_constructed_clients",
+      "reason": "Same explicit global-HOME/config-mutating dynamic-client test exclusion as prior run."
+    }
+  ],
+  "runs": [
+    {
+      "filter": "brain_feed",
+      "command": [
+        "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/deps/permagent-9b37c58c9d9d9d6c",
+        "brain_feed",
+        "--test-threads=1"
+      ],
+      "exitCode": 0,
+      "durationSeconds": 1.103,
+      "stdout": "\nrunning 19 tests\ntest brain_feed::tests::chat_cannot_be_disabled_even_when_listed ... ok\ntest brain_feed::tests::content_is_bounded_on_char_boundary ... ok\ntest brain_feed::tests::disabled_list_parses_short_names ... ok\ntest brain_feed::tests::disabled_sources_reads_live_not_cached_at_boot ... ok\ntest brain_feed::tests::feed_for_project_resolves_slug_and_skips_personal ... ok\ntest brain_feed::tests::feed_on_a_pool_without_the_table_is_silent ... ok\ntest brain_feed::tests::feed_without_brain_queues_and_never_errors ... ok\ntest brain_feed::tests::keys_are_stable_and_sanitised ... ok\ntest brain_feed::tests::no_source_is_the_prunable_activity_class ... ok\ntest brain_feed::tests::note_content_keeps_meeting_length_beyond_default_fact_cap ... ok\ntest brain_feed::tests::owner_source_is_wired_into_all_and_round_trips_by_tag ... ok\ntest brain_feed::tests::redundant_redelivery_of_an_already_completed_job_does_not_double_count ... ok\ntest brain_feed::tests::remember_opts_carry_the_source_tag ... ok\ntest brain_feed::tests::repeat_feed_of_same_key_upserts ... ok\ntest brain_feed::tests::serialized_drain_releases_gate_after_delivery_error_and_retries_new_revision ... ok\ntest brain_feed::tests::serialized_drains_keep_newest_revision_even_when_first_waiter_is_cancelled ... ok\ntest brain_feed::tests::spawn_periodic_drain_delivers_a_backlog_with_no_feed_call ... ok\ntest brain_feed::tests::status_lists_every_source_with_counts_and_errors ... ok\ntest brain_feed::tests::strict_enqueue_waits_for_wal_writer_before_resolving_wing ... ok\n\ntest result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 6450 filtered out; finished in 1.08s\n\n",
+      "stderr": ""
+    },
+    {
+      "filter": "project_notes",
+      "command": [
+        "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/deps/permagent-9b37c58c9d9d9d6c",
+        "project_notes",
+        "--test-threads=1"
+      ],
+      "exitCode": 0,
+      "durationSeconds": 0.779,
+      "stdout": "\nrunning 16 tests\ntest project_notes::tests::create_note_indexed_brainless_persists_row ... ok\ntest project_notes::tests::deleting_project_cascades_notes ... ok\ntest project_notes::tests::exports_distinguish_same_day_titles_and_untitled_id_prefixes ... ok\ntest project_notes::tests::get_and_delete_are_project_scoped ... ok\ntest project_notes::tests::guard_export_failure_does_not_block_note_save ... ok\ntest project_notes::tests::guard_export_file_nonempty_and_contains_transcript ... ok\ntest project_notes::tests::guard_markdown_export_written_on_save_and_rewrite ... ok\ntest project_notes::tests::insert_and_list_back ... ok\ntest project_notes::tests::meeting_export_never_regresses_to_late_raw_snapshot ... ok\ntest project_notes::tests::migration_is_idempotent ... ok\ntest project_notes::tests::note_memory_content_shapes ... ok\ntest project_notes::tests::note_without_a_resolvable_project_stays_unwinged ... ok\ntest project_notes::tests::note_writes_share_one_stable_episode ... ok\ntest project_notes::tests::note_written_into_its_project_wing ... ok\ntest project_notes::tests::resolve_note_wing_looks_up_slug_skips_personal_and_falls_back ... ok\ntest project_notes::tests::titleless_note_roundtrips ... ok\n\ntest result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 6453 filtered out; finished in 0.75s\n\n",
+      "stderr": ""
+    },
+    {
+      "filter": "haiku_55",
+      "command": [
+        "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/deps/permagent-9b37c58c9d9d9d6c",
+        "haiku_55",
+        "--test-threads=1"
+      ],
+      "exitCode": 0,
+      "durationSeconds": 0.128,
+      "stdout": "\nrunning 4 tests\ntest providers::anthropic::haiku_55_tests::haiku_55_catalogue_has_one_million_context_without_changing_defaults ... ok\ntest providers::formats::anthropic::tests::haiku_55_converts_legacy_budget_and_preserves_explicit_disable ... ok\ntest providers::formats::anthropic::tests::haiku_55_defaults_to_adaptive_medium_and_omits_sampling ... ok\ntest providers::formats::anthropic::tests::haiku_55_signature_only_thinking_round_trips ... ok\n\ntest result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 6465 filtered out; finished in 0.11s\n\n",
+      "stderr": ""
+    },
+    {
+      "filter": "app_conductor",
+      "command": [
+        "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/deps/permagent-9b37c58c9d9d9d6c",
+        "app_conductor",
+        "--test-threads=1"
+      ],
+      "exitCode": 0,
+      "durationSeconds": 0.021,
+      "stdout": "\nrunning 16 tests\ntest agents::platform_extensions::app_conductor::tests::catalog_lists_names_every_surface ... ok\ntest agents::platform_extensions::app_conductor::tests::clipboard_body_rejects_oversized ... ok\ntest agents::platform_extensions::app_conductor::tests::clipboard_body_trims_and_rejects_empty ... ok\ntest agents::platform_extensions::app_conductor::tests::desktop_ui_blocked_on_iphone_voice ... ok\ntest agents::platform_extensions::app_conductor::tests::home_focus_accepts_bundled_types_and_overview_only ... ok\ntest agents::platform_extensions::app_conductor::tests::item_catalog_matches_frontend_dispatcher_one_to_one ... ok\ntest agents::platform_extensions::app_conductor::tests::item_kinds_list_names_every_kind_and_its_ids ... ok\ntest agents::platform_extensions::app_conductor::tests::navigation_aliases_use_existing_catalog_routes ... ok\ntest agents::platform_extensions::app_conductor::tests::open_item_result_is_honest_about_delivery ... ok\ntest agents::platform_extensions::app_conductor::tests::open_item_result_names_both_ids_for_goal ... ok\ntest agents::platform_extensions::app_conductor::tests::project_lenses_require_real_project_identity_and_world_rejects_unknown_places ... ok\ntest agents::platform_extensions::app_conductor::tests::record_is_open_only_and_navigation_is_not_a_receipt ... ok\ntest agents::platform_extensions::app_conductor::tests::unknown_item_kinds_rejected ... ok\ntest agents::platform_extensions::app_conductor::tests::unknown_pairs_rejected ... ok\ntest agents::platform_extensions::app_conductor::tests::valid_item_kinds_accepted ... ok\ntest agents::platform_extensions::app_conductor::tests::valid_pairs_accepted ... ok\n\ntest result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 6453 filtered out; finished in 0.00s\n\n",
+      "stderr": ""
+    },
+    {
+      "filter": "whisper_segments",
+      "command": [
+        "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/deps/permagent-9b37c58c9d9d9d6c",
+        "whisper_segments",
+        "--test-threads=1"
+      ],
+      "exitCode": 0,
+      "durationSeconds": 0.02,
+      "stdout": "\nrunning 4 tests\ntest dictation::whisper_segments::tests::adjacent_utterances_can_start_at_previous_end_but_must_end_later ... ok\ntest dictation::whisper_segments::tests::incomplete_window_revisits_tail_instead_of_losing_later_commitment ... ok\ntest dictation::whisper_segments::tests::invalid_or_missing_timestamps_cannot_stall_or_exceed_window ... ok\ntest dictation::whisper_segments::tests::terminal_timestamp_finishes_window_without_duplicate_replay ... ok\n\ntest result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 6465 filtered out; finished in 0.00s\n\n",
+      "stderr": ""
+    },
+    {
+      "filter": "self_knowledge",
+      "command": [
+        "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/deps/permagent-9b37c58c9d9d9d6c",
+        "self_knowledge",
+        "--test-threads=1",
+        "--skip",
+        "agents::self_knowledge::tests::dynamic_tool_inventories_match_constructed_clients"
+      ],
+      "exitCode": 0,
+      "durationSeconds": 1.854,
+      "stdout": "\nrunning 58 tests\ntest agents::self_knowledge::teachable::tests::cost_optimizer_is_teachable ... ok\ntest agents::self_knowledge::teachable::tests::council_is_teachable_like_the_guard ... ok\ntest agents::self_knowledge::teachable::tests::every_teachable_id_is_a_real_descriptor ... ok\ntest agents::self_knowledge::teachable::tests::every_teachable_tab_is_a_known_catalog_tab ... ok\ntest agents::self_knowledge::teachable::tests::learn_next_excludes_engaged_and_preserves_value_order ... ok\ntest agents::self_knowledge::teachable::tests::offer_gate_respects_cooldown_and_unused ... ok\ntest agents::self_knowledge::teachable::tests::teachable_ids_are_unique ... ok\ntest agents::self_knowledge::tests::a_static_feature_never_confirms_against_a_live_status_line ... ok\ntest agents::self_knowledge::tests::brief_renders_every_category ... ok\ntest agents::self_knowledge::tests::brief_withholds_exactly_the_experimental_workers ... ok\ntest agents::self_knowledge::tests::briefings_distinguish_unreadable_from_empty_from_present ... ok\ntest agents::self_knowledge::tests::coding_harness_capabilities_are_discoverable_and_teachable ... ok\ntest agents::self_knowledge::tests::completeness_guard_catches_a_dropped_open_item ... ok\ntest agents::self_knowledge::tests::completeness_guard_catches_a_dropped_search_memory ... ok\ntest agents::self_knowledge::tests::concierge_descriptor_hidden_when_flag_off ... ok\ntest agents::self_knowledge::tests::concierge_descriptor_shown_when_flag_on ... ok\ntest agents::self_knowledge::tests::config_backed_flags_reach_the_brief_only_through_the_builder ... ok\ntest agents::self_knowledge::tests::council_descriptor_hidden_when_flag_off ... ok\ntest agents::self_knowledge::tests::council_descriptor_shown_when_flag_on ... ok\ntest agents::self_knowledge::tests::declared_extensions_also_scope_out_workers_and_surfaces ... ok\ntest agents::self_knowledge::tests::declared_extensions_scope_the_tool_inventory_and_exclude_the_rest ... ok\ntest agents::self_knowledge::tests::descriptor_audit_dump ... ignored, audit dump, not an assertion\ntest agents::self_knowledge::tests::descriptor_display_names_are_unique_in_the_brief ... ok\ntest agents::self_knowledge::tests::descriptor_ids_are_unique_across_registries ... ok\ntest agents::self_knowledge::tests::descriptor_prose_names_only_real_tools ... ok\ntest agents::self_knowledge::tests::dispatchable_workers_from_config_reports_engine_pending_without_probing ... ok\ntest agents::self_knowledge::tests::dispatchable_workers_render_when_present_and_omit_when_empty ... ok\ntest agents::self_knowledge::tests::every_gate_key_resolves_from_feature_flags ... ok\ntest agents::self_knowledge::tests::every_known_surface_has_a_descriptor ... ok\ntest agents::self_knowledge::tests::every_known_worker_has_a_descriptor ... ok\ntest agents::self_knowledge::tests::gate_ids_match_the_descriptors_that_own_them ... ok\ntest agents::self_knowledge::tests::gate_set_is_exactly_the_features_pane_set ... ok\ntest agents::self_knowledge::tests::gated_and_always_described_workers_report_their_off_state ... ok\ntest agents::self_knowledge::tests::grow_post_flow_is_in_self_knowledge ... ok\ntest agents::self_knowledge::tests::guardrails_have_descriptors_and_render ... ok\ntest agents::self_knowledge::tests::librarian_is_not_double_listed_as_a_tool ... ok\ntest agents::self_knowledge::tests::no_declared_extensions_keeps_the_full_product_contract_inventory ... ok\ntest agents::self_knowledge::tests::no_user_facing_goose_branding_leak ... ok\ntest agents::self_knowledge::tests::orchestrator_self_describes_goal_orchestration_and_decision_inbox ... ok\ntest agents::self_knowledge::tests::paired_descriptors_do_not_contradict ... ok\ntest agents::self_knowledge::tests::phantom_guard_catches_the_list_projects_phantom ... ok\ntest agents::self_knowledge::tests::playbook_descriptor_hidden_when_flag_off ... ok\ntest agents::self_knowledge::tests::playbook_descriptor_shown_when_flag_on ... ok\ntest agents::self_knowledge::tests::scoped_inventory_points_the_model_at_the_main_agent ... ok\ntest agents::self_knowledge::tests::steward_gate_key_is_the_key_the_descriptor_names ... ok\ntest agents::self_knowledge::tests::the_brief_says_what_configure_can_and_cannot_change ... ok\ntest agents::self_knowledge::tests::tool_descriptions_name_every_callable_tool ... ok\ntest agents::self_knowledge::tests::unknown_feature_has_no_lesson ... ok\ntest agents::self_knowledge::tests::v1_lessons_have_authored_steps ... ok\ntest agents::self_knowledge::tests::workers_are_queryable_surfaces_are_static ... ok\ntest agents::self_knowledge::usage::tests::activity_maps_only_to_real_capability_ids ... ok\ntest agents::self_knowledge::usage::tests::expected_surfaces_are_covered ... ok\ntest agents::self_knowledge::usage::tests::legacy_usage_ids_hydrate_under_new_ids_and_merge ... ok\ntest agents::self_knowledge::usage::tests::mark_taught_engages_and_sets_flag ... ok\ntest agents::self_knowledge::usage::tests::mark_used_round_trips_and_accumulates ... ok\ntest agents::self_knowledge::usage::tests::new_events_engage_their_feature_and_drop_from_learn_next ... ok\ntest agents::self_knowledge::usage::tests::serde_round_trip_is_the_hydrate_contract ... ok\ntest sovereignty::tests::self_knowledge_descriptor_narrates_the_boundary ... ok\n\ntest result: ok. 57 passed; 0 failed; 1 ignored; 0 measured; 6411 filtered out; finished in 1.82s\n\n",
+      "stderr": ""
+    }
+  ]
+}

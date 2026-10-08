@@ -1,0 +1,23 @@
+{
+  "command": [
+    "/Users/j/Documents/dev/permagent-runtime/bin/cargo",
+    "test",
+    "-p",
+    "permagent",
+    "meeting_",
+    "--lib",
+    "--locked"
+  ],
+  "log": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/reports/world-production/record-backend-tests-20261007-232233.log",
+  "exit_code": 0,
+  "reason": null,
+  "cleanup_error": null,
+  "owned_group_stopped": false,
+  "elapsed_s": 247.08,
+  "minimum_free_gib": 25.122,
+  "startup_minimum_gib": 25,
+  "continuous_floor_gib": 20,
+  "timeout_s": 1800,
+  "staged": false,
+  "launched": false
+}

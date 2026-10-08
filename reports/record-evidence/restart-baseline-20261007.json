@@ -1,0 +1,91 @@
+{
+  "captured_at": "2026-10-08T02:29:18.618127+00:00",
+  "root": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/record-qa-runtime",
+  "triages": [
+    {
+      "id": "mt-3de39270f313f0dfd855335ac4649012",
+      "status": "completed",
+      "attempt_count": 1,
+      "card_ids_json": "[\"mc-091cf5459056839137cf268754087c53\"]",
+      "note_id": "mn-a657d2a48264d51e78f69754c23d4d6a",
+      "project_id": "01a11937-7ef7-7fd0-9652-1ff4cd64ee4b"
+    },
+    {
+      "id": "mt-45e64083e671874805beb06c97a54826",
+      "status": "completed",
+      "attempt_count": 1,
+      "card_ids_json": "[\"mc-5b412f7bb0d08ee76913c835253d8d12\"]",
+      "note_id": "mn-d2748f839eeee991aef58d3952f82dc7",
+      "project_id": "01a11937-7fb5-7191-b260-f67eb5326cf4"
+    },
+    {
+      "id": "mt-9f102f14a490ec278ad742cf2a65b3ad",
+      "status": "completed",
+      "attempt_count": 1,
+      "card_ids_json": "[\"mc-572e6fd0c3e385100251485eaf247357\",\"mc-8d3d08cb540f286217cc0e8674135c72\"]",
+      "note_id": "mn-548027db1a6d11b10821a0362275a271",
+      "project_id": "01a11937-05c6-7d70-87ad-670c2ffae12f"
+    }
+  ],
+  "card_ids": [
+    "mc-091cf5459056839137cf268754087c53",
+    "mc-572e6fd0c3e385100251485eaf247357",
+    "mc-5b412f7bb0d08ee76913c835253d8d12",
+    "mc-8d3d08cb540f286217cc0e8674135c72"
+  ],
+  "note_ids": [
+    "mn-548027db1a6d11b10821a0362275a271",
+    "mn-a657d2a48264d51e78f69754c23d4d6a",
+    "mn-d2748f839eeee991aef58d3952f82dc7"
+  ],
+  "outbox": [
+    {
+      "memory_key": "card:mc-091cf5459056839137cf268754087c53:created",
+      "source": "permagent.card",
+      "status": "pending",
+      "attempts": 0
+    },
+    {
+      "memory_key": "card:mc-572e6fd0c3e385100251485eaf247357:created",
+      "source": "permagent.card",
+      "status": "pending",
+      "attempts": 0
+    },
+    {
+      "memory_key": "card:mc-5b412f7bb0d08ee76913c835253d8d12:created",
+      "source": "permagent.card",
+      "status": "pending",
+      "attempts": 0
+    },
+    {
+      "memory_key": "card:mc-8d3d08cb540f286217cc0e8674135c72:created",
+      "source": "permagent.card",
+      "status": "pending",
+      "attempts": 0
+    },
+    {
+      "memory_key": "note:01a11937-05c6-7d70-87ad-670c2ffae12f:mn-548027db1a6d11b10821a0362275a271",
+      "source": "permagent.note",
+      "status": "pending",
+      "attempts": 0
+    },
+    {
+      "memory_key": "note:01a11937-7ef7-7fd0-9652-1ff4cd64ee4b:mn-a657d2a48264d51e78f69754c23d4d6a",
+      "source": "permagent.note",
+      "status": "pending",
+      "attempts": 0
+    },
+    {
+      "memory_key": "note:01a11937-7fb5-7191-b260-f67eb5326cf4:mn-d2748f839eeee991aef58d3952f82dc7",
+      "source": "permagent.note",
+      "status": "pending",
+      "attempts": 0
+    },
+    {
+      "memory_key": "watcher_insight:01a11937-7ef7-7fd0-9652-1ff4cd64ee4b:2026-10-08T01:54:37.470894+00:00",
+      "source": "permagent.watcher_insight",
+      "status": "pending",
+      "attempts": 0
+    }
+  ]
+}

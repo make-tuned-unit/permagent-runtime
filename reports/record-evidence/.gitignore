@@ -1,0 +1,4 @@
+# Rebuild these local test executables from the adjacent sources.
+/native-host/*.app/
+/whisper-window-tests
+__pycache__/

@@ -1,0 +1,22 @@
+{
+  "helper": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/permagent-audiocap-scoped-review",
+  "helper_sha256": "0318ce2682c8a1b917ba91e36c79911ee881c6d591a23298df014d0ed3e28fa7",
+  "source_sha256": "66975f1ac1bed9fe7bbf4b6b67bfcd1000bff0780e3497ede9fbf0d1f678e50e",
+  "compile_exit_code": 0,
+  "signature_exit_code": 0,
+  "self_test_exit_code": 0,
+  "self_test_output": "PASS planar stereo, interleaved stereo, mismatched channel rejection, CoreMedia undersized-list regression, exact application scope",
+  "scoped_marker_present": true,
+  "old_helper_marker_absent": true,
+  "nsworkspace_fixture": {
+    "bundleId": "ai.permagent.record-practice-20261007",
+    "name": "Permagent Record Practice",
+    "pid": 83059,
+    "regular": true,
+    "terminated": false
+  },
+  "native_rust_scope_compiled": false,
+  "capture_started": false,
+  "staged": false,
+  "launched": false
+}

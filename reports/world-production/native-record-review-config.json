@@ -1,0 +1,47 @@
+{
+  "productName": "Permagent Record Review",
+  "identifier": "ai.permagent.record-review-20261007",
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Permagent Record Review",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 1024,
+        "minHeight": 640,
+        "center": true,
+        "decorations": true,
+        "resizable": true,
+        "fullscreen": false,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": {
+          "x": 12,
+          "y": 22
+        },
+        "transparent": true,
+        "windowEffects": {
+          "effects": [
+            "sidebar"
+          ],
+          "state": "followsWindowActiveState"
+        }
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' blob: ipc://localhost http://localhost:3002 http://127.0.0.1:3002 ws://localhost:3002 ws://127.0.0.1:3002 https://fonts.googleapis.com https://fonts.gstatic.com https://chitin.id https://mainnet.base.org https://arweave.net; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' https://rsms.me https://api.fontshare.com https://fonts.googleapis.com; font-src 'self' https://rsms.me https://api.fontshare.com https://fonts.gstatic.com; img-src 'self' data: blob: http: https:; frame-src 'self' https: http:"
+    }
+  },
+  "bundle": {
+    "createUpdaterArtifacts": false,
+    "macOS": {
+      "signingIdentity": null
+    }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": []
+    }
+  }
+}

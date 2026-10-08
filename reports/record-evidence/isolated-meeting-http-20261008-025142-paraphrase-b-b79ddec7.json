@@ -1,0 +1,16 @@
+{
+  "method": "synthetic HTTP backend acceptance, NOT native capture",
+  "url": "http://127.0.0.1:3002",
+  "startedUtc": "2026-10-08T02:51:42Z",
+  "checks": [],
+  "tokenLogged": false,
+  "scenario": "paraphrase-b",
+  "error": {
+    "method": "GET",
+    "path": "/config",
+    "status": null,
+    "category": "transport",
+    "retryable": true
+  },
+  "passed": false
+}

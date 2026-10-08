@@ -1,0 +1,27 @@
+{
+  "app": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/reports/record-evidence/native-host/Permagent Record Practice.app",
+  "identifier": "ai.permagent.record-practice-20261007",
+  "command": [
+    "xcrun",
+    "swiftc",
+    "-parse-as-library",
+    "-swift-version",
+    "5",
+    "-target",
+    "arm64-apple-macosx13.0",
+    "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/reports/record-evidence/native-host/main.swift",
+    "-o",
+    "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/reports/record-evidence/native-host/Permagent Record Practice.app/Contents/MacOS/PermagentRecordPractice",
+    "-framework",
+    "AppKit",
+    "-framework",
+    "WebKit"
+  ],
+  "source_sha256": "ffc7278b1751b7ce4f6b6f7e2c53bfe246259601c41ad11baf9816be5ae216a0",
+  "binary_sha256": "b709fefa9055f2fa9b6c3b8a5f7a395bf560b91a5d442439c54556d479a9403e",
+  "architecture": "arm64",
+  "url": "http://127.0.0.1:5489/",
+  "launched": false,
+  "device_capture": "explicitly denied by public WKUIDelegate",
+  "playback": "user gesture required"
+}

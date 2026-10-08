@@ -1,0 +1,7 @@
+{
+  "manifest": "reports/world-production/ARTIFACT_RECHECK_ROUTE_VARIANTS_2026-10-08.json",
+  "files": 68,
+  "bytes": 293586912,
+  "validation": "Every canonical path, protected hash exclusion, inode,mtime,size,SHA256 matched immediately before unlink",
+  "freeGiB": 24.628154754638672
+}

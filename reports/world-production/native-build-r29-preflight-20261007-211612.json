@@ -1,0 +1,86 @@
+{
+  "revision": "r29-preflight",
+  "lane": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006",
+  "target": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006",
+  "command": [
+    "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/scripts/build-guard.sh",
+    "--min-free-gb",
+    "25",
+    "--",
+    "/Users/j/Documents/dev/permagent-runtime/bin/node",
+    "../command-center/node_modules/@tauri-apps/cli/tauri.js",
+    "build",
+    "--debug",
+    "--no-bundle",
+    "--config",
+    "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/reports/world-production/native-review-config.json",
+    "--",
+    "--locked",
+    "-j",
+    "1"
+  ],
+  "log": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/reports/world-production/native-build-r29-preflight-20261007-211612.log",
+  "exit_code": 1,
+  "reason": null,
+  "elapsed_s": 24.05,
+  "minimum_free_gib": 43.168,
+  "samples": [
+    {
+      "elapsed_s": 0.0,
+      "free_gib": 43.182
+    },
+    {
+      "elapsed_s": 2.01,
+      "free_gib": 43.182
+    },
+    {
+      "elapsed_s": 4.01,
+      "free_gib": 43.182
+    },
+    {
+      "elapsed_s": 6.01,
+      "free_gib": 43.181
+    },
+    {
+      "elapsed_s": 8.02,
+      "free_gib": 43.179
+    },
+    {
+      "elapsed_s": 10.02,
+      "free_gib": 43.178
+    },
+    {
+      "elapsed_s": 12.03,
+      "free_gib": 43.178
+    },
+    {
+      "elapsed_s": 14.03,
+      "free_gib": 43.176
+    },
+    {
+      "elapsed_s": 16.03,
+      "free_gib": 43.18
+    },
+    {
+      "elapsed_s": 18.04,
+      "free_gib": 43.178
+    },
+    {
+      "elapsed_s": 20.04,
+      "free_gib": 43.243
+    },
+    {
+      "elapsed_s": 22.05,
+      "free_gib": 43.168
+    },
+    {
+      "elapsed_s": 24.05,
+      "free_gib": 43.168
+    }
+  ],
+  "startup_minimum_gib": 25,
+  "continuous_floor_gib": 20,
+  "timeout_s": 1800,
+  "staged": false,
+  "launched": false
+}

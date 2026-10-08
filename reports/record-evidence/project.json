@@ -1,0 +1,19 @@
+{
+  "id": "01a118e9-2f56-78e0-a933-3e42454b1360",
+  "slug": "record-qa-20261007",
+  "name": "Record QA 2026-10-07",
+  "description": "Synthetic meeting capture and Orchestrator triage acceptance. Test commitments only; do not execute.",
+  "status": "active",
+  "rootPath": null,
+  "siteUrl": null,
+  "repoUrl": null,
+  "notes": "",
+  "metadataJson": {},
+  "tags": [
+    "record-qa",
+    "synthetic-test"
+  ],
+  "createdAt": "2026-10-08T00:28:17.630Z",
+  "updatedAt": "2026-10-08T00:28:17.630Z",
+  "lastOpenedAt": "2026-10-08T00:28:17.630Z"
+}

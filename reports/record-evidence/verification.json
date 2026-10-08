@@ -1,0 +1,31 @@
+{
+  "url": "http://127.0.0.1:5489/",
+  "verification": "HTTP/file integrity only; no UI, WebRTC connection, playback or capture performed",
+  "checks": [
+    {
+      "path": "index.html",
+      "status": 200,
+      "bytes": 5313,
+      "sha256": "c043e33223dd7fc4c87de8b70a75a2762134dfe38934e6f26cb5933e2e27e988"
+    },
+    {
+      "path": "fixture.js",
+      "status": 200,
+      "bytes": 10509,
+      "sha256": "9a48639797beebf0ceb565f07fc02824b13669ce498fdf6269b360f131bd95ab"
+    },
+    {
+      "path": "manifest.json",
+      "status": 200,
+      "bytes": 9139,
+      "sha256": "68d4b9b1237dbe1ab9c45ee5f4c2a319d1e8695d63554d5aa64e8e1c24f6ac0c"
+    },
+    {
+      "path": "assets/far_tail.wav",
+      "status": 200,
+      "bytes": 182640,
+      "sha256": "5b031422135c64d6ce7d814931becb0b67a30bf6dfc526f014158eed30f8e882"
+    }
+  ],
+  "manifest_sha256": "68d4b9b1237dbe1ab9c45ee5f4c2a319d1e8695d63554d5aa64e8e1c24f6ac0c"
+}

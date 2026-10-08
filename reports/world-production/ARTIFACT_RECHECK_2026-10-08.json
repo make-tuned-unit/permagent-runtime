@@ -1,0 +1,15 @@
+{
+  "generated_local": "2026-10-07T23:56:22.958130",
+  "roots": [
+    "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/.fingerprint/permagent-daemon-16367fb0e75db594/bin-permagentd.json",
+    "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/.fingerprint/permagent-app-66fac28bdf92a204/bin-permagent-app.json",
+    "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/.fingerprint/permagent-248dc4f388df31e9/lib-permagent.json",
+    "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/.fingerprint/permagent-daemon-3d6761447116bf25/lib-permagent_daemon.json",
+    "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/debug/.fingerprint/permagent-9b37c58c9d9d9d6c/test-lib-permagent.json"
+  ],
+  "protected_fingerprints": 1826,
+  "missing": [],
+  "candidate_policy": "Read-only, no deletion. Current recursive root closure protected; only old pre-23:11:48 rlib/rmeta/rcgu artifacts, no dylibs, no newer route dependency variants.",
+  "candidates": [],
+  "allocated_bytes": 0
+}

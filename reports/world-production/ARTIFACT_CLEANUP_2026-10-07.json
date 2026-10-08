@@ -1,0 +1,9 @@
+{
+  "removed_files": 6304,
+  "removed_bytes": 6330597068,
+  "free_before_gib": 25.383,
+  "free_after_gib": 31.294,
+  "manifest": "reports/world-production/ARTIFACT_REACHABILITY_2026-10-07.json",
+  "preserved": "current protected closure, dylibs, all other targets, review apps and runtime data",
+  "time": 1791426044.6558459
+}
