@@ -1,0 +1,44 @@
+{
+  "verifiedAtUtc": "2026-10-08T13:35:35.067188+00:00",
+  "scope": "Brain Notes filter/filtered empty, automation one-time timezone truthfulness, wizard partial-read status; no native/Cargo/runtime operations",
+  "testRunner": "vitest run",
+  "testFiles": [
+    {
+      "path": "src/components/brain/BrainList.forget.test.tsx",
+      "passed": 7
+    },
+    {
+      "path": "src/components/brain/brainMemorySource.test.ts",
+      "passed": 6
+    },
+    {
+      "path": "src/components/brain/BrainView.search.test.tsx",
+      "passed": 12
+    },
+    {
+      "path": "src/components/automate/AutomateView.wiring.test.tsx",
+      "passed": 11
+    },
+    {
+      "path": "src/components/wizard/StepReview.test.tsx",
+      "passed": 4
+    },
+    {
+      "path": "src/components/wizard/wizardLogic.test.ts",
+      "passed": 12
+    },
+    {
+      "path": "src/components/wizard/WizardShell.flow.test.tsx",
+      "passed": 9
+    }
+  ],
+  "passed": 61,
+  "failed": 0,
+  "testFilesPassed": 7,
+  "typescriptCommand": "tsc --noEmit",
+  "typescriptExitCode": 0,
+  "scopedDiffCheckExitCode": 0,
+  "sourceFrozen": true,
+  "runtimeCuaPending": true,
+  "evidence": "Observed tool execution: functions exec session 78810; final combined process exit 0. Tests printed seven files/61 passes; final tsc produced no errors."
+}

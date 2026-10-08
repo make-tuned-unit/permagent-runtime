@@ -293,7 +293,7 @@ describe('Brain saved-memory preview resolution', () => {
       `/api/brain/memory?key=${encodeURIComponent(savedNote.key)}`, expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
     expect(container.textContent).toContain(savedNote.text);
-    expect(container.textContent).toContain('from note');
+    expect(container.textContent).toContain('from a note');
     expect(container.textContent).not.toContain('source unknown');
     expect(container.textContent).toContain('Saved memory — outside current graph');
     expect(container.textContent).not.toContain('saved memory not verified');

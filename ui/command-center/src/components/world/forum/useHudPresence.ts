@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useForumReducedMotion } from './useForumReducedMotion';
 
 /** How long the HUD stays up after the last input, in milliseconds. */
 export const HUD_REST_DELAY_MS = 4200;
@@ -34,10 +35,7 @@ export function useHudPresence({
   const holdRef = useRef(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const reduceMotion =
-    typeof window !== 'undefined' &&
-    typeof window.matchMedia === 'function' &&
-    window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const reduceMotion = useForumReducedMotion();
 
   const clear = () => {
     if (timerRef.current) {

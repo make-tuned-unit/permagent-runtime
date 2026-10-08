@@ -1,0 +1,41 @@
+{
+  "atUtc": "2026-10-08T14:13:50.156710+00:00",
+  "ownedServices": [
+    {
+      "port": 5301,
+      "pid": 56516,
+      "result": "SIGTERM sent after working-directory verification",
+      "listeningAfter": false
+    },
+    {
+      "port": 5302,
+      "pid": 35084,
+      "result": "SIGTERM sent after working-directory verification",
+      "listeningAfter": false
+    },
+    {
+      "port": 5489,
+      "pid": 75041,
+      "result": "SIGTERM sent after working-directory verification",
+      "listeningAfter": false
+    },
+    {
+      "port": 3002,
+      "result": "already stopped",
+      "listeningAfter": false
+    },
+    {
+      "app": "Record Practice",
+      "pid": 83059,
+      "result": "SIGTERM sent after executable verification",
+      "runningAfter": false
+    }
+  ],
+  "preserved": [
+    "installed Permagent daemon 3001",
+    "Ollama 11434",
+    "other worker Calendar preview 5391",
+    "unrelated benchmark and Claude sessions",
+    "all source and private QA runtime data"
+  ]
+}

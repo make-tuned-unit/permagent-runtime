@@ -94,4 +94,24 @@ class ScopedCaptureTests(unittest.TestCase):
         self.assertIn('kAudioProcessPropertyIsRunningOutput', source)
         self.assertIn('Selected process identity changed during HAL inspection', source)
 
+    def valid_capture_evidence(self):
+        return {'ready': True, 'sourceVerified': True, 'readersJoined': True, 'exitCode': 0,
+                'stderr': [], 'chunks': [
+                    {'path': '/owned/sysaudio_0000.wav', 'peak': 300, 'durationSeconds': 45, 'afterStopSignal': False},
+                    {'path': '/owned/sysaudio_0001.wav', 'peak': 200, 'durationSeconds': 30, 'afterStopSignal': True}]}
+
+    def test_helper_write_error_never_counts_as_success_even_with_nonzero_tail(self):
+        evidence = self.valid_capture_evidence()
+        self.assertTrue(capture.capture_passed(evidence))
+        evidence['stderr'] = [{'line': 'ERROR write disk full'}]
+        self.assertFalse(capture.capture_passed(evidence))
+
+    def test_missing_full_chunk_or_numbering_gap_never_counts_as_success(self):
+        evidence = self.valid_capture_evidence()
+        evidence['chunks'] = evidence['chunks'][1:]
+        self.assertFalse(capture.capture_passed(evidence))
+        evidence = self.valid_capture_evidence()
+        evidence['chunks'][1]['path'] = '/owned/sysaudio_0002.wav'
+        self.assertFalse(capture.capture_passed(evidence))
+
 if __name__ == '__main__': unittest.main()

@@ -1,0 +1,103 @@
+{
+  "started": 1791466697.9878662,
+  "steps": [
+    {
+      "command": [
+        "swiftc",
+        "-O",
+        "ui/desktop/src-tauri/audiocap/main.swift",
+        "-o",
+        "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/permagent-audiocap-pcm-review",
+        "-framework",
+        "ScreenCaptureKit",
+        "-framework",
+        "AVFoundation",
+        "-framework",
+        "CoreMedia",
+        "-framework",
+        "CoreGraphics",
+        "-framework",
+        "AppKit"
+      ],
+      "exitCode": 0,
+      "output": ""
+    },
+    {
+      "command": [
+        "codesign",
+        "--force",
+        "--sign",
+        "-",
+        "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/permagent-audiocap-pcm-review"
+      ],
+      "exitCode": 0,
+      "output": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/permagent-audiocap-pcm-review: replacing existing signature\n"
+    },
+    {
+      "command": [
+        "codesign",
+        "--verify",
+        "--strict",
+        "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/permagent-audiocap-pcm-review"
+      ],
+      "exitCode": 0,
+      "output": ""
+    },
+    {
+      "command": [
+        "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/permagent-audiocap-pcm-review",
+        "--self-test"
+      ],
+      "exitCode": 0,
+      "output": "PASS planar stereo, interleaved stereo, mismatched channel rejection, CoreMedia undersized-list regression, exact application scope, owned descendant scope and escape rejection, PCM silence/phase/quantization diagnostics\n"
+    },
+    {
+      "command": [
+        "swiftc",
+        "-O",
+        "reports/record-evidence/audio-diagnostics/chrome_audio_process_probe.swift",
+        "-o",
+        "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/chrome-audio-process-probe",
+        "-framework",
+        "CoreAudio",
+        "-framework",
+        "AppKit"
+      ],
+      "exitCode": 0,
+      "output": ""
+    },
+    {
+      "command": [
+        "codesign",
+        "--force",
+        "--sign",
+        "-",
+        "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/chrome-audio-process-probe"
+      ],
+      "exitCode": 0,
+      "output": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/chrome-audio-process-probe: replacing existing signature\n"
+    },
+    {
+      "command": [
+        "codesign",
+        "--verify",
+        "--strict",
+        "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/chrome-audio-process-probe"
+      ],
+      "exitCode": 0,
+      "output": ""
+    }
+  ],
+  "minFreeBytes": 36278915072,
+  "finished": 1791466706.6471832,
+  "artifacts": [
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/permagent-audiocap-pcm-review",
+      "sha256": "5b4ae9564e976cfdb221fc28ef41309bd1616f7d9424af9a6a79895dafee0d4e"
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/chrome-audio-process-probe",
+      "sha256": "7c1c995962aeef739c555aed23a7213da35dd3b829540f450fdf2dd8431335f4"
+    }
+  ]
+}

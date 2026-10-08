@@ -7,6 +7,7 @@ describe('humanizeMemorySource', () => {
     expect(humanizeMemorySource('permagent.goal')).toEqual({ phrase: 'from a goal', known: true });
     expect(humanizeMemorySource('permagent.decision.asked')).toEqual({ phrase: 'from a decision', known: true });
     expect(humanizeMemorySource('permagent.card')).toEqual({ phrase: 'from a task', known: true });
+    expect(humanizeMemorySource('permagent.note')).toEqual({ phrase: 'from a note', known: true });
   });
 
   it('is honest about an absent source instead of guessing', () => {

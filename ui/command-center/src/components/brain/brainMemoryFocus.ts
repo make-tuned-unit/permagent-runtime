@@ -177,6 +177,18 @@ export function deriveMemoryTitle(mem: GraphMemory): string {
       return firstSentence.slice(0, 77) + '...';
     }
   }
+  // Saved project notes contain their human title on the first nonempty
+  // line. Prefer that to UUID fragments from note:<project>:<note>, while
+  // retaining the existing fallback for blank/opaque/structured content.
+  if (mem.key?.startsWith('note:')) {
+    const firstLine = mem.text.split(/\r?\n/).find(line => line.trim())?.trim();
+    if (firstLine && /\p{L}/u.test(firstLine)
+      && !/^(?:note:|mn-[0-9a-f-]+$|\{|\[)/i.test(firstLine)
+      && !/^[0-9a-f-]{16,}$/i.test(firstLine)) {
+      const characters = Array.from(firstLine);
+      return characters.length > 80 ? `${characters.slice(0, 77).join('')}...` : firstLine;
+    }
+  }
   // Key fallback: humanize.
   if (mem.key) {
     return humanizeMemoryKey(mem.key);

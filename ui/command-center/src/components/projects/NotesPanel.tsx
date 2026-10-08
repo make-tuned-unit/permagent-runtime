@@ -188,6 +188,7 @@ export function NotesPanel({ project }: { project: Project }) {
         <input
           value={title}
           onChange={e => setTitle(e.target.value)}
+          aria-label="Note title"
           placeholder="Title (optional)"
           style={{
             fontSize: textSize.caption, padding: `${space.sm}px ${space.md}px`, borderRadius: radius.md,
@@ -202,6 +203,7 @@ export function NotesPanel({ project }: { project: Project }) {
             // Cmd/Ctrl+Enter saves — quick capture without reaching for the mouse.
             if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); save(); }
           }}
+          aria-label="Note content"
           placeholder="Write a note… it lands in your project's Brain."
           rows={3}
           style={{

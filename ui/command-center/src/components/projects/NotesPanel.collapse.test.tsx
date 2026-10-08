@@ -77,6 +77,8 @@ function titleRow(text: string): HTMLElement {
 describe('NotesPanel collapsed notes', () => {
   it('hides the body until the title row is clicked, then hides again on re-click', async () => {
     await render(<NotesPanel project={project} />);
+    expect(container.querySelector('input[aria-label="Note title"]')).toBeTruthy();
+    expect(container.querySelector('textarea[aria-label="Note content"]')).toBeTruthy();
     expect(container.textContent).toContain('Design decisions');
     expect(container.textContent).not.toContain(note.body);
 

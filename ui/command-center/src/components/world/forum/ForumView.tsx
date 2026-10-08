@@ -41,6 +41,7 @@ import './forum.css';
 import { askFromForum } from './forumQuery';
 import { ForumConversation } from './ForumConversation';
 import { useSystemAppearance } from './useSystemAppearance';
+import { useForumLighting } from './useForumLighting';
 import { ForumLighting } from './ForumLighting';
 import { FORUM_AGENT_PROFILES } from './agentProfiles';
 import { ForumWalk } from './ForumWalk';
@@ -226,7 +227,7 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
   const { colors, theme } = useTheme();
   const material = useGlass('glassHi');
   const systemAppearance = useSystemAppearance();
-  const [lighting, setLighting] = useState<'system'|'day'|'night'>('system');
+  const [lighting, setLighting] = useForumLighting();
   const appearance = lighting === 'system' ? systemAppearance : lighting;
   const [compact, setCompact] = useState(() => new URLSearchParams(window.location.search).get('campus') !== '1');
   const [overview, setOverview] = useState(false);
@@ -260,6 +261,7 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
   const [pageVisible, setPageVisible] = useState(!document.hidden);
   useEffect(() => { const change = () => setPageVisible(!document.hidden); document.addEventListener('visibilitychange', change); return () => document.removeEventListener('visibilitychange', change); }, []);
   const worldRef = useRef<HTMLElement>(null);
+  const deskToggleRef = useRef<HTMLButtonElement>(null);
   const [walking,setWalking] = useState(false);
   const [interactionPrompt,setInteractionPrompt] = useState<string|null>(null);
   const onScreen = useOnScreen(worldRef);
@@ -415,16 +417,13 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
     }
   });
   const toggleDesk = useCallback(() => {
-    setDeskOpen((open) => {
-      const next = !open;
-      try {
-        localStorage.setItem(FORUM_DESK_KEY, next ? 'open' : 'closed');
-      } catch {
-        /* a private window still gets the toggle, just not the memory */
-      }
-      return next;
-    });
-  }, []);
+    const next = !deskOpen;
+    // Hand focus back before hiding the header's focused close button.
+    if (!next) deskToggleRef.current?.focus({ preventScroll: true });
+    try { localStorage.setItem(FORUM_DESK_KEY, next ? 'open' : 'closed'); }
+    catch { /* a private window still gets the toggle, just not the memory */ }
+    setDeskOpen(next);
+  }, [deskOpen]);
 
   // The HUD rests when you are not driving; flying counts as driving.
   const hud = useHudPresence({ walking: walking || flying, enabled: !agoraOpen });
@@ -575,7 +574,7 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
         // available, so exploration does not depend on that browser feature.
         try { const result=canvas?.requestPointerLock?.(); if(result && typeof result.catch==='function')void result.catch(()=>{}); } catch { /* drag look remains available */ }
       }}>{walking?'Return to overview':'Walk the world'}</Button></div>
-      {compact && <Button colors={colors} variant={deskOpen ? 'ghostOn' : 'bare'} flashSuccess={false} aria-expanded={deskOpen} aria-controls="forum-agent-desk" onClick={toggleDesk}>Agent desk</Button>}
+      {compact && <Button ref={deskToggleRef} colors={colors} variant={deskOpen ? 'ghostOn' : 'bare'} flashSuccess={false} aria-expanded={deskOpen} aria-controls="forum-agent-desk" onClick={toggleDesk}>Agent desk</Button>}
       </div>
     </section>
     <aside className="forum-panel" id="forum-agent-desk" aria-label="Agent learning and task desk" aria-hidden={!deskOpen}>

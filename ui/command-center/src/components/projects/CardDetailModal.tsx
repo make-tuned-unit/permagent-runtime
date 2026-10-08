@@ -167,7 +167,7 @@ export function CardDetailModal({
   const footer = card && !loading ? (
     editing ? (
       <>
-        <Button colors={colors} onClick={() => setEditing(false)} disabled={saving} style={ghostVars(colors)}>
+        <Button colors={colors} onClick={() => { setSaveError(null); setEditing(false); }} disabled={saving} style={ghostVars(colors)}>
           Discard
         </Button>
         <Button

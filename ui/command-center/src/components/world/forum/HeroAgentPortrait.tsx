@@ -1,7 +1,8 @@
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 import { useEffect, useMemo, useState } from 'react';
-import { getReduceMotion } from '../../../styles/tokens';
+import { useForumReducedMotion } from './useForumReducedMotion';
+import { GardenAssetBoundary } from './GardenAssetBoundary';
 import { extendForumLoader } from './forumGltf';
 import { disposeHeroRobot, buildHeroRobot, HERO_KIT_URL, heroProportions } from './heroRobot';
 
@@ -63,16 +64,18 @@ function useDocumentVisible() {
 
 export function HeroAgentPortrait({ id, size, label }: { id: string; size: PortraitSize; label?: string }) {
   const visible = useDocumentVisible();
-  const reducedMotion = useMemo(() => getReduceMotion(), []);
+  const reducedMotion = useForumReducedMotion();
+  const [failedId, setFailedId] = useState<string | null>(null);
+  const failed = failedId === id;
   const dimension = size === 'dock' ? 28 : size === 'profile' ? 112 : 220;
   return <div
     className={`hero-agent-portrait hero-agent-portrait-${size}`}
     data-testid="live-agent-portrait"
-    aria-label={label}
+    aria-label={failed ? 'Portrait unavailable' : label}
     role={label ? 'img' : undefined}
     aria-hidden={label ? undefined : true}
   >
-    {visible && <Canvas
+    {visible && <GardenAssetBoundary key={id} onFailure={() => setFailedId(id)} fallback={<div className="agent-portrait-fallback" style={{ width: dimension, height: size === 'dock' ? 28 : size === 'profile' ? 136 : 260, display: 'grid', placeContent: 'center', textAlign: 'center', fontSize: 11, color: 'var(--forum-muted)' }}><span aria-hidden="true">◇</span>{size !== 'dock' && <span>Portrait unavailable</span>}</div>}><Canvas
       frameloop="demand"
       dpr={[1, 1.5]}
       camera={{ position: [0, .88, 3.2], fov: 31, near: .1, far: 20 }}
@@ -80,6 +83,6 @@ export function HeroAgentPortrait({ id, size, label }: { id: string; size: Portr
       style={{ width: dimension, height: size === 'dock' ? 28 : size === 'profile' ? 136 : 260, background: 'transparent' }}
     >
       <PortraitScene id={id} reducedMotion={reducedMotion} />
-    </Canvas>}
+    </Canvas></GardenAssetBoundary>}
   </div>;
 }

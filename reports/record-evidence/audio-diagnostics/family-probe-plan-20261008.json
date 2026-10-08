@@ -1,0 +1,99 @@
+{
+  "createdUtc": "2026-10-08T13:47:25.551231+00:00",
+  "method": "read-only evidence review; new probe source + safety contracts; no compile/HAL query/capture by this worker",
+  "observedCapture": {
+    "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/record-qa-runtime/capture-evidence/chrome-445673a40737436e945f7baaa25e3e9e/capture.json",
+    "sha256": "9205553c89547c6b048525b3321ffd66c04a91c15e2e142ba59e0742d3b98760",
+    "helper": {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/permagent-audiocap-pcm-review",
+      "sha256": "5b4ae9564e976cfdb221fc28ef41309bd1616f7d9424af9a6a79895dafee0d4e"
+    },
+    "capturePassed": false,
+    "pcmFormat": {
+      "bitsPerChannel": 32,
+      "bufferBytes": [
+        3840,
+        3840
+      ],
+      "bufferChannels": [
+        1,
+        1
+      ],
+      "bytesPerFrame": 4,
+      "channels": 2,
+      "formatFlags": 41,
+      "formatID": 1819304813,
+      "sampleBufferFrames": 960,
+      "sampleRate": 48000
+    },
+    "pcmDiagnostics": {
+      "callbacks": 3760,
+      "downmixed": {
+        "nonzeroCount": 0,
+        "peak": 0,
+        "rms": 0,
+        "sampleCount": 3609600
+      },
+      "phase": "final",
+      "quantizedInt16": {
+        "nonzeroCount": 0,
+        "peak": 0,
+        "rms": 0,
+        "sampleCount": 1203200
+      },
+      "rawChannels": [
+        {
+          "nonzeroCount": 0,
+          "peak": 0,
+          "rms": 0,
+          "sampleCount": 3609600
+        },
+        {
+          "nonzeroCount": 0,
+          "peak": 0,
+          "rms": 0,
+          "sampleCount": 3609600
+        }
+      ],
+      "resampledFloat": {
+        "nonzeroCount": 0,
+        "peak": 0,
+        "rms": 0,
+        "sampleCount": 1203200
+      }
+    },
+    "pcmDiagnosis": "incoming_pcm_silent"
+  },
+  "parentReportedSimultaneousEvidence": {
+    "fixtureAudioPackets": 2752,
+    "fixtureNonzeroAudioEnergy": 1.1358,
+    "fixtureVideoFrames": 274,
+    "fixtureFinalCuePlayed": true,
+    "chromeRootPID": 726,
+    "audioServicePID": 66550,
+    "halProcessObject": 130,
+    "halIsRunning": 0,
+    "halIsRunningOutput": 0,
+    "halOutputDevices": [],
+    "halObservations": 2
+  },
+  "interpretation": [
+    "Every supplied SCK Float32 channel sample was zero before downmix, resampling and Int16 conversion; converter loss/phase cancellation are ruled out for this captured run.",
+    "WebRTC packets/decoded energy/final cue progression prove the receive/graph path, not hardware audio rendering.",
+    "The selected AudioService showed no active HAL output. It is not yet established that this process is the actual audio owner; root/renderer/other verified descendants must be inspected.",
+    "Do not repeat blind SCK capture. First identify active Chrome-owned HAL process/output or establish that none renders during the fixture.",
+    "If another verified Chrome process owns active output, correlate its PID to SCK selected inventory; if all selected-family output is inactive, investigate rendering/session/device path before capture.",
+    "No conclusion yet that macOS permissions or SCK filtering caused the silence; no new grant or CoreAudio tap start is attempted."
+  ],
+  "nextProbe": {
+    "source": "reports/record-evidence/audio-diagnostics/chrome_audio_family_probe.swift",
+    "sha256": "4ffba45155c58726073f9fe3d500a98e0e568813a9771c2ac880a321cd69dbae",
+    "preservedOriginalSource": "reports/record-evidence/audio-diagnostics/chrome_audio_process_probe.swift",
+    "preservedOriginalSha256": "73cd50103a94a1134384886a67575f9e0d71ce1b40554802211919182c008457",
+    "scope": "exact root bundle identity + complete executable-contained ancestry + rechecked PID start-time chain; output only verified Chrome-owned HAL rows",
+    "selfTestsPrepared": "root/direct/nested; unrelated ancestry; bundle prefix collision; outside intermediary; cycle; absent process; root PID reuse; lookup PID mismatch",
+    "sourceSafetyTestsPassed": 3,
+    "compiled": false,
+    "executed": false
+  }
+}

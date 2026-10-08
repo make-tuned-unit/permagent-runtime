@@ -158,6 +158,53 @@ describe('clicking a Kanban card opens its detail', () => {
     expect(cardEl().textContent).toContain('Renew the domain');
   });
 
+  it('discards an invalid edit without leaving its error or changing the saved card', async () => {
+    await renderBoard();
+    const el = cardEl();
+    await act(async () => { pointer('pointerdown', el, 40, 40); });
+    await act(async () => { pointer('pointerup', el, 40, 40); });
+
+    const click = async (label: string) => {
+      const button = Array.from(document.querySelectorAll('button'))
+        .find(node => node.textContent?.trim() === label);
+      expect(button).toBeTruthy();
+      await act(async () => { button!.click(); });
+    };
+    await click('Edit card');
+    const title = document.querySelector<HTMLInputElement>('input[aria-label="Card title"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(title, '');
+      title.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await click('Save changes');
+    expect(document.body.textContent).toContain('A card needs a title.');
+
+    await click('Discard');
+    expect(detailIsOpen()).toBe(true);
+    expect(document.body.textContent).not.toContain('A card needs a title.');
+    expect(cardEl().textContent).toContain(card.title);
+    expect(apiFetchMock.mock.calls.some(([, options]) =>
+      options?.method === 'PATCH' || options?.method === 'PUT')).toBe(false);
+
+    await click('Edit card');
+    expect(document.querySelector<HTMLInputElement>('input[aria-label="Card title"]')?.value).toBe(card.title);
+  });
+
+  it('names the new-card title input and cancels without creating a card', async () => {
+    await renderBoard();
+    const add = Array.from(container.querySelectorAll('button'))
+      .find(node => node.textContent?.includes('Add card'));
+    expect(add).toBeTruthy();
+    await act(async () => { add!.click(); });
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="New card title"]');
+    expect(input).not.toBeNull();
+    await act(async () => {
+      input!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    expect(container.querySelector('input[aria-label="New card title"]')).toBeNull();
+    expect(apiFetchMock.mock.calls.some(([, options]) => options?.method === 'POST')).toBe(false);
+  });
+
   it('does not open the detail when the press was a drag', async () => {
     await renderBoard();
     const el = cardEl();

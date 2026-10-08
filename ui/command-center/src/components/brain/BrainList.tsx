@@ -421,7 +421,7 @@ export function BrainList({
 
         {showMemories && !displayLoading && !displayError && displayMemories.length === 0 && (
           <div style={{ padding: 40, textAlign: 'center', fontFamily: font.body, fontSize: textSize.small, color: colors.textMuted }}>
-            {isSearch ? `No memories match "${searchQuery}" — try a name or project.` : 'No memories yet.'}
+            {isSearch ? `No memories match "${searchQuery}" — try a name or project.` : sourceFilter || timeValue < 1 ? 'No memories match these filters.' : 'No memories yet.'}
           </div>
         )}
 

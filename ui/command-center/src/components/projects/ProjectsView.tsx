@@ -949,6 +949,7 @@ export function ProjectKanban({ project }: { project: Project }) {
                 <div style={{ marginTop: space.md, display: 'flex', flexDirection: 'column', gap: space.xs }}>
                   <input
                     ref={inputRef}
+                    aria-label="New card title"
                     value={newCardTitle}
                     onChange={e => setNewCardTitle(e.target.value)}
                     onKeyDown={e => {

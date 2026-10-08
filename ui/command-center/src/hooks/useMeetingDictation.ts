@@ -439,9 +439,8 @@ export function useMeetingDictation() {
   /** What the recording in hand is actually capturing, fixed at Start — the
    *  panel labels come from this, never from the (editable) picker toggles. */
   const [activeSources, setActiveSources] = useState<RecordingSources | null>(null);
-  // Proof-of-capture: how many far-side chunks have actually arrived. The
-  // indicator uses this to say "hearing the call" instead of leaving the user
-  // guessing whether the other participants are really being recorded.
+  // Count only far-side chunks transcribed to words. An arriving silent WAV
+  // or failed transcription must not light the panel's "hearing" indicator.
   const [farChunksHeard, setFarChunksHeard] = useState(0);
   const farStashRef = useRef<FarSideStash>({ recordingId: 0, parts: [] });
   const farQueueRef = useRef<Promise<void>>(Promise.resolve());
@@ -584,14 +583,18 @@ export function useMeetingDictation() {
       stash.seen!.add(path);
       const slot = stash.parts.length;
       stash.parts.push('');
-      setFarChunksHeard(n => n + 1);
+      const isCurrent = () => farStashRef.current === stash && recordingIdRef.current === recordingId;
       farQueueRef.current = farQueueRef.current.then(async () => {
+        if (!isCurrent()) return;
         try {
           const bytes = await readSystemAudioChunk(path);
           const blob = new Blob([bytes], { type: 'audio/wav' });
           const { text } = await api.transcribeAudio(blob);
+          if (!isCurrent()) return;
           stash.parts[slot] = text;
+          if (text.trim().length > 0) setFarChunksHeard(n => n + 1);
         } catch {
+          if (!isCurrent()) return;
           stash.parts[slot] = GAP_MARKER;
           setFailedChunks(n => n + 1);
         }
@@ -607,6 +610,7 @@ export function useMeetingDictation() {
       try { await stopSystemAudioCapture(); } catch { /* nothing was running */ }
 
       const off = await listenSystemAudio(intake, payload => {
+        if (recordingIdRef.current !== recordingId) return;
         // "permission" is the user's to resolve and must say so plainly;
         // anything else is ours. Conflating them is what makes this
         // undebuggable from a screenshot.
@@ -659,17 +663,25 @@ export function useMeetingDictation() {
    *  `takeTail: false` (discard, unmount) stops without taking anything. */
   const stopSystemAudio = useCallback(async (takeTail: boolean = true) => {
     const intake = farIntakeRef.current;
+    const unlisteners = unlistenRef.current;
+    const hadCapture = intake !== null || unlisteners.length > 0;
+    let failure: string | null = null;
     farIntakeRef.current = null;
+    // Retire only this stop's listeners. A newer start may register its own
+    // while native shutdown awaits; this continuation must not remove them.
+    unlistenRef.current = [];
     if ('__TAURI_INTERNALS__' in window) {
       try {
         const unread = await stopSystemAudioCapture();
         // Let the flushed chunk's event dispatch before the listeners go.
         await new Promise(resolve => setTimeout(resolve, 0));
         if (takeTail && intake && unread) unread.forEach(intake);
-      } catch { /* helper already gone; the flush is best-effort by design */ }
+      } catch (e) {
+        if (takeTail && hadCapture) failure = (e as Error)?.message || String(e);
+      }
     }
-    unlistenRef.current.forEach(fn => { try { fn(); } catch { /* already gone */ } });
-    unlistenRef.current = [];
+    unlisteners.forEach(fn => { try { fn(); } catch { /* already gone */ } });
+    return failure;
   }, []);
 
   /**
@@ -686,8 +698,13 @@ export function useMeetingDictation() {
     try {
       setState('finishing');
       clearInterval(timerRef.current);
-      await stopSystemAudio(); // takes any flushed tail, then unsubscribes
+      const stopError = await stopSystemAudio(); // takes any flushed tail, then unsubscribes
       await farQueueRef.current;
+      if (recordingIdRef.current !== recordingId) return;
+      if (stopError) {
+        farStashRef.current.parts.push(GAP_MARKER);
+        setFailedChunks(n => n + 1);
+      }
       stashDraft();
       const startedAt = startedAtRef.current.toISOString();
       const kept = readDrafts().find(d => d.startedAt === startedAt);
@@ -735,17 +752,23 @@ export function useMeetingDictation() {
     let off = 0;
     for (const c of chunks) { merged.set(c, off); off += c.length; }
     const rate = rateRef.current;
-    const slot = partsRef.current.length;
-    partsRef.current.push(''); // reserve speech-order slot
+    const recordingId = recordingIdRef.current;
+    const parts = partsRef.current;
+    const isCurrent = () => recordingIdRef.current === recordingId && partsRef.current === parts;
+    const slot = parts.length;
+    parts.push(''); // reserve a slot in THIS recording, never a future recording's array
 
     queueRef.current = queueRef.current.then(async () => {
+      if (!isCurrent()) return;
       try {
         const wav = encodeWav(merged, rate);
         const { text } = await api.transcribeAudio(new Blob([wav], { type: 'audio/wav' }));
-        partsRef.current[slot] = text;
+        if (!isCurrent()) return;
+        parts[slot] = text;
         if (text.trim().length > 0) setNearChunksHeard(n => n + 1);
       } catch {
-        partsRef.current[slot] = GAP_MARKER;
+        if (!isCurrent()) return;
+        parts[slot] = GAP_MARKER;
         setFailedChunks(n => n + 1);
       }
       stashDraft();
@@ -801,6 +824,7 @@ export function useMeetingDictation() {
     // else under its name, and never quietly widen to all system audio.
     if (app) {
       const running = await listSystemAudioApps();
+      if (recordingIdRef.current !== recordingId) { startingRef.current = false; return; }
       if (appAvailability(app, running) !== 'available') {
         recordingIdRef.current += 1;
         setTarget(null);
@@ -810,7 +834,9 @@ export function useMeetingDictation() {
         return;
       }
     }
-    if (!micWanted && !(await probeSystemAudio())) {
+    const helperAvailable = micWanted || await probeSystemAudio();
+    if (recordingIdRef.current !== recordingId) { startingRef.current = false; return; }
+    if (!helperAvailable) {
       recordingIdRef.current += 1;
       setTarget(null);
       setError("System audio capture isn't available in this build, so there is nothing to record. Turn on “Record my microphone”, or use a build that includes the capture helper.");
@@ -820,6 +846,13 @@ export function useMeetingDictation() {
     }
     if (micWanted) try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // Permission may resolve after unmount/discard. Stop this returned
+      // stream before assigning refs or creating any AudioContext/timer/draft.
+      if (recordingIdRef.current !== recordingId) {
+        stream.getTracks().forEach(track => track.stop());
+        startingRef.current = false;
+        return;
+      }
       streamRef.current = stream;
       // 16 kHz keeps meeting-length uploads small; fall back to the device
       // default if the webview refuses the rate. The WAV header always carries
@@ -874,7 +907,8 @@ export function useMeetingDictation() {
       : null;
     startingRef.current = false;
     if (recordingIdRef.current !== recordingId) {
-      // Unmounted while the helper was starting: it must not outlive us.
+      // Unmounted while the helper was starting: neither source may outlive us.
+      teardownAudio();
       void stopSystemAudio(false);
       return;
     }
@@ -1064,9 +1098,14 @@ export function useMeetingDictation() {
       flushChunk(); // tail
       teardownAudio();
 
-      await stopSystemAudio();
+      const farStopError = await stopSystemAudio();
       await queueRef.current;      // mic chunks transcribed (or gap-marked)
       await farQueueRef.current;   // far-side chunks likewise
+      if (farStopError) {
+        farStashRef.current.parts.push(GAP_MARKER);
+        setFailedChunks(n => n + 1);
+        setSystemAudioError(farStopError);
+      }
       const transcript = composeTranscriptBody(partsRef.current, liveFarParts());
       const composed = meetingNoteBody(transcript, userNotesRef.current);
       if (!composed) {
@@ -1085,6 +1124,11 @@ export function useMeetingDictation() {
       // the same note.
       stashDraft({ title, body: composed });
       unsavedRef.current = { title, body: composed, recordingId };
+      if (farStopError) {
+        setError(`Recording stopped, but final system audio may be incomplete (${farStopError}). Your captured transcript and notes are kept. Retry save will save this partial transcript with a gap marker.`);
+        setState('error');
+        return null;
+      }
       return await attemptSave(target, title, composed, recordingId);
     } finally {
       stoppingRef.current = false;
@@ -1188,7 +1232,7 @@ export function useMeetingDictation() {
     listSystemAudioApps,
     /** What the current recording captures, fixed at Start. */
     activeSources,
-    /** Far-side chunks actually received this recording — proof of capture. */
+    /** Far-side chunks transcribed to words during this recording. */
     farChunksHeard,
     /** Mic chunks that transcribed to words — proof the microphone is live. */
     nearChunksHeard,

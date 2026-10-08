@@ -93,3 +93,17 @@ it('keeps work, tool knowledge and world settings available in closed disclosure
   expect(host.textContent).toContain('Existing tools and skills');
   expect(host.querySelector('[aria-label="World lighting"]')).not.toBeNull();
 });
+
+it('returns keyboard focus to the desk trigger before hiding the focused close control', () => {
+  const close = host.querySelector('[aria-label="Close agent desk"]') as HTMLButtonElement;
+  act(() => close.focus());
+  expect(document.activeElement).toBe(close);
+  act(() => close.click());
+  const trigger = host.querySelector('[aria-controls="forum-agent-desk"]') as HTMLButtonElement;
+  expect(trigger.getAttribute('aria-expanded')).toBe('false');
+  expect(document.activeElement).toBe(trigger);
+  expect(host.querySelector('#forum-agent-desk')?.getAttribute('aria-hidden')).toBe('true');
+  act(() => trigger.click());
+  expect(trigger.getAttribute('aria-expanded')).toBe('true');
+  expect(profile()).not.toBeNull();
+});

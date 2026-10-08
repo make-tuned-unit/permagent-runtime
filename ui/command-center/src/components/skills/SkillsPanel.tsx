@@ -126,6 +126,7 @@ export function SkillsPanel({ onClose }: { onClose?: () => void } = {}) {
               type="text"
               value={search}
               onChange={e => setSearch(e.target.value)}
+              aria-label="Search skills"
               placeholder="Search skills..."
               className="skills-search-input w-full rounded-md pl-7 pr-3 py-1.5 text-[11px] focus:outline-none transition"
               style={{ fontFamily: font.mono, border: `1px solid ${colors.border}`, backgroundColor: `${colors.surface}80`, color: colors.text }}

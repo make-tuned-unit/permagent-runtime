@@ -79,6 +79,33 @@ def classify_pcm_diagnostics(metrics):
     return 'nonzero_pcm_reached_wav'
 
 
+
+def capture_protocol_errors(evidence):
+    errors = []
+    if any(entry['line'].startswith('ERROR ') for entry in evidence.get('stderr', [])):
+        errors.append('Helper emitted an ERROR; partial output cannot prove complete capture')
+    chunks = evidence.get('chunks', [])
+    indices = []
+    for chunk in chunks:
+        match = re.fullmatch(r'sysaudio_([0-9]+)\.wav', Path(chunk['path']).name)
+        indices.append(int(match.group(1)) if match else None)
+    if indices != list(range(len(chunks))):
+        errors.append('Helper chunk numbering is missing, duplicated, or out of order')
+    # This runner always requests55..80s with45s chunks. A tail alone can look
+    # valid after a failed first write because the helper increments its index
+    # before attempting the write; require the full chunk as well.
+    if not any(abs(chunk['durationSeconds'] - 45) <= 1 / 16000 for chunk in chunks):
+        errors.append('Capture did not retain a complete45-second chunk')
+    return errors
+
+
+def capture_passed(evidence):
+    return (not evidence.get('error') and not capture_protocol_errors(evidence) and evidence['ready'] and
+        evidence['sourceVerified'] and evidence['readersJoined'] and evidence['exitCode'] == 0 and
+        bool(evidence['chunks']) and any(c['peak'] > 0 for c in evidence['chunks']) and
+        any(c['afterStopSignal'] and 0 < c['durationSeconds'] < 45 for c in evidence['chunks']))
+
+
 def run(args):
     isolated.manifest()
     helper = helper_check(args.helper, args.sha256)
@@ -177,10 +204,8 @@ def run(args):
             evidence['pcmDiagnosis'] = classify_pcm_diagnostics(evidence.get('pcmDiagnostics'))
             if evidence['pcmDiagnosis'] == 'incomplete_diagnostics':
                 evidence['error'] = 'PCM diagnostic helper did not emit its final amplitude receipt'
-        evidence['capturePassed'] = (not evidence.get('error') and evidence['ready'] and
-            evidence['sourceVerified'] and evidence['readersJoined'] and proc.returncode == 0 and
-            bool(evidence['chunks']) and any(c['peak'] > 0 for c in evidence['chunks']) and
-            any(c['afterStopSignal'] and 0 < c['durationSeconds'] < 45 for c in evidence['chunks']))
+        evidence['protocolErrors'] = capture_protocol_errors(evidence)
+        evidence['capturePassed'] = capture_passed(evidence)
         isolated.write_json(directory / 'capture.json', evidence)
     print(json.dumps({'capturePassed': evidence['capturePassed'], 'evidence': str(directory / 'capture.json')}))
     return evidence['capturePassed']

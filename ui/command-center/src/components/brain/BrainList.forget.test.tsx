@@ -181,3 +181,31 @@ describe('BrainList memory row — Forget / undo', () => {
     );
   });
 });
+
+describe('BrainList source and date filtering', () => {
+  it('offers project notes as a real source filter and distinguishes an empty filtered result', async () => {
+    const note = { ...KNOWN_MEMORY, source: 'permagent.note', key: 'note:qa:1' };
+    getBrainMemoriesMock.mockResolvedValueOnce({ memories: [note], total: 1, has_more: false });
+    await renderList();
+    expect(container.textContent).toContain('from a note');
+    const notes = Array.from(container.querySelectorAll('button')).find(button => button.textContent === 'notes');
+    expect(notes).toBeTruthy();
+    getBrainMemoriesMock.mockResolvedValue({ memories: [], total: 0, has_more: false });
+    await act(async () => { notes!.click(); });
+    expect(getBrainMemoriesMock).toHaveBeenLastCalledWith({ limit: 50, source: 'permagent.note' });
+    expect(container.textContent).toContain('No memories match these filters.');
+    expect(container.textContent).not.toContain('No memories yet.');
+    const all = Array.from(container.querySelectorAll('button')).find(button => button.textContent === 'all sources');
+    await act(async () => { all!.click(); });
+    expect(getBrainMemoriesMock).toHaveBeenLastCalledWith({ limit: 50 });
+    expect(container.textContent).toContain('No memories yet.');
+  });
+
+  it('does not describe an empty date window as an empty Brain', async () => {
+    getBrainMemoriesMock.mockResolvedValue({ memories: [], total: 0, has_more: false });
+    await act(async () => { root.render(<BrainList onSelect={() => {}} selectedId={null} timeValue={0.1} />); });
+    expect(getBrainMemoriesMock).toHaveBeenCalledWith(expect.objectContaining({ after: expect.any(String) }));
+    expect(container.textContent).toContain('No memories match these filters.');
+    expect(container.textContent).not.toContain('No memories yet.');
+  });
+});

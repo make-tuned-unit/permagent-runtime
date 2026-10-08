@@ -8,7 +8,7 @@ import { StepFrame } from './StepFrame';
 import { LOCAL_RUNTIME_PROVIDER } from './providerChoices';
 
 export interface ReviewFacts {
-  model: { connected: boolean; text: string };
+  model: { connected: boolean | null; text: string };
   folders: string;
   search: string;
   memory: string;
@@ -20,8 +20,10 @@ export function summarize(input: {
   providers: Array<{ name: string; is_configured: boolean; metadata: { display_name: string } }>;
   searchSaved: string[];
   librarian: { enabled: boolean; model: string } | null;
+  unavailable?: { config?: boolean; providers?: boolean; search?: boolean; librarian?: boolean };
 }): ReviewFacts {
   const cfg = input.config ?? {};
+  const unavailable = input.unavailable ?? {};
   const providerName = typeof cfg.GOOSE_PROVIDER === 'string' ? cfg.GOOSE_PROVIDER : '';
   const modelName = typeof cfg.GOOSE_MODEL === 'string' ? cfg.GOOSE_MODEL : '';
   const entry = input.providers.find(p => p.name === providerName);
@@ -29,12 +31,16 @@ export function summarize(input: {
   const where = providerName === LOCAL_RUNTIME_PROVIDER ? 'On this Mac' : entry?.metadata.display_name || providerName;
   const roots = Array.isArray(cfg.dev_roots) ? cfg.dev_roots.filter(r => typeof r === 'string') : [];
   return {
-    model: connected
+    model: unavailable.config || unavailable.providers
+      ? { connected: null, text: 'Unavailable' }
+      : connected
       ? { connected, text: [where, modelName].filter(Boolean).join(' · ') }
       : { connected, text: 'Not connected' },
-    folders: roots.length === 0 ? 'None' : roots.length === 1 ? String(roots[0]) : `${roots.length} folders`,
-    search: input.searchSaved.length ? input.searchSaved.join(', ') : 'Not set up',
-    memory: input.librarian?.enabled ? `On · ${input.librarian.model}` : 'Off',
+    folders: unavailable.config ? 'Unavailable' : roots.length === 0 ? 'None' : roots.length === 1 ? String(roots[0]) : `${roots.length} folders`,
+    search: unavailable.search
+      ? (input.searchSaved.length ? `${input.searchSaved.join(', ')} · Other providers unavailable` : 'Unavailable')
+      : input.searchSaved.length ? input.searchSaved.join(', ') : 'Not set up',
+    memory: unavailable.librarian ? 'Unavailable' : input.librarian?.enabled ? `On · ${input.librarian.model}` : 'Off',
   };
 }
 
@@ -64,15 +70,29 @@ export function StepReview({ agentName, toneLabel, firstMessage, onFirstMessage,
     let alive = true;
     (async () => {
       try {
-        const [config, providers, librarian, searchSaved] = await Promise.all([
+        const [config, providers, librarian, searchReads] = await Promise.allSettled([
           api.getConfig(),
           api.getProviders(),
-          api.getLibrarianSchedule().catch(() => null),
-          Promise.all(SEARCH_PROVIDERS.map(async p => {
-            try { return (await api.readSecretConfig(p.keyName))?.maskedValue ? p.displayName : null; } catch { return null; }
-          })).then(xs => xs.filter((x): x is string => !!x)),
+          api.getLibrarianSchedule(),
+          Promise.allSettled(SEARCH_PROVIDERS.map(async p =>
+            (await api.readSecretConfig(p.keyName))?.maskedValue ? p.displayName : null)),
         ]);
-        if (alive) setFacts(summarize({ config: config.config, providers, searchSaved, librarian }));
+        const searchResults = searchReads.status === 'fulfilled' ? searchReads.value : [];
+        const searchSaved = searchResults.flatMap(result => result.status === 'fulfilled' && result.value ? [result.value] : []);
+        const unavailable = {
+          config: config.status === 'rejected', providers: providers.status === 'rejected',
+          librarian: librarian.status === 'rejected',
+          search: searchReads.status === 'rejected' || searchResults.some(result => result.status === 'rejected'),
+        };
+        if (alive) {
+          setFacts(summarize({
+            config: config.status === 'fulfilled' ? config.value.config : undefined,
+            providers: providers.status === 'fulfilled' ? providers.value : [],
+            librarian: librarian.status === 'fulfilled' ? librarian.value : null,
+            searchSaved, unavailable,
+          }));
+          if (Object.values(unavailable).some(Boolean)) setError('Some settings could not be read. Unavailable values have not been confirmed.');
+        }
       } catch (e) {
         if (alive) setError(e instanceof Error ? e.message : String(e));
       }
@@ -80,6 +100,7 @@ export function StepReview({ agentName, toneLabel, firstMessage, onFirstMessage,
     return () => { alive = false; };
   }, []);
 
+  const pendingValue = error ? 'Unavailable' : 'Checking…';
   return (
     <StepFrame
       title="Ready when you are"
@@ -87,16 +108,17 @@ export function StepReview({ agentName, toneLabel, firstMessage, onFirstMessage,
       primary={{ label: 'Start Permagent', pending: saving, pendingLabel: 'Starting…' }}
       onPrimary={onStart}
     >
-      {error && <StatusLine tone="warn">Couldn't read back every setting ({error}). Your choices were saved as you made them.</StatusLine>}
+      {!facts && !error && <StatusLine tone="info">Checking saved settings… You can start while these checks finish.</StatusLine>}
+      {error && <StatusLine tone="warn">{error} You can review your saved choices later in Settings.</StatusLine>}
       <dl style={{ margin: 0, display: 'flex', flexDirection: 'column' }}>
-        <Row label="Model" value={facts ? facts.model.text : '…'} warn={!!facts && !facts.model.connected} onChange={() => onEdit(steps.model)} />
+        <Row label="Model" value={facts ? facts.model.text : pendingValue} warn={facts?.model.connected === false} onChange={() => onEdit(steps.model)} />
         <Row label="Agent" value={`${agentName} · ${toneLabel}`} onChange={() => onEdit(steps.agent)} />
-        <Row label="Code folders" value={facts?.folders ?? '…'} onChange={() => onEdit(steps.folders)} />
-        <Row label="Web search" value={facts?.search ?? '…'} onChange={() => onEdit(steps.extras)} />
-        <Row label="Memory model" value={facts?.memory ?? '…'} onChange={() => onEdit(steps.extras)} last />
+        <Row label="Code folders" value={facts?.folders ?? pendingValue} onChange={() => onEdit(steps.folders)} />
+        <Row label="Web search" value={facts?.search ?? pendingValue} onChange={() => onEdit(steps.extras)} />
+        <Row label="Memory model" value={facts?.memory ?? pendingValue} onChange={() => onEdit(steps.extras)} last />
       </dl>
 
-      {facts && !facts.model.connected && (
+      {facts?.model.connected === false && (
         <StatusLine tone="warn">No model is connected, so {agentName} can't reply yet. Add one any time in Settings → Models.</StatusLine>
       )}
 

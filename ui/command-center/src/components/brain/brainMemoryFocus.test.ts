@@ -168,6 +168,33 @@ describe('deriveMemoryTitle', () => {
   it('uses the description first sentence when present', () => {
     expect(deriveMemoryTitle(graphMem({ description: 'First thing. Second thing.' }))).toBe('First thing.');
   });
+  it('uses a saved note title instead of its opaque project/note key', () => {
+    expect(deriveMemoryTitle(graphMem({
+      key: 'note:97a174d2-b840:mn-abcdef', description: null,
+      text: '\n  Synthetic Amber Launch meeting  \r\n\r\nFinal tail stays pending.',
+    }))).toBe('Synthetic Amber Launch meeting');
+  });
+  it('keeps an enriched description ahead of a note title', () => {
+    expect(deriveMemoryTitle(graphMem({ key: 'note:project:note', description: 'Verified summary. More.', text: 'Raw note title' })))
+      .toBe('Verified summary.');
+  });
+  it('limits long human note titles without splitting Unicode characters', () => {
+    const title = 'Meeting ' + '🚀'.repeat(90);
+    const result = deriveMemoryTitle(graphMem({ key: 'note:project:note', description: null, text: title + '\nbody' }));
+    expect(Array.from(result)).toHaveLength(80);
+    expect(result).toBe(Array.from(title).slice(0, 77).join('') + '...');
+    expect(result).not.toContain('body');
+  });
+  it.each(['', '1234567890', '97a174d2-b840-1234-aabb-abcdef123456', 'note:opaque', 'mn-abcdef123456', '{"raw":"object"}'])(
+    'retains the key fallback for non-title note content %j', text => {
+      const key = 'note:project:note';
+      expect(deriveMemoryTitle(graphMem({ key, description: null, text }))).toBe(humanizeMemoryKey(key));
+    },
+  );
+  it('does not change title precedence for other memory kinds', () => {
+    expect(deriveMemoryTitle(graphMem({ key: 'code:project:map', description: null, text: 'Human first line' })))
+      .toBe('Code Project Map');
+  });
   it('humanizes the key when there is no description', () => {
     expect(deriveMemoryTitle(graphMem({ description: null, key: 'daily-standup' }))).toBe('Daily Standup');
   });

@@ -1,0 +1,70 @@
+{
+  "createdUtc": "2026-10-08T13:27:17.347577+00:00",
+  "method": "source review plus focused mocked React/audio/IPC boundary reproductions; no native/runtime/capture",
+  "redRun": {
+    "command": "NODE_OPTIONS=--max-old-space-size=768 node node_modules/vitest/vitest.mjs run src/hooks/useMeetingDictation.lifecycle.test.tsx --pool=forks --poolOptions.forks.singleFork -t \"retires pending microphone|late microphone stream|final system audio flush\"",
+    "exitCode": 1,
+    "failed": 3,
+    "skipped": 50,
+    "durationSeconds": 1.4,
+    "observations": [
+      "late A microphone transcription incorrectly incremented recording B speech counter; continuation writes shared B parts array",
+      "late getUserMedia stream after unmount was not stopped",
+      "final native flush error returned a saved note instead of preserving an incomplete draft"
+    ]
+  },
+  "sourceFixes": [
+    "mic and far transcription continuations verify recording identity before work and after awaited result; mic array is recording-local",
+    "late microphone stream is stopped before refs/context/timer/draft creation if its recording retired",
+    "stale source-list/helper probes cannot progress startup after unmount; helper-start mismatch tears down mic too",
+    "final system-audio stop failure returns explicit error, appends a gap marker, freezes exact title/body/recordingId draft and offers user-triggered Retry save without automatic save",
+    "each stop closes only its own listeners, preserving any newer registration",
+    "far hearing indicator increments only after nonempty successful transcription, not merely receiving a silent WAV"
+  ],
+  "testsAdded": 4,
+  "greenRun": "NOT RUN: parent requested no additional tests/builds during disk cleanup after the red reproductions",
+  "editedLifecycleFiles": [
+    "ui/command-center/src/hooks/useMeetingDictation.ts",
+    "ui/command-center/src/hooks/useMeetingDictation.lifecycle.test.tsx"
+  ],
+  "activeWorkerProcesses": [],
+  "remainingAcceptance": [
+    "run lifecycle/draft/Record source tests and typecheck after cleanup permits",
+    "compile/self-test opt-in SCK diagnostics and read-only HAL probe under parent slot",
+    "actual nonzero scoped capture and native Record Computer Use remain unpassed",
+    "diagnostic runner review found it currently does not treat helper ERROR stderr as failure; a write failure can omit a chunk while another nonzero final chunk satisfies current capturePassed checks; defer repair/test until cleanup finishes",
+    "existing stop path with dual mic capture surfaces asynchronous helper errors but should be tested for transcript gap provenance on mid-call write failure",
+    "near/far transcript order is chunk-based approximate rather than timestamp-aligned diarization"
+  ],
+  "postCleanupValidation": {
+    "verifiedUtc": "2026-10-08T13:37:16.563565+00:00",
+    "hookTests": {
+      "passed": 94,
+      "files": [
+        "useMeetingDictation.lifecycle.test.tsx",
+        "useMeetingDictation.drafts.test.ts",
+        "useMeetingDictation.test.ts"
+      ],
+      "durationSeconds": 1.1,
+      "exitCode": 0
+    },
+    "typecheck": {
+      "command": "NODE_OPTIONS=--max-old-space-size=1536 node node_modules/typescript/bin/tsc --noEmit",
+      "exitCode": 0
+    },
+    "captureProtocol": {
+      "redRun": "2 new regressions failed against the extracted original capturePassed predicate",
+      "greenRun": "9 passed",
+      "fix": "ERROR stderr, noncontiguous/duplicate/out-of-order chunk indices, or absent45-second full chunk now fail acceptance; original nonzero-signal/final-tail checks retained"
+    },
+    "captureRun": false,
+    "nativeBuild": false
+  },
+  "currentSourceSha256": {
+    "ui/command-center/src/hooks/useMeetingDictation.ts": "89aa0a256fc55d30b10b6b7ef06607e23fca69b8ac8d44dda66d67bc64f34509",
+    "ui/command-center/src/hooks/useMeetingDictation.lifecycle.test.tsx": "47f1443976c3f20694a04ea0685275de2479bebaee2b507879466052d5b6672e",
+    "ui/desktop/src-tauri/audiocap/main.swift": "d3ed41c35c3a8cce99d5c2e62fe0f1d4b136882c72089a5b7eb8a514cffac9d1",
+    "reports/record-evidence/audio-diagnostics/chrome_audio_process_probe.swift": "73cd50103a94a1134384886a67575f9e0d71ce1b40554802211919182c008457",
+    "reports/record-evidence/scoped_capture.py": "a0c70a2b35f91b770a104bd8b3066a3c1f83b2cfcc5ac58c939d1d6ce1cd8d62"
+  }
+}

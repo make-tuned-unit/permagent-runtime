@@ -17,12 +17,12 @@
   "built": false,
   "captured": false,
   "captureRunner": "reports/record-evidence/scoped_capture.py",
-  "captureRunnerSha256": "4b1009ceff220a7def6229fb953646810ea53a91e07574a8fb0dc73dc3b661b7",
+  "captureRunnerSha256": "a0c70a2b35f91b770a104bd8b3066a3c1f83b2cfcc5ac58c939d1d6ce1cd8d62",
   "primaryReferences": [
     "https://developer.apple.com/documentation/coreaudio/capturing-system-audio-with-core-audio-taps",
     "https://developer.apple.com/documentation/coreaudio/catapdescription",
     "https://developer.apple.com/documentation/bundleresources/information-property-list/nsaudiocaptureusagedescription"
   ],
   "tapExecution": "Not permitted without a proven nonprompting existing-permission path; no tap capture source executed",
-  "sourceContracts": "7 Python/source tests passed; Swift self-test assertions added but not compiled or executed"
+  "sourceContracts": "9 Python/source/protocol tests passed; Swift self-test assertions remain uncompiled/unexecuted"
 }

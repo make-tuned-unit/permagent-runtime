@@ -1030,3 +1030,92 @@ describe('helper error after Start', () => {
     expect(noteBody()).toBe('still here');
   });
 });
+
+describe('retired recording and final capture errors', () => {
+  it('does not claim the far side was heard when the received chunk is silent', async () => {
+    const r = mount();
+    act(() => r.h.setSystemAudio(true));
+    await run(() => r.h.start(PROJECT_A));
+    act(() => emit('system_audio_chunk', '/tmp/silent.wav'));
+    await settle();
+    expect(r.h.farChunksHeard).toBe(0);
+    farTexts.set('/tmp/speech.wav', 'actual far side words');
+    act(() => emit('system_audio_chunk', '/tmp/speech.wav'));
+    await settle();
+    expect(r.h.farChunksHeard).toBe(1);
+    act(() => r.h.discard());
+    await settle();
+    r.unmount();
+  });
+
+  it('retires pending microphone transcription before another project starts', async () => {
+    const r = mount();
+    await run(() => r.h.start(PROJECT_A));
+    let release!: (value: { text: string }) => void;
+    transcribeAudio.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+    speak(MEETING_CHUNK_SECONDS);
+    await settle();
+    act(() => r.h.discard());
+    await settle();
+    await run(() => r.h.start(PROJECT_B));
+    await act(async () => { release({ text: 'private words from discarded project A' }); });
+    await settle();
+    expect(readDrafts().find(d => d.projectId === PROJECT_B.projectId)?.parts).toEqual([]);
+    expect(r.h.nearChunksHeard).toBe(0);
+    micTexts = ['only fresh project B words'];
+    speak(1);
+    await run(() => r.h.stop());
+    expect(noteBody()).toBe('only fresh project B words');
+    expect(createProjectNote.mock.calls[0][0]).toBe(PROJECT_B.projectId);
+    r.unmount();
+  });
+
+  it('closes a late microphone stream when unmounted during permission resolution', async () => {
+    const r = mount();
+    let release!: (value: { getTracks: () => FakeTrack[] }) => void;
+    vi.mocked(navigator.mediaDevices.getUserMedia).mockImplementationOnce(() => new Promise(resolve => {
+      release = value => resolve(value as unknown as MediaStream);
+    }));
+    let starting!: Promise<void>;
+    act(() => { starting = r.h.start(PROJECT_A); });
+    await settle();
+    r.unmount();
+    const lateTrack = new FakeTrack();
+    try {
+      await act(async () => { release({ getTracks: () => [lateTrack] }); await starting; });
+      expect(lateTrack.stopped).toBe(true);
+      expect(contexts.every(context => context.state === 'closed')).toBe(true);
+      expect(readDrafts()).toEqual([]);
+    } finally {
+      act(() => r.h.discard());
+    }
+  });
+
+  it('keeps a recoverable draft when the final system audio flush fails', async () => {
+    const r = mount();
+    act(() => r.h.setSystemAudio(true));
+    await run(() => r.h.start(PROJECT_A));
+    act(() => r.h.setUserNotes('keep the typed commitment'));
+    micTexts = ['confirmed before stop'];
+    speak(1);
+    invoke.mockImplementationOnce(async (command: string) => {
+      expect(command).toBe('stop_system_audio');
+      throw new Error('capture helper timed out; final audio may be incomplete');
+    });
+    const saved = await run(() => r.h.stop());
+    expect(saved).toBeNull();
+    expect(createProjectNote).not.toHaveBeenCalled();
+    expect(r.h.state).toBe('error');
+    expect(r.h.error).toMatch(/final audio|incomplete/i);
+    expect(r.h.hasUnsavedTranscript).toBe(true);
+    const draft = readDrafts()[0];
+    expect(draft.body).toContain('confirmed before stop');
+    expect(draft.body).toContain('keep the typed commitment');
+    expect(draft.body).toContain(GAP_MARKER);
+    const stableId = draft.recordingId;
+    await run(() => r.h.retrySave());
+    expect(sentRecordingId()).toBe(stableId);
+    expect(noteBody()).toBe(draft.body);
+    r.unmount();
+  });
+});

@@ -2706,7 +2706,6 @@ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
       const d = new Date(atLocal);
       if (Number.isNaN(d.getTime())) throw new Error('that date and time did not parse.');
       body.at = d.toISOString();
-      if (tz.trim()) body.tz = tz.trim();
     } else {
       if (everySeconds < 1) throw new Error('enter an interval of at least a minute.');
       body.every_seconds = everySeconds;
@@ -2806,7 +2805,10 @@ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
 
         {kind === 'once' && (
           <div style={{ marginBottom: space.xl }}>
-            <input aria-label="Run date and time" type="datetime-local" value={atLocal} onChange={e => setAtLocal(e.target.value)} style={{ ...fieldStyle, fontFamily: font.mono }} />
+            <input aria-label="Run date and time" aria-describedby={`${fieldId}-local-time`} type="datetime-local" value={atLocal} onChange={e => setAtLocal(e.target.value)} style={{ ...fieldStyle, fontFamily: font.mono }} />
+            <div id={`${fieldId}-local-time`} style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: space.sm }}>
+              Uses this device's local time ({Intl.DateTimeFormat().resolvedOptions().timeZone}).
+            </div>
           </div>
         )}
 
@@ -2821,7 +2823,7 @@ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
           </div>
         )}
 
-        {kind !== 'interval' && (
+        {kind === 'cron' && (
           <div style={{ marginBottom: space.xl }}>
             <label htmlFor={`${fieldId}-timezone`} style={{ fontSize: textSize.caption, fontWeight: 600, color: colors.textMuted, display: 'block', marginBottom: space.sm }}>Timezone (optional)</label>
             <input id={`${fieldId}-timezone`} value={tz} onChange={e => setTz(e.target.value)} placeholder="UTC, +05:30, -08:00" style={{ ...fieldStyle, fontFamily: font.mono }} />

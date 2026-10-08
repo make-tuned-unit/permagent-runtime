@@ -231,6 +231,8 @@ it('labels the new automation fields and conditional schedule controls without c
   };
   choose('One-time');
   expect(dialog.querySelector('input[type="datetime-local"]')?.getAttribute('aria-label')).toBe('Run date and time');
+  expect(dialog.textContent).toContain("Uses this device's local time");
+  expect(dialog.textContent).not.toContain('Timezone (optional)');
   choose('Interval');
   expect(dialog.querySelector('input[min="1"]')?.getAttribute('aria-label')).toBe('Interval amount');
   expect(dialog.querySelector('select')?.getAttribute('aria-label')).toBe('Interval unit');
@@ -240,4 +242,34 @@ it('labels the new automation fields and conditional schedule controls without c
   act(() => custom.click());
   expect(dialog.querySelector('input[placeholder="0 9 * * 1-5"]')?.getAttribute('aria-label')).toBe('Custom cron expression');
   expect(vi.mocked(apiFetch).mock.calls.some(([url]) => url === '/schedule/create')).toBe(false);
+});
+
+it('one-time creation uses device-local datetime and does not carry a previously selected cron timezone', async () => {
+  await act(async () => { root.render(<AutomateView />); });
+  await settle();
+  act(() => [...container.querySelectorAll('button')].find(button => button.textContent?.includes('+ Create'))!.click());
+  const dialog = document.querySelector('[role="dialog"]')!;
+  const set = (element: HTMLInputElement | HTMLTextAreaElement, value: string) => {
+    const prototype = element.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    act(() => {
+      Object.getOwnPropertyDescriptor(prototype, 'value')!.set!.call(element, value);
+      element.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+  };
+  const field = (label: string) => [...dialog.querySelectorAll('label')].find(element => element.textContent === label)!.control as HTMLInputElement;
+  set(field('What should we call this?'), 'Synthetic one-time QA');
+  set(field('What should the agent do?'), 'A mocked test only.');
+  set(field('Timezone (optional)'), '+05:30');
+  act(() => [...dialog.querySelectorAll('button')].find(button => button.textContent === 'One-time')!.click());
+  const datetime = dialog.querySelector<HTMLInputElement>('input[type="datetime-local"]')!;
+  set(datetime, '2030-10-08T09:30');
+  expect(document.getElementById(datetime.getAttribute('aria-describedby')!)?.textContent).toContain("Uses this device's local time");
+  await act(async () => { dialog.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); });
+  await settle();
+  const create = vi.mocked(apiFetch).mock.calls.find(([url]) => url === '/schedule/create');
+  expect(create).toBeTruthy();
+  const payload = JSON.parse(String(create![1]!.body));
+  expect(payload.at).toBe(new Date('2030-10-08T09:30').toISOString());
+  expect(payload).not.toHaveProperty('tz');
+  expect(payload).not.toHaveProperty('cron');
 });

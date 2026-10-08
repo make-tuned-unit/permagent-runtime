@@ -1,0 +1,90 @@
+{
+  "beforeFreeBytes": 24345759744,
+  "removed": [
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/dagK-cache-minimums",
+      "head": "3530da4e59357c4e05e133c30093963f1c3a2762",
+      "branch": "refs/heads/dagk/cache-minimums",
+      "created": 1791466398.624507,
+      "archive": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/cleanup-archives-20261008/dirty-worktrees/dagK-cache-minimums/files.tar.gz",
+      "archiveSha256": "29185cc623360ddf078426dd726373b74dcad086612f7a0838a07c6abc0fcd1d",
+      "statusSha256": "6d0a361f7a4e8da161276b9770fbb606b2876b36441d1eeefe9429ef7f3dd874"
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/dagK-grow-deltas",
+      "head": "3530da4e59357c4e05e133c30093963f1c3a2762",
+      "branch": "refs/heads/dagk/grow-deltas",
+      "created": 1791466398.89764,
+      "archive": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/cleanup-archives-20261008/dirty-worktrees/dagK-grow-deltas/files.tar.gz",
+      "archiveSha256": "0fca3555887dd06889662ccee7a8b52a73e3f40d9d02f623eb0bd269665c576f",
+      "statusSha256": "edfb34f40e15779e11eab4ac4c495ac0e1c87c7a4af153ab20ca76c9cf92c623"
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/dagK-memory-source-forget",
+      "head": "3530da4e59357c4e05e133c30093963f1c3a2762",
+      "branch": "refs/heads/dagk/memory-source-forget",
+      "created": 1791466399.138078,
+      "archive": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/cleanup-archives-20261008/dirty-worktrees/dagK-memory-source-forget/files.tar.gz",
+      "archiveSha256": "f341d0b6976a0bbb8527aae66d11674e603941cd6d9c1d07ef76ec4a861aa6bc",
+      "statusSha256": "dc7b59ed7067276c1d629ee88229c61a33c34ecc036647412d1c815baff357e2"
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/dagK-owner-identity",
+      "head": "3530da4e59357c4e05e133c30093963f1c3a2762",
+      "branch": "refs/heads/dagk/owner-identity",
+      "created": 1791466399.421097,
+      "archive": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/cleanup-archives-20261008/dirty-worktrees/dagK-owner-identity/files.tar.gz",
+      "archiveSha256": "ae591548529bbb9092ad2dd84419c89bb6df89bd450e89dc99ca9e077d2030bb",
+      "statusSha256": "166e9ed9965e8c0381f2bd1b9c732d1620272e400e98d496193667658704295a"
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/dagK-pressable",
+      "head": "378eb9c780fe182614037ce3912b30793c1516ca",
+      "branch": "refs/heads/dagk/pressable-sweep",
+      "created": 1791466399.65887,
+      "archive": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/cleanup-archives-20261008/dirty-worktrees/dagK-pressable/files.tar.gz",
+      "archiveSha256": "5fe18a980f9872685f98fe7e47bad9760395c60a6aa84eee6076726594cd6b52",
+      "statusSha256": "f3f9072e640ad4884e19ee2549d40c0b7875e1acc786a3a3774cbb7e6b40934d"
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/dagK-relationship-strength",
+      "head": "3530da4e59357c4e05e133c30093963f1c3a2762",
+      "branch": "refs/heads/dagk/relationship-strength",
+      "created": 1791466399.915123,
+      "archive": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/cleanup-archives-20261008/dirty-worktrees/dagK-relationship-strength/files.tar.gz",
+      "archiveSha256": "0e941ee2d33fa782c7774941697cbe970bbf3ac9fd5e71bf8acb7a2eff29b748",
+      "statusSha256": "64e461ff3a3eac110863e298780f04696e8338ad14fc4d883d5754b39a975ad2"
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/dagK-worker-plan-librarian",
+      "head": "3530da4e59357c4e05e133c30093963f1c3a2762",
+      "branch": "refs/heads/dagk/worker-plan-librarian",
+      "created": 1791466400.5228071,
+      "archive": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/cleanup-archives-20261008/dirty-worktrees/dagK-worker-plan-librarian/files.tar.gz",
+      "archiveSha256": "209519f3e0b04196b4efecc18f810bc7efd00c9173738bb947adca790ad71d2a",
+      "statusSha256": "e506b77ec388ba4af3e34e286f8c50756e7c0c60b318be6f47f1ab6a59651022"
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/home-layout-fix-20260928",
+      "head": "3495271b5b10991596e89d6d3c88646d2b22bb05",
+      "branch": "refs/heads/fix/home-layout-save-20260928",
+      "created": 1791466404.313472,
+      "archive": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/cleanup-archives-20261008/dirty-worktrees/home-layout-fix-20260928/files.tar.gz",
+      "archiveSha256": "95161b8611ef3404c7b1fa78afea68ee0de9b8cbbb45a8ba2ae99db63a702f1d",
+      "statusSha256": "20300fde3ac962ab33df18e775da8165da208c731b98068c235d5e888d3ec491"
+    },
+    {
+      "path": "/Users/j/Documents/dev/permagent-worktrees/wq-record-20261007",
+      "head": "b55bf214feeb41bd5c9708cfafe628f98c491608",
+      "branch": "refs/heads/wq/record-20261007",
+      "created": 1791466404.572648,
+      "archive": "/Users/j/Documents/dev/permagent-worktrees/.shared-target/cleanup-archives-20261008/dirty-worktrees/wq-record-20261007/files.tar.gz",
+      "archiveSha256": "9d892cbdcde74e3c409a0fb6f28a18ae786204823c2e9d51b8a2c67d35023c5a",
+      "statusSha256": "06b7cf2b2fd3cb4b16d918cd09c5ce9890ce611590337ae904df891a5e829f5a"
+    }
+  ],
+  "started": 1791466434.965745,
+  "afterFreeBytes": 31083200512,
+  "observedFreeIncreaseBytes": 6737440768,
+  "finished": 1791466441.333997
+}

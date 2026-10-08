@@ -141,10 +141,11 @@ While root's CUA fixture plays, the explicit read-only invocation is:
   --chrome-pid <observed-chrome-root-pid> --audio-pid <observed-chrome-audioservice-pid>
 ```
 
-An active WebRTC graph with `isRunningOutput=0` or no output devices points toward
-rendering/output routing before capture. Active HAL output combined with SCK raw
-zeros points toward filtering/session/permission rather than our converter; it
-is not by itself proof which of those is responsible.
+An inactive selected AudioService alone does not establish which Chrome process
+owns rendering. Inspect the complete verified Chrome family before drawing a
+routing conclusion. Active HAL output combined with SCK raw zeros narrows the
+investigation toward filtering/session/capture access; it does not establish
+which of those is responsible.
 
 A possible later CoreAudio capture would use
 `CATapDescription(stereoMixdownOfProcesses: [theExactProcessObject])`,
@@ -175,3 +176,61 @@ The local SDK `AudioHardware.h` documents PID translation (unknown PID returns
 `CATapDescription.h` documents inclusion/exclusion/private/unmuted semantics.
 Seven Python/source contract tests pass. New Swift source/fixtures remain
 uncompiled and unexecuted pending the parent resource/build slot.
+
+Post-cleanup protocol review reproduced a false acceptance case: a helper write
+error followed by a valid nonzero final tail could satisfy the old success
+predicate. The runner now records `protocolErrors` and rejects any helper
+`ERROR` line, noncontiguous/out-of-order chunk numbering, or missing full45-second
+chunk, in addition to the existing signal/stop-tail checks. Two added regressions
+failed before the fix; all9 Python/source/protocol tests pass afterward. No new
+capture or Swift build was part of this validation.
+
+## Chrome family routing probe: source prepared 2026-10-08
+
+The instrumented live run `445673a40737436e945f7baaa25e3e9e` supplied
+3,609,600 zero Float32 samples **per raw channel**, across 3,760 callbacks.
+This rules out our downmix, resampling, or quantization as the source of silence
+for that run. Received WebRTC packets, decoded energy, and cue progression do
+not alone prove hardware rendering. The selected AudioService's inactive HAL
+object is therefore insufficient to identify the rendering owner.
+
+`audio-diagnostics/chrome_audio_family_probe.swift` preserves the previous exact
+AudioService probe and adds the explicit Chrome root plus all HAL process objects
+whose entire ancestry and canonical executables belong to that exact Chrome
+instance. Process start times and HAL PID mapping are rechecked before emission.
+Only verified owned rows are output; unowned process identifiers, arguments,
+paths, names, and counts are not emitted. Root absence from HAL is represented
+as `hasHALObject: false`, not invented zero activity. No capture, taps, property
+writes, or permission APIs are called.
+
+After parent compiler authorization (not run by the preparing worker):
+
+```sh
+swiftc -O reports/record-evidence/audio-diagnostics/chrome_audio_family_probe.swift \
+  -o /Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/chrome-audio-family-probe \
+  -framework CoreAudio -framework AppKit
+codesign --force --sign - /Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/chrome-audio-family-probe
+codesign --verify --strict /Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/chrome-audio-family-probe
+/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/chrome-audio-family-probe --self-test
+```
+
+The self-test exercises root/direct/nested ownership, unrelated ancestry,
+bundle boundary, foreign intermediary, cycles, absent processes, PID reuse,
+and mismatched lookup identity without HAL queries. Three Python source safety
+contracts pass; Swift compilation and executable self-tests remain pending.
+
+Root must verify the current task-only Chrome PID before the next metadata
+measurement; `726` was observed during the prior run and must not be assumed
+current. While root plays the fixture through CUA, query:
+
+```sh
+/Users/j/Documents/dev/permagent-worktrees/.shared-target/world-production-20261006/chrome-audio-family-probe \
+  --chrome-pid <verified-current-chrome-root-pid>
+```
+
+If a different owned process reports active output, correlate that PID with the
+SCK filter inventory. If the entire owned family is inactive, investigate
+rendering/session/device state before another capture. Do not repeat blind
+capture or infer a permission defect from the existing evidence. The complete
+capture receipt, hashes, and narrowed hypotheses are recorded in
+`audio-diagnostics/family-probe-plan-20261008.json`.
