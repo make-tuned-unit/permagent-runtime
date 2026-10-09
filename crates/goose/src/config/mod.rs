@@ -39,11 +39,12 @@ pub use local_model::{
     local_default_model, resolve_local_default_model, DEFAULT_LOCAL_MODEL, LOCAL_DEFAULT_MODEL_KEY,
 };
 pub use model_roles::{
-    assess_harness_coordinator, assess_harness_coordinator_in, trusted_default_models,
-    ProviderAvailability, RoleContext, DEFAULT_TRUSTED_DEFAULT_MODELS, TRUSTED_DEFAULT_MODELS_KEY, effective_harness_route, effective_harness_route_from_config,
-    gate_harness_coordinator, resolve_role_model, role_model_from_config, CoordinatorEligibility,
-    EffectiveHarnessRoute, HarnessGateDecision, HarnessGateOutcome, ModelRole, RoleModel,
-    RoleModelSource, RoleResolution, HARNESS_COORDINATOR_MIN_ORCHESTRATION,
+    assess_harness_coordinator, assess_harness_coordinator_in, effective_harness_route,
+    effective_harness_route_from_config, gate_harness_coordinator, resolve_role_model,
+    role_model_from_config, trusted_default_models, CoordinatorEligibility, EffectiveHarnessRoute,
+    HarnessGateDecision, HarnessGateOutcome, ModelRole, ProviderAvailability, RoleContext,
+    RoleModel, RoleModelSource, RoleResolution, DEFAULT_TRUSTED_DEFAULT_MODELS,
+    HARNESS_COORDINATOR_MIN_ORCHESTRATION, TRUSTED_DEFAULT_MODELS_KEY,
 };
 pub use permission::PermissionManager;
 pub use secret_source::{SecretSource, SecretSourceError};
@@ -52,8 +53,8 @@ pub use signup_openrouter::configure_openrouter;
 pub use signup_tetrate::configure_tetrate;
 pub use voice_model::{
     default_voice_model, default_voice_model_for, voice_model_from_config, voice_preferences,
-    VoiceModel, VoiceModelSource,
-    DEFAULT_VOICE_MODEL_ID, DEFAULT_VOICE_PROVIDER_ID, VOICE_MODEL_KEY, VOICE_PROVIDER_KEY,
+    VoiceModel, VoiceModelSource, DEFAULT_VOICE_MODEL_ID, DEFAULT_VOICE_PROVIDER_ID,
+    VOICE_MODEL_KEY, VOICE_PROVIDER_KEY,
 };
 
 pub use extensions::DEFAULT_DISPLAY_NAME;

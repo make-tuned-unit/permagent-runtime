@@ -25,7 +25,9 @@ const POSTHOG_DEFAULT_HOST: &str = "https://us.i.posthog.com";
 /// Pure: `(project key, capture URL)` from the two config values, or `None`
 /// when no key is configured.
 pub fn resolve_posthog_sink(key: Option<String>, host: Option<String>) -> Option<(String, String)> {
-    let key = key.map(|k| k.trim().to_string()).filter(|k| !k.is_empty())?;
+    let key = key
+        .map(|k| k.trim().to_string())
+        .filter(|k| !k.is_empty())?;
     let host = host
         .map(|h| h.trim().trim_end_matches('/').to_string())
         .filter(|h| !h.is_empty())
@@ -752,14 +754,23 @@ mod tests {
     #[test]
     fn no_key_means_no_sink_and_host_defaults_only_with_a_key() {
         assert_eq!(resolve_posthog_sink(None, None), None);
-        assert_eq!(resolve_posthog_sink(Some("  ".into()), Some("https://h".into())), None);
+        assert_eq!(
+            resolve_posthog_sink(Some("  ".into()), Some("https://h".into())),
+            None
+        );
         assert_eq!(
             resolve_posthog_sink(Some("k".into()), None),
-            Some(("k".to_string(), "https://us.i.posthog.com/capture/".to_string()))
+            Some((
+                "k".to_string(),
+                "https://us.i.posthog.com/capture/".to_string()
+            ))
         );
         assert_eq!(
             resolve_posthog_sink(Some(" k ".into()), Some("https://ph.example.org/".into())),
-            Some(("k".to_string(), "https://ph.example.org/capture/".to_string()))
+            Some((
+                "k".to_string(),
+                "https://ph.example.org/capture/".to_string()
+            ))
         );
     }
 }

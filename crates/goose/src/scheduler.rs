@@ -4023,7 +4023,8 @@ async fn execute_job_inner(
                     .trim();
                 match serde_json::from_str::<Vec<serde_json::Value>>(json_str) {
                     Ok(findings) => {
-                        let findings_dir = crate::config::paths::Paths::in_state_dir("automation/findings");
+                        let findings_dir =
+                            crate::config::paths::Paths::in_state_dir("automation/findings");
                         let _ = std::fs::create_dir_all(&findings_dir);
                         let findings_path = findings_dir.join(format!("{}.json", session.id));
                         let findings_data = serde_json::json!({

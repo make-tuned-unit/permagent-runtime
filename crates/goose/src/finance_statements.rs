@@ -300,7 +300,9 @@ fn phrase_matches(payee_words: &[String], phrase: &str) -> bool {
     if needle.is_empty() || needle.len() > payee_words.len() {
         return false;
     }
-    payee_words.windows(needle.len()).any(|w| w == needle.as_slice())
+    payee_words
+        .windows(needle.len())
+        .any(|w| w == needle.as_slice())
 }
 
 fn user_rules_path() -> std::path::PathBuf {
@@ -313,7 +315,12 @@ pub fn parse_rules(yaml: &str) -> (Vec<CategoryRule>, Vec<String>) {
     let mut warnings = Vec::new();
     let file: RulesFile = match serde_yaml::from_str(yaml) {
         Ok(f) => f,
-        Err(e) => return (Vec::new(), vec![format!("{RULES_FILE_NAME} is not valid: {e}")]),
+        Err(e) => {
+            return (
+                Vec::new(),
+                vec![format!("{RULES_FILE_NAME} is not valid: {e}")],
+            )
+        }
     };
     let mut rules = Vec::new();
     for rule in file.rules {
@@ -609,8 +616,14 @@ mod tests {
 
     #[test]
     fn builtins_are_generic_and_matched_on_whole_words() {
-        assert_eq!(categorize_with("Riverside Pharmacy #12", -9.0, &[]), "health");
-        assert_eq!(categorize_with("Metro Transit pass", -90.0, &[]), "transport");
+        assert_eq!(
+            categorize_with("Riverside Pharmacy #12", -9.0, &[]),
+            "health"
+        );
+        assert_eq!(
+            categorize_with("Metro Transit pass", -90.0, &[]),
+            "transport"
+        );
         assert_eq!(categorize_with("Acme Telecom", -60.0, &[]), "utilities");
         // Regional merchants are not built in.
         assert_eq!(categorize_with("Sobeys", -30.0, &[]), "uncategorized");
@@ -620,9 +633,18 @@ mod tests {
     #[test]
     fn substrings_inside_other_words_do_not_match() {
         assert_eq!(categorize_with("Bellevue Dental", -50.0, &[]), "health");
-        assert_eq!(categorize_with("Shellfish Bar", -20.0, &[]), "uncategorized");
-        assert_eq!(categorize_with("Skipton Building Soc", -20.0, &[]), "uncategorized");
-        assert_eq!(categorize_with("Parkinson Rentals", -20.0, &[]), "uncategorized");
+        assert_eq!(
+            categorize_with("Shellfish Bar", -20.0, &[]),
+            "uncategorized"
+        );
+        assert_eq!(
+            categorize_with("Skipton Building Soc", -20.0, &[]),
+            "uncategorized"
+        );
+        assert_eq!(
+            categorize_with("Parkinson Rentals", -20.0, &[]),
+            "uncategorized"
+        );
         // But the word itself, with punctuation around it, still matches.
         assert_eq!(categorize_with("E-TRANSFER SENT", 25.0, &[]), "transfer");
         assert_eq!(categorize_with("COFFEE-HOUSE", -4.0, &[]), "dining");
@@ -635,7 +657,10 @@ mod tests {
         );
         assert_eq!(rules.len(), 2);
         assert_eq!(warnings.len(), 1, "{warnings:?}");
-        assert_eq!(categorize_with("CORNER MARKET 41", -12.0, &rules), "groceries");
+        assert_eq!(
+            categorize_with("CORNER MARKET 41", -12.0, &rules),
+            "groceries"
+        );
         // A user rule outranks the built-in `pharmacy`.
         assert_eq!(
             categorize_with("Water Street Pharmacy", -5.0, &rules),

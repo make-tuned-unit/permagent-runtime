@@ -283,12 +283,7 @@ fn probe_model_loaded_on_this_thread(model: &str) -> (bool, Option<String>) {
 
     let resp = match client.get(&url).send() {
         Ok(r) => r,
-        Err(_) => {
-            return (
-                false,
-                Some(format!("Ollama not reachable at {base}")),
-            )
-        }
+        Err(_) => return (false, Some(format!("Ollama not reachable at {base}"))),
     };
 
     let body = match resp.text() {

@@ -84,7 +84,10 @@ async fn ollama_status() -> Json<OllamaStatus> {
         .build()
         .unwrap_or_default();
 
-    let tags = client.get(format!("{}/api/tags", ollama_base())).send().await;
+    let tags = client
+        .get(format!("{}/api/tags", ollama_base()))
+        .send()
+        .await;
     let ps = client.get(format!("{}/api/ps", ollama_base())).send().await;
 
     let installed = match tags {

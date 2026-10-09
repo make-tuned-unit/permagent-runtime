@@ -144,9 +144,9 @@ pub fn assess_harness_coordinator_in(
     model: &str,
     trusted: &[RoleModel],
 ) -> CoordinatorEligibility {
-    let is_trusted = trusted.iter().any(|t| {
-        t.provider.eq_ignore_ascii_case(provider) && t.model.eq_ignore_ascii_case(model)
-    });
+    let is_trusted = trusted
+        .iter()
+        .any(|t| t.provider.eq_ignore_ascii_case(provider) && t.model.eq_ignore_ascii_case(model));
     let Some((knowledge, _confidence)) =
         crate::cost_router::lookup_with_confidence(provider, model)
     else {
@@ -452,9 +452,7 @@ pub struct ProviderAvailability {
 impl ProviderAvailability {
     /// Every provider counts as usable.
     pub fn all() -> Self {
-        Self {
-            usable: None,
-        }
+        Self { usable: None }
     }
 
     /// Exactly these providers are usable (lowercase ids).
@@ -1157,7 +1155,10 @@ mod tests {
             assert_eq!(resolved.route, None, "{}", role.label());
             assert_eq!(resolved.source, RoleModelSource::Unconfigured);
             let reason = resolved.source.reason().expect("a reason is given");
-            assert!(reason.contains("No model provider is configured"), "{reason}");
+            assert!(
+                reason.contains("No model provider is configured"),
+                "{reason}"
+            );
         }
         let effective = effective_harness_route_in(reader(&[]), &ctx(&[]));
         assert_eq!(effective.outcome, None);
@@ -1184,15 +1185,26 @@ mod tests {
         for role in ModelRole::all() {
             let resolved = resolve_role_model_in(role, reader(&[]), &context);
             assert_eq!(resolved.source, RoleModelSource::Default);
-            assert_eq!(resolved.route, Some(RoleModel::new("ollama", "llama3.2:3b")));
+            assert_eq!(
+                resolved.route,
+                Some(RoleModel::new("ollama", "llama3.2:3b"))
+            );
         }
     }
 
     #[test]
     fn a_keyed_provider_outranks_the_local_rung_and_preference_order_holds() {
-        let both = resolve_role_model_in(ModelRole::Harness, reader(&[]), &ctx(&["openai", "anthropic", "ollama"]));
+        let both = resolve_role_model_in(
+            ModelRole::Harness,
+            reader(&[]),
+            &ctx(&["openai", "anthropic", "ollama"]),
+        );
         assert_eq!(both.route, Some(ModelRole::Harness.measured_default()));
-        let deepseek = resolve_role_model_in(ModelRole::Chat, reader(&[]), &ctx(&["custom_deepseek", "openai"]));
+        let deepseek = resolve_role_model_in(
+            ModelRole::Chat,
+            reader(&[]),
+            &ctx(&["custom_deepseek", "openai"]),
+        );
         assert_eq!(deepseek.route, Some(ModelRole::Chat.measured_default()));
     }
 
@@ -1207,7 +1219,10 @@ mod tests {
         assert_eq!(resolved.route, Some(RoleModel::new("zai", "glm-5.3")));
         let session = resolve_role_model_in(
             ModelRole::Chat,
-            reader(&[(SESSION_PROVIDER_KEY, "zai"), (SESSION_MODEL_KEY, "glm-5.3")]),
+            reader(&[
+                (SESSION_PROVIDER_KEY, "zai"),
+                (SESSION_MODEL_KEY, "glm-5.3"),
+            ]),
             &ctx(&[]),
         );
         assert_eq!(session.source, RoleModelSource::SessionModel);
@@ -1250,7 +1265,10 @@ mod tests {
             &context,
         );
         assert_eq!(decision.outcome, HarnessGateOutcome::Rerouted);
-        assert_eq!(decision.route, RoleModel::new("custom_deepseek", "deepseek-chat"));
+        assert_eq!(
+            decision.route,
+            RoleModel::new("custom_deepseek", "deepseek-chat")
+        );
 
         let nothing = gate_harness_coordinator_in(
             RoleModel::new("anthropic", "claude-haiku-4-5"),

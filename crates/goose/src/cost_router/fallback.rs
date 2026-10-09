@@ -379,11 +379,7 @@ pub fn failover_candidates(
         // No role-fit ranking is needed, so skip provider detection.
         return permanent_failure_candidates(&read);
     }
-    failover_candidates_in(
-        read,
-        role,
-        &crate::config::model_roles::RoleContext::live(),
-    )
+    failover_candidates_in(read, role, &crate::config::model_roles::RoleContext::live())
 }
 
 /// [`failover_candidates`] over an explicit [`RoleContext`]: the trusted
@@ -2537,7 +2533,11 @@ mod tests {
             ("PERMAGENT_ROLE_REVIEW_MODEL", "glm-5.2"),
         ]);
         assert_eq!(
-            targets(&failover_candidates_in(&r, SessionRole::General, &coord_ctx())),
+            targets(&failover_candidates_in(
+                &r,
+                SessionRole::General,
+                &coord_ctx()
+            )),
             targets(&permanent_failure_candidates(&r)),
         );
 

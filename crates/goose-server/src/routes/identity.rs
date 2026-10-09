@@ -97,8 +97,9 @@ async fn put_identity(
         primary: new_persona.clone(),
         workers,
     };
-    agent_identity::save_agent_config(&config)
-        .map_err(|err| ErrorResponse::internal(format!("Couldn't save the agent's identity: {err}")))?;
+    agent_identity::save_agent_config(&config).map_err(|err| {
+        ErrorResponse::internal(format!("Couldn't save the agent's identity: {err}"))
+    })?;
 
     // Hot-reload via RwLock
     let response = IdentityResponse::from(&new_persona);

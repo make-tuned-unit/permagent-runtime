@@ -2032,10 +2032,9 @@ mod tests {
             _ => None,
         };
         let ctx = permagent::config::RoleContext::permissive();
-        let route = harness_resolved_route(permagent::config::model_roles::effective_harness_route_in(
-            session_haiku,
-            &ctx,
-        ));
+        let route = harness_resolved_route(
+            permagent::config::model_roles::effective_harness_route_in(session_haiku, &ctx),
+        );
         let measured = ModelRole::Harness.measured_default();
         assert_eq!(route.provider, measured.provider);
         assert_eq!(route.model, measured.model);
@@ -2046,10 +2045,9 @@ mod tests {
             .expect("a rerouted harness says why");
         assert!(notice.contains("anthropic/claude-haiku-4-5"), "{notice}");
 
-        let fresh = harness_resolved_route(permagent::config::model_roles::effective_harness_route_in(
-            |_| None,
-            &ctx,
-        ));
+        let fresh = harness_resolved_route(
+            permagent::config::model_roles::effective_harness_route_in(|_| None, &ctx),
+        );
         assert_eq!(fresh.source, "default");
         assert_eq!(fresh.notice, None);
     }

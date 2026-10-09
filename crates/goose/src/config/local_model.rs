@@ -47,8 +47,9 @@ mod tests {
     #[test]
     fn a_configured_value_wins_and_is_trimmed() {
         assert_eq!(
-            resolve_local_default_model(|k| (k == LOCAL_DEFAULT_MODEL_KEY)
-                .then(|| " llama3.2:3b ".to_string())),
+            resolve_local_default_model(
+                |k| (k == LOCAL_DEFAULT_MODEL_KEY).then(|| " llama3.2:3b ".to_string())
+            ),
             "llama3.2:3b"
         );
     }
