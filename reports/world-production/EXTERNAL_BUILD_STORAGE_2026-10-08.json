@@ -1,0 +1,83 @@
+{
+  "mount": "/Volumes/PermagentBuilds",
+  "external_drive": "/Volumes/UNTITLED",
+  "image": "/Volumes/UNTITLED/CodexBuilds/PermagentBuilds.sparsebundle",
+  "image_capacity_gib": 200,
+  "volume_uuid": "85630790-0A49-4D4E-B683-888258B80A99",
+  "drive_uuid": "53500C9A-452C-35D6-9F4E-1240FDD8DB9D",
+  "target": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006",
+  "temporary_files": "/Volumes/PermagentBuilds/permagent/tmp/world-production-20261006",
+  "symlink_check": true,
+  "large_file_bytes": 5368709120,
+  "large_file_allocated_bytes": 0,
+  "checks": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "output": "\nrunning 1 test\ntest smoke_test ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n   Compiling external-build-smoke v0.1.0 (/Volumes/PermagentBuilds/permagent/smoke)\n    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.68s\n     Running unittests src/main.rs (/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/smoke/debug/deps/external_build_smoke-c1c9b14348cd99a7)\n"
+    },
+    {
+      "command": [
+        "cargo",
+        "run",
+        "--offline"
+      ],
+      "exit_code": 0,
+      "output": "external build, link, and execution passed\n   Compiling external-build-smoke v0.1.0 (/Volumes/PermagentBuilds/permagent/smoke)\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.11s\n     Running `/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/smoke/debug/external-build-smoke`\n"
+    }
+  ],
+  "internal_free_gib": 40.78079605102539,
+  "external_free_gib": 519.8864440917969,
+  "launcher": "/Volumes/PermagentBuilds/permagent/run-build",
+  "guarded_smoke": {
+    "target": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006",
+    "tmpdir": "/Volumes/PermagentBuilds/permagent/tmp/world-production-20261006",
+    "exit_code": 0,
+    "reason": "completed",
+    "initial_free_gib": {
+      "/Volumes/PermagentBuilds": 199.67790603637695,
+      "/Volumes/UNTITLED": 519.8847961425781,
+      "/System/Volumes/Data": 39.76333999633789
+    },
+    "minimum_free_gib": {
+      "/Volumes/PermagentBuilds": 199.67788696289062,
+      "/Volumes/UNTITLED": 519.8847961425781,
+      "/System/Volumes/Data": 39.76333999633789
+    }
+  },
+  "guard_checks": {
+    "missing_mount_refused": true,
+    "low_space_refused_before_spawn": true,
+    "native_backend_runtime_target_agree": true,
+    "python_syntax": true,
+    "git_diff_check": true
+  },
+  "guard_start_gib": 25,
+  "guard_stop_gib": 20,
+  "monitored_volumes": [
+    "/System/Volumes/Data",
+    "/Volumes/PermagentBuilds",
+    "/Volumes/UNTITLED"
+  ],
+  "mount_command": [
+    "hdiutil",
+    "attach",
+    "/Volumes/UNTITLED/CodexBuilds/PermagentBuilds.sparsebundle",
+    "-mountpoint",
+    "/Volumes/PermagentBuilds",
+    "-nobrowse",
+    "-noautoopen"
+  ],
+  "limitations": [
+    "Smoke build passed; not a full app rebuild.",
+    "Existing independent Cargo build left untouched.",
+    "Prior World target was cleared by another session; no old artifacts migrated.",
+    "Requires drive and image mounted; refuses a missing or wrong volume."
+  ],
+  "free_internal_gib_at_close": 40.65818786621094,
+  "image_allocated_bytes": 32440320
+}

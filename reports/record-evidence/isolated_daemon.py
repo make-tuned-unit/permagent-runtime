@@ -25,7 +25,7 @@ LANE = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(LANE / 'reports/world-production'))
 from run_guarded_native import stop_owned_group
 
-TARGET = LANE.parent / '.shared-target/world-production-20261006'
+TARGET = Path(os.environ.get('PERMAGENT_BUILD_TARGET', str(LANE.parent / '.shared-target/world-production-20261006')))
 ROOT = TARGET / 'record-qa-runtime'
 DEBUG = TARGET / 'debug'
 PORT = 3002

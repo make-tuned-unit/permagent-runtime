@@ -1,10 +1,10 @@
 """Stage and verify a locally built review app. Never launches or installs it."""
 from pathlib import Path
-import argparse, hashlib, json, re, shutil, subprocess, time
+import argparse, hashlib, json, os, re, shutil, subprocess, time
 from native_stage_paths import stage_paths, verify_versioned_ledger
 
 LANE = Path(__file__).resolve().parents[2]
-TARGET = LANE.parent / '.shared-target/world-production-20261006'
+TARGET = Path(os.environ.get('PERMAGENT_BUILD_TARGET', str(LANE.parent / '.shared-target/world-production-20261006')))
 BASE = Path('/Applications/Permagent.app')
 STAGE = TARGET / 'staged/Permagent World Review.app'
 BINARY = TARGET / 'debug/permagent-app'

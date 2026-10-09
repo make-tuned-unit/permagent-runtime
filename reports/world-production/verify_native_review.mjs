@@ -10,7 +10,7 @@ if (process.argv.slice(2).some(arg => arg !== '--record-review')) throw new Erro
 const identifier = recordReview ? 'ai.permagent.record-review-20261007' : 'ai.permagent.world-review-20261006';
 const productName = recordReview ? 'Permagent Record Review' : 'Permagent World Review';
 const lane = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const target = path.resolve(lane, '../.shared-target/world-production-20261006');
+const target = process.env.PERMAGENT_BUILD_TARGET || path.resolve(lane, '../.shared-target/world-production-20261006');
 const dist = path.join(lane, 'ui/command-center/dist');
 const binary = fs.readFileSync(path.join(target, 'debug/permagent-app'));
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');

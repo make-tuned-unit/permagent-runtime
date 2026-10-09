@@ -24,7 +24,7 @@ import time
 from native_daemon_preservation import DaemonPreservation
 
 LANE = Path(__file__).resolve().parents[2]
-TARGET = LANE.parent / '.shared-target/world-production-20261006'
+TARGET = Path(os.environ.get('PERMAGENT_BUILD_TARGET', str(LANE.parent / '.shared-target/world-production-20261006')))
 REPORTS = LANE / 'reports/world-production'
 DATA_VOLUME = Path('/System/Volumes/Data')
 START_GIB = 25
