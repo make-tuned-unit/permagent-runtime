@@ -1551,4 +1551,44 @@ mod tests {
         assert_eq!(AgentRuntimeState::Available.as_str(), "available");
         assert_eq!(AgentRuntimeState::Error.as_str(), "error");
     }
+
+    // The registry is process-global, so each test owns a unique agent id.
+
+    #[test]
+    fn agent_that_never_ran_a_turn_has_no_runtime_state() {
+        // A blank session creates no reply turn, so nothing is recorded.
+        assert_eq!(agent_runtime_state("test-never-ran"), None);
+    }
+
+    #[test]
+    fn in_flight_turn_is_working_and_finishing_returns_to_available() {
+        record_agent_working("test-lifecycle");
+        assert_eq!(
+            agent_runtime_state("test-lifecycle"),
+            Some(AgentRuntimeState::Working)
+        );
+        record_agent_done("test-lifecycle");
+        assert_eq!(
+            agent_runtime_state("test-lifecycle"),
+            Some(AgentRuntimeState::Available)
+        );
+    }
+
+    #[test]
+    fn in_flight_count_never_goes_negative() {
+        record_agent_done("test-negative");
+        record_agent_done("test-negative");
+        record_agent_error("test-negative");
+        record_agent_done("test-negative");
+        record_agent_working("test-negative");
+        assert_eq!(
+            agent_runtime_state("test-negative"),
+            Some(AgentRuntimeState::Working)
+        );
+        record_agent_done("test-negative");
+        assert_eq!(
+            agent_runtime_state("test-negative"),
+            Some(AgentRuntimeState::Available)
+        );
+    }
 }

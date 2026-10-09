@@ -133,16 +133,14 @@ async fn henry_status(State(state): State<Arc<AppState>>) -> Json<HenryStatusRes
     // Current tool: check active session event buses for in-flight requests
     let current_tool = find_current_tool(&state, &active_sessions).await;
 
-    // Determine state. A real error from the agent's actual reply lifecycle
-    // (#348, latched in the runtime registry) outranks the session-activity
-    // derive — otherwise this 2s poll would clobber a real failure back to
-    // available/working. Working/available themselves still agree with the
-    // session derive (an in-flight reply IS an active session).
-    let current_state = if permagent::events::agent_errored("henry") {
-        "error".to_string()
-    } else {
-        classify_henry_state(current_tool.is_some(), !active_sessions.is_empty()).to_string()
-    };
+    // Determine state from the in-flight signals only. A session that merely
+    // exists, or was touched in the last two minutes (a blank "New Chat"), is
+    // NOT activity. See `derive_henry_state`.
+    let current_state = derive_henry_state(
+        permagent::events::agent_runtime_state("henry"),
+        current_tool.is_some(),
+    )
+    .to_string();
 
     // Spectral DB queries (tasks, messages, session stats)
     let today_str = today_midnight.format("%Y-%m-%dT%H:%M:%S").to_string();
@@ -228,16 +226,26 @@ async fn henry_status(State(state): State<Arc<AppState>>) -> Json<HenryStatusRes
     })
 }
 
-/// Classify Henry's coarse runtime state from whether a tool is in flight and
-/// whether any session is active. Shared by this route and the #288 agent-state
-/// tick (`crate::agent_state_tick`) so both derive state identically.
-pub(crate) fn classify_henry_state(has_tool: bool, has_active_session: bool) -> &'static str {
-    if has_tool {
-        "tool_call"
-    } else if has_active_session {
-        "in_conversation"
-    } else {
-        "idle"
+/// Henry's coarse runtime state, derived ONLY from in-flight work.
+///
+/// `runtime` is the reply-loop registry (`permagent::events`, a Drop-guarded
+/// in-flight count plus a real error latch); `has_in_flight_request` is whether
+/// any session event bus holds an active request. Session recency is
+/// deliberately not an input: creating an empty chat session must not make an
+/// idle agent look busy. Shared by this route and the agent-state tick
+/// (`crate::agent_state_tick`) so both derive state identically.
+///
+/// Returns `tool_call` | `in_conversation` | `idle` | `error`.
+pub(crate) fn derive_henry_state(
+    runtime: Option<permagent::events::AgentRuntimeState>,
+    has_in_flight_request: bool,
+) -> &'static str {
+    use permagent::events::AgentRuntimeState;
+    match (runtime, has_in_flight_request) {
+        (_, true) => "tool_call",
+        (Some(AgentRuntimeState::Working), false) => "in_conversation",
+        (Some(AgentRuntimeState::Error), false) => "error",
+        (Some(AgentRuntimeState::Available), false) | (None, false) => "idle",
     }
 }
 
@@ -425,4 +433,53 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/api/henry/status", get(henry_status))
         .route("/api/henry/briefings/ack", post(ack_briefings))
         .with_state(state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::derive_henry_state;
+    use permagent::events::AgentRuntimeState;
+
+    #[test]
+    fn blank_session_is_not_working() {
+        // A freshly created, empty session: no turn ever ran, no request.
+        assert_eq!(derive_henry_state(None, false), "idle");
+    }
+
+    #[test]
+    fn idle_after_a_finished_turn() {
+        assert_eq!(
+            derive_henry_state(Some(AgentRuntimeState::Available), false),
+            "idle"
+        );
+    }
+
+    #[test]
+    fn in_flight_reply_turn_is_working() {
+        assert_eq!(
+            derive_henry_state(Some(AgentRuntimeState::Working), false),
+            "in_conversation"
+        );
+    }
+
+    #[test]
+    fn in_flight_request_is_working_even_without_registry_state() {
+        assert_eq!(derive_henry_state(None, true), "tool_call");
+        assert_eq!(
+            derive_henry_state(Some(AgentRuntimeState::Available), true),
+            "tool_call"
+        );
+    }
+
+    #[test]
+    fn real_error_is_reported_until_new_work_starts() {
+        assert_eq!(
+            derive_henry_state(Some(AgentRuntimeState::Error), false),
+            "error"
+        );
+        assert_eq!(
+            derive_henry_state(Some(AgentRuntimeState::Error), true),
+            "tool_call"
+        );
+    }
 }
