@@ -28,12 +28,13 @@ function type(text: string) {
 
 beforeEach(() => {
   localStorage.clear();
+  window.history.replaceState({}, '', '/');
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
   originalSendMessage = useCommandCenter.getState().sendMessage;
   originalChatWindowOpen = useCommandCenter.getState().chatWindowOpen;
-  act(() => useCommandCenter.setState({ isStreaming: false }));
+  act(() => useCommandCenter.setState({ isStreaming: false, chatDraft: { text: '', files: [] } }));
 });
 
 afterEach(() => {
@@ -41,6 +42,50 @@ afterEach(() => {
   container.remove();
   useCommandCenter.setState({ sendMessage: originalSendMessage, chatWindowOpen: originalChatWindowOpen });
   localStorage.clear();
+  window.history.replaceState({}, '', '/');
+});
+
+it('restores a typed and attached draft after the dock composer unmounts', () => {
+  const first = createRef<ChatInputHandle>();
+  act(() => root.render(<ChatInput ref={first} />));
+  type('Keep this review draft');
+  act(() => first.current?.addFiles([new File(['note'], 'review.txt', { type: 'text/plain' })]));
+  act(() => root.unmount());
+  root = createRoot(container);
+  act(() => root.render(<ChatInput />));
+  expect(field().value).toBe('Keep this review draft');
+  expect(container.textContent).toContain('review.txt');
+});
+
+it('waits for a detached draft handoff before showing a queued setup request', () => {
+  window.history.replaceState({}, '', '/?view=chat&draft_handoff=test-marker');
+  const ref = createRef<ChatInputHandle>();
+  act(() => root.render(<ChatInput ref={ref} />));
+  expect(field().value).toBe('');
+  expect(container.textContent).toContain('Restoring your unsent draft');
+  expect(peekChatSetupIntent()).toBeNull();
+
+  act(() => ref.current?.restoreDraft('Keep my draft', [new File(['note'], 'review.txt')], {
+    v: 1, id: 'setup-from-main', text: 'Help me set up Tailscale', issuedAt: Date.now(),
+  }));
+  expect(field().value).toBe('Keep my draft');
+  expect(container.textContent).toContain('review.txt');
+  expect(container.textContent).toContain('Tailscale setup request is ready');
+  expect(peekChatSetupIntent()).toBe('Help me set up Tailscale');
+});
+
+it('keeps a new setup request pending while an empty detached draft is frozen for return', () => {
+  window.history.replaceState({}, '', '/?view=chat');
+  const ref = createRef<ChatInputHandle>();
+  act(() => root.render(<ChatInput ref={ref} />));
+  let snapshot: ReturnType<ChatInputHandle['freezeDraft']> = null;
+  act(() => { snapshot = ref.current?.freezeDraft() ?? null; });
+  expect(snapshot).toMatchObject({ text: '', files: [] });
+  act(() => { expect(stashChatSetupIntent('Help me set up Tailscale')).toBe(true); });
+  expect(field().value).toBe('');
+  expect(peekChatSetupIntent()).toBe('Help me set up Tailscale');
+  act(() => ref.current?.releaseDraft());
+  expect(field().value).toBe('Help me set up Tailscale');
 });
 
 it('shows a stored setup request for editing when Chat opens, without sending it', () => {

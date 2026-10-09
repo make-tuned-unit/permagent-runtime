@@ -73,12 +73,12 @@ function render(el: JSX.Element) {
 
 describe('HeaderAgentStatus', () => {
   it('uses the name the user configured, the same one the World shows', () => {
-    // QA: the header read "Agent online" while the World called the same
+    // QA: the header used the default name while the World called the same
     // agent Ada. One resolver now serves both.
     orchestrator.name = 'Ada';
     const el = render(<HeaderAgentStatus data={dashboard('idle')} error={null} />);
     expect(el.textContent).toContain('Ada');
-    expect(el.getAttribute('aria-label')).toBe('Ada is online');
+    expect(el.getAttribute('aria-label')).toBe('Ada — hub connected');
   });
 
   it('never shows the dashboard payload name, which is the default persona', () => {
@@ -98,9 +98,9 @@ describe('HeaderAgentStatus', () => {
     // Home fetched /api/dashboard twice and header and body could disagree.
     orchestrator.name = 'Ada';
     const thinking = render(<HeaderAgentStatus data={dashboard('thinking')} error={null} />);
-    expect(thinking.getAttribute('aria-label')).toBe('Ada is thinking');
+    expect(thinking.getAttribute('aria-label')).toBe('Ada — thinking');
     const offline = render(<HeaderAgentStatus data={dashboard('idle')} error={new Error('down')} />);
-    expect(offline.getAttribute('aria-label')).toBe('Ada is offline');
+    expect(offline.getAttribute('aria-label')).toBe('Ada — hub unreachable');
     expect(apiFetchMock).not.toHaveBeenCalled();
   });
 });

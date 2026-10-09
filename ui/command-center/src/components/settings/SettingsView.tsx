@@ -51,6 +51,8 @@ import { ProviderModelPicker } from './ProviderModelPicker';
 import { MemoryFeedPanel } from './MemoryFeedPanel';
 import { OnChainIdentitySection } from './OnChainIdentitySection';
 import { stashChatSetupIntent } from '../../lib/wizardIntent';
+import { recommendModel, type ModelTier } from '../../lib/modelTiers';
+import { LOCAL_RUNTIME_PROVIDER } from '../wizard/providerChoices';
 
 // The PreviewBadge/PreviewNotice machinery (2026-07-10 audit) is gone: every
 // preview-only control has been either wired to real state or removed
@@ -892,6 +894,25 @@ export function ToolsPanel({ goto }: PanelProps) {
 type OllamaModel = { name: string; size: number; digest: string; modified_at: string };
 type OllamaRunning = { name: string; size: number; size_vram: number; digest: string; expires_at: string };
 type OllamaStatus = { reachable: boolean; installed: OllamaModel[]; running: OllamaRunning[] };
+type OllamaNotice = { tone: 'info' | 'ok' | 'warn' | 'error'; text: string; source?: 'start' };
+type OllamaPull = { model: string; percent: number; status: string; verifying: boolean };
+
+function installedOllamaName(model: string, status: OllamaStatus): string | null {
+  return status.installed.find(item => item.name === model || item.name === `${model}:latest`)?.name ?? null;
+}
+
+async function openOllamaDownload(): Promise<void> {
+  const url = 'https://ollama.com/download';
+  if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
+    try {
+      const { open } = await import('@tauri-apps/plugin-shell');
+      await open(url);
+      return;
+    } catch { /* Browser fallback below. */ }
+  }
+  window.open(url, '_blank', 'noopener,noreferrer');
+}
+
 function formatBytes(b: number): string {
   if (b < 1e9) return `${(b / 1e6).toFixed(0)} MB`;
   return `${(b / 1e9).toFixed(1)} GB`;
@@ -1093,6 +1114,18 @@ function RoleModelRow({
 export function ModelsPanel({ goto }: PanelProps) {
   const { colors } = useThemeHook();
   const [ollama, setOllama] = useState<OllamaStatus | null>(null);
+  const [ollamaError, setOllamaError] = useState<string | null>(null);
+  const [ollamaNotice, setOllamaNotice] = useState<OllamaNotice | null>(null);
+  const [ollamaStarting, setOllamaStarting] = useState(false);
+  const [suggestedOllama, setSuggestedOllama] = useState<ModelTier | null | undefined>(undefined);
+  const [ollamaPull, setOllamaPull] = useState<OllamaPull | null>(null);
+  const [checkingOllamaModel, setCheckingOllamaModel] = useState<string | null>(null);
+  const ollamaAbort = useRef<(() => void) | null>(null);
+  const ollamaAlive = useRef(true);
+  useEffect(() => {
+    ollamaAlive.current = true;
+    return () => { ollamaAlive.current = false; ollamaAbort.current?.(); };
+  }, []);
 
   // Primary-model readout (merged from the retired Governance → Models panel).
   // Read-only: the model/provider switch itself lives in the provider modal on
@@ -1183,16 +1216,127 @@ export function ModelsPanel({ goto }: PanelProps) {
     return () => { active = false; };
   }, [configRev]);
 
-  // Poll Ollama status while panel is visible
-  useEffect(() => {
-    let active = true;
-    const poll = () => {
-      api.getOllamaStatus().then(s => { if (active) setOllama(s); }).catch(() => {});
-    };
-    poll();
-    const id = setInterval(poll, 8000);
-    return () => { active = false; clearInterval(id); };
+  const refreshOllama = useCallback(async (): Promise<OllamaStatus | null> => {
+    try {
+      const status = await api.getOllamaStatus();
+      if (ollamaAlive.current) {
+        setOllama(status);
+        setOllamaError(null);
+        setOllamaNotice(current => {
+          if (status.reachable) return current?.source === 'start' ? null : current;
+          return current?.tone === 'ok' ? null : current;
+        });
+      }
+      return status;
+    } catch (error) {
+      if (ollamaAlive.current) {
+        setOllama(null);
+        setOllamaError(error instanceof Error ? error.message : String(error));
+        setOllamaNotice(current => current?.tone === 'ok' ? null : current);
+      }
+      return null;
+    }
   }, []);
+
+  // Read-only status polling never launches or downloads anything.
+  useEffect(() => {
+    void refreshOllama();
+    const id = setInterval(() => { void refreshOllama(); }, 8000);
+    return () => clearInterval(id);
+  }, [refreshOllama]);
+  useEffect(() => {
+    api.getSystemInfo()
+      .then(info => { if (ollamaAlive.current) setSuggestedOllama(recommendModel(info.total_ram_bytes || 0)); })
+      .catch(() => { if (ollamaAlive.current) setSuggestedOllama(null); });
+  }, []);
+
+  const startOllama = async () => {
+    setOllamaStarting(true);
+    setOllamaNotice(null);
+    try {
+      const result = await api.startOllama();
+      if (!ollamaAlive.current) return false;
+      if (!result.launched) {
+        setOllamaNotice({ tone: 'warn', text: 'Ollama could not be started here. Get Ollama, install it, then check again.' });
+        return false;
+      }
+      const status = await refreshOllama();
+      if (!ollamaAlive.current) return false;
+      setOllamaNotice(status?.reachable
+        ? null
+        : { tone: 'info', source: 'start', text: 'Ollama launch requested. Checking its status automatically; use Check again if it takes longer.' });
+      return !!status?.reachable;
+    } catch (error) {
+      if (ollamaAlive.current) setOllamaNotice({ tone: 'error', text: `Could not start Ollama: ${error instanceof Error ? error.message : String(error)}` });
+      return false;
+    } finally {
+      if (ollamaAlive.current) setOllamaStarting(false);
+    }
+  };
+
+  const downloadOllama = async (model: string) => {
+    setOllamaNotice(null);
+    setOllamaPull({ model, percent: 0, status: 'Starting download…', verifying: false });
+    const job = api.pullOllamaModel(model, progress => {
+      if (!ollamaAlive.current) return;
+      setOllamaPull(current => current && {
+        ...current,
+        status: progress.status || current.status,
+        percent: progress.total && progress.completed ? Math.round(progress.completed / progress.total * 100) : current.percent,
+      });
+    });
+    ollamaAbort.current = job.abort;
+    let streamFinished = false;
+    try {
+      await job.promise;
+      streamFinished = true;
+      if (!ollamaAlive.current) return false;
+      ollamaAbort.current = null;
+      setOllamaPull(current => current && { ...current, status: 'Checking installed models…', verifying: true });
+      const status = await refreshOllama();
+      if (!ollamaAlive.current) return false;
+      const installed = status?.reachable ? installedOllamaName(model, status) : null;
+      if (!installed) throw new Error(`${model} was not found in Ollama after the download stream ended.`);
+      setOllamaNotice({ tone: 'ok', text: `${installed} is installed. Choose Use for Chat to check it live.` });
+      return true;
+    } catch (error) {
+      if (!ollamaAlive.current) return false;
+      setOllamaNotice((error as Error).name === 'AbortError'
+        ? { tone: 'warn', text: 'Stopped waiting for progress. Ollama may continue downloading. Check installed models before retrying.' }
+        : { tone: 'error', text: `${streamFinished ? 'Download could not be verified' : 'Download failed'}: ${error instanceof Error ? error.message : String(error)}` });
+      return false;
+    } finally {
+      if (ollamaAbort.current === job.abort) ollamaAbort.current = null;
+      if (ollamaAlive.current) setOllamaPull(null);
+    }
+  };
+
+  const useOllamaForChat = async (model: string) => {
+    setCheckingOllamaModel(model);
+    setOllamaNotice(null);
+    try {
+      const status = await refreshOllama();
+      if (!ollamaAlive.current) return false;
+      if (!status?.reachable || !installedOllamaName(model, status)) {
+        setOllamaNotice({ tone: 'error', text: `${model} is no longer shown as installed in Ollama. Check installed models before selecting it.` });
+        return false;
+      }
+      await api.setModelRoute('chat', LOCAL_RUNTIME_PROVIDER, model);
+      setChatCfg({ provider: LOCAL_RUNTIME_PROVIDER, model });
+      useCommandCenter.getState().bumpConfig();
+      const result = await api.checkProvider(LOCAL_RUNTIME_PROVIDER);
+      if (!ollamaAlive.current) return false;
+      setOllamaNotice(result?.live
+        ? { tone: 'ok', text: `${model} is selected for Chat. Ollama answered a live model-list check; send a message to confirm a reply.` }
+        : { tone: 'warn', text: `Saved ${model} for Chat, but a live model-list check did not confirm Ollama${result?.note ? `: ${result.note}` : '.'} Check again or send a message to test it.` });
+      return !!result?.live;
+    } catch (error) {
+      if (ollamaAlive.current) setOllamaNotice({ tone: 'error', text: `Could not confirm ${model} for Chat: ${error instanceof Error ? error.message : String(error)}. Check the model and try again.` });
+      return false;
+    } finally {
+      if (ollamaAlive.current) setCheckingOllamaModel(null);
+    }
+  };
 
   return (
     <div>
@@ -1269,41 +1413,82 @@ export function ModelsPanel({ goto }: PanelProps) {
       </Section>
 
       {/* ── Ollama Status ────────────────────────────────────────── */}
-      <Section title="Local models (Ollama)">
-        {!ollama ? (
-          <Row label="Status" hint="Checking..."><span style={{ fontSize: textSize.caption, color: colors.textDim }}>Loading...</span></Row>
-        ) : !ollama.reachable ? (
-          <Row label="Status" hint="Ollama is not running. Install from ollama.com and run 'ollama serve'.">
+      <Section title="Local models (Ollama)" sub="Install Ollama on this Mac, download a model, then choose it for Chat. Each step runs only when you select it.">
+        {ollamaError && <Row label="Status" hint="The latest Ollama check failed.">
+          <div style={{ display: 'flex', alignItems: 'center', gap: space.md, flexWrap: 'wrap' }}>
+            <span role="alert" style={{ fontSize: textSize.caption, color: colors.danger, minWidth: 0, overflowWrap: 'anywhere' }}>{ollamaError}</span>
+            <Button type="button" colors={colors} style={ghost(colors)} flashSuccess={false} onClick={refreshOllama}>Check again</Button>
+          </div>
+        </Row>}
+        {!ollama && !ollamaError && <Row label="Status" hint="Checking Ollama on this Mac…">
+          <span style={{ fontSize: textSize.caption, color: colors.textDim }}>Loading…</span>
+        </Row>}
+        {ollama && !ollama.reachable && <Row label="Status" hint="Ollama is not running on this Mac.">
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: space.md }}>
             <span style={{ fontSize: textSize.caption, color: colors.danger }}>Ollama not running</span>
-          </Row>
-        ) : (
-          <>
-            <Row label="Connection" hint="Ollama at localhost:11434">
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: space.sm }}>
+              <Button type="button" colors={colors} style={ghost(colors)} disabled={ollamaStarting} flashSuccess={false} onClick={startOllama}>
+                {ollamaStarting ? 'Starting…' : 'Start Ollama'}
+              </Button>
+              <Button type="button" colors={colors} style={ghost(colors)} flashSuccess={false} onClick={openOllamaDownload}>Get Ollama ↗</Button>
+              <Button type="button" colors={colors} style={ghost(colors)} flashSuccess={false} onClick={refreshOllama}>Check again</Button>
+            </div>
+          </div>
+        </Row>}
+        {ollama?.reachable && <>
+          <Row label="Connection" hint="Local Ollama service">
+            <div style={{ display: 'flex', alignItems: 'center', gap: space.md, flexWrap: 'wrap' }}>
               <span style={{ fontSize: textSize.caption, color: colors.cyan }}>Connected</span>
-            </Row>
-            {ollama.installed.length === 0 ? (
-              <Row label="Models" hint="No models installed. Run 'ollama pull <model>' to get started.">
-                <span style={{ fontSize: textSize.caption, color: colors.textDim }}>None</span>
-              </Row>
-            ) : (
-              ollama.installed.map(m => {
-                const running = ollama.running.find(r => r.name === m.name);
-                return (
-                  <Row key={m.name} label={m.name} hint={formatBytes(m.size)}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: space.md }}>
-                      <ModelStateBadge state={running ? 'running' : 'installed'} />
-                      {running?.expires_at && (
-                        <span style={{ fontSize: textSize.micro, color: colors.textDim }}>
-                          unloads {new Date(running.expires_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                        </span>
-                      )}
-                    </div>
-                  </Row>
-                );
-              })
-            )}
-          </>
-        )}
+              <Button type="button" colors={colors} style={ghost(colors)} flashSuccess={false} onClick={refreshOllama}>Check again</Button>
+            </div>
+          </Row>
+          {ollama.installed.length === 0 && <Row label="Models" hint="Ollama is running but has no models installed.">
+            <span style={{ fontSize: textSize.caption, color: colors.textDim }}>None installed</span>
+          </Row>}
+          {ollama.installed.map(m => {
+            const running = ollama.running.find(r => r.name === m.name);
+            return <Row key={m.name} label={m.name} hint={formatBytes(m.size)}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: space.md, flexWrap: 'wrap' }}>
+                <ModelStateBadge state={running ? 'running' : 'installed'} />
+                {running?.expires_at && <span style={{ fontSize: textSize.micro, color: colors.textDim }}>
+                  unloads {new Date(running.expires_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                </span>}
+                <Button type="button" colors={colors} style={ghost(colors)} disabled={checkingOllamaModel !== null} flashSuccess={false} onClick={() => useOllamaForChat(m.name)}>
+                  {checkingOllamaModel === m.name ? 'Checking…' : 'Use for Chat'}
+                </Button>
+              </div>
+            </Row>;
+          })}
+          {suggestedOllama && !installedOllamaName(suggestedOllama.model, ollama) && !ollamaPull && <Row
+            label="Suggested download"
+            hint={`Sized for this Mac's memory; about ${suggestedOllama.downloadSizeGB} GB of disk.`}
+          >
+            <Button type="button" colors={colors} style={{ ...ghost(colors), maxWidth: '100%', overflowWrap: 'anywhere' }} flashSuccess={false} onClick={() => downloadOllama(suggestedOllama.model)}>
+              Download {suggestedOllama.model}
+            </Button>
+          </Row>}
+          {suggestedOllama === null && ollama.installed.length === 0 && <Row label="Next step" hint="No safe local-model recommendation is available for this Mac.">
+            <Button type="button" colors={colors} style={ghost(colors)} onClick={() => goto('keys')}>Set up a hosted provider</Button>
+          </Row>}
+        </>}
+        {ollamaPull && <Row label="Downloading model">
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: space.sm, minWidth: 0 }}>
+            <span style={{ fontSize: textSize.micro, color: colors.textDim, overflowWrap: 'anywhere' }}>{ollamaPull.model} · {ollamaPull.status}</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: space.md, flexWrap: 'wrap' }}>
+              <div role="progressbar" aria-label={`Downloading ${ollamaPull.model}`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={ollamaPull.percent}
+                style={{ width: 140, height: 6, borderRadius: radius.pill, background: colors.fillActive, overflow: 'hidden' }}>
+                <div style={{ width: `${ollamaPull.percent}%`, height: '100%', background: colors.cyan }} />
+              </div>
+              <span style={{ fontSize: textSize.caption, color: colors.textDim }}>{ollamaPull.percent}%</span>
+              {!ollamaPull.verifying && <Button type="button" colors={colors} style={ghost(colors)} flashSuccess={false} onClick={() => ollamaAbort.current?.()}>Stop waiting</Button>}
+            </div>
+          </div>
+        </Row>}
+        {ollamaNotice && <Row label="Update">
+          <span role={ollamaNotice.tone === 'error' ? 'alert' : 'status'} style={{ fontSize: textSize.caption, minWidth: 0, overflowWrap: 'anywhere', color: ollamaNotice.tone === 'error' ? colors.danger : ollamaNotice.tone === 'ok' ? colors.success : colors.textMuted }}>
+            {ollamaNotice.text}
+          </span>
+        </Row>}
       </Section>
 
       <LocalModelsSection />

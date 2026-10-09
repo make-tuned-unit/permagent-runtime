@@ -268,7 +268,7 @@ function App() {
     // Don't accept drops on World View — it's a watch-only surface
     if (activeWorkspace && hasToolType(activeWorkspace.layoutJson, 'world')) return;
     const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
-    const { emit, once } = await import('@tauri-apps/api/event');
+    const { emitTo, once } = await import('@tauri-apps/api/event');
 
     // The DOCK is a chat surface too: with it open, hand the files straight to
     // its composer instead of popping a whole chat window out over the app —
@@ -291,24 +291,30 @@ function App() {
 
     const existing = await WebviewWindow.getByLabel('chat');
     if (existing) {
-      await emit('chat_drop_files', { files: payload });
+      await emitTo('chat', 'chat_drop_files', { files: payload });
       return;
     }
 
-    // Open a new chat window and wait for it to signal readiness
-    const chatWindow = await createChatWindow(theme);
-    chatWindow.once('tauri://error', (e) => console.error('Chat window error:', e));
-
-    const ready = await Promise.race([
-      new Promise<true>((resolve) => { once('chat_ready', () => resolve(true)); }),
-      new Promise<false>((resolve) => setTimeout(() => resolve(false), 3000)),
-    ]);
-
-    if (ready) {
-      await emit('chat_drop_files', { files: payload });
-    } else {
-      console.error('[drop] chat window did not become ready');
-      toast('Could not deliver files to chat', 'The chat window did not answer — please try the drop again.');
+    // Register before creation: createChatWindow may itself wait for an
+    // acknowledged draft handoff, so subscribing after it returns misses ready.
+    let resolveReady: ((ready: true) => void) | undefined;
+    const readySignal = new Promise<true>(resolve => { resolveReady = resolve; });
+    const unready = await once('chat_ready', () => resolveReady?.(true));
+    try {
+      const chatWindow = await createChatWindow(theme);
+      chatWindow.once('tauri://error', (e) => console.error('Chat window error:', e));
+      const ready = await Promise.race([
+        readySignal,
+        new Promise<false>((resolve) => setTimeout(() => resolve(false), 3000)),
+      ]);
+      if (ready) {
+        await emitTo('chat', 'chat_drop_files', { files: payload });
+      } else {
+        console.error('[drop] chat window did not become ready');
+        toast('Could not deliver files to chat', 'The chat window did not answer — please try the drop again.');
+      }
+    } finally {
+      unready();
     }
   }, [activeWorkspace, theme]);
 

@@ -100,10 +100,12 @@ def fresh_root() -> tuple[Path, Path]:
     return root, home
 
 
-def child_env(root: Path, home: Path) -> dict[str, str]:
+def child_env(root: Path, home: Path, use_existing_local_ollama: bool = False) -> dict[str, str]:
     # Construct from nothing: never inherit provider keys, proxies, user HOME,
     # model choices, Tailscale state, DYLD overrides, or Keychain access.
-    denied_ollama = f'http://127.0.0.1:{OLLAMA_DENIED_PORT}'
+    # An explicit positive-path review may reuse the already-running local
+    # service. This never starts Ollama, downloads a model, or selects a route.
+    ollama_url = 'http://127.0.0.1:11434' if use_existing_local_ollama else f'http://127.0.0.1:{OLLAMA_DENIED_PORT}'
     return {
         'PATH': '/usr/bin:/bin:/usr/sbin:/sbin',
         'LANG': 'en_US.UTF-8',
@@ -122,8 +124,8 @@ def child_env(root: Path, home: Path) -> dict[str, str]:
         'TUNNEL_AUTO_START': 'false',
         'PERMAGENT_MESH_TRUSTED': '0',
         'PERMAGENT_MESH_ENGINE': '0',
-        'OLLAMA_HOST': denied_ollama,
-        'PERMAGENT_OLLAMA_HOST': denied_ollama,
+        'OLLAMA_HOST': ollama_url,
+        'PERMAGENT_OLLAMA_HOST': ollama_url,
     }
 
 
@@ -164,6 +166,8 @@ def main() -> int:
     parser.add_argument('--execute', action='store_true', help='Required to launch the verified daemon')
     parser.add_argument('--sha256', required=True, help='Reviewed SHA-256 of debug/permagentd')
     parser.add_argument('--max-seconds', type=int, default=1800, help='Supervisor lifetime, 1..3600 seconds')
+    parser.add_argument('--use-existing-local-ollama', action='store_true',
+                        help='Explicit positive-path review: use an existing localhost:11434 service without starting it or selecting a model')
     args = parser.parse_args()
     if not args.execute:
         raise RuntimeError('Refusing launch without --execute')
@@ -189,6 +193,7 @@ def main() -> int:
         'startedUtc': stamp, 'ready': False, 'tokenLogged': False,
         'inheritedEnvironment': False, 'defaultConfigSeeded': False,
         'runtimeOverrides': sorted(child_env(root, home)),
+        'modelRuntime': 'existing-local-ollama' if args.use_existing_local_ollama else 'unavailable-fixture',
         'initialFreeGiB': initial_free,
         'maxSeconds': args.max_seconds,
     }
@@ -204,7 +209,7 @@ def main() -> int:
         log.flush()
         # Discard daemon stdout/stderr so a future daemon log change cannot put
         # bearer values or private user content in a persisted review log.
-        proc = subprocess.Popen(command, cwd=root, env=child_env(root, home),
+        proc = subprocess.Popen(command, cwd=root, env=child_env(root, home, args.use_existing_local_ollama),
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                 start_new_session=True)
         started = time.monotonic()

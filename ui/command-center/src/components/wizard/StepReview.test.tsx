@@ -4,7 +4,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 const reads = vi.hoisted(() => ({
-  getConfig: vi.fn(), getProviders: vi.fn(), getLibrarianSchedule: vi.fn(), readSecretConfig: vi.fn(),
+  getConfig: vi.fn(), getProviders: vi.fn(), getLibrarianSchedule: vi.fn(), readSecretConfig: vi.fn(), getOllamaStatus: vi.fn(),
 }));
 vi.mock('../../lib/api', () => ({ api: reads }));
 vi.mock('../../styles/useTheme', async () => {
@@ -24,6 +24,7 @@ beforeEach(() => {
   reads.getConfig.mockResolvedValue({ config: { GOOSE_PROVIDER: 'ollama', GOOSE_MODEL: 'qa:local', dev_roots: [] } });
   reads.getProviders.mockResolvedValue([{ name: 'ollama', is_configured: true, metadata: { display_name: 'Ollama' } }]);
   reads.getLibrarianSchedule.mockResolvedValue({ enabled: false, model: 'qa:local' });
+  reads.getOllamaStatus.mockResolvedValue({ reachable: true, installed: [{ name: 'qa:local' }], running: [] });
   reads.readSecretConfig.mockResolvedValue(null);
   container = document.createElement('div');
   document.body.append(container);
@@ -80,4 +81,14 @@ it('retains a verified search provider while identifying other unreadable provid
     ? Promise.resolve({ maskedValue: 'configured' }) : Promise.reject(new Error('unreachable')));
   await renderReview();
   expect(row('Web search')).toBe(`${SEARCH_PROVIDERS[0].displayName} · Other providers unavailable`);
+});
+
+it('does not report the product-default enabled schedule as ready without its model', async () => {
+  reads.getConfig.mockResolvedValue({ config: {} });
+  reads.getLibrarianSchedule.mockResolvedValue({ enabled: true, model: 'qwen2.5:7b' });
+  reads.getOllamaStatus.mockResolvedValue({ reachable: false, installed: [], running: [] });
+  await renderReview();
+  expect(row('Model')).toBe('Not connected');
+  expect(row('Memory model')).toBe('On · Ollama unavailable');
+  expect(row('Memory model')).not.toContain('On · qwen2.5:7b');
 });

@@ -13,6 +13,11 @@ const allowed = vi.hoisted(() => ({
   upsertConfig: vi.fn(),
   setModelRoute: vi.fn(),
   getOllamaStatus: vi.fn(),
+  startOllama: vi.fn(),
+  pullOllamaModel: vi.fn(),
+  getSystemInfo: vi.fn(),
+  setProvider: vi.fn(),
+  checkProvider: vi.fn(),
   getLibrarianSchedule: vi.fn(),
   setLibrarianSchedule: vi.fn(),
   runLibrarianNow: vi.fn(),
@@ -88,6 +93,11 @@ beforeEach(() => {
   allowed.upsertConfig.mockReset().mockResolvedValue({} as never);
   allowed.setModelRoute.mockReset().mockResolvedValue({} as never);
   allowed.getOllamaStatus.mockReset().mockResolvedValue({ reachable: false } as never);
+  allowed.startOllama.mockReset().mockResolvedValue({ launched: false, method: null } as never);
+  allowed.pullOllamaModel.mockReset();
+  allowed.getSystemInfo.mockReset().mockResolvedValue({ total_ram_bytes: 16 * 1024 ** 3 } as never);
+  allowed.setProvider.mockReset().mockResolvedValue(undefined as never);
+  allowed.checkProvider.mockReset().mockResolvedValue(undefined as never);
   allowed.getLibrarianSchedule.mockReset().mockResolvedValue(null as never);
   allowed.getPacks.mockReset().mockResolvedValue({
     prompt: false,
@@ -483,5 +493,150 @@ describe('ModelsPanel voice model row', () => {
 
     expect(allowed.setModelRoute).toHaveBeenCalledOnce();
     expect(allowed.setModelRoute).toHaveBeenCalledWith('voice', '', 'session');
+  });
+});
+
+const ollamaStatus = (names: string[] = []) => ({
+  reachable: true,
+  installed: names.map(name => ({ name, size: 2_000_000_000, digest: 'd', modified_at: '' })),
+  running: [],
+});
+
+function modelButton(label: string): HTMLButtonElement {
+  const button = [...container.querySelectorAll('button')].find(item => item.textContent?.trim() === label);
+  if (!button) throw new Error(`No ${label} button in Models`);
+  return button;
+}
+
+describe('ModelsPanel Ollama setup', () => {
+  it('keeps a failed status read recoverable without showing stale connection state', async () => {
+    allowed.getOllamaStatus.mockRejectedValueOnce(new Error('status timed out'))
+      .mockResolvedValue({ reachable: false, installed: [], running: [] } as never);
+    await mount(vi.fn());
+    expect(container.textContent).toContain('status timed out');
+    expect(container.textContent).not.toContain('Connected');
+    await act(async () => { modelButton('Check again').click(); });
+    expect(container.textContent).toContain('Ollama not running');
+  });
+
+  it('offers explicit start, official download and recheck when Ollama is down', async () => {
+    const open = vi.spyOn(window, 'open').mockImplementation(() => null);
+    try {
+      await mount(vi.fn());
+      expect(container.textContent).toContain('Ollama not running');
+      expect(allowed.startOllama).not.toHaveBeenCalled();
+      expect(allowed.pullOllamaModel).not.toHaveBeenCalled();
+
+      await act(async () => { modelButton('Start Ollama').click(); });
+      expect(allowed.startOllama).toHaveBeenCalledOnce();
+      expect(container.textContent).toContain('could not be started');
+      await act(async () => { modelButton('Get Ollama ↗').click(); });
+      expect(open).toHaveBeenCalledWith('https://ollama.com/download', '_blank', 'noopener,noreferrer');
+      await act(async () => { modelButton('Check again').click(); });
+      expect(allowed.getOllamaStatus).toHaveBeenCalledTimes(2);
+    } finally {
+      open.mockRestore();
+    }
+  });
+
+  it('checks the service after an explicit successful start before showing Connected', async () => {
+    allowed.getOllamaStatus.mockResolvedValueOnce({ reachable: false, installed: [], running: [] } as never)
+      .mockResolvedValueOnce(ollamaStatus() as never);
+    allowed.startOllama.mockResolvedValue({ launched: true, method: 'app' } as never);
+    await mount(vi.fn());
+    await act(async () => { modelButton('Start Ollama').click(); });
+    expect(allowed.startOllama).toHaveBeenCalledOnce();
+    expect(container.textContent).toContain('Connected');
+    expect(container.textContent).not.toContain('ready for Chat');
+  });
+
+  it('does not call an empty SSE stream a downloaded model', async () => {
+    allowed.getOllamaStatus.mockResolvedValue(ollamaStatus() as never);
+    allowed.pullOllamaModel.mockReturnValue({ promise: Promise.resolve(), abort: vi.fn() } as never);
+    await mount(vi.fn());
+    expect(container.textContent).toContain('has no models installed');
+    await act(async () => { modelButton('Download qwen3:8b').click(); });
+    expect(allowed.pullOllamaModel).toHaveBeenCalledWith('qwen3:8b', expect.any(Function));
+    expect(allowed.getOllamaStatus).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toContain('Download could not be verified');
+    expect(container.textContent).not.toContain('ready for Chat');
+    expect(modelButton('Download qwen3:8b')).toBeTruthy();
+  });
+
+  it('stops waiting without claiming to cancel a server download', async () => {
+    allowed.getOllamaStatus.mockResolvedValue(ollamaStatus() as never);
+    let rejectPull!: (error: Error) => void;
+    const abort = vi.fn(() => rejectPull(new DOMException('Aborted', 'AbortError')));
+    allowed.pullOllamaModel.mockReturnValue({
+      promise: new Promise<void>((_, reject) => { rejectPull = reject; }), abort,
+    } as never);
+    await mount(vi.fn());
+    await act(async () => { modelButton('Download qwen3:8b').click(); });
+    await act(async () => { modelButton('Stop waiting').click(); });
+    expect(abort).toHaveBeenCalledOnce();
+    expect(container.textContent).toContain('Ollama may continue downloading');
+    expect(container.textContent).not.toContain('Download stopped');
+  });
+
+  it('requires installed inventory, then a separate live check to say Chat is ready', async () => {
+    allowed.getOllamaStatus.mockResolvedValueOnce(ollamaStatus() as never)
+      .mockResolvedValue(ollamaStatus(['qwen3:8b']) as never);
+    allowed.pullOllamaModel.mockReturnValue({ promise: Promise.resolve(), abort: vi.fn() } as never);
+    allowed.checkProvider.mockResolvedValue({ live: true, model: 'qwen3:8b' } as never);
+    await mount(vi.fn());
+    await act(async () => { modelButton('Download qwen3:8b').click(); });
+    expect(container.textContent).toContain('is installed');
+    expect(allowed.setModelRoute).not.toHaveBeenCalled();
+    await act(async () => { modelButton('Use for Chat').click(); });
+    expect(allowed.setModelRoute).toHaveBeenCalledWith('chat', 'ollama', 'qwen3:8b');
+    expect(allowed.setProvider).not.toHaveBeenCalled();
+    expect(allowed.checkProvider).toHaveBeenCalledWith('ollama');
+    expect(container.textContent).toContain('Ollama answered a live model-list check');
+  });
+
+  it('keeps an inconclusive live check distinct from ready', async () => {
+    allowed.getOllamaStatus.mockResolvedValue(ollamaStatus(['small:3b']) as never);
+    await mount(vi.fn());
+    await act(async () => { modelButton('Use for Chat').click(); });
+    expect(container.textContent).toContain('live model-list check did not confirm');
+    expect(container.textContent).not.toContain('ready for Chat');
+  });
+
+  it.each(['down', 'failed read'])('clears an earlier green model notice when Ollama is %s', async outcome => {
+    allowed.getOllamaStatus.mockResolvedValue(ollamaStatus(['small:3b']) as never);
+    allowed.checkProvider.mockResolvedValue({ live: true, model: 'small:3b' } as never);
+    await mount(vi.fn());
+    await act(async () => { modelButton('Use for Chat').click(); });
+    expect(container.textContent).toContain('Ollama answered a live model-list check');
+
+    if (outcome === 'down') {
+      allowed.getOllamaStatus.mockResolvedValueOnce({ reachable: false, installed: [], running: [] } as never);
+    } else {
+      allowed.getOllamaStatus.mockRejectedValueOnce(new Error('status timed out'));
+    }
+    await act(async () => { modelButton('Check again').click(); });
+    expect(container.textContent).not.toContain('Ollama answered a live model-list check');
+    expect(container.textContent).toContain(outcome === 'down' ? 'Ollama not running' : 'status timed out');
+  });
+
+  it('does not save a stale installed-model row as the Chat route', async () => {
+    allowed.getOllamaStatus.mockResolvedValueOnce(ollamaStatus(['small:3b']) as never)
+      .mockResolvedValue(ollamaStatus() as never);
+    await mount(vi.fn());
+    await act(async () => { modelButton('Use for Chat').click(); });
+    expect(allowed.setModelRoute).not.toHaveBeenCalled();
+    expect(allowed.checkProvider).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('no longer shown as installed');
+  });
+
+  it('keeps the hosted setup path when this Mac has no safe local recommendation', async () => {
+    allowed.getOllamaStatus.mockResolvedValue(ollamaStatus() as never);
+    allowed.getSystemInfo.mockResolvedValue({ total_ram_bytes: 4 * 1024 ** 3 } as never);
+    const goto = vi.fn();
+    await mount(goto);
+    expect(container.textContent).toContain('No safe local-model recommendation');
+    expect(container.textContent).not.toContain('Download qwen3');
+    await act(async () => { modelButton('Set up a hosted provider').click(); });
+    expect(goto).toHaveBeenCalledWith('keys');
   });
 });

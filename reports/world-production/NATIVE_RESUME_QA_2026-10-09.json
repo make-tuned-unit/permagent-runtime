@@ -1,0 +1,70 @@
+{
+  "scope": "Native review of commit 8012f149 and follow-up fixes in the isolated Record review app, using CUA; not the installed production app.",
+  "baseline": {
+    "stage": "Permagent Record Review (record-thumbnails-20261009).app",
+    "daemon": "Owned blank-profile daemon on loopback 3002; keyring disabled, fresh HOME and data root, Ollama directed to an unbound test port.",
+    "onboarding": [
+      "Welcome, hosted/local/later model choices, generic Aria identity, empty code-folder selection, extras and review were traversed.",
+      "Ollama unavailable showed Start/Get/Check controls and disabled model selection.",
+      "Continue without model completed onboarding and retained the optional first-message draft.",
+      "No-model Send left the draft unsent and displayed a setup explanation.",
+      "Memory readiness incorrectly appeared On from a default enabled schedule, despite missing Ollama; delegated for correction."
+    ],
+    "portraits": {
+      "all_eight_native_roster_images": "PASS: Librarian, Watcher, Git Steward, Guard, Financier, Forecaster, Council and Grower rendered their current World designs.",
+      "detail_images": "PASS: Librarian and Council at detail size, including full headwear. Other detail headers not yet individually inspected.",
+      "world_navigation": "FAIL: Librarian Open in World opened Aria rather than Librarian; delegated and covered by eight-ID regression."
+    },
+    "setup_handoff": [
+      "Devices had no paired devices; remote access stayed off.",
+      "Have Aria set it up produced an editable, unsent Tailscale request.",
+      "An existing visible draft remained unchanged and a pending setup summary appeared.",
+      "FAIL: closing/reopening or detaching Chat discarded the composer draft, allowing the pending setup request to take its place; delegated for correction.",
+      "Detached Chat Open model setup raised the main window and navigated to Models.",
+      "Models had no start/install controls in the baseline; delegated for correction."
+    ],
+    "automations": [
+      "All five starter schedules were paused and their cards said Review needed.",
+      "Daily Workspace Snapshot detail explained it would not run until Enable schedule was chosen; no enable action was taken.",
+      "FAIL: summary claimed Everything is running despite paused jobs; delegated for correction."
+    ],
+    "capabilities": "Tools surfaced Browser and App Conductor as enabled, Desktop Control as off. This proves visibility of configuration, not tool execution or OS permissions.",
+    "agent_status": "FAIL: Scheduler/Librarian counts and disabled Steward were incorrectly labelled Running; pending personas appeared available. Delegated for correction.",
+    "accessibility": "PASS: enabled Reduce motion through Appearance in the isolated profile; World destination selection still worked. Down moved keyboard focus from Garden archive to Maker workshop and Enter selected Maker workshop/Steward.",
+    "review_app_closed_before_build": true
+  },
+  "verification_after_fixes": "PENDING build and native review",
+  "limits": [
+    "No model inference, model downloads, installer execution, sign-in, remote-access enable, OS permission grants, agent job dispatch or automation enable was performed.",
+    "World activity still has a backend recent-session heuristic that can imply working after a blank session is created. This needs an authoritative active-request fix and backend validation.",
+    "No claim that every agent task or every app flow works flawlessly.",
+    "Native X remains the original unacknowledged close path and can race a last edit; Return to dock is the acknowledged transfer action. App restart persistence is not claimed."
+  ],
+  "design_references": [
+    "https://developer.apple.com/design/human-interface-guidelines/materials",
+    "https://developer.apple.com/design/human-interface-guidelines/motion"
+  ],
+  "disk_headroom_gib": {
+    "internal": 58,
+    "external_apfs_image": 190,
+    "external_physical": 507
+  },
+  "implemented_fixes": [
+    "Eight current World thumbnails retained; Settings Open in World now consumes the requested character when the view becomes visible.",
+    "Agent status counts/enabled flags no longer imply Running; pending personas distinguish unavailable engines from runtime prerequisite probes.",
+    "Automate reports paused starters; Home connection label names hub connectivity.",
+    "Models adds explicit Ollama start/download/retry and Chat-route selection with installed inventory and live model-list checks; stale status/success cleared on failed refresh.",
+    "Wizard memory readiness distinguishes a saved enabled schedule from reachable Ollama and an installed scheduled model.",
+    "Composer draft and files survive dock unmount. Initial detach and Return to dock use targeted, acknowledged app events; text/file bytes do not enter window URLs.",
+    "Setup request payloads cross window storage partitions, and matching request IDs control consumption/dismissal. Late requests remain pending during a frozen transfer."
+  ],
+  "focused_tests": {
+    "agent_roster": 72,
+    "world_focus": 9,
+    "automate_and_hub": 38,
+    "models_final": 36,
+    "wizard_initial": 33,
+    "chat_setup_final": 48,
+    "note": "Separate focused runs overlap; counts must not be summed as unique tests."
+  }
+}

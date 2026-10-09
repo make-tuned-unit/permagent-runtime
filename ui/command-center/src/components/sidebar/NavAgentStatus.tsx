@@ -31,9 +31,9 @@ import { useTheme, type ThemeColors } from '../../styles/useTheme';
 export type NavAgentState = 'online' | 'thinking' | 'offline';
 
 const STATE_WORD: Record<NavAgentState, string> = {
-  online: 'online',
+  online: 'hub connected',
   thinking: 'thinking',
-  offline: 'offline',
+  offline: 'hub unreachable',
 };
 
 /**
@@ -121,7 +121,7 @@ export function HeaderAgentStatus({ data, error }: {
     <span
       data-testid="header-agent-status"
       role="status"
-      aria-label={`${name} is ${word}`}
+      aria-label={`${name} — ${word}`}
       style={{
         display: 'inline-flex', alignItems: 'center', gap: space.sm,
         fontFamily: font.body, whiteSpace: 'nowrap',

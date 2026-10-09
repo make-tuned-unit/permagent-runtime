@@ -12,7 +12,7 @@ import { Tooltip } from '../../common/Tooltip';
 import { H1 } from '../../common/H1';
 import { Toggle } from '../../common/Toggle';
 import {
-  availabilityLabel,
+  dispatchAvailabilityLabel,
   defaultEnabledLabel,
   EMPTY_ACTIVITY_NOTE,
   EMPTY_GOALS_NOTE,
@@ -81,15 +81,14 @@ function StatusText({ text, tone }: { text: string; tone: LabelTone }) {
   );
 }
 
-/** A worker's live status, narrowed to one of five plain words (Running,
- *  Idle, Scheduled (N jobs), Off, Unknown — see `liveStatusChip`), rendered
+/** A worker's live status, narrowed to a plain status or count fact, rendered
  *  as a chip with the raw daemon text (a config key, a failure reason,
  *  whatever it actually said) reachable only via Tooltip, never printed
  *  bare. This is LIVE STATUS, distinct from the on/off `GateChip` beside the
  *  name — the two must never say the same thing in different words. */
-function LiveStatusPill({ id, live }: { id: string; live: LiveState }) {
+function LiveStatusPill({ id, live, gate }: { id: string; live: LiveState; gate: AgentGate | null }) {
   const { colors } = useTheme();
-  const chip = liveStatusChip(live);
+  const chip = liveStatusChip(live, gate);
   return (
     <Tooltip content={chip.detail}>
       <span
@@ -648,7 +647,7 @@ function AgentDetailPane({
   // off — offering to flip a key that daemon does not read would be a lie.
   const gate = readAgentGate(detail);
 
-  const headerAvailability = detail.kind === 'dispatch_persona' ? availabilityLabel(detail.availability) : null;
+  const headerAvailability = detail.kind === 'dispatch_persona' ? dispatchAvailabilityLabel(detail) : null;
 
   return (
     <div>
@@ -682,7 +681,7 @@ function AgentDetailPane({
         <span>{detail.kind === 'worker' ? 'Runs on its own' : 'Takes on goals'}</span>
         {detail.kind === 'dispatch_persona' && <span>{`engine: ${engineLabel(detail.engine)}`}</span>}
         {detail.kind === 'worker'
-          ? <LiveStatusPill id={id} live={detail.live_state} />
+          ? <LiveStatusPill id={id} live={detail.live_state} gate={gate} />
           : headerAvailability && <StatusText text={headerAvailability.text} tone={headerAvailability.tone} />}
         {detail.kind === 'dispatch_persona' && (
           <span>cost: {detail.cost_tier}</span>
@@ -1073,7 +1072,7 @@ function WorkerRow({ worker, activity, onOpen }: {
       icon={<AgentPortrait agentId={worker.id} size={28} />}
       title={worker.display_name}
       chip={<GateChip id={worker.id} gate={gate} />}
-      status={<LiveStatusPill id={worker.id} live={worker.live_state} />}
+      status={<LiveStatusPill id={worker.id} live={worker.live_state} gate={gate} />}
       detail={
         <>
           <div>{workerSummary(worker)}</div>
@@ -1087,7 +1086,7 @@ function WorkerRow({ worker, activity, onOpen }: {
 }
 
 function PersonaRow({ persona, onOpen }: { persona: DispatchPersona; onOpen: () => void }) {
-  const avail = availabilityLabel(persona.availability);
+  const avail = dispatchAvailabilityLabel(persona);
   const gate = readAgentGate(persona);
   return (
     <ListRow

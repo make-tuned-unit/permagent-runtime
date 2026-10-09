@@ -1,0 +1,31 @@
+{
+  "exit_code": 1,
+  "elapsed_s": 313.4,
+  "reason": null,
+  "log": "/Volumes/PermagentBuilds/permagent/tmp/world-production-20261006/frontend-resume-r3-full-suite.log",
+  "command": [
+    "/Users/j/.local/share/mise/installs/node/24.19.0/bin/node",
+    "--no-concurrent-sparkplug",
+    "node_modules/vitest/vitest.mjs",
+    "run",
+    "--config",
+    "../../reports/world-production/vitest.serial-forks.config.ts",
+    "--reporter=default",
+    "--reporter=json",
+    "--outputFile=/Volumes/PermagentBuilds/permagent/tmp/world-production-20261006/frontend-resume-r3-vitest.json"
+  ],
+  "results": {
+    "success": false,
+    "numTotalTests": 4009,
+    "numPassedTests": 4008,
+    "numFailedTests": 1,
+    "numPendingTests": 0,
+    "testFiles": 497,
+    "failedTests": [
+      {
+        "name": " send button goes quiet with nothing to send, and lights up once there is",
+        "file": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/src/components/chat/ChatInput.send.test.tsx"
+      }
+    ]
+  }
+}

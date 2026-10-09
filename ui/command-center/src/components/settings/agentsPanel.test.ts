@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   availabilityLabel,
+  dispatchAvailabilityLabel,
   grantsNotEnforcedNote,
   EMPTY_ACTIVITY_NOTE,
   grantsSummary,
@@ -67,6 +68,27 @@ describe('availabilityLabel', () => {
     expect(l.text).toMatch(/could not check/i);
     expect(l.text.toLowerCase()).not.toContain('unavailable');
     expect(l.tone).toBe('error');
+  });
+});
+
+describe('dispatchAvailabilityLabel', () => {
+  it('does not call a pending engine dispatchable when its prerequisite probe passes', () => {
+    expect(dispatchAvailabilityLabel({ engine: 'pending', availability: { status: 'available' } })).toEqual({
+      text: 'Not dispatchable — no runnable engine', tone: 'unknown',
+    });
+  });
+
+  it('distinguishes an internal registration from model or task verification', () => {
+    const status = dispatchAvailabilityLabel({ engine: 'internal_subagent', availability: { status: 'available' } });
+    expect(status.text).toBe('Registered; model and task unverified');
+    expect(status.tone).toBe('unknown');
+  });
+
+  it('preserves failed prerequisite detail even for a pending engine', () => {
+    const status = dispatchAvailabilityLabel({ engine: 'pending', availability: { status: 'unavailable', reason: 'binary missing' } });
+    expect(status.text).toContain('Not dispatchable');
+    expect(status.text).toContain('binary missing');
+    expect(status.tone).toBe('error');
   });
 });
 
@@ -279,32 +301,40 @@ describe('firstSentence', () => {
 });
 
 describe('liveStatusChip', () => {
-  // Ruling 2026-09-25's 1440px review: the status column was leaking daemon internals
-  // ("off (strix_enabled=false)", "no live state to query") straight onto
-  // the row. Every raw value must narrow to one of five plain words, with the
-  // raw text demoted to `detail` (a tooltip's content, never the chip label).
+  // Raw daemon values remain in the tooltip, while a count or enabled flag
+  // must never be promoted to evidence of an executing task.
   it('narrows a config-key-leaking off value to plain "Off"', () => {
     const chip = liveStatusChip({ status: 'ok', value: 'off (strix_enabled=false)' });
     expect(chip.label).toBe('Off');
     expect(chip.detail).toContain('strix_enabled=false');
   });
 
-  it('narrows a bare "on" to "Running", not the internal word itself', () => {
+  it('narrows a bare "on" to a neutral enabled fact, not Running', () => {
     const chip = liveStatusChip({ status: 'ok', value: 'on' });
-    expect(chip.label).toBe('Running');
+    expect(chip.label).toBe('Enabled');
+    expect(chip.tone).toBe('unknown');
   });
 
-  it('turns a job count into "Scheduled (N jobs)"', () => {
-    expect(liveStatusChip({ status: 'ok', value: '3 jobs' }).label).toBe('Scheduled (3 jobs)');
-    expect(liveStatusChip({ status: 'ok', value: '1 job' }).label).toBe('Scheduled (1 job)');
+  it('reports configured job counts without implying paused jobs will run', () => {
+    expect(liveStatusChip({ status: 'ok', value: '3 jobs' }).label).toBe('3 jobs configured');
+    expect(liveStatusChip({ status: 'ok', value: '1 job' }).label).toBe('1 job configured');
+    expect(liveStatusChip({ status: 'ok', value: '5 job(s) scheduled' }).label).toBe('5 jobs configured');
+    expect(liveStatusChip({ status: 'ok', value: '5 job(s) scheduled' }).tone).toBe('unknown');
   });
 
   it('maps "idle" straight through', () => {
     expect(liveStatusChip({ status: 'ok', value: 'idle' }).label).toBe('Idle');
   });
 
-  it('maps not_queryable to Idle and unavailable to Unknown, distinctly', () => {
-    expect(liveStatusChip({ status: 'not_queryable' }).label).toBe('Idle');
+  it('preserves an explicit running signal but treats counts and enabled flags as non-running', () => {
+    expect(liveStatusChip({ status: 'ok', value: 'running a scan' }).label).toBe('Running');
+    expect(liveStatusChip({ status: 'ok', value: '0 described, 0 pending' }).label).toBe('Status reported');
+    expect(liveStatusChip({ status: 'ok', value: 'git-health sweep off (steward_scan_enabled=false)' }, { config_key: 'steward_scan_enabled', enabled: false }).label).toBe('Off');
+    expect(liveStatusChip({ status: 'ok', value: 'running an already-started scan' }, { config_key: 'steward_scan_enabled', enabled: false }).label).toBe('Running');
+  });
+
+  it('maps not_queryable to No live signal and unavailable to Unknown, distinctly', () => {
+    expect(liveStatusChip({ status: 'not_queryable' }).label).toBe('No live signal');
     const unavailable = liveStatusChip({ status: 'unavailable', reason: 'pool locked' });
     expect(unavailable.label).toBe('Unknown');
     expect(unavailable.tone).toBe('error');
@@ -319,7 +349,7 @@ describe('liveStatusChip', () => {
       { status: 'unavailable', reason: 'x' } as const,
     ]) {
       const chip = liveStatusChip(s);
-      expect(['Running', 'Idle', 'Off', 'Unknown']).toContain(chip.label);
+      expect(['Enabled', 'No live signal', 'Off', 'Unknown']).toContain(chip.label);
     }
   });
 });

@@ -5,6 +5,7 @@ import { useTheme } from '../../styles/useTheme';
 import { api } from '../../lib/api';
 import { SEARCH_PROVIDERS, saveAndEnableSearchProvider } from '../../lib/searchProviders';
 import { recommendModel, MIN_RAM_GB, type ModelTier } from '../../lib/modelTiers';
+import { hasInstalledModel, memoryStatus, memoryStatusLabel, type MemoryStatus } from './memoryStatus';
 import { FieldLabel, GhostLink, Input, SecondaryButton, Select, StatusLine } from './atoms';
 import { StepFrame } from './StepFrame';
 import { safeWizardError } from './wizardErrors';
@@ -24,9 +25,12 @@ type Section = 'search' | 'memory' | null;
 export function StepExtras({ agentName, onNext }: Props) {
   const [open, setOpen] = useState<Section>(null);
   const [searchState, setSearchState] = useState<'none' | 'saved' | 'working'>('none');
-  const [memoryState, setMemoryState] = useState<'off' | 'on'>('off');
+  const [memoryState, setMemoryState] = useState<MemoryStatus>('checking');
+  const [memoryPreference, setMemoryPreference] = useState<boolean | null>(null);
   const [downloading, setDownloading] = useState(false);
-  const anything = searchState !== 'none' || memoryState === 'on';
+  // A saved enabled schedule remains the person's choice even while its model
+  // is unavailable. Never imply that Continue/Skip changed that preference.
+  const anything = searchState !== 'none' || memoryPreference !== false;
 
   return (
     <StepFrame
@@ -50,12 +54,12 @@ export function StepExtras({ agentName, onNext }: Props) {
       <Section
         title="Local memory model"
         detail="A small model on this Mac that tidies and links your memories overnight. Nothing it reads leaves your Mac."
-        status={memoryState === 'on' ? 'On' : 'Off'}
-        good={memoryState === 'on'}
+        status={memoryStatusLabel(memoryState)}
+        good={memoryState === 'installed'}
         open={open === 'memory'}
         onToggle={() => setOpen(o => (o === 'memory' ? null : 'memory'))}
       >
-        <MemorySetup onState={setMemoryState} onDownloading={setDownloading} />
+        <MemorySetup onState={setMemoryState} onPreference={setMemoryPreference} onDownloading={setDownloading} />
       </Section>
     </StepFrame>
   );
@@ -212,16 +216,19 @@ interface Schedule {
   run_if_launched_in_window: boolean; pruning_enabled?: boolean;
 }
 
-function MemorySetup({ onState, onDownloading }: {
-  onState: (s: 'off' | 'on') => void;
+function MemorySetup({ onState, onPreference, onDownloading }: {
+  onState: (s: MemoryStatus) => void;
+  onPreference: (enabled: boolean) => void;
   onDownloading: (d: boolean) => void;
 }) {
   const { colors } = useTheme();
   const [ramGB, setRamGB] = useState<number | null>(null);
   const [tier, setTier] = useState<ModelTier | null>(null);
   const [reachable, setReachable] = useState<boolean | null>(null);
+  const [statusUnavailable, setStatusUnavailable] = useState(false);
   const [installed, setInstalled] = useState<string[]>([]);
   const [schedule, setSchedule] = useState<Schedule | null>(null);
+  const [scheduleUnavailable, setScheduleUnavailable] = useState(false);
   const [starting, setStarting] = useState(false);
   const [pct, setPct] = useState<number | null>(null);
   const [note, setNote] = useState<{ tone: 'ok' | 'warn' | 'error'; text: string } | null>(null);
@@ -232,13 +239,18 @@ function MemorySetup({ onState, onDownloading }: {
   const readStatus = useCallback(async () => {
     try {
       const s = await api.getOllamaStatus();
-      if (!alive.current) return false;
+      if (!alive.current) return null;
+      setStatusUnavailable(false);
       setReachable(s.reachable);
       setInstalled(s.installed.map(m => m.name));
-      return s.reachable;
+      return s;
     } catch {
-      if (alive.current) setReachable(false);
-      return false;
+      if (alive.current) {
+        setStatusUnavailable(true);
+        setReachable(null);
+        setInstalled([]);
+      }
+      return null;
     }
   }, []);
 
@@ -254,15 +266,20 @@ function MemorySetup({ onState, onDownloading }: {
       .catch(() => { if (alive.current) setRamGB(0); });
     void readStatus();
     api.getLibrarianSchedule()
-      .then(s => { if (alive.current) setSchedule(s); })
-      .catch(() => { /* shown as off */ });
+      .then(s => { if (alive.current) { setSchedule(s); setScheduleUnavailable(false); } })
+      .catch(() => { if (alive.current) setScheduleUnavailable(true); });
   }, [readStatus]);
 
-  useEffect(() => { onState(schedule?.enabled ? 'on' : 'off'); }, [schedule, onState]);
+  const status = memoryStatus({
+    schedule, scheduleUnavailable, ollamaUnavailable: statusUnavailable,
+    ollama: reachable === null ? null : { reachable, installed: installed.map(name => ({ name })) },
+  });
+  useEffect(() => { onState(status); }, [status, onState]);
+  useEffect(() => { if (schedule) onPreference(schedule.enabled); }, [schedule, onPreference]);
   useEffect(() => { onDownloading(pct !== null); }, [pct, onDownloading]);
 
   const model = tier?.model ?? '';
-  const hasModel = !!model && installed.some(n => n === model || n === `${model}:latest`);
+  const hasModel = hasInstalledModel(installed, model);
 
   const writeSchedule = async (enabled: boolean) => {
     const base = schedule ?? await api.getLibrarianSchedule();
@@ -276,7 +293,7 @@ function MemorySetup({ onState, onDownloading }: {
     try { await api.startOllama(); } catch { /* polled below */ }
     for (let i = 0; i < 8 && alive.current; i += 1) {
       await new Promise(r => setTimeout(r, 2000));
-      if (await readStatus()) break;
+      if ((await readStatus())?.reachable) break;
     }
     if (alive.current) setStarting(false);
   };
@@ -294,10 +311,14 @@ function MemorySetup({ onState, onDownloading }: {
         abortRef.current = null;
         if (!alive.current) return false;
         setPct(null);
-        await readStatus();
+      }
+      const latest = await readStatus();
+      if (!latest?.reachable || !hasInstalledModel(latest.installed.map(item => item.name), model)) {
+        if (alive.current) setNote({ tone: 'warn', text: `${model} is not listed in Ollama yet. Check again before turning the schedule on.` });
+        return false;
       }
       await writeSchedule(true);
-      // The "On · model" line below is the confirmation; no second message.
+      // The badge reports both the saved choice and installed-model evidence.
       if (alive.current) setNote(null);
       return true;
     } catch (e) {
@@ -324,7 +345,7 @@ function MemorySetup({ onState, onDownloading }: {
 
   const text = { fontFamily: font.body, fontSize: textSize.small, color: colors.textMuted, lineHeight: 1.5, margin: 0 } as const;
 
-  if (ramGB === null || reachable === null) return <StatusLine tone="info">Checking this Mac…</StatusLine>;
+  if (ramGB === null || (reachable === null && !statusUnavailable)) return <StatusLine tone="info">Checking this Mac…</StatusLine>;
   if (!tier) {
     return <p style={text}>This Mac has {ramGB} GB of memory, which is under the {MIN_RAM_GB} GB a local model needs. Everything else works without it.</p>;
   }
@@ -336,21 +357,32 @@ function MemorySetup({ onState, onDownloading }: {
         {hasModel ? ', already installed.' : `, about ${tier.downloadSizeGB} GB to download.`} Runs with Ollama.
       </p>
 
-      {!reachable && (
+      {statusUnavailable && <StatusLine tone="warn">Could not check Ollama. The saved memory schedule has not been changed. <GhostLink onClick={readStatus}>Check again</GhostLink>{schedule?.enabled && <> · <GhostLink onClick={turnOff}>Turn off schedule</GhostLink></>}</StatusLine>}
+      {scheduleUnavailable && <StatusLine tone="warn">Could not read the memory schedule. Check again later before changing it.</StatusLine>}
+      {schedule?.enabled && status === 'needs-ollama' && <StatusLine tone="warn">The schedule is on for {schedule.model}, but Ollama is not reachable, so the model cannot run yet.</StatusLine>}
+      {schedule?.enabled && status === 'needs-model' && <StatusLine tone="warn">The schedule is on for {schedule.model}, but Ollama does not list that model.</StatusLine>}
+
+      {!statusUnavailable && !reachable && (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: space.md, alignItems: 'center' }}>
           <SecondaryButton onClick={start} disabled={starting}>{starting ? 'Starting…' : 'Start Ollama'}</SecondaryButton>
           <SecondaryButton onClick={() => { window.open('https://ollama.com/download', '_blank', 'noopener,noreferrer'); }}>Get Ollama ↗</SecondaryButton>
           <GhostLink onClick={readStatus}>Check again</GhostLink>
+          {schedule?.enabled && <GhostLink onClick={turnOff}>Turn off schedule</GhostLink>}
         </div>
       )}
 
       {reachable && pct === null && (
-        schedule?.enabled
+        status === 'installed'
           ? <div style={{ display: 'flex', gap: space.xl, alignItems: 'center' }}>
-              <StatusLine tone="ok">On · {schedule.model}</StatusLine>
+              <StatusLine tone="ok">On · {schedule?.model} is installed in Ollama</StatusLine>
               <GhostLink onClick={turnOff}>Turn off</GhostLink>
             </div>
-          : <div><SecondaryButton onClick={turnOn}>{hasModel ? 'Turn on' : `Download ${tier.downloadSizeGB} GB and turn on`}</SecondaryButton></div>
+          : <div style={{ display: 'flex', flexWrap: 'wrap', gap: space.md, alignItems: 'center' }}>
+              <SecondaryButton onClick={turnOn} disabled={scheduleUnavailable}>{schedule?.enabled
+                ? hasModel ? `Use installed ${model} instead` : `Download ${tier.downloadSizeGB} GB and use ${model} instead`
+                : hasModel ? 'Turn on' : `Download ${tier.downloadSizeGB} GB and turn on`}</SecondaryButton>
+              {schedule?.enabled && <GhostLink onClick={turnOff}>Turn off</GhostLink>}
+            </div>
       )}
 
       {pct !== null && (

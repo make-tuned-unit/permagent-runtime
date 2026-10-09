@@ -416,6 +416,19 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
       return !compact;
     }
   });
+  const pendingWorldAgent = useCommandCenter(s => s.pendingWorldAgent);
+  const clearPendingWorldAgent = useCommandCenter(s => s.clearPendingWorldAgent);
+  useEffect(() => {
+    // Settings can navigate here while this World was mounted but hidden. Wait
+    // until it is visible, then use the same select/focus path as an in-world
+    // click. A missing character is not a consumed navigation request.
+    if (!onPanel || !pendingWorldAgent || !ROSTER.some(a => a.id === pendingWorldAgent)) return;
+    setAgoraOpen(false);
+    setConversation(false);
+    setDeskOpen(true);
+    selectAndFocusAgent(pendingWorldAgent, { markUnsaved: true });
+    clearPendingWorldAgent();
+  }, [onPanel, pendingWorldAgent, selectAndFocusAgent, clearPendingWorldAgent]);
   const toggleDesk = useCallback(() => {
     const next = !deskOpen;
     // Hand focus back before hiding the header's focused close button.

@@ -14,6 +14,8 @@ import { hardScrollEdgeSurface, VIEW_HEADER_MIN_HEIGHT, VIEW_HEADER_PADDING_Y } 
 import { ChatView } from './ChatView';
 import { useCommandCenter } from '../../lib/store';
 import { createChatWindow } from '../../lib/chatWindow';
+import { CHAT_DRAFT_FINAL, CHAT_DRAFT_FINAL_ACK, CHAT_DRAFT_SYNC, applyFinalDraft, decodeDraftFiles, isStaleDraftSync, type DraftFinal, type DraftSync } from '../../lib/chatDraftHandoff';
+import { CHAT_SETUP_INTENT_EVENT, receiveChatSetupIntentChange, type ChatSetupIntentChange } from '../../lib/wizardIntent';
 import { useTheme } from '../../styles/useTheme';
 import { setSpeakReplies, useSpeakReplies } from '../../lib/speakReplies';
 import { duration, ease, font, radius, space } from '../../styles/tokens';
@@ -83,12 +85,13 @@ function writeDockWidth(px: number) {
   try { localStorage.setItem(WIDTH_KEY, String(px)); } catch { /* private mode */ }
 }
 
-const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+const isTauri = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
 export function ChatDock() {
   const { colors, reduceMotion } = useTheme();
   const open = useCommandCenter((s) => s.chatDockOpen);
   const closeChatDock = useCommandCenter((s) => s.closeChatDock);
+  const finalDraftRevisions = useRef(new Map<string, number>());
   const [narrow, setNarrow] = useState(
     typeof window !== 'undefined' && window.innerWidth < 640,
   );
@@ -102,6 +105,63 @@ export function ChatDock() {
     };
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  useEffect(() => {
+    if (!isTauri() || new URLSearchParams(window.location.search).get('view') === 'chat') return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void import('@tauri-apps/api/event')
+      .then(({ listen }) => listen<ChatSetupIntentChange>(CHAT_SETUP_INTENT_EVENT, event => {
+        receiveChatSetupIntentChange(event.payload);
+      }))
+      .then(fn => { if (disposed) fn(); else unlisten = fn; })
+      .catch(() => {});
+    return () => { disposed = true; unlisten?.(); };
+  }, []);
+
+  // The detached webview has its own store. Keep the main window's draft in
+  // step so closing the pop-out can restore text and attachments in the dock.
+  useEffect(() => {
+    if (!isTauri() || new URLSearchParams(window.location.search).get('view') === 'chat') return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    const lastFiles = new Map<string, number>();
+    void import('@tauri-apps/api/event').then(({ listen }) => listen<DraftSync>(CHAT_DRAFT_SYNC, event => {
+      if (event.payload.source && isStaleDraftSync(event.payload, finalDraftRevisions.current.get(event.payload.source))) return;
+      if (event.payload.text !== undefined) useCommandCenter.getState().setChatDraft({ text: event.payload.text });
+      if (event.payload.files !== undefined) {
+        const { source, fileRevision } = event.payload;
+        if (source && fileRevision !== undefined) {
+          if (fileRevision <= (lastFiles.get(source) ?? 0)) return;
+          lastFiles.set(source, fileRevision);
+        }
+        try { useCommandCenter.getState().setChatDraft({ files: decodeDraftFiles(event.payload.files) }); } catch { /* keep last valid draft */ }
+      }
+    })).then(fn => { if (disposed) fn(); else unlisten = fn; }).catch(error => { console.error('draft sync listener failed', error); });
+    return () => { disposed = true; unlisten?.(); };
+  }, []);
+
+  useEffect(() => {
+    if (!isTauri() || new URLSearchParams(window.location.search).get('view') === 'chat') return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void import('@tauri-apps/api/event').then(({ listen, emitTo }) =>
+      listen<DraftFinal>(CHAT_DRAFT_FINAL, event => {
+        const payload = event.payload;
+        if (!payload || typeof payload.id !== 'string' || typeof payload.source !== 'string') return;
+        try {
+          applyFinalDraft(payload,
+            draft => useCommandCenter.getState().setChatDraft(draft),
+            () => useCommandCenter.setState({ chatReturnPending: true }));
+          finalDraftRevisions.current.set(payload.source, payload.revision);
+          void emitTo('chat', CHAT_DRAFT_FINAL_ACK, { id: payload.id, ok: true }).catch(() => {});
+        } catch {
+          void emitTo('chat', CHAT_DRAFT_FINAL_ACK, { id: payload.id, ok: false }).catch(() => {});
+        }
+      }),
+    ).then(fn => { if (disposed) fn(); else unlisten = fn; }).catch(error => { console.error('draft final listener failed', error); });
+    return () => { disposed = true; unlisten?.(); };
   }, []);
 
   // ── Width, and the drag that sets it ──
@@ -260,7 +320,7 @@ export function ChatDock() {
           {/* Speak replies (#18) — the agent voices completed replies; this is
               the mute. Voice-first onboarding flips it on; the pref persists. */}
           <SpeakToggle />
-          {isTauri && <DetachButton onDone={closeChatDock} />}
+          {isTauri() && <DetachButton />}
           <Tooltip content="Close chat">
             <Button
               colors={colors}
@@ -427,19 +487,18 @@ function ResizeEdge({
   );
 }
 
-function DetachButton({ onDone }: { onDone: () => void }) {
+function DetachButton() {
   const { colors, theme } = useTheme();
   return (
     <Tooltip content="Open chat in its own window">
       <Button
         colors={colors}
         onClick={async () => {
-          onDone();
-          if (!isTauri) return true;
+          if (!isTauri()) return true;
           try {
             await createChatWindow(theme);
           } catch {
-            /* fall back to keeping the dock closed; user can reopen */
+            /* createChatWindow restores the dock and its unsent draft */
             return false;
           }
           return true;

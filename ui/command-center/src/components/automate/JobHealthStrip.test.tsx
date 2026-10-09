@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom
  *
- * A6: one line at the top of Automate saying either "everything is running"
- * or which jobs need attention. R2: the strip must not render at all before
+ * A6: one line at the top of Automate reporting paused schedules, known
+ * problems, or digest availability. R2: the strip must not render before
  * the first fetch settles (its own "loading" state is its absence, not a
  * false green), and a resolved-but-unknown digest must say so, not go quiet.
  */
@@ -28,12 +28,22 @@ it('renders nothing for a null summary — the loading state is its own absence'
   expect(container.querySelector('[data-testid="job-health-strip"]')).toBeNull();
 });
 
-it('says "everything is running" in the ok state', () => {
+it('reports no known problems without claiming a job ran in the ok state', () => {
   const summary = summarizeHealth({ jobs: [{ id: 'a', label: 'A', cadence: 'daily', outcome: 'ok' }] }, []);
   act(() => root.render(<JobHealthStrip summary={summary} />));
   const strip = container.querySelector('[data-testid="job-health-strip"]')!;
   expect(strip.getAttribute('data-state')).toBe('ok');
-  expect(strip.textContent).toContain('Everything is running');
+  expect(strip.textContent).toContain('No current job-health problems reported');
+});
+
+it('renders all-paused schedules as neutral, including review count', () => {
+  const summary = summarizeHealth({ jobs: [{ id: 'audit', label: 'Audit', cadence: 'built-in', outcome: 'ok' }] }, [
+    { id: 'starter', paused: true, currently_running: false, requires_approval: true },
+  ]);
+  act(() => root.render(<JobHealthStrip summary={summary} />));
+  const strip = container.querySelector('[data-testid="job-health-strip"]')!;
+  expect(strip.getAttribute('data-state')).toBe('paused');
+  expect(strip.textContent).toContain('1 schedule paused — 1 needs review before enabling');
 });
 
 it('says job health is unknown rather than claiming green when the fetch failed', () => {

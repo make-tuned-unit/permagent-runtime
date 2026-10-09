@@ -1,0 +1,25 @@
+{
+  "exit_code": 0,
+  "elapsed_s": 310.3,
+  "reason": null,
+  "log": "/Volumes/PermagentBuilds/permagent/tmp/world-production-20261006/frontend-resume-r4-full-suite.log",
+  "command": [
+    "/Users/j/.local/share/mise/installs/node/24.19.0/bin/node",
+    "--no-concurrent-sparkplug",
+    "node_modules/vitest/vitest.mjs",
+    "run",
+    "--config",
+    "../../reports/world-production/vitest.serial-forks.config.ts",
+    "--reporter=default",
+    "--reporter=json",
+    "--outputFile=/Volumes/PermagentBuilds/permagent/tmp/world-production-20261006/frontend-resume-r4-vitest.json"
+  ],
+  "results": {
+    "success": true,
+    "numTotalTests": 4009,
+    "numPassedTests": 4009,
+    "numFailedTests": 0,
+    "numPendingTests": 0,
+    "testFiles": 497
+  }
+}

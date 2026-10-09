@@ -316,6 +316,30 @@ describe('WizardShell', () => {
     expect(onComplete).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps the saved memory choice but does not call an unreachable default model On', async () => {
+    localStorage.setItem(DRAFT_KEY, JSON.stringify({ step: 4, name: 'Nova', toneId: 'warm', firstMessage: '', modelChoice: 'later' }));
+    m.getLibrarianSchedule.mockResolvedValue({
+      enabled: true, start_time: '02:00', duration_minutes: 240,
+      model: 'qwen2.5:7b', run_if_launched_in_window: true,
+    });
+    m.getOllamaStatus.mockResolvedValue({ reachable: false, installed: [], running: [] });
+    await start();
+    expect(progress()).toBe('Step 5 of 6 · Extras');
+    const memorySection = byText<HTMLButtonElement>('button', /Local memory model/);
+    expect(memorySection.textContent).toContain('Ollama unavailable');
+    expect(memorySection.textContent).not.toContain(' On');
+    expect(primaryLabel()).toBe('Continue');
+    await click(memorySection);
+    expect(text()).toContain('The schedule is on for qwen2.5:7b, but Ollama is not reachable');
+    expect(m.startOllama).not.toHaveBeenCalled();
+    expect(m.pullOllamaModel).not.toHaveBeenCalled();
+    await submit();
+    expect(progress()).toBe('Step 6 of 6 · Review');
+    const memoryRow = [...container.querySelectorAll('dt')].find(row => row.textContent === 'Memory model')?.parentElement;
+    expect(memoryRow?.querySelector('dd')?.textContent).toBe('On · Ollama unavailable');
+    expect(m.setLibrarianSchedule).not.toHaveBeenCalled();
+  });
+
   it('save failure shows the banner; Retry saves and finishes', async () => {
     localStorage.setItem(DRAFT_KEY, JSON.stringify({ step: 5, name: 'Nova', toneId: 'warm', firstMessage: '', modelChoice: 'later' }));
     let fail = true;

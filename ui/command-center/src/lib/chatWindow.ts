@@ -13,6 +13,8 @@
 import type { WebviewWindow as WebviewWindowType } from '@tauri-apps/api/webviewWindow';
 import { Effect, EffectState } from '@tauri-apps/api/window';
 import { useCommandCenter } from './store';
+import { CHAT_DRAFT_HANDOFF, CHAT_DRAFT_HANDOFF_ACK, encodeDraftFiles } from './chatDraftHandoff';
+import { peekChatSetupIntentRecord } from './wizardIntent';
 import {
   applyWindowTransparency, NATIVE_WINDOW_IS_OPAQUE, OVERLAY_TITLEBAR, reinsetTrafficLights,
 } from './windowChrome';
@@ -53,22 +55,53 @@ export function saveChatGeometry(g: ChatGeometry): void {
  * geometry when available, otherwise centers at the default size.
  * `appTheme` is the app theme key ('silver' → light, else dark).
  */
-export async function createChatWindow(appTheme: string): Promise<WebviewWindowType> {
+let creatingChatWindow: Promise<WebviewWindowType> | null = null;
+
+export function createChatWindow(appTheme: string): Promise<WebviewWindowType> {
+  if (creatingChatWindow) return creatingChatWindow;
+  const pending = createChatWindowOnce(appTheme);
+  creatingChatWindow = pending;
+  const clear = () => { if (creatingChatWindow === pending) creatingChatWindow = null; };
+  pending.then(clear, clear);
+  return pending;
+}
+
+async function createChatWindowOnce(appTheme: string): Promise<WebviewWindowType> {
+  // Freeze the composer before any file encoding or native imports can yield.
+  // Its store copy remains intact if any part of the handoff fails.
+  const dockWasOpen = useCommandCenter.getState().chatDockOpen;
+  useCommandCenter.setState({ chatWindowOpen: true, chatDockOpen: false });
+  let chat: WebviewWindowType | undefined;
+  let unready: (() => void) | undefined;
+  let unack: (() => void) | undefined;
+  try {
   const { WebviewWindow } = await import('@tauri-apps/api/webviewWindow');
+  const draft = useCommandCenter.getState().chatDraft;
+  // Always use a nonce: a Devices request can arrive while this window is
+  // opening, after the initial snapshot but before its listener is ready.
+  const handoffId = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
+  // The dock is already frozen. A failed read restores it with its File
+  // objects still in the main window's store.
+  const handoffFiles = await encodeDraftFiles(draft.files);
+  const { emitTo, listen } = await import('@tauri-apps/api/event');
+  let readyResolve: (() => void) | undefined;
+  let ackResolve: (() => void) | undefined;
+  const ready = new Promise<void>(resolve => { readyResolve = resolve; });
+  const ack = new Promise<void>(resolve => { ackResolve = resolve; });
+  const bounded = (work: Promise<void>, label: string) => new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out`)), 8000);
+    work.then(() => { clearTimeout(timer); resolve(); }, error => { clearTimeout(timer); reject(error); });
+  });
+  unready = await listen<{ draft_handoff: string | null }>('chat_ready', event => {
+    if (event.payload?.draft_handoff === handoffId) readyResolve?.();
+  });
+  unack = await listen<{ id: string }>(CHAT_DRAFT_HANDOFF_ACK, event => {
+    if (event.payload?.id === handoffId) ackResolve?.();
+  });
   const saved = loadChatGeometry();
   const placement = saved
     ? { x: saved.x, y: saved.y, width: saved.width, height: saved.height }
     : { ...DEFAULT_SIZE, center: true };
-
-  // Every open path (launcher, dock-detach, drop handler, navigate) funnels
-  // through here — flag the window as open so the launcher pill hides
-  // regardless of which surface created it. The launcher's close listener
-  // clears it when the window goes away.
-  //
-  // Also close the dock: detached and docked chat are meant to be mutually
-  // exclusive, and paths other than the detach button left the sidebar open
-  // behind the new window (two chats, and mid-conversation two orbs).
-  useCommandCenter.setState({ chatWindowOpen: true, chatDockOpen: false });
 
   // Hand the CURRENT session id to the chat window explicitly. It used to be
   // discovered via localStorage, but on macOS WKWebView storage does not
@@ -87,15 +120,16 @@ export async function createChatWindow(appTheme: string): Promise<WebviewWindowT
       currentSession = await useCommandCenter.getState().ensureSession();
     } catch { /* fall through: the window will mint one as a last resort */ }
   }
-  const url = currentSession
-    ? `index.html?view=chat&session=${encodeURIComponent(currentSession)}`
-    : 'index.html?view=chat';
+  const params = new URLSearchParams({ view: 'chat' });
+  if (currentSession) params.set('session', currentSession);
+  params.set('draft_handoff', handoffId);
+  const url = `index.html?${params.toString()}`;
 
   // The same chrome the main window wears: an overlay titlebar over our own
   // HTML, and the native material behind it. Runtime windows need both halves
   // applied AFTER creation — the builder silently drops `trafficLightPosition`
   // and does not carry transparency to the webview (see windowChrome.ts).
-  const chat = new WebviewWindow('chat', {
+    chat = new WebviewWindow('chat', {
     url,
     title: 'Permagent Chat',
     ...MIN_SIZE,
@@ -126,12 +160,26 @@ export async function createChatWindow(appTheme: string): Promise<WebviewWindowT
     // floating above other apps.
     theme: appTheme === 'silver' ? 'light' : 'dark',
     ...placement,
-  });
-  void chat.once('tauri://created', () => {
-    void reinsetTrafficLights('chat');
-    void applyWindowTransparency('chat');
-  });
-  return chat;
+    });
+    void chat.once('tauri://created', () => {
+      void reinsetTrafficLights('chat');
+      void applyWindowTransparency('chat');
+    });
+    await bounded(ready, 'Chat draft handoff readiness');
+    await emitTo('chat', CHAT_DRAFT_HANDOFF, {
+      id: handoffId, text: draft.text, files: handoffFiles,
+      pendingSetup: peekChatSetupIntentRecord(),
+    });
+    await bounded(ack, 'Chat draft handoff acknowledgement');
+    return chat;
+  } catch (error) {
+    try { await chat?.close(); } catch { /* the window may not have been created */ }
+    useCommandCenter.setState({ chatWindowOpen: false, chatDockOpen: dockWasOpen });
+    throw error;
+  } finally {
+    unready?.();
+    unack?.();
+  }
 }
 
 /**

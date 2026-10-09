@@ -22,7 +22,7 @@
       "ui/command-center/src/components/world/forum/agentWardrobe.ts"
     ],
     "browser_qa": "Root reviewed an isolated Vite preview that imported the actual getAgentThumbnail module. All eight Settings-linked current World designs rendered at 192, 56, and 28 pixels. A first crop clipped Librarian/Council headwear; y=0.58 camera adjustment passed a second visual review with visible headwear and recognizable faces/wardrobe.",
-    "native_settings_status": "UNVERIFIED: current native app built and staged with verified current assets; CUA launch timed out, reattach returned cgWindowNotFound. Owned review app stopped; no final native visual acceptance.",
+    "native_settings_status": "Root subsequently verified all eight linked roster thumbnails in the staged native app, plus Librarian and Council detail portraits. Other detail screens and actual agent execution remain unverified.",
     "agent_task_execution_status": "UNVERIFIED; portrait rendering proves neither agent tool execution nor task success.",
     "focused_tests": "Frontend focused batches passed: 42 portrait/mapping assertions, 2 follow-up assertions, and 10 cache-retry/portrait/design-token/icon assertions. These test component wiring and cache behavior, not native app integration or agent execution.",
     "surface_audit": {
@@ -489,7 +489,20 @@
     "crates/goose/src/agents/platform_extensions/app_perception.rs:2369",
     "crates/goose/src/agents/platform_extensions/orchestrator.rs:42135"
   ],
-  "verification_state": "World\u2194Settings canonical identity mapping and thumbnail component/cache behavior passed focused frontend batches (42, 2, and 10 assertions). Root visually reviewed actual getAgentThumbnail browser preview for all eight linked designs at 192/56/28 pixels after the y=0.58 crop correction. Source audit found no additional obsolete thumbnail surface. Native installed Settings integration and every agent task success/failure scenario remain UNVERIFIED; rendering and mapping do not prove agent execution.",
+  "verification_state": "World\u2194Settings canonical identity mapping and thumbnail component/cache behavior passed focused frontend batches (42, 2, and 10 assertions). Root visually reviewed actual getAgentThumbnail browser preview for all eight linked designs at 192/56/28 pixels after the y=0.58 crop correction. Root later verified all eight roster portraits and Librarian/Council detail portraits in staged native Settings. Source audit found no additional obsolete thumbnail surface. Every agent task success/failure scenario remains UNVERIFIED; rendering and mapping do not prove agent execution.",
+  "runtime_status_followup": {
+    "frontend_fix": "Automate job-health summary now reports all-paused starter schedules as paused, even if the built-in audit check is OK, and an otherwise healthy digest only says no current problems were reported. Home idle/unreachable label now says hub connected/hub unreachable instead of agent online/offline. Focused frontend regression batch passed 38/38 assertions across four files.",
+    "world_unresolved": "Native blank World said the orchestrator was working despite no model configured and no in-flight work. Do not relabel true work away in the frontend; correct the server's runtime signal.",
+    "source": [
+      "crates/goose-server/src/routes/henry_status.rs:108-145: session updated_at within 120 seconds is treated as active and passed to classify_henry_state",
+      "crates/goose-server/src/agent_state_tick.rs:54-90: authoritative reply-loop registry is used only after the first turn; pre-first-turn fallback also treats recently updated sessions as working",
+      "crates/goose-server/src/routes/dashboard.rs:70-121: recent session metadata drives thinking and in_flight without an active request",
+      "crates/goose-server/src/routes/dashboard_cards.rs:1095-1140: Home status card repeats the same recency heuristic",
+      "crates/goose/src/job_health.rs:36-53,285-301: Off is healthy for fault detection and built-in audit check may be OK while all schedules are paused"
+    ],
+    "backend_change_needed": "Drive Working/Available/Error from actual reply-loop state in events::agent_runtime_state(\"henry\") and active request IDs before the first turn. Reconcile henry_status, the tick fallback, dashboard, and Home card from that signal; retain recent sessions only as history. Cover fresh blank session with no request, actual reply/tool work, latched error, and unreachable backend. Do not equate a connected daemon or successful health digest with a runnable model or completed work.",
+    "status": "BACKEND_UNRESOLVED; SOURCE_AUDITED_ONLY"
+  },
   "per_agent_execution_verification": [
     {
       "id": "henry",

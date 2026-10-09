@@ -4,7 +4,7 @@
  * All state flows through the daemon (HTTP/SSE), not the main window.
  */
 import { useEffect, useRef, useState, useCallback, type CSSProperties } from 'react';
-import { FiEye } from 'react-icons/fi';
+import { FiArrowLeft, FiEye } from 'react-icons/fi';
 import { font, radius, space } from './styles/tokens';
 import { useTheme } from './styles/useTheme';
 import { Button } from './components/common/Button';
@@ -29,6 +29,8 @@ import { VoiceOrb } from './components/voice/VoiceOrb';
 import { readLiveConversation, requestVoiceEnd } from './lib/voiceHandoff';
 import { ChatSetupCard } from './components/chat/ChatSetupCard';
 import { chatSetupState, modelSetupReadiness } from './components/chat/chatSetupState';
+import { CHAT_DRAFT_FINAL, CHAT_DRAFT_FINAL_ACK, CHAT_DRAFT_HANDOFF, CHAT_DRAFT_HANDOFF_ACK, decodeDraftFiles, encodeDraftFiles, type DraftHandoff } from './lib/chatDraftHandoff';
+import { CHAT_SETUP_INTENT_EVENT, lastSeenChatSetupIntentId, peekChatSetupIntentRecord, receiveChatSetupIntentChange, type ChatSetupIntentChange } from './lib/wizardIntent';
 // VoiceButton moved to ChatInput row (beside send button)
 
 export default function ChatApp() {
@@ -48,6 +50,9 @@ export default function ChatApp() {
   const [providerCheckKnown, setProviderCheckKnown] = useState(false);
   const [inspectionOpen, setInspectionOpen] = useState(false);
   const [inputFocused, setInputFocused] = useState(false);
+  const [returning, setReturning] = useState(false);
+  const [returnError, setReturnError] = useState<string | null>(null);
+  const returningRef = useRef(false);
 
   useEffect(() => {
     let active = true;
@@ -115,11 +120,62 @@ export default function ChatApp() {
     chatInputRef.current?.addFiles(files);
   }, []);
 
+  const returnToDock = useCallback(async () => {
+    if (returningRef.current) return;
+    const draft = chatInputRef.current?.freezeDraft();
+    if (!draft) {
+      setReturnError('Wait for your draft to finish restoring, then try again.');
+      return;
+    }
+    returningRef.current = true;
+    setReturning(true);
+    setReturnError(null);
+    const id = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
+    const deadline = Date.now() + 8000;
+    let unack: (() => void) | undefined;
+    const bounded = <T,>(work: Promise<T>): Promise<T> => new Promise((resolve, reject) => {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) { reject(new Error('Draft transfer timed out')); return; }
+      const timer = setTimeout(() => reject(new Error('Draft transfer timed out')), remaining);
+      work.then(value => { clearTimeout(timer); resolve(value); }, error => { clearTimeout(timer); reject(error); });
+    });
+    try {
+      const files = await bounded(encodeDraftFiles(draft.files));
+      const { emitTo, listen } = await bounded(import('@tauri-apps/api/event'));
+      let resolveAck: (() => void) | undefined;
+      let rejectAck: ((error: Error) => void) | undefined;
+      const ack = new Promise<void>((resolve, reject) => { resolveAck = resolve; rejectAck = reject; });
+      unack = await bounded(listen<{ id: string; ok: boolean }>(CHAT_DRAFT_FINAL_ACK, event => {
+        if (event.payload?.id !== id) return;
+        if (event.payload.ok) resolveAck?.();
+        else rejectAck?.(new Error('The main window could not save your draft'));
+      }));
+      await bounded(emitTo('main', CHAT_DRAFT_FINAL, {
+        id, source: draft.source, revision: draft.revision, text: draft.text, files,
+        setup: peekChatSetupIntentRecord(), lastSeenSetupId: lastSeenChatSetupIntentId(),
+      }));
+      await bounded(ack);
+      const { getCurrentWindow } = await bounded(import('@tauri-apps/api/window'));
+      await bounded(getCurrentWindow().close());
+    } catch {
+      chatInputRef.current?.releaseDraft();
+      setReturnError('Your draft is still here. Could not confirm its transfer to the main window. Try Return to dock again.');
+    } finally {
+      unack?.();
+      returningRef.current = false;
+      setReturning(false);
+    }
+  }, []);
+
   // Listen for cross-window file drops and signal readiness
   useEffect(() => {
     let unlisten: (() => void) | undefined;
+    let unlistenDraft: (() => void) | undefined;
+    let unlistenSetup: (() => void) | undefined;
+    let disposed = false;
     (async () => {
-      const { emit, listen } = await import('@tauri-apps/api/event');
+      const { emit, emitTo, listen } = await import('@tauri-apps/api/event');
+      if (disposed) return;
       unlisten = await listen<{ files: { name: string; mime_type: string; data_b64: string }[] }>('chat_drop_files', (event) => {
         const files = event.payload.files.map((f) => {
           const bytes = Uint8Array.from(atob(f.data_b64), (c) => c.charCodeAt(0));
@@ -127,9 +183,26 @@ export default function ChatApp() {
         });
         chatInputRef.current?.addFiles(files);
       });
-      await emit('chat_ready', {});
-    })();
-    return () => { unlisten?.(); };
+      if (disposed) { unlisten(); return; }
+      unlistenSetup = await listen<ChatSetupIntentChange>(CHAT_SETUP_INTENT_EVENT, event => {
+        receiveChatSetupIntentChange(event.payload);
+      });
+      if (disposed) { unlistenSetup(); return; }
+      const handoffId = new URLSearchParams(window.location.search).get('draft_handoff');
+      if (handoffId) {
+        unlistenDraft = await listen<DraftHandoff>(CHAT_DRAFT_HANDOFF, (event) => {
+          if (event.payload.id !== handoffId) return;
+          try {
+            if (!chatInputRef.current) return;
+            chatInputRef.current.restoreDraft(event.payload.text, decodeDraftFiles(event.payload.files), event.payload.pendingSetup);
+            void emitTo('main', CHAT_DRAFT_HANDOFF_ACK, { id: handoffId });
+          } catch { /* sender keeps the original draft and times out safely */ }
+        });
+        if (disposed) { unlistenDraft(); return; }
+      }
+      if (!disposed) await emit('chat_ready', { draft_handoff: handoffId });
+    })().catch(() => {});
+    return () => { disposed = true; unlisten?.(); unlistenDraft?.(); unlistenSetup?.(); };
   }, []);
 
   useEffect(() => {
@@ -226,11 +299,20 @@ export default function ChatApp() {
               <FiEye size={12} />
             </Button>
           </Tooltip>
+          <Button colors={colors} variant="bare" type="button" disabled={returning}
+            onClick={() => { void returnToDock(); }} aria-label="Return to dock"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: space.xs, whiteSpace: 'nowrap' }}>
+            <FiArrowLeft size={13} /> Return to dock
+          </Button>
         </div>
       </div>
 
       {/* Chat body */}
       <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+        {returning && <div role="status" style={{ padding: space.sm, color: colors.textMuted }}>Saving your unsent draft and attachments…</div>}
+        {returnError && <div role="alert" style={{ padding: space.sm, color: colors.warning }}>
+          {returnError} <Button colors={colors} variant="bare" type="button" onClick={() => { void returnToDock(); }}>Retry</Button>
+        </div>}
         <DropZone onDrop={handleDrop}>
           <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
             <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>

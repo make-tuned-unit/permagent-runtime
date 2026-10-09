@@ -113,15 +113,16 @@ describe('review summary', () => {
     const f = summarize({
       config: { GOOSE_PROVIDER: 'acme', GOOSE_MODEL: 'acme-1', dev_roots: ['/a', '/b'] },
       providers, searchSaved: ['Search Co'], librarian: { enabled: true, model: 'small:3b' },
+      ollama: { reachable: true, installed: [{ name: 'small:3b' }] },
     });
     expect(f).toEqual({
       model: { connected: true, text: 'Acme AI · acme-1' },
-      folders: '2 folders', search: 'Search Co', memory: 'On · small:3b',
+      folders: '2 folders', search: 'Search Co', memory: 'On · small:3b installed in Ollama',
     });
   });
 
   it('says plainly when no model is connected', () => {
-    const f = summarize({ config: {}, providers, searchSaved: [], librarian: null });
+    const f = summarize({ config: {}, providers, searchSaved: [], librarian: { enabled: false, model: '' } });
     expect(f.model).toEqual({ connected: false, text: 'Not connected' });
     expect(f.folders).toBe('None');
     expect(f.memory).toBe('Off');
@@ -130,5 +131,12 @@ describe('review summary', () => {
   it('names a local model as on this Mac', () => {
     const f = summarize({ config: { GOOSE_PROVIDER: 'ollama', GOOSE_MODEL: 'small:3b' }, providers, searchSaved: [], librarian: null });
     expect(f.model.text).toBe('On this Mac · small:3b');
+  });
+
+  it('keeps an enabled schedule visible without calling a missing model ready', () => {
+    const base = { config: {}, providers, searchSaved: [], librarian: { enabled: true, model: 'qwen2.5:7b' } };
+    expect(summarize({ ...base, ollama: { reachable: false, installed: [] } }).memory).toBe('On · Ollama unavailable');
+    expect(summarize({ ...base, ollama: { reachable: true, installed: [] } }).memory).toBe('On · qwen2.5:7b not installed');
+    expect(summarize({ ...base, ollama: null, unavailable: { ollama: true } }).memory).toBe('Unavailable');
   });
 });

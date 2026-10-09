@@ -1,0 +1,16 @@
+[
+  {
+    "check": "typecheck",
+    "exit_code": 0,
+    "elapsed_s": 13.0,
+    "reason": null,
+    "log": "/Volumes/PermagentBuilds/permagent/tmp/world-production-20261006/frontend-resume-typecheck.log"
+  },
+  {
+    "check": "full-suite",
+    "exit_code": -15,
+    "elapsed_s": 68.3,
+    "reason": "Coordinator stopped owned full-suite group after independent review confirmed partitioned-window setup-intent delivery and consumption bugs. This is not a full-suite pass.",
+    "log": "/Volumes/PermagentBuilds/permagent/tmp/world-production-20261006/frontend-resume-full-suite.log"
+  }
+]

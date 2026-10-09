@@ -23,6 +23,7 @@ vi.mock('../../../lib/api', () => ({
     readConfig: vi.fn(async () => null),
     upsertConfig: vi.fn(async () => ({})),
     getLibrarianSchedule: vi.fn(async () => null),
+    getLibrarianStatus: vi.fn(async () => ({ entities_awaiting_context: 0 })),
     getOllamaStatus: vi.fn(async () => ({ reachable: false, installed: [], running: [] })),
     runLibrarianNow: vi.fn(async () => ({})),
   },
@@ -337,7 +338,7 @@ describe('AgentsPanel', () => {
     expect(upsertConfig).toHaveBeenCalledWith('strix_enabled', true);
     const after = apiFetchMock.mock.calls.slice(before).map(c => c[0]);
     expect(after).toContain('/api/agents/strix');
-    expect(container.querySelector('[data-testid="live-status-strix"]')?.textContent).toBe('Running');
+    expect(container.querySelector('[data-testid="live-status-strix"]')?.textContent).toBe('Enabled');
     expect(await liveStatusTooltip('strix')).toContain('on — sweeping every 24h');
     expect(await liveStatusTooltip('strix')).not.toContain('off (strix_enabled=false)');
   });
@@ -660,14 +661,22 @@ describe('AgentsPanel', () => {
     expect((note?.textContent ?? '').toLowerCase()).not.toContain('cli process');
   });
 
+  it('labels pending and internal personas without claiming a successful task', async () => {
+    mockRosterAndDetail();
+    await mount();
+    expect(container.querySelector('[data-testid="persona-row-steward"]')?.textContent).toContain('Not dispatchable — no runnable engine');
+    expect(container.querySelector('[data-testid="persona-row-planner"]')?.textContent).toContain('Registered; model and task unverified');
+    await open('persona-row-steward');
+    expect(container.textContent).toContain('Not dispatchable — no runnable engine');
+  });
+
   it('does not render unavailable live_state as idle', async () => {
     mockRosterAndDetail();
     await mount();
 
     // Scheduler's mock live_state is `{ status: 'unavailable', reason: 'pool
-    // locked' }` — the chip must say "Unknown" (never "Idle": that word is
-    // reserved for `not_queryable`, a property of the worker, not a failed
-    // read), with the reason reachable only via the pill's Tooltip.
+    // locked' }` — the chip must say "Unknown" (never "Idle"), with the
+    // reason reachable only via the pill's Tooltip.
     expect(container.querySelector('[data-testid="live-status-scheduler"]')?.textContent).toBe('Unknown');
     expect(await liveStatusTooltip('scheduler')).toMatch(/could not be read/i);
     expect(await liveStatusTooltip('scheduler')).toContain('pool locked');
@@ -845,6 +854,28 @@ describe('AgentsPanel', () => {
   // journal text — de-jargoned above. This block pins the row-level view of
   // all three fixes together.
   describe('status column and every-row gate chip (ST1 round 3)', () => {
+    it('keeps blank-setup counts and a disabled sweep from reading as running', async () => {
+      const workers = [
+        { id: 'scheduler', display_name: 'Scheduler', what_it_does: 'Schedules jobs.', why_it_matters: 'Keeps time.', state_source: 'queryable', live_state: { status: 'ok', value: '5 job(s) scheduled' }, dispatchable: false, gate: null },
+        { id: 'librarian', display_name: 'The Librarian', what_it_does: 'Describes files.', why_it_matters: 'Keeps context.', state_source: 'queryable', live_state: { status: 'ok', value: '0 described, 0 pending' }, dispatchable: false, gate: null },
+        { id: 'git_steward', display_name: 'Git Steward', what_it_does: 'Checks repositories.', why_it_matters: 'Keeps them healthy.', state_source: 'queryable', live_state: { status: 'ok', value: 'git-health sweep off (steward_scan_enabled=false)' }, dispatchable: false, gate: { config_key: 'steward_scan_enabled', enabled: false } },
+      ];
+      apiFetchMock.mockImplementation(async (endpoint: string) => {
+        if (endpoint === '/api/agents/roster') return { workers, dispatch_roster: [], capabilities: [] } as never;
+        if (/\/work(?:\?|$)/.test(endpoint)) return EMPTY_WORK as never;
+        if (endpoint === '/api/agents/librarian') return { kind: 'worker', ...workers[1] } as never;
+        throw new Error(`unexpected fetch ${endpoint}`);
+      });
+      await mount();
+      expect(container.querySelector('[data-testid="live-status-scheduler"]')?.textContent).toBe('5 jobs configured');
+      expect(container.querySelector('[data-testid="live-status-librarian"]')?.textContent).toBe('Status reported');
+      expect(container.querySelector('[data-testid="gate-chip-librarian"]')?.textContent).toBe('Always on');
+      expect(container.querySelector('[data-testid="live-status-git_steward"]')?.textContent).toBe('Off');
+      await open('worker-row-librarian');
+      expect(container.querySelector('[data-testid="live-status-librarian"]')?.textContent).toBe('Status reported');
+      expect(container.textContent).not.toContain('Running');
+    });
+
     it('gives an ungated worker an "Always on" chip, not a missing one', async () => {
       mockRosterAndDetail();
       await mount();
@@ -855,7 +886,7 @@ describe('AgentsPanel', () => {
     it('does not show the same on/off word twice for one worker', async () => {
       // A worker whose gate says "on" AND whose live_state literally says
       // "on" too — the exact daemon shape that produced the duplicate. The
-      // status pill must narrow to a DIFFERENT word ("Running"), not repeat
+      // status pill must narrow to a DIFFERENT word ("Enabled"), not repeat
       // the gate chip's "on".
       apiFetchMock.mockImplementation(async (endpoint: string) => {
         if (endpoint === '/api/agents/roster') {
@@ -875,10 +906,10 @@ describe('AgentsPanel', () => {
       await mount();
 
       // Gate chip and status pill each say something, and they say DIFFERENT
-      // things — "on" (the switch) and "Running" (the live status) — rather
+      // things — "on" (the switch) and "Enabled" (the reported state) — rather
       // than the daemon's identical "on" value leaking into both.
       expect(container.querySelector('[data-testid="gate-chip-initiative"]')?.textContent).toBe('on');
-      expect(container.querySelector('[data-testid="live-status-initiative"]')?.textContent).toBe('Running');
+      expect(container.querySelector('[data-testid="live-status-initiative"]')?.textContent).toBe('Enabled');
     });
   });
 });

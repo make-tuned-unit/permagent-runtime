@@ -96,7 +96,28 @@ it('A6: mounts the job-health strip and reads it from /api/job-health', async ()
   const strip = container.querySelector('[data-testid="job-health-strip"]');
   expect(strip).toBeTruthy();
   expect(strip!.getAttribute('data-state')).toBe('ok');
-  expect(strip!.textContent).toContain('Everything is running');
+  expect(strip!.textContent).toContain('No current job-health problems reported');
+});
+
+it('A6: blank setup with paused starters and a healthy audit check does not claim jobs are running', async () => {
+  jobsFixture = Array.from({ length: 5 }, (_, index) => ({
+    ...okJob, id: `starter-${index}`, display_name: `Starter ${index}`,
+    paused: true, requires_approval: true, last_run: null, last_status: null, next_run: null,
+  }));
+  healthFixture = {
+    all_green: true,
+    jobs: [
+      ...jobsFixture.map((job: any) => ({ id: job.id, label: job.display_name, cadence: 'daily', outcome: 'off' })),
+      { id: 'decision_audit_chain', label: 'Decision audit chain', cadence: 'built-in', outcome: 'ok' },
+    ],
+  };
+  await act(async () => { root.render(<AutomateView />); });
+  await settle();
+  const strip = container.querySelector('[data-testid="job-health-strip"]')!;
+  expect(strip.getAttribute('data-state')).toBe('paused');
+  expect(strip.textContent).toContain('5 schedules paused — 5 need review before enabling');
+  expect(strip.textContent).not.toMatch(/everything is running|jobs healthy/i);
+  expect(container.textContent).toContain('REVIEW NEEDED');
 });
 
 it('A6: a daemon that will not answer /api/job-health reads "unknown", not green', async () => {

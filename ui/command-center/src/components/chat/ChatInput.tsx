@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback, useImperativeHandle, forwardRef, type CSSProperties } from 'react';
 import { FiSend, FiLoader, FiPaperclip } from 'react-icons/fi';
 import { useCommandCenter } from '../../lib/store';
-import { CHAT_SETUP_INTENT_EVENT, CHAT_SETUP_INTENT_KEY, discardChatSetupIntent, peekChatSetupIntent, peekWizardIntent, takeChatSetupIntent, takeWizardIntent } from '../../lib/wizardIntent';
+import { CHAT_SETUP_INTENT_EVENT, CHAT_SETUP_INTENT_KEY, adoptChatSetupIntentRecord, discardChatSetupIntent, peekChatSetupIntentRecord, peekWizardIntent, takeChatSetupIntent, takeWizardIntent, type ChatSetupIntentRecord } from '../../lib/wizardIntent';
 import { ease, font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { AttachmentChip } from './AttachmentChip';
@@ -10,6 +10,7 @@ import { VoiceButton } from '../voice/VoiceButton';
 import { useOrchestratorName } from '../world/shared/useOrchestratorName';
 import { openChatModelSetup } from './ChatSetupCard';
 import type { ModelSetupReadiness } from './chatSetupState';
+import { CHAT_DRAFT_SYNC, encodeDraftFiles } from '../../lib/chatDraftHandoff';
 
 import { Tooltip } from '../common/Tooltip';
 const MAX_FILE_SIZE = 50 * 1024 * 1024;
@@ -20,6 +21,9 @@ const COMPOSER_CONTROL = 36;
 
 export interface ChatInputHandle {
   addFiles: (files: File[]) => void;
+  restoreDraft: (text: string, files: File[], pendingSetup?: ChatSetupIntentRecord | null) => void;
+  freezeDraft: () => { text: string; files: File[]; source: string; revision: number } | null;
+  releaseDraft: () => void;
 }
 
 interface ChatInputProps {
@@ -39,9 +43,12 @@ export const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function Ch
   const sendMessage = useCommandCenter(s => s.sendMessage);
   const stopStreaming = useCommandCenter(s => s.stopStreaming);
 
-  const [input, setInput] = useState(() => peekWizardIntent() ?? '');
-  const [pendingSetup, setPendingSetup] = useState(() => peekChatSetupIntent());
-  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+  const detached = new URLSearchParams(window.location.search).get('view') === 'chat';
+  const waitsForHandoff = detached && new URLSearchParams(window.location.search).has('draft_handoff');
+  const [handoffReady, setHandoffReady] = useState(() => !waitsForHandoff);
+  const [input, setInput] = useState(() => waitsForHandoff ? '' : (useCommandCenter.getState().chatDraft?.text || peekWizardIntent() || ''));
+  const [pendingSetup, setPendingSetup] = useState(() => peekChatSetupIntentRecord());
+  const [pendingFiles, setPendingFiles] = useState<File[]>(() => waitsForHandoff ? [] : (useCommandCenter.getState().chatDraft?.files ?? []));
   // Local "cancel requested" state: set on Stop click, cleared when the turn
   // actually settles (isStreaming → false via the Finish event). Kept out of the
   // global store — it's pure per-input affordance state.
@@ -51,16 +58,49 @@ export const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function Ch
   // highest-traffic control in the app.
   const [stopFailed, setStopFailed] = useState(false);
   const [needsModelNotice, setNeedsModelNotice] = useState(false);
+  const [closeFrozen, setCloseFrozen] = useState(false);
+  const closeFrozenRef = useRef(false);
+  const fileSyncRevision = useRef(0);
+  const draftRevision = useRef(0);
+  const draftSyncSource = useRef(globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`);
+  const latestDraft = useRef({ text: input, files: pendingFiles });
+  latestDraft.current = { text: input, files: pendingFiles };
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const disabled = isStreaming;
+  const disabled = isStreaming || !handoffReady || closeFrozen || (!detached && chatWindowOpen);
   /** One line, drawn over the field — see the placeholder span below. */
-  const placeholder = disabled ? `${agentName} is replying…` : `Message ${agentName}`;
+  const placeholder = !handoffReady ? 'Restoring your draft…' : isStreaming ? `${agentName} is replying…` : `Message ${agentName}`;
 
   useEffect(() => {
     const seed = peekWizardIntent();
     if (seed && textareaRef.current?.value === seed) takeWizardIntent();
   }, []);
+
+  useEffect(() => {
+    useCommandCenter.getState().setChatDraft?.({ text: input, files: pendingFiles });
+  }, [input, pendingFiles]);
+
+  // Native webviews have separate stores. Sync edits back to the main window
+  // after the acknowledged handoff, so closing the pop-out restores its draft.
+  useEffect(() => {
+    if (!detached || !handoffReady || !('__TAURI_INTERNALS__' in window)) return;
+    const revision = draftRevision.current;
+    void import('@tauri-apps/api/event').then(({ emitTo }) => emitTo('main', CHAT_DRAFT_SYNC, { text: input, source: draftSyncSource.current, revision })).catch(() => {});
+  }, [detached, handoffReady, input]);
+  useEffect(() => {
+    if (!detached || !handoffReady || !('__TAURI_INTERNALS__' in window)) return;
+    let active = true;
+    const revision = ++fileSyncRevision.current;
+    const draftVersion = draftRevision.current;
+    void encodeDraftFiles(pendingFiles)
+      .then(async files => {
+        if (!active) return;
+        const { emitTo } = await import('@tauri-apps/api/event');
+        if (active) await emitTo('main', CHAT_DRAFT_SYNC, { files, source: draftSyncSource.current, revision: draftVersion, fileRevision: revision });
+      })
+      .catch(() => {});
+    return () => { active = false; };
+  }, [detached, handoffReady, pendingFiles]);
 
   useEffect(() => {
     const el = textareaRef.current;
@@ -69,27 +109,17 @@ export const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function Ch
     el.style.height = `${Math.min(el.scrollHeight, 120)}px`;
   }, [input]);
 
-  // A mounted dock receives the custom event; a detached window receives the
-  // storage event. The persisted request also survives opening Chat later.
+  // ChatDock and ChatApp apply native payloads to their own storage. This
+  // composer observes only local changes and never assumes WK storage shares.
   useEffect(() => {
-    const refresh = () => setPendingSetup(peekChatSetupIntent());
+    const refresh = () => setPendingSetup(peekChatSetupIntentRecord());
     const onStorage = (event: StorageEvent) => {
       if (event.key === CHAT_SETUP_INTENT_KEY) refresh();
     };
     window.addEventListener(CHAT_SETUP_INTENT_EVENT, refresh);
     window.addEventListener('storage', onStorage);
-    let unlisten: (() => void) | undefined;
-    let disposed = false;
-    if ('__TAURI_INTERNALS__' in window) {
-      void import('@tauri-apps/api/event')
-        .then(({ listen }) => listen(CHAT_SETUP_INTENT_EVENT, refresh))
-        .then(fn => { if (disposed) fn(); else { unlisten = fn; refresh(); } })
-        .catch(() => {});
-    }
     refresh();
     return () => {
-      disposed = true;
-      unlisten?.();
       window.removeEventListener(CHAT_SETUP_INTENT_EVENT, refresh);
       window.removeEventListener('storage', onStorage);
     };
@@ -98,15 +128,16 @@ export const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function Ch
   // Never replace a draft already in the composer. Once it is sent or cleared,
   // promote the setup request into the field for review and editing.
   useEffect(() => {
-    if (!pendingSetup || !ownsSetupIntent) return;
-    if (input.trim() === pendingSetup.trim()) {
-      takeChatSetupIntent();
-      setPendingSetup(null);
+    if (!pendingSetup || !ownsSetupIntent || !handoffReady || closeFrozenRef.current || closeFrozen) return;
+    if (input.trim() === pendingSetup.text.trim()) {
+      takeChatSetupIntent(pendingSetup.id);
+      setPendingSetup(peekChatSetupIntentRecord());
     } else if (!input && pendingFiles.length === 0) {
-      const intent = takeChatSetupIntent();
-      if (intent) { setInput(intent); setPendingSetup(null); }
+      const intent = takeChatSetupIntent(pendingSetup.id);
+      if (intent) setInput(intent);
+      setPendingSetup(peekChatSetupIntentRecord());
     }
-  }, [input, pendingFiles.length, pendingSetup, ownsSetupIntent]);
+  }, [input, pendingFiles.length, pendingSetup, ownsSetupIntent, handoffReady, closeFrozen]);
 
   useEffect(() => {
     if (modelReadiness !== 'needs-model') setNeedsModelNotice(false);
@@ -122,15 +153,40 @@ export const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function Ch
   }, [isStreaming]);
 
   const addFiles = useCallback((files: File[]) => {
+    if (closeFrozenRef.current || (!detached && useCommandCenter.getState().chatWindowOpen)) return;
     const valid = files.filter(f => f.size <= MAX_FILE_SIZE);
-    setPendingFiles(prev => [...prev, ...valid]);
-  }, []);
+    const next = [...latestDraft.current.files, ...valid];
+    draftRevision.current += 1;
+    latestDraft.current = { ...latestDraft.current, files: next };
+    setPendingFiles(next);
+  }, [detached]);
 
-  useImperativeHandle(ref, () => ({ addFiles }), [addFiles]);
+  useImperativeHandle(ref, () => ({
+    addFiles,
+    restoreDraft: (text, files, setup) => {
+      draftRevision.current += 1;
+      latestDraft.current = { text, files: [...files, ...latestDraft.current.files] };
+      setInput(text);
+      setPendingFiles(latestDraft.current.files);
+      adoptChatSetupIntentRecord(setup ?? null);
+      setHandoffReady(true);
+    },
+    freezeDraft: () => {
+      if (!handoffReady || closeFrozenRef.current) return null;
+      closeFrozenRef.current = true;
+      setCloseFrozen(true);
+      return { ...latestDraft.current, files: [...latestDraft.current.files], source: draftSyncSource.current, revision: draftRevision.current };
+    },
+    releaseDraft: () => { closeFrozenRef.current = false; setCloseFrozen(false); },
+  }), [addFiles, handoffReady]);
 
   const removeFile = useCallback((index: number) => {
-    setPendingFiles(prev => prev.filter((_, i) => i !== index));
-  }, []);
+    if (closeFrozenRef.current || (!detached && useCommandCenter.getState().chatWindowOpen)) return;
+    const next = latestDraft.current.files.filter((_, i) => i !== index);
+    draftRevision.current += 1;
+    latestDraft.current = { ...latestDraft.current, files: next };
+    setPendingFiles(next);
+  }, [detached]);
 
 
   /** Something to send: typed text, or files waiting to go with it. */
@@ -138,13 +194,15 @@ export const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function Ch
 
   const handleSend = async () => {
     const msg = input.trim();
-    if ((!msg && pendingFiles.length === 0) || disabled) return;
+    if ((!msg && pendingFiles.length === 0) || disabled || closeFrozenRef.current) return;
     if (modelReadiness === 'needs-model') {
       setNeedsModelNotice(true);
       return;
     }
 
     const files = [...pendingFiles];
+    draftRevision.current += 1;
+    latestDraft.current = { text: '', files: [] };
     setInput('');
     setPendingFiles([]);
     await sendMessage(msg || '(file upload)', files.length > 0 ? files : undefined);
@@ -195,12 +253,13 @@ export const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function Ch
 
   return (
     <div className="p-3" style={{ borderTop: `1px solid ${colors.border}`, backgroundColor: colors.surface }}>
-      {pendingSetup && (input || pendingFiles.length > 0) && input.trim() !== pendingSetup.trim() && (
+      {!handoffReady && <div role="status" style={{ marginBottom: space.sm, color: colors.textMuted, fontFamily: font.body, fontSize: textSize.caption }}>Restoring your unsent draft…</div>}
+      {pendingSetup && (input || pendingFiles.length > 0) && input.trim() !== pendingSetup.text.trim() && (
         <details style={{ marginBottom: space.md, color: colors.textMuted, fontFamily: font.body, fontSize: textSize.caption }}>
           <summary style={{ cursor: 'pointer' }}>Tailscale setup request is ready. Your current draft is unchanged.</summary>
-          <p style={{ margin: `${space.sm}px 0 0`, whiteSpace: 'pre-wrap' }}>{pendingSetup}</p>
+          <p style={{ margin: `${space.sm}px 0 0`, whiteSpace: 'pre-wrap' }}>{pendingSetup.text}</p>
           <p style={{ margin: `${space.sm}px 0 0` }}>Send or clear your current draft to edit this request in the composer.</p>
-          <Button colors={colors} variant="bare" type="button" onClick={() => { if (discardChatSetupIntent()) setPendingSetup(null); }}>Dismiss setup request</Button>
+          <Button colors={colors} variant="bare" type="button" disabled={disabled} onClick={() => { if (discardChatSetupIntent(pendingSetup.id)) setPendingSetup(peekChatSetupIntentRecord()); }}>Dismiss setup request</Button>
         </details>
       )}
       {pendingFiles.length > 0 && (
@@ -286,7 +345,12 @@ export const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function Ch
         <textarea
           ref={textareaRef}
           value={input}
-          onChange={e => setInput(e.target.value)}
+          onChange={e => {
+            if (closeFrozenRef.current) return;
+            draftRevision.current += 1;
+            latestDraft.current = { ...latestDraft.current, text: e.target.value };
+            setInput(e.target.value);
+          }}
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
           aria-label={placeholder}

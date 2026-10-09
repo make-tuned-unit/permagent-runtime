@@ -273,6 +273,11 @@ interface CommandCenterStore {
 
   // --- Chat state ---
   chatMessages: ChatMessage[];
+  /** Unsent composer content survives dock unmounts in this window. */
+  chatDraft: { text: string; files: File[] };
+  setChatDraft: (patch: Partial<{ text: string; files: File[] }>) => void;
+  /** Main-window signal: open the dock once the detached window is gone. */
+  chatReturnPending: boolean;
   chatSessionId: string | null;
   /** A saved session names both a provider and model. Restoration can still
       fail, so this is evidence to allow a retry, not proof of readiness. */
@@ -1155,6 +1160,9 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
 
   // Chat
   chatMessages: [],
+  chatDraft: { text: '', files: [] },
+  setChatDraft: (patch) => set(s => ({ chatDraft: { ...s.chatDraft, ...patch } })),
+  chatReturnPending: false,
   chatSessionId: (() => {
     try { return localStorage.getItem('permagent-chat-session-id'); } catch { return null; }
   })(),

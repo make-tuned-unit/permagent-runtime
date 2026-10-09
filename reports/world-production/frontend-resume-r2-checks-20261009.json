@@ -1,0 +1,16 @@
+[
+  {
+    "check": "typecheck",
+    "exit_code": 0,
+    "elapsed_s": 11.1,
+    "reason": null,
+    "log": "/Volumes/PermagentBuilds/permagent/tmp/world-production-20261006/frontend-resume-r2-typecheck.log"
+  },
+  {
+    "check": "full-suite",
+    "exit_code": -11,
+    "elapsed_s": 41.3,
+    "reason": "Node/V8 SIGSEGV (EXC_BAD_ACCESS) in ConcurrentBaselineCompiler; no test report completed. Retried with isolated forks and concurrent Sparkplug disabled in review-only config.",
+    "log": "/Volumes/PermagentBuilds/permagent/tmp/world-production-20261006/frontend-resume-r2-full-suite.log"
+  }
+]

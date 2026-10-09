@@ -1,6 +1,6 @@
 /**
- * The Automate view's health strip: one line that says either "everything is
- * running" or which jobs are quietly failing, missed, never ran, or wedged.
+ * The Automate view's health strip: one line that distinguishes paused jobs,
+ * reported problems, and an available health digest without inferring a run.
  *
  * Sources:
  *  - `GET /api/job-health` (routes/job_health.rs → permagent::job_health) —
@@ -44,6 +44,7 @@ export interface HealthScheduleFacts extends ScheduleHealthFacts {
   id: string;
   display_name?: string | null;
   process_start_time?: string | null;
+  requires_approval?: boolean;
 }
 
 /** A run in flight longer than this is called wedged. Scheduled recipes are
@@ -62,6 +63,7 @@ export interface HealthProblem {
 
 export type HealthSummary =
   | { state: 'unknown'; message: string }
+  | { state: 'paused'; message: string }
   | { state: 'ok'; message: string; total: number }
   | { state: 'problems'; message: string; problems: HealthProblem[] };
 
@@ -122,6 +124,18 @@ export function summarizeHealth(
     // No digest: we cannot claim green. Say what we do not know.
     return { state: 'unknown', message: digest?.error ? `Job health unknown — ${digest.error}` : 'Job health unknown — the daemon did not answer' };
   }
+  const paused = schedules.filter(s => s.paused && !s.currently_running);
+  const review = paused.filter(s => s.requires_approval).length;
+  if (paused.length > 0 && paused.length === schedules.length) {
+    const count = paused.length;
+    return {
+      state: 'paused',
+      message: `${count} schedule${count === 1 ? '' : 's'} paused${review ? ` — ${review} need${review === 1 ? 's' : ''} review before enabling` : ''}. No schedule is running.`,
+    };
+  }
   const total = digest!.jobs!.filter(j => j.outcome !== 'off').length;
-  return { state: 'ok', total, message: `Everything is running — ${total} job${total === 1 ? '' : 's'} healthy` };
+  return {
+    state: 'ok', total,
+    message: `No current job-health problems reported${paused.length ? `; ${paused.length} schedule${paused.length === 1 ? '' : 's'} paused${review ? `, ${review} need${review === 1 ? 's' : ''} review` : ''}` : ''}.`,
+  };
 }

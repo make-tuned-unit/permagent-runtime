@@ -28,7 +28,7 @@ beforeEach(() => {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
-  act(() => { useCommandCenter.setState({ isStreaming: false }); });
+  act(() => { useCommandCenter.setState({ isStreaming: false, chatDraft: { text: '', files: [] } }); });
   act(() => root.render(<ChatInput />));
 });
 afterEach(() => { act(() => root.unmount()); container.remove(); });

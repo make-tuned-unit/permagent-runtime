@@ -35,6 +35,30 @@ describe('summarizeHealth', () => {
     expect(summarizeHealth(digest, [], now)).toMatchObject({ state: 'ok', total: 1 });
   });
 
+  it('reports all paused starter schedules as paused despite an OK audit check', () => {
+    const schedules: HealthScheduleFacts[] = Array.from({ length: 5 }, (_, index) => ({
+      id: `starter-${index}`, paused: true, currently_running: false, requires_approval: true,
+    }));
+    const digest: JobHealthDigest = {
+      all_green: true,
+      jobs: [
+        ...schedules.map(schedule => ({ id: schedule.id, label: schedule.id, cadence: 'daily', outcome: 'off' as const })),
+        { id: 'decision_audit_chain', label: 'Decision audit chain', cadence: 'built-in', outcome: 'ok' },
+      ],
+    };
+    const summary = summarizeHealth(digest, schedules, now);
+    expect(summary).toMatchObject({ state: 'paused' });
+    expect(summary.message).toContain('5 schedules paused');
+    expect(summary.message).toContain('5 need review before enabling');
+    expect(summary.message).not.toMatch(/everything is running|jobs healthy/i);
+  });
+
+  it('does not infer a run from a healthy digest when no schedules exist', () => {
+    const summary = summarizeHealth({ jobs: [{ id: 'audit', label: 'Audit', cadence: 'built-in', outcome: 'ok' }] }, [], now);
+    expect(summary).toMatchObject({ state: 'ok', total: 1 });
+    expect(summary.message).toBe('No current job-health problems reported.');
+  });
+
   it('flags a failing job with its streak', () => {
     const digest: JobHealthDigest = {
       jobs: [{ id: 'a', label: 'Flight monitor', cadence: 'hourly', outcome: 'failed', failure_streak: 3 }],

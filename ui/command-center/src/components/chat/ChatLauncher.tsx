@@ -316,6 +316,10 @@ export function ChatLauncher() {
       if (disposed) return;
       disposed = true; // idempotent: event and poll race, only one may win
       setChatWindowOpen(false);
+      if (useCommandCenter.getState().chatReturnPending) {
+        useCommandCenter.setState({ chatReturnPending: false });
+        useCommandCenter.getState().openChatDock();
+      }
     };
 
     (async () => {

@@ -1,6 +1,6 @@
 /**
- * One line at the top of Automate: "everything is running", or which jobs are
- * quietly failing, missed, never ran, or wedged. See `jobHealthModel.ts`.
+ * One line at the top of Automate: paused schedules, reported problems, or
+ * digest availability. See `jobHealthModel.ts`.
  */
 import type { CSSProperties } from 'react';
 import { font, radius, space, textSize } from '../../styles/tokens';

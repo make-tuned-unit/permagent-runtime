@@ -6,6 +6,7 @@ import { SEARCH_PROVIDERS } from '../../lib/searchProviders';
 import { FieldLabel, GhostLink, StatusLine, Textarea } from './atoms';
 import { StepFrame } from './StepFrame';
 import { LOCAL_RUNTIME_PROVIDER } from './providerChoices';
+import { memoryStatus, type OllamaInventory } from './memoryStatus';
 
 export interface ReviewFacts {
   model: { connected: boolean | null; text: string };
@@ -20,7 +21,8 @@ export function summarize(input: {
   providers: Array<{ name: string; is_configured: boolean; metadata: { display_name: string } }>;
   searchSaved: string[];
   librarian: { enabled: boolean; model: string } | null;
-  unavailable?: { config?: boolean; providers?: boolean; search?: boolean; librarian?: boolean };
+  ollama?: OllamaInventory | null;
+  unavailable?: { config?: boolean; providers?: boolean; search?: boolean; librarian?: boolean; ollama?: boolean };
 }): ReviewFacts {
   const cfg = input.config ?? {};
   const unavailable = input.unavailable ?? {};
@@ -30,6 +32,12 @@ export function summarize(input: {
   const connected = !!entry && entry.is_configured;
   const where = providerName === LOCAL_RUNTIME_PROVIDER ? 'On this Mac' : entry?.metadata.display_name || providerName;
   const roots = Array.isArray(cfg.dev_roots) ? cfg.dev_roots.filter(r => typeof r === 'string') : [];
+  const memory = memoryStatus({ schedule: input.librarian, ollama: input.ollama ?? null,
+    scheduleUnavailable: !!unavailable.librarian, ollamaUnavailable: !!unavailable.ollama });
+  const memoryText = memory === 'installed' ? `On · ${input.librarian?.model} installed in Ollama`
+    : memory === 'needs-ollama' ? 'On · Ollama unavailable'
+    : memory === 'needs-model' ? `On · ${input.librarian?.model || 'model'} not installed`
+    : memory === 'off' ? 'Off' : memory === 'checking' ? 'Checking…' : 'Unavailable';
   return {
     model: unavailable.config || unavailable.providers
       ? { connected: null, text: 'Unavailable' }
@@ -40,7 +48,7 @@ export function summarize(input: {
     search: unavailable.search
       ? (input.searchSaved.length ? `${input.searchSaved.join(', ')} · Other providers unavailable` : 'Unavailable')
       : input.searchSaved.length ? input.searchSaved.join(', ') : 'Not set up',
-    memory: unavailable.librarian ? 'Unavailable' : input.librarian?.enabled ? `On · ${input.librarian.model}` : 'Off',
+    memory: memoryText,
   };
 }
 
@@ -70,18 +78,20 @@ export function StepReview({ agentName, toneLabel, firstMessage, onFirstMessage,
     let alive = true;
     (async () => {
       try {
-        const [config, providers, librarian, searchReads] = await Promise.allSettled([
+        const [config, providers, librarian, searchReads, ollama] = await Promise.allSettled([
           api.getConfig(),
           api.getProviders(),
           api.getLibrarianSchedule(),
           Promise.allSettled(SEARCH_PROVIDERS.map(async p =>
             (await api.readSecretConfig(p.keyName))?.maskedValue ? p.displayName : null)),
+          api.getOllamaStatus(),
         ]);
         const searchResults = searchReads.status === 'fulfilled' ? searchReads.value : [];
         const searchSaved = searchResults.flatMap(result => result.status === 'fulfilled' && result.value ? [result.value] : []);
         const unavailable = {
           config: config.status === 'rejected', providers: providers.status === 'rejected',
           librarian: librarian.status === 'rejected',
+          ollama: librarian.status === 'fulfilled' && librarian.value.enabled && ollama.status === 'rejected',
           search: searchReads.status === 'rejected' || searchResults.some(result => result.status === 'rejected'),
         };
         if (alive) {
@@ -89,6 +99,7 @@ export function StepReview({ agentName, toneLabel, firstMessage, onFirstMessage,
             config: config.status === 'fulfilled' ? config.value.config : undefined,
             providers: providers.status === 'fulfilled' ? providers.value : [],
             librarian: librarian.status === 'fulfilled' ? librarian.value : null,
+            ollama: ollama.status === 'fulfilled' ? ollama.value : null,
             searchSaved, unavailable,
           }));
           if (Object.values(unavailable).some(Boolean)) setError('Some settings could not be read. Unavailable values have not been confirmed.');

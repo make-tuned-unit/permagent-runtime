@@ -1,0 +1,8 @@
+{
+  "original_root": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/record-qa-runtime",
+  "archive": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/record-qa-runtime-archive-20261009-040446",
+  "receipt": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/record-qa-runtime-archive-20261009-040446/blank-native-daemon-20261009-040446.json",
+  "reason": "Preserve completed owned QA state before a fresh native onboarding review",
+  "stopped_owned_supervisor": 69081,
+  "production_3001_untouched": true
+}

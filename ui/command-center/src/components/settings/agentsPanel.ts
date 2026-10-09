@@ -121,36 +121,34 @@ export function liveStateLabel(s: LiveState): StatusLabel {
   }
 }
 
-/** The five words a worker's live status is allowed to say to a human. Every
- *  raw daemon value narrows to exactly one of these — never rendered bare —
+/** A worker's live status narrows the raw daemon value without inferring work
+ *  from a count, an enabled flag, or an unrecognized string. Raw values are
  *  with the raw string (a config key, a reason, whatever the daemon actually
  *  said) available only as the caller's tooltip content, never in the chip
  *  itself (ruling 2026-09-25's 1440px review: "off (strix_enabled=false)" and "no live
  *  state to query" were leaking straight onto the row). */
 export interface LiveStatusChip {
-  label: 'Running' | 'Idle' | 'Off' | 'Unknown' | string;
+  label: string;
   tone: LabelTone;
   /** The raw daemon text — a tooltip's content, never rendered directly. */
   detail: string;
 }
 
-export function liveStatusChip(s: LiveState): LiveStatusChip {
+export function liveStatusChip(s: LiveState, gate: AgentGate | null = null): LiveStatusChip {
   const detail = liveStateLabel(s).text;
   if (s.status === 'unavailable') return { label: 'Unknown', tone: 'error', detail };
-  if (s.status === 'not_queryable') return { label: 'Idle', tone: 'unknown', detail };
+  if (s.status === 'not_queryable') return { label: 'No live signal', tone: 'unknown', detail };
   const raw = s.value.trim();
-  const jobs = raw.match(/^(\d+)\s*jobs?$/i);
+  if (/^running\b/i.test(raw)) return { label: 'Running', tone: 'ok', detail };
+  if (gate?.enabled === false || /^off\b/i.test(raw)) return { label: 'Off', tone: 'unknown', detail };
+  if (/^idle$/i.test(raw)) return { label: 'Idle', tone: 'unknown', detail };
+  if (/^on\b/i.test(raw)) return { label: 'Enabled', tone: 'unknown', detail };
+  const jobs = raw.match(/^(\d+)\s*(?:jobs?|job\(s\) scheduled)$/i);
   if (jobs) {
     const n = Number(jobs[1]);
-    return { label: `Scheduled (${n} job${n === 1 ? '' : 's'})`, tone: 'ok', detail };
+    return { label: `${n} job${n === 1 ? '' : 's'} configured`, tone: 'unknown', detail };
   }
-  if (/^off\b/i.test(raw)) return { label: 'Off', tone: 'unknown', detail };
-  if (/^(on|running)\b/i.test(raw)) return { label: 'Running', tone: 'ok', detail };
-  if (/^idle$/i.test(raw)) return { label: 'Idle', tone: 'unknown', detail };
-  // An 'ok' read with a value shaped like none of the above — still an
-  // affirmative signal from the daemon, so "Running" is the honest default
-  // rather than inventing a sixth word or leaking the raw value.
-  return { label: 'Running', tone: 'ok', detail };
+  return { label: 'Status reported', tone: 'unknown', detail };
 }
 
 export function availabilityLabel(a: Availability): StatusLabel {
@@ -163,6 +161,22 @@ export function availabilityLabel(a: Availability): StatusLabel {
       // Distinct from unavailable: we could not check, not that it is down.
       return { text: `could not check — ${a.reason}`, tone: 'error' };
   }
+}
+
+/** Availability probes cover configured prerequisites, not completed tasks.
+ * The internal subagent's default "always" check does not probe its model. */
+export function dispatchAvailabilityLabel(persona: Pick<DispatchPersona, 'engine' | 'availability'>): StatusLabel {
+  if (persona.engine === 'pending') {
+    const prerequisite = persona.availability.status === 'available' ? '' : `; ${availabilityLabel(persona.availability).text}`;
+    return { text: `Not dispatchable — no runnable engine${prerequisite}`, tone: persona.availability.status === 'available' ? 'unknown' : 'error' };
+  }
+  if (persona.engine === 'internal_subagent' && persona.availability.status === 'available') {
+    return { text: 'Registered; model and task unverified', tone: 'unknown' };
+  }
+  if (persona.availability.status === 'available') {
+    return { text: 'Availability check passed; task unverified', tone: 'unknown' };
+  }
+  return availabilityLabel(persona.availability);
 }
 
 export function presenceLabel(p: SecretPresence): StatusLabel {

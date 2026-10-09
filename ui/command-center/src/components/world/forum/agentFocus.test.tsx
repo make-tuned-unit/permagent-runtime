@@ -11,6 +11,7 @@ import { nextAgentFocus } from './agentFocus';
 import { commandHabitatAgent } from './habitatMotion';
 import { askFromForum } from './forumQuery';
 import { useCommandCenter } from '../../../lib/store';
+import { worldAgentIdForAgent } from '../../../lib/worldAgentIds';
 
 let canvasChildren: ReactNode = null;
 
@@ -94,6 +95,7 @@ describe('ForumView agent select→focus wiring', () => {
     vi.mocked(commandHabitatAgent).mockClear();
     vi.mocked(askFromForum).mockClear();
     useCommandCenter.setState({
+      pendingWorldAgent: null,
       chatWindowOpen: false,
       worldConversationActive: false,
       chatDockOpen: true,
@@ -108,10 +110,11 @@ describe('ForumView agent select→focus wiring', () => {
   afterEach(() => {
     act(() => root.unmount());
     host.remove();
+    useCommandCenter.setState({ pendingWorldAgent: null });
     vi.unstubAllGlobals();
   });
 
-  async function renderWithManifest(ok: boolean) {
+  async function renderWithManifest(ok: boolean, visible = true) {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo) => {
       const url = String(input);
       if (url.includes('garden-hero/manifest.json')) {
@@ -122,7 +125,7 @@ describe('ForumView agent select→focus wiring', () => {
       return { ok: false, json: async () => ({}) };
     }));
     await act(async () => {
-      root.render(<ForumView />);
+      root.render(<ForumView visible={visible} />);
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -179,6 +182,40 @@ describe('ForumView agent select→focus wiring', () => {
     expect(navigationFocus()).toEqual({ id: 'steward', revision: 1 });
     expect(commandHabitatAgent).not.toHaveBeenCalled();
     expect(askFromForum).not.toHaveBeenCalled();
+  });
+
+  it('consumes Settings links for all eight mapped agents and opens the current World desk', async () => {
+    await renderWithManifest(true);
+    const agentIds = [
+      'librarian', 'watcher', 'git_steward', 'strix', 'financier',
+      'forecaster', 'council', 'growth_measurement',
+    ];
+    for (const [index, agentId] of agentIds.entries()) {
+      const worldId = worldAgentIdForAgent(agentId)!;
+      await act(async () => { useCommandCenter.setState({ pendingWorldAgent: worldId }); });
+      expect(useCommandCenter.getState().pendingWorldAgent).toBeNull();
+      expect((host.querySelector('#forum-agent') as HTMLSelectElement).value).toBe(worldId);
+      expect(host.querySelector('.agent-desk-profile h3')?.textContent).toBeTruthy();
+      expect(navigationFocus()).toEqual({ id: worldId, revision: index + 1 });
+    }
+    expect(host.querySelector('.agent-desk-header')).toBeTruthy();
+    expect(commandHabitatAgent).not.toHaveBeenCalled();
+    expect(askFromForum).not.toHaveBeenCalled();
+  });
+
+  it('holds a Settings request while hidden and leaves an unknown character unconsumed', async () => {
+    await renderWithManifest(true, false);
+    await act(async () => { useCommandCenter.setState({ pendingWorldAgent: 'council' }); });
+    expect(useCommandCenter.getState().pendingWorldAgent).toBe('council');
+    expect(navigationFocus()).toBeNull();
+
+    await act(async () => { root.render(<ForumView visible />); });
+    expect(useCommandCenter.getState().pendingWorldAgent).toBeNull();
+    expect(navigationFocus()).toEqual({ id: 'council', revision: 1 });
+
+    await act(async () => { useCommandCenter.setState({ pendingWorldAgent: 'not_in_roster' }); });
+    expect(useCommandCenter.getState().pendingWorldAgent).toBe('not_in_roster');
+    expect(navigationFocus()).toEqual({ id: 'council', revision: 1 });
   });
 });
 
