@@ -11,7 +11,7 @@
 //! so the HUD always shows something. Daemon-unreachable error stays a frontend
 //! signal (the status poll failing).
 
-use crate::routes::henry_status::classify_henry_state;
+use crate::routes::henry_status::derive_henry_state;
 use crate::state::AppState;
 use permagent::session::session_manager::SessionType;
 use std::sync::Arc;
@@ -46,19 +46,15 @@ pub fn spawn(state: Arc<AppState>) {
     });
 }
 
-/// Henry's HUD state (`working` | `available` | `error`). Real lifecycle state
-/// (#348) is authoritative once the agent has run at least one reply turn; the
-/// session-activity derive is only a pre-first-turn fallback.
+/// Henry's HUD state (`working` | `available` | `error`), derived from in-flight
+/// work only: the reply-loop registry (#348) plus any active request on a
+/// session event bus. A session that merely exists or was recently touched is
+/// not activity.
 async fn derive_henry_hud_state(state: &AppState) -> &'static str {
-    // Authoritative: real reply-loop lifecycle (in-flight ref-count + error latch).
-    if let Some(rt) = permagent::events::agent_runtime_state("henry") {
-        return rt.as_str();
-    }
+    let runtime = permagent::events::agent_runtime_state("henry");
 
-    // Pre-first-turn fallback: derive from active sessions + in-flight tools,
-    // mirroring `mapHenryState` on the frontend.
+    // Lean projection — this 2s-interval check only needs id/type/updated_at.
     let two_min_ago = chrono::Utc::now() - chrono::Duration::seconds(ACTIVE_WINDOW_SECS);
-    // Lean projection — this 2s-interval fallback only needs id/type/updated_at.
     let sessions = state
         .session_manager()
         .list_session_summaries()
@@ -74,19 +70,20 @@ async fn derive_henry_hud_state(state: &AppState) -> &'static str {
         .map(|s| s.id.clone())
         .collect();
 
-    // In-flight tool? Mirror henry_status::find_current_tool (active request ids).
-    let mut has_tool = false;
+    // In-flight request? Mirror henry_status::find_current_tool.
+    let mut has_request = false;
     for id in &active_ids {
         if let Some(bus) = state.get_event_bus(id).await {
             if !bus.active_request_ids().await.is_empty() {
-                has_tool = true;
+                has_request = true;
                 break;
             }
         }
     }
 
-    match classify_henry_state(has_tool, !active_ids.is_empty()) {
+    match derive_henry_state(runtime, has_request) {
         "tool_call" | "in_conversation" => "working",
+        "error" => "error",
         _ => "available",
     }
 }
