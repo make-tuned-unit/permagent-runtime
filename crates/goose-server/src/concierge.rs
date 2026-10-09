@@ -36,8 +36,8 @@ const STARTUP_DELAY: Duration = Duration::from_secs(240);
 const MIN_GAP_HOURS: i64 = 20;
 /// Max unread messages triaged per pass — a gentle, bounded read.
 const MAX_TRIAGE: usize = 10;
-/// The local model used to draft replies. Same family the Reader summarizes with,
-/// and it runs on-device (see the local-tier pin in `permagent::concierge`).
+// The local model used to draft replies. Same family the Reader summarizes with,
+// and it runs on-device (see the local-tier pin in `permagent::concierge`).
 
 /// How a reply body is composed. The real loop drafts on the LOCAL model; tests
 /// use the deterministic template so they stay offline and fast.
