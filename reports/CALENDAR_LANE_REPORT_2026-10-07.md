@@ -76,3 +76,5 @@ Open or partial:
 2. Points to look at: the Month "+N" chip and day click; Week overlaps in the Wed 14 Oct cluster; the now-line on today; the popover's position near the window edges; the failure/Retry state (needs `invoke` to reject — not in the harness).
 3. Real app (only after the cargo gate and a native build): Home → Calendar card. Grant access via the access panel, then page through Week and Month to confirm `calendar_events_in_range` returns real events. Compare attendees and the URL against Calendar.app.
 4. `reports/calendar-evidence/*.png` came from the earlier worker, before this session's fixes. The two fixes do not change the default rendering, but those PNGs are not acceptance. Retake them.
+
+> Note (2026-10-09): the evidence harness described above (`harness/calendar/*`, `vite.calendar-harness.config.ts`) was removed before merge, as the brief requires; the UI verification route in item 1 no longer applies.
