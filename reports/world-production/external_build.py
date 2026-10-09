@@ -95,7 +95,9 @@ def main():
         and Path(command[1]).resolve() == LANE / 'reports/world-production/run_guarded_native.py'
     )
     if not native_runner:
-        command = [str(LANE / 'scripts/build-guard.sh'), '--min-free-gb', '25', '--', *command]
+        # The repository guard checks the internal data volume only; give it the
+        # same internal threshold as this launcher (user-approved 2026-10-09).
+        command = [str(LANE / 'scripts/build-guard.sh'), '--min-free-gb', str(START_GIB[INTERNAL]), '--', *command]
     log_path = ROOT / 'logs' / (time.strftime('%Y%m%d-%H%M%S') + f'-{os.getpid()}.log')
     def interrupted(signum, _frame):
         raise KeyboardInterrupt(f'Signal {signum}')
