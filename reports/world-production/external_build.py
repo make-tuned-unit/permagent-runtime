@@ -3,7 +3,10 @@
 
 Usage: /usr/bin/python3 reports/world-production/external_build.py -- COMMAND ...
 For example: ... -- /usr/bin/python3 reports/world-production/run_record_backend_tests.py --build-daemon
-Keeps the existing 25 GiB startup / 20 GiB stop guards on all three volumes.
+Guards: 25 GiB startup / 20 GiB stop on the external image and its backing drive
+(where Cargo output, staged apps and build temp live); 12 GiB startup / 8 GiB stop
+on the internal data volume, which now only carries swap and small test fixtures
+(user-approved 2026-10-09).
 """
 import fcntl
 import json
@@ -29,6 +32,14 @@ VOLUMES = {
     MOUNT: '85630790-0A49-4D4E-B683-888258B80A99',
     DRIVE: '53500C9A-452C-35D6-9F4E-1240FDD8DB9D',
 }
+INTERNAL = '/System/Volumes/Data'
+# Per-volume guards (GiB), user-approved 2026-10-09. The external image and its
+# backing drive take the Cargo target, staged apps and build temp, so they keep
+# the original 25/20. The internal volume now only carries swap and small test
+# fixtures; a benchmark peer makes it swing by several GiB, so 12/8 protects
+# swap headroom without stalling builds that write nothing large there.
+START_GIB = {str(MOUNT): 25, str(DRIVE): 25, INTERNAL: 12}
+FLOOR_GIB = {str(MOUNT): 20, str(DRIVE): 20, INTERNAL: 8}
 
 
 def check_mounts():
@@ -60,8 +71,10 @@ def main():
         raise SystemExit(__doc__)
     check_mounts()
     initial = space()
-    if min(initial.values()) < 25:
-        raise RuntimeError(f'25 GiB startup minimum not met: {initial}')
+    short = {path: free for path, free in initial.items() if free < START_GIB[path]}
+    if short:
+        raise RuntimeError('startup minimum not met (GiB free vs required): '
+                           + str({k: (round(v, 1), START_GIB[k]) for k, v in short.items()}))
     for path in (TARGET, TEMP, ROOT / 'logs'):
         path.mkdir(parents=True, exist_ok=True)
         if path.resolve() != path or path.stat().st_dev != MOUNT.stat().st_dev:
@@ -100,8 +113,10 @@ def main():
             while proc.poll() is None:
                 current = space()
                 minimum = {path: min(minimum[path], value) for path, value in current.items()}
-                if min(current.values()) < 20:
-                    raise RuntimeError(f'20 GiB continuous floor reached: {current}')
+                low = {path: free for path, free in current.items() if free < FLOOR_GIB[path]}
+                if low:
+                    raise RuntimeError('continuous floor reached (GiB free vs floor): '
+                                       + str({k: (round(v, 1), FLOOR_GIB[k]) for k, v in low.items()}))
                 if time.monotonic() - started > 3600:
                     raise RuntimeError('One-hour build deadline reached')
                 time.sleep(1)
