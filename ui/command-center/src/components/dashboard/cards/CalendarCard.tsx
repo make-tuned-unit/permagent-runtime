@@ -142,6 +142,9 @@ export function CalendarCard({ nowMs: pinnedNow, sizeMode = 'auto', initialView 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     if (e.metaKey || e.ctrlKey || e.altKey || compact) return;
     const t = e.target as HTMLElement;
+    // React bubbles a portal's keys through its React parent: a key pressed in
+    // the event popover (portalled to <body>) must not page the calendar.
+    if (!rootRef.current?.contains(t)) return;
     if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable) return;
     if (e.key === 'ArrowLeft') { e.preventDefault(); step(-1); }
     else if (e.key === 'ArrowRight') { e.preventDefault(); step(1); }
@@ -159,7 +162,11 @@ export function CalendarCard({ nowMs: pinnedNow, sizeMode = 'auto', initialView 
 
   const showAccess = access.kind !== 'connected' && access.kind !== 'checking' && access.text !== '';
   const emptyWord = view === 'day' ? 'today' : view === 'week' ? 'this week' : 'this month';
-  const loadingFirst = (compact ? ahead : main).loading && (compact ? ahead : main).events.length === 0;
+  // Granted, yet neither EventKit nor the daemon answered and nothing is
+  // cached: say so rather than claim an empty week. (Without a grant, or
+  // outside the desktop app, the access panel already explains the gap.)
+  const readFailed = main.failed && shell.inDesktopApp && shell.status === 'fullAccess';
+  const loadingFirst =(compact ? ahead : main).loading && (compact ? ahead : main).events.length === 0;
 
   return (
     <div
@@ -232,7 +239,13 @@ export function CalendarCard({ nowMs: pinnedNow, sizeMode = 'auto', initialView 
         <CompactList events={ahead.events} nowMs={nowMs} onPick={pick} loading={loadingFirst} />
       ) : (
         <div key={view} className="pa-enter" data-testid="calendar-body" style={{ minWidth: 0 }}>
-          {main.events.length === 0 && !main.loading && view !== 'month' ? (
+          {readFailed ? (
+            <div data-testid="calendar-failed" style={{ display: 'flex', alignItems: 'center', gap: space.lg, marginBottom: space.md }}>
+              <EmptyNote>The calendar could not be read just now</EmptyNote>
+              <Button colors={colors} type="button" onClick={main.refresh} flashSuccess={false}
+                data-testid="calendar-retry" style={ghost}>Retry</Button>
+            </div>
+          ) : main.events.length === 0 && !main.loading && view !== 'month' ? (
             <EmptyNote hint={main.source === 'daemon' ? 'Only today is read until Apple Calendar is connected' : undefined}>
               No events {emptyWord}
             </EmptyNote>
@@ -249,7 +262,7 @@ export function CalendarCard({ nowMs: pinnedNow, sizeMode = 'auto', initialView 
             <DayView anchorMs={anchor} nowMs={nowMs} events={main.events} onPickEvent={pick}
               onPickDay={pickDay} wide={width >= DAY_WIDE_FROM_PX} />
           )}
-          {view === 'month' && main.events.length === 0 && !main.loading && (
+          {view === 'month' && main.events.length === 0 && !main.loading && !(readFailed) && (
             <div style={{ marginTop: space.md }}><EmptyNote>No events {emptyWord}</EmptyNote></div>
           )}
         </div>

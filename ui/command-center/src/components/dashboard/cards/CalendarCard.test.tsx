@@ -22,14 +22,15 @@ const events = [
   ...[0, 1, 2, 3, 4].map(i => ({ id: `m${i}`, title: `Busy ${i}`, startMs: at(14, 9 + i), endMs: at(14, 10 + i), allDay: false, calendar: 'Work', attendees: 0 })),
 ];
 
-const invoke = vi.fn(async (cmd: string, args?: { start: string; end: string }) => {
+const serve = async (cmd: string, args?: { start: string; end: string }) => {
   if (cmd === 'calendar_authorization_status') return 'fullAccess';
   if (cmd === 'calendar_events_in_range' && args) {
     const s = Date.parse(args.start); const e = Date.parse(args.end);
     return events.filter(x => x.startMs < e && x.endMs > s);
   }
   return undefined;
-});
+};
+const invoke = vi.fn(serve);
 vi.mock('@tauri-apps/api/core', () => ({ invoke: (...a: unknown[]) => invoke(...(a as [string, never])) }));
 
 import { CalendarCard, VIEW_STORAGE_KEY } from './CalendarCard';
@@ -58,7 +59,7 @@ async function key(k: string, target: Element = q('calendar-card')!) {
 
 beforeEach(() => {
   _clearCalendarCache();
-  invoke.mockClear();
+  invoke.mockReset().mockImplementation(serve);
   apiFetch.mockReset().mockRejectedValue(new Error('offline'));
   try { localStorage.clear(); } catch { /* ignore */ }
   (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {};
@@ -192,6 +193,35 @@ describe('popover', () => {
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     });
     expect(document.querySelector('[data-testid="calendar-popover"]')).toBeNull();
+  });
+
+  it('keys pressed inside the popover do not page the calendar behind it', async () => {
+    await render({ initialView: 'day' });
+    const title = q('calendar-title')!.textContent;
+    const row = qa('calendar-list-row').find(r => r.textContent!.includes('Standup'))!;
+    await act(async () => { row.click(); await Promise.resolve(); });
+    const pop = document.querySelector('[data-testid="calendar-popover"]') as HTMLElement;
+    await key('ArrowRight', pop);
+    await key('m', pop);
+    expect(q('calendar-title')!.textContent).toBe(title);
+    expect(q('calendar-card')!.dataset.view).toBe('day');
+  });
+});
+
+describe('read failure', () => {
+  it('says the calendar could not be read (not "No events") and Retry asks again', async () => {
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'calendar_authorization_status') return 'fullAccess';
+      throw new Error('EventKit unavailable');
+    });
+    await render();
+    expect(q('calendar-failed')).not.toBeNull();
+    expect(q('calendar-body')!.textContent).not.toContain('No events');
+    const ranged = () => invoke.mock.calls.filter(c => c[0] === 'calendar_events_in_range').length;
+    const before = ranged();
+    await act(async () => { q('calendar-retry')!.click(); await Promise.resolve(); });
+    for (let i = 0; i < 3; i += 1) await act(async () => { await new Promise(r => setTimeout(r, 0)); });
+    expect(ranged()).toBeGreaterThan(before);
   });
 });
 
