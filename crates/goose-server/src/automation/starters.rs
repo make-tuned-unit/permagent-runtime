@@ -164,7 +164,7 @@ fn record_starter_deletion_at(starter_id: &str, path: &std::path::Path) -> Resul
         .map_err(|e| format!("serialize disabled starters: {}", e))?;
     let tmp = parent.join(".disabled_starters.json.tmp");
     std::fs::write(&tmp, &json).map_err(|e| format!("write {}: {}", tmp.display(), e))?;
-    std::fs::rename(&tmp, &path).map_err(|e| {
+    std::fs::rename(&tmp, path).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
         format!("rename tombstone into place {}: {}", path.display(), e)
     })?;
