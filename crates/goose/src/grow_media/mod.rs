@@ -844,7 +844,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            err.contains("publish_failed") && err.contains("draft"),
+            err.contains("publish failed") && err.contains("draft"),
             "unexpected: {err}"
         );
     }
