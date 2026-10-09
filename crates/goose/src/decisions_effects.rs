@@ -81,9 +81,9 @@ fn write_regression_task_in(
             serde_yaml::to_string(payload.category.as_deref().unwrap_or("regression"))
                 .unwrap_or_default()
                 .trim(),
-            serde_yaml::to_string(&payload.test)
-                .unwrap_or_default()
-                .trim(),
+            // A flow sequence stays on one line; `serde_yaml::to_string` renders a
+            // sequence as a multi-line block, which cannot follow a `test: ` key.
+            serde_json::to_string(&payload.test).unwrap_or_default(),
             payload
                 .prompt
                 .lines()
