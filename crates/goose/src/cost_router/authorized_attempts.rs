@@ -85,9 +85,7 @@ pub(crate) async fn with_native_pretransport_gate<F: Future>(
 /// Run the installed policy before one physical provider operation. Callers
 /// that are not native-bound have no policy and retain existing behavior.
 pub(crate) async fn check_native_pretransport_gate() -> Result<(), ProviderError> {
-    let gate = NATIVE_PRETRANSPORT_GATE
-        .try_with(|gate| Arc::clone(gate))
-        .ok();
+    let gate = NATIVE_PRETRANSPORT_GATE.try_with(Arc::clone).ok();
     if let Some(gate) = gate {
         gate().await?;
     }
@@ -133,6 +131,7 @@ pub fn attempt_is_authorized(next_attempt: u32) -> bool {
 
 /// Install an extensible authorization at a hold-taking dispatch seam.
 /// No paid hold leaves the enclosing task-local scope untouched.
+#[cfg(test)]
 pub(crate) async fn with_reservation_attempts<F: Future>(
     manager: Arc<SessionManager>,
     invocation_id: String,

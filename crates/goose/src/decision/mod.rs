@@ -772,6 +772,7 @@ fn parse_positive_u32(raw: &str) -> Option<u32> {
     }
 }
 
+#[expect(dead_code, reason = "token estimator with no caller on this tip")]
 fn estimate_input_tokens(char_len: usize) -> i64 {
     let estimated = (char_len.saturating_add(3)) / 4;
     i64::try_from(estimated).unwrap_or(i64::MAX)

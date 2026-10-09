@@ -320,7 +320,7 @@ async fn try_auto_answer_reservation_gate(
             let mut gate_grant_minted = false;
             if let ProviderAuthorizationFailure::NeedsGate { requested_usd, .. } = failure {
                 let worker_binding =
-                    match crate::native_provider_calls::active_worker_binding(&pool, &session.id)
+                    match crate::native_provider_calls::active_worker_binding(pool, &session.id)
                         .await
                     {
                         Ok(binding) => binding,
@@ -2335,6 +2335,7 @@ pub(crate) struct ProviderInvocationContext {
     pub provenance: CallProvenance,
 }
 
+#[expect(dead_code, reason = "dispatch marker with no caller on this tip")]
 pub(crate) async fn mark_provider_dispatch_possible(
     manager: &SessionManager,
     invocation: &ProviderInvocationContext,

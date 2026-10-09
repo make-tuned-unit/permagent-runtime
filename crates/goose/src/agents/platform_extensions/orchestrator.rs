@@ -8006,6 +8006,7 @@ async fn record_worker_output(
 }
 
 /// Best-effort terminal stamp on a goal's execution receipt (#210).
+#[cfg(test)]
 async fn finalize_receipt(pool: &sqlx::Pool<sqlx::Sqlite>, card_id: &str, state: ReceiptState) {
     if let Ok(Some(value)) = cards::get_goal_execution_receipt(pool, card_id).await {
         if let Ok(mut receipt) = serde_json::from_value::<ExecutionReceipt>(value) {
@@ -19000,6 +19001,7 @@ fn auto_land_review_requirement_for_goal(
 
 /// What [`independent_review_before_auto_land`] decided.
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)] // short-lived decision value, never stored in bulk
 enum AutoLandReview {
     /// No review is needed (trivial, or nothing measurable to review).
     NotRequired { reason: String },
@@ -19248,7 +19250,7 @@ async fn independent_review_before_auto_land(
             let changes = crate::cost_router::detect_signature_changes(&diff);
             let review_head = reviewed_head.as_str();
             let call_sites: usize =
-                enumerate_signature_call_sites_pinned(&dir, &review_head, &changes)
+                enumerate_signature_call_sites_pinned(&dir, review_head, &changes)
                     .await
                     .iter()
                     .map(|e| e.call_sites.len())
@@ -19966,6 +19968,7 @@ pub async fn handle_goal_timeout_for(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_goal_timeout_for_attempt(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     card_id: &str,
@@ -26545,6 +26548,10 @@ async fn hand_salvaged_work_to_review_unverified(
 /// daemon, or headless without auto-land configured) — move InProgress →
 /// Review, mint (or reuse) the ordinary `approve_review` decision, and stop.
 /// Never auto-landed from here.
+#[expect(
+    dead_code,
+    reason = "legacy human-review hand-off, no caller on this tip"
+)]
 async fn hand_to_review_for_a_human(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     card: &cards::Card,
@@ -27310,10 +27317,9 @@ async fn call_reviewer_provider(
     // comment ("a call whose job is to check other work") — tag it so it
     // stops falling into `unknown`.
     let completion = tokio::time::timeout(timeout, async {
-        if native_policy.is_some() {
+        if let Some(policy) = native_policy {
             // Full selected model; fast accounting substitutes the model
             // after route validation and can perform another fallback.
-            let policy = native_policy.expect("native branch has policy");
             let gate_policy = policy.clone();
             let gate_provider = provider.get_name().to_string();
             let gate_model = provider.get_model_config().model_name;
@@ -27396,6 +27402,7 @@ async fn call_reviewer_provider(
 /// `ReviewerCallFailure::Unavailable` the real call would have produced, so
 /// every existing caller's fallback logic (the one same-session-tier-model
 /// retry, `resolve_session_tier_fallback`) runs unchanged.
+#[allow(clippy::too_many_arguments)]
 async fn call_reviewer_provider_checked(
     session_id: Option<&str>,
     provider_id: &str,
@@ -27537,6 +27544,10 @@ where
 
 /// [`run_reviewer_call_cycle`] wired to the real provider call
 /// ([`call_reviewer_provider_checked`]).
+#[expect(
+    dead_code,
+    reason = "wrapper superseded by the _and_system variant, no caller on this tip"
+)]
 async fn call_reviewer_provider_with_timeout_retry(
     session_id: Option<&str>,
     provider_id: &str,
@@ -27560,6 +27571,7 @@ async fn call_reviewer_provider_with_timeout_retry(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn call_reviewer_provider_with_timeout_retry_and_system(
     session_id: Option<&str>,
     provider_id: &str,
@@ -29671,18 +29683,9 @@ pub(crate) async fn assign_delegate_reviewer(
     };
     let mut measured: Option<(String, std::path::PathBuf, ReviewDiffSource)> = None;
     if let (Some(pool), Some((card, is_worker))) = (pool, goal.as_ref()) {
-        measured = match goal_trunk_relative_diff(
-            pool,
-            card,
-            &session.working_dir,
-            *is_worker,
-            None,
-        )
-        .await
-        {
-            Ok(diff) => diff,
-            Err(_) => None,
-        };
+        measured = goal_trunk_relative_diff(pool, card, &session.working_dir, *is_worker, None)
+            .await
+            .unwrap_or_default();
     }
     if measured.is_none() {
         if let Some(diff) = git_in_worktree(&session.working_dir, &["diff", "HEAD"])

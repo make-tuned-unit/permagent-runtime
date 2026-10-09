@@ -343,6 +343,7 @@ pub fn parse_rules(yaml: &str) -> (Vec<CategoryRule>, Vec<String>) {
 }
 
 /// User rules, reloaded when the file changes.
+#[allow(clippy::type_complexity)] // process-wide mtime-keyed cache
 fn user_rules() -> std::sync::Arc<Vec<CategoryRule>> {
     use std::sync::{Arc, Mutex};
     use std::time::SystemTime;

@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 pub(crate) enum TerminalState {
     Succeeded,
     Failed,
+    #[expect(dead_code, reason = "terminal state not yet produced by any caller")]
     Cancelled,
     Lost,
 }
@@ -398,6 +399,7 @@ pub(crate) struct CandidateLineage {
     pub canonical_root: PathBuf,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum LineageResolution {
     Verified(CandidateLineage),
     NoGit,
@@ -811,6 +813,10 @@ pub(crate) async fn revalidate_review_binding(
 /// Final landing accepts only the exact Complete-stage token derived inside
 /// the checked approval transaction; a card already marked Complete is not
 /// itself evidence that anything landed successfully.
+#[expect(
+    dead_code,
+    reason = "pool-level landing check, callers use the _tx form"
+)]
 pub(crate) async fn revalidate_review_binding_for_landing(
     pool: &Pool<Sqlite>,
     review: &NativeReviewBinding,
@@ -834,11 +840,11 @@ pub(crate) async fn revalidate_review_binding_for_landing_tx(
     {
         bail!("Landing lacks exact native approval ownership");
     }
-    if !matches!(resolve_candidate_inner(&mut **tx,&review.lineage.candidate.goal_id).await?,LineageResolution::Verified(ref current) if current==&review.lineage)
+    if !matches!(resolve_candidate_inner(&mut *tx,&review.lineage.candidate.goal_id).await?,LineageResolution::Verified(ref current) if current==&review.lineage)
     {
         bail!("Reviewed lineage changed before landing");
     }
-    match contributor_evidence_inner(&mut **tx, &review.lineage).await? {
+    match contributor_evidence_inner(&mut *tx, &review.lineage).await? {
         ContributorEvidence::Known {
             families,
             invocation_ids,

@@ -1457,6 +1457,7 @@ impl SessionManager {
         Ok(outcome)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn reserve_provider_invocation_with_identity(
         &self,
         invocation_id: &str,
@@ -1509,6 +1510,7 @@ impl SessionManager {
     /// Reserve an accounted invocation with its exact native attempt and
     /// actual effective provider/model route. Existing rows must have the
     /// same identity; metadata never gets rewritten on replay or extension.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn reserve_bounded_provider_invocation_with_identity(
         &self,
         invocation_id: &str,

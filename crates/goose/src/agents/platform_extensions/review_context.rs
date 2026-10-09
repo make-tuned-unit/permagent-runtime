@@ -527,10 +527,7 @@ fn is_sensitive_path(path: &str) -> bool {
 }
 
 fn is_sensitive_query(query: &str) -> bool {
-    let query = query
-        .to_ascii_lowercase()
-        .replace('-', "_")
-        .replace(' ', "_");
+    let query = query.to_ascii_lowercase().replace(['-', ' '], "_");
     [
         "secret",
         "password",

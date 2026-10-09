@@ -58,6 +58,7 @@ fn process_presence(_pid: i64) -> ProcessPresence {
 }
 
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum NativeInspection {
     LegacyUnverified,
     StillOwned(String),

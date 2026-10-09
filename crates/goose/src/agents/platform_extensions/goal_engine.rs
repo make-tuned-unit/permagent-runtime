@@ -411,6 +411,7 @@ pub struct DispatchedWork {
 /// orchestrator finalizes the exact claim before consuming this start gate.
 pub struct PreparedWork {
     pub run_id: String,
+    #[allow(clippy::type_complexity)] // boxed one-shot start gate
     pub(crate) start: Option<
         Box<
             dyn FnOnce() -> futures::future::BoxFuture<'static, Result<DispatchedWork, String>>

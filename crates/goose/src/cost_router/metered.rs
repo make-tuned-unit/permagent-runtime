@@ -151,7 +151,7 @@ pub async fn reserve_metered_call(
     let binding = crate::native_provider_calls::active_worker_binding(&pool, &session.id)
         .await
         .map_err(MeteredCallError::Storage)?;
-    if binding.is_some() && request.model.as_deref().map_or(true, str::is_empty) {
+    if binding.is_some() && request.model.as_deref().is_none_or(str::is_empty) {
         return Err(MeteredCallError::BudgetUnknown {
             reason: "native metered provider call has no exact model identity".to_string(),
         });

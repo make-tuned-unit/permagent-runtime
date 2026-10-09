@@ -819,6 +819,7 @@ pub(crate) async fn advance_goal_checked_in_tx(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn advance_goal_checked_in_tx_with_auto_land(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     card_id: &str,
@@ -1318,6 +1319,7 @@ pub async fn requeue_goal_with_meta(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn requeue_goal_with_meta_for_attempt(
     pool: &Pool<Sqlite>,
     card_id: &str,
@@ -2311,6 +2313,7 @@ pub async fn exhaust_and_park_with_cause(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn exhaust_and_park_for_attempt(
     pool: &Pool<Sqlite>,
     card_id: &str,

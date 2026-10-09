@@ -156,6 +156,7 @@ pub fn triage_session_name(project_id: &str, recording_id: &str) -> String {
 }
 
 /// Deterministic triage + note ids for idempotent client recording ids.
+#[allow(clippy::string_slice)] // slices an ASCII hex digest
 pub fn stable_triage_ids(project_id: &str, recording_id: &str) -> (String, String) {
     let digest = hex::encode(Sha256::digest(
         format!("{project_id}\0{recording_id}").as_bytes(),
@@ -166,6 +167,7 @@ pub fn stable_triage_ids(project_id: &str, recording_id: &str) -> (String, Strin
     )
 }
 
+#[allow(clippy::string_slice)] // slices an ASCII hex digest
 fn stable_card_id(triage_id: &str, item_key: &str) -> String {
     let digest = hex::encode(Sha256::digest(
         format!("card:{triage_id}:{item_key}").as_bytes(),
@@ -839,6 +841,7 @@ async fn claim_next(pool: &Pool<Sqlite>) -> Result<Option<String>, String> {
     Ok(Some(id))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn mark_status(
     pool: &Pool<Sqlite>,
     triage_id: &str,
@@ -1155,6 +1158,7 @@ async fn apply_extraction_effects(input: ApplyInput<'_>) -> Result<Vec<String>, 
     Ok(card_ids)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn persist_canonical_result(
     pool: &Pool<Sqlite>,
     triage_id: &str,
