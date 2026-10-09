@@ -2377,7 +2377,7 @@ mod structured_report_tests {
                 "scan_storage_health",
                 "call-1",
                 "call-1",
-                &legacy_body(&[replacement.clone()]),
+                &legacy_body(std::slice::from_ref(&replacement)),
             );
             let dir = dir.clone();
             let home = home.clone();
@@ -2397,7 +2397,7 @@ mod structured_report_tests {
                 "scan_storage_health",
                 "call-1",
                 "call-1",
-                &legacy_body(&[replacement.clone()]),
+                &legacy_body(std::slice::from_ref(&replacement)),
             ),
             "corrupt",
             &dir,

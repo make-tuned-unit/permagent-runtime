@@ -2981,7 +2981,7 @@ mod tests {
         for disclosure in [ToolDisclosure::Catalog, ToolDisclosure::Filesystem] {
             let mut coordinator = loaded.clone();
             if use_code_execution_for_role(true, true) {
-                coordinator = disclose_code_mode_tools(coordinator, disclosure.clone());
+                coordinator = disclose_code_mode_tools(coordinator, disclosure);
             }
             finish_model_tool_visibility(&mut coordinator, true);
             let names: Vec<_> = coordinator.iter().map(|tool| tool.name.as_ref()).collect();
