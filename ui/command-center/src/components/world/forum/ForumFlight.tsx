@@ -8,10 +8,9 @@ import { extendForumLoader } from './forumGltf';
 import { landingSampleAt } from './walkCollision';
 import {
   flightStep,
+  flightInputFromKeys,
   gearIsDown,
-  idleInput,
   thrusterGlow,
-  type FlightInput,
   type FlightState,
 } from './flightMotion';
 
@@ -106,15 +105,10 @@ export function ForumFlight({
   }, [gl, onExit, onDisembark]);
 
   useFrame((_, rawDt) => {
-    const k = keys.current;
-    const input: FlightInput = getReduceMotion()
-      ? idleInput
-      : {
-          thrust: Number(k.has('ArrowUp') || k.has('KeyW')) - Number(k.has('ArrowDown') || k.has('KeyS')),
-          turn: Number(k.has('ArrowLeft') || k.has('KeyA')) - Number(k.has('ArrowRight') || k.has('KeyD')),
-          lift: Number(k.has('Space')) - Number(k.has('KeyC')),
-          boost: k.has('ShiftLeft') || k.has('ShiftRight'),
-        };
+    // Reduce Motion quiets the incidental camera and hull response below, not
+    // the controls the user needs to reach a destination and land.
+    const reducedMotion = getReduceMotion();
+    const input = flightInputFromKeys(keys.current);
 
     const next = flightStep(state.current, input, rawDt, (x, z) => landingSampleAt(x, z));
     state.current = next;
@@ -123,7 +117,7 @@ export function ForumFlight({
     skiff.position.set(next.x, next.y, next.z);
     // Bank into the turn and pitch into the throttle: the cheapest honest cue
     // that the craft is doing what you asked, without an animation system.
-    skiff.rotation.set(-input.thrust * 0.08, next.yaw, -input.turn * 0.22, 'YXZ');
+    skiff.rotation.set(reducedMotion ? 0 : -input.thrust * 0.08, next.yaw, reducedMotion ? 0 : -input.turn * 0.22, 'YXZ');
 
     const ground = landingSampleAt(next.x, next.z);
     const gear = gearIsDown(next, ground);
@@ -147,10 +141,9 @@ export function ForumFlight({
 
     // Chase camera: behind the bow, above the deck, looking slightly down.
     const behind = new THREE.Vector3(Math.sin(next.yaw), 0, Math.cos(next.yaw)).multiplyScalar(16);
-    camera.position.lerp(
-      new THREE.Vector3(next.x + behind.x, next.y + 6.5, next.z + behind.z),
-      Math.min(1, rawDt * 3.2),
-    );
+    const cameraTarget = new THREE.Vector3(next.x + behind.x, next.y + 6.5, next.z + behind.z);
+    if (reducedMotion) camera.position.copy(cameraTarget);
+    else camera.position.lerp(cameraTarget, Math.min(1, rawDt * 3.2));
     camera.lookAt(next.x, next.y + 1.2, next.z);
   });
 

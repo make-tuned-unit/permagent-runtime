@@ -1,0 +1,95 @@
+{
+  "binary": {
+    "path": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/debug/permagentd",
+    "sha256": "542a27935f28e0f7d61b24ed9b7a90171ab32061b7a1a019a8584c886a8d9ab9"
+  },
+  "root": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/first-user-qa-20261009-020513",
+  "port": 3003,
+  "initialStateEmpty": true,
+  "method": "real daemon empty data-root and HOME startup/restart; same OS account, no native/UI acceptance",
+  "initialHomeEmpty": true,
+  "keyringDisabled": true,
+  "inheritedProviderOrCredentialEnvironment": false,
+  "serviceOverrides": [
+    "CONCIERGE_ENABLED",
+    "COUNCIL_ENABLED",
+    "GOOSE_TELEMETRY_ENABLED",
+    "OLLAMA_HOST",
+    "PERMAGENT_OLLAMA_HOST",
+    "POLYBOT_ENABLED",
+    "STEWARD_SCAN_ENABLED",
+    "STRIX_ENABLED"
+  ],
+  "phases": [
+    {
+      "phase": "fresh",
+      "checks": {
+        "noProvider": true,
+        "noModel": true,
+        "wizardIncomplete": true,
+        "dictationUnconfigured": true,
+        "brainReadable": true,
+        "brainEmpty": true,
+        "ownerEmpty": true,
+        "pronunciationsEmpty": true,
+        "allStartersPresent": true,
+        "startersAwaitReview": true,
+        "onlyProductStarterProject": true,
+        "ontologyPreserved": true,
+        "productOntology": true,
+        "unauthorizedRejected": true,
+        "foreignOriginRejected": true
+      },
+      "dictationStatus": {
+        "status": "unavailable",
+        "reason": "not_configured",
+        "model": null,
+        "inference_verified": false
+      },
+      "projectCount": 1,
+      "memoryCount": 0,
+      "unauthorizedRejectedStatus": 401,
+      "foreignOriginRejectedStatus": 403,
+      "exitCode": 0,
+      "elapsedSeconds": 18.422536334,
+      "minimumFreeGiB": 193.9237174987793,
+      "stopped": true
+    },
+    {
+      "phase": "restart",
+      "checks": {
+        "noProvider": true,
+        "noModel": true,
+        "wizardIncomplete": true,
+        "dictationUnconfigured": true,
+        "brainReadable": true,
+        "brainEmpty": true,
+        "ownerEmpty": true,
+        "pronunciationsEmpty": true,
+        "allStartersPresent": true,
+        "startersAwaitReview": true,
+        "onlyProductStarterProject": true,
+        "ontologyPreserved": true,
+        "productOntology": true,
+        "unauthorizedRejected": true,
+        "foreignOriginRejected": true
+      },
+      "dictationStatus": {
+        "status": "unavailable",
+        "reason": "not_configured",
+        "model": null,
+        "inference_verified": false
+      },
+      "projectCount": 1,
+      "memoryCount": 0,
+      "unauthorizedRejectedStatus": 401,
+      "foreignOriginRejectedStatus": 403,
+      "exitCode": 0,
+      "elapsedSeconds": 1.2526013749999976,
+      "minimumFreeGiB": 193.92363357543945,
+      "stopped": true
+    }
+  ],
+  "tokenLogged": false,
+  "passed": true
+}

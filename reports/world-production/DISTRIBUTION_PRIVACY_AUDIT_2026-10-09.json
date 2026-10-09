@@ -1,0 +1,220 @@
+{
+  "audit": "distribution privacy and blank-user defaults",
+  "date": "2026-10-09",
+  "baseline": "world/production-20261006 at e6ff7fa4, with concurrent uncommitted work present",
+  "method": "Source-only inspection and targeted tracked-file scans. No installed bundle inspection, fresh-home run, tests, services, UI, or model calls. No private dictionary, secret, or credential values copied.",
+  "conclusion": {
+    "current_source": "No owner-specific name, email, project, key, absolute home path, or pronunciation entry was found in active first-run defaults and prompt resources inspected. Owner identity starts empty; the agent persona has a generic default. Pronunciations load from per-user state, not an embedded dictionary in current source.",
+    "installed_baseline": "The populated pronunciation dictionary seen in the installed native app is consistent with existing local user state. That app predates the audited branch, so source inspection alone cannot prove its package contents or migration behavior.",
+    "release_readiness": "Unverified. An isolated package and fresh-home acceptance run remain necessary; enabled starter schedules and development fixture bundling also need release checks."
+  },
+  "source_boundaries": [
+    {
+      "kind": "shipped application source",
+      "paths": [
+        "crates/goose/src",
+        "crates/goose-server/src",
+        "ui/command-center/src",
+        "ui/command-center/public",
+        "ui/desktop/src-tauri/tauri.conf.json"
+      ],
+      "basis": "Native build points at command-center/dist and explicitly bundles daemon/CLI sidecars plus MCP, whisper, and audio helper resources (ui/desktop/src-tauri/tauri.conf.json:6-10,44-74). The public directory is a frontend build input."
+    },
+    {
+      "kind": "development provenance, not listed native bundle resource",
+      "paths": [
+        "assets/world"
+      ],
+      "scan": "114 text assets inspected; 16 machine-home-style path matches and 4 email-like matches occur in authoring/proof JSON or README material. Values withheld. No runtime reference requiring this tree was found; native bundle resources do not name it (ui/desktop/src-tauri/tauri.conf.json:63-74). Keep it excluded and confirm final artifact."
+    },
+    {
+      "kind": "development fixtures, tests, reports, docs",
+      "paths": [
+        "ui/command-center/src/components/dashboard/decisions/mockDecisions.ts",
+        "**/*.test.*",
+        "reports",
+        "documentation"
+      ],
+      "scan": "These are not fresh-user data. mockDecisions.ts previously had machine-home-style fixture paths at lines 145,227,239; they were changed to relative generic example paths in this worktree. The fixture remains statically imported by client.ts:184, while runtime selection requires VITE_DECISIONS_MOCK=1 at client.ts:186-190. Confirm production build does not carry or activate these fixtures."
+    }
+  ],
+  "default_and_seed_map": [
+    {
+      "component": "owner identity",
+      "behavior": "All fields optional and absent by default; missing owner.yaml returns an empty record.",
+      "evidence": [
+        "crates/goose/src/config/agent_identity.rs:308-335",
+        "crates/goose/src/config/paths.rs:5-29"
+      ]
+    },
+    {
+      "component": "agent identity",
+      "behavior": "Generic persona name, traits, tone, and greeting supplied as fresh default. No specific human owner identity inferred.",
+      "evidence": [
+        "crates/goose/src/config/agent_identity.rs:264-275",
+        "ui/command-center/src/components/wizard/persona.ts:51-68"
+      ]
+    },
+    {
+      "component": "pronunciation dictionary",
+      "behavior": "Reads ~/.permagent/data/pronunciations.json through the current OS home; missing or unreadable file yields empty map. Persona UI fetches that API. No tracked dictionary file or embedded pronunciations.json reference found.",
+      "evidence": [
+        "crates/goose/src/config/paths.rs:5-13",
+        "crates/goose-server/src/voice/user_lexicon.rs:38-47",
+        "crates/goose-server/src/routes/voice.rs:282-285",
+        "ui/command-center/src/components/voice/PronunciationSection.tsx:41-48"
+      ]
+    },
+    {
+      "component": "Brain welcome memories",
+      "behavior": "Generic orientation content; seed is gated on wizard_complete at daemon startup and on config completion.",
+      "evidence": [
+        "crates/goose-server/src/automation/onboarding_seed.rs:1-15,37-78,84-137",
+        "crates/goose-server/src/state.rs:813-816",
+        "crates/goose-server/src/routes/config_management.rs:409-410"
+      ]
+    },
+    {
+      "component": "development folders",
+      "behavior": "Discovers conventional folders relative to current OS home; wizard offers actual discovered paths and persists selection on user action.",
+      "evidence": [
+        "crates/goose/src/config/dev_roots.rs:30-47,53-70,93-115",
+        "ui/command-center/src/components/wizard/StepFolders.tsx:55-68,101-125"
+      ]
+    },
+    {
+      "component": "starter automation",
+      "behavior": "Five generic recipes are installed at daemon startup, independent of wizard completion, with paused=false. Scheduler adds them to the active cron scheduler, and the fire path checks paused but shows no wizard_complete check. Whether one fires during a particular first-run window depends on clock and service lifetime.",
+      "evidence": [
+        "crates/goose-server/src/automation/starters.rs:1-20,53-105,176-262",
+        "crates/goose-server/src/state.rs:798-816",
+        "crates/goose/src/scheduler.rs:1662-1728,2066-2128"
+      ]
+    },
+    {
+      "component": "telemetry",
+      "behavior": "Opt-in is off by default; configured PostHog host is a public service endpoint, and telemetry key is a config key rather than a discovered embedded private value.",
+      "evidence": [
+        "crates/goose/src/posthog.rs:19-23,67-76,92-104,589-649"
+      ]
+    }
+  ],
+  "findings": [
+    {
+      "id": "DP-1",
+      "severity": "P1",
+      "status": "source-confirmed; execution unverified",
+      "issue": "Starter recipes are created enabled before wizard completion; a fresh daemon can schedule background work before the user finishes setup.",
+      "evidence": [
+        "crates/goose-server/src/state.rs:798-816",
+        "crates/goose-server/src/automation/starters.rs:226-244",
+        "crates/goose/src/scheduler.rs:1662-1728"
+      ],
+      "fix": "Seed each new starter as paused=true and requires_approval=true. Do not auto-resume at wizard completion. Existing jobs retain their persisted paused/enabled state; reconciliation and Reset to default update recipe content/metadata only. User Resume in Automate clears approval. Hide or disable Run Now for approval-pending starters so the visible action matches the scheduler gate.",
+      "acceptance": "Under a temporary home with wizard_complete absent, every new starter is visible in Automate as PAUSED and cannot fire by cron, catch-up, or run-now. Completing the wizard alone leaves them paused. A user Resume enables exactly the selected starter, surviving restart and recipe reconciliation. Previously enabled, paused, and deleted starters retain those respective choices across upgrade. A failed/no-provider run reports failure without falsely claiming completion."
+    },
+    {
+      "id": "DP-2",
+      "severity": "P1 product gap",
+      "status": "source-confirmed; agent execution unverified",
+      "issue": "First-run wizard blocks chat until completion, while setup of local model and folders is UI-driven. The chat agent cannot itself lead the entire blank-machine setup path as requested.",
+      "evidence": [
+        "ui/command-center/src/lib/startupConfig.ts:11-17",
+        "ui/command-center/src/App.tsx:336-383",
+        "ui/command-center/src/components/wizard/WizardShell.tsx:129-145",
+        "ui/command-center/src/components/wizard/StepModel.tsx:361-400"
+      ],
+      "fix": "Provide a minimal first-run chat/setup controller and delegated, permission-aware install/download/config tools with observable progress and resumable failure states; retain an offline/manual route when no inference engine exists.",
+      "acceptance": "On a clean user profile with neither Ollama nor a model, ask chat agent to set up local inference, folders, Tailscale, and computer control. Verify each action against OS/app state; make denied permission, unavailable network, download failure, and restart truthfully recoverable."
+    },
+    {
+      "id": "DP-3",
+      "severity": "P2",
+      "status": "fixture paths fixed in worktree; final bundle unverified",
+      "issue": "Synthetic decision fixtures are statically imported into frontend source, although runtime selection is environment-gated. Their machine-home-style paths were replaced with relative generic examples; the source alone does not prove the entire mock module is removed from release JavaScript.",
+      "evidence": [
+        "ui/command-center/src/components/dashboard/decisions/client.ts:184-190",
+        "ui/command-center/src/components/dashboard/decisions/mockDecisions.ts:145,227,239"
+      ],
+      "fix": "Neutral synthetic paths are now used. Move the mock behind a build-time development-only import and scan the built frontend and installed app for fixture markers and owner-specific path patterns.",
+      "acceptance": "Build a production frontend with VITE_DECISIONS_MOCK unset; confirm mock UI is inactive and fixture-only markers are absent from emitted assets."
+    },
+    {
+      "id": "DP-4",
+      "severity": "P2 capability gap",
+      "status": "source-confirmed; agent execution unverified",
+      "issue": "Computer control is macOS Accessibility-only, defaults off, and offers status, app listing, accessibility tree, click, and type actions, without general screenshot, scroll, or keyboard-shortcut primitives. Agent-led setup cannot assume control is usable on a fresh install.",
+      "evidence": [
+        "crates/goose/src/agents/platform_extensions/desktop/mod.rs:1-25,92-109,195-200,238-332",
+        "crates/goose/src/agents/platform_extensions/mod.rs:530-539"
+      ],
+      "fix": "Make availability/permission request explicit in onboarding and add needed observation/navigation actions with OS permission boundaries; surface unsupported platforms as unsupported.",
+      "acceptance": "Fresh macOS profile: denied Accessibility permission yields clear blocked status; after granting it, agent observes target app, navigates, clicks and types, detects a changed UI, and reports actual result. Test unsupported platform response separately."
+    },
+    {
+      "id": "DP-5",
+      "severity": "P2 release verification",
+      "status": "unverified installed artifact",
+      "issue": "Current source separates pronunciation state from bundle resources, but the installed native baseline is older and already has a populated personal/project lexicon. Its exact package content and state migration are unverified.",
+      "evidence": [
+        "crates/goose-server/src/voice/user_lexicon.rs:38-47",
+        "ui/desktop/src-tauri/tauri.conf.json:44-74"
+      ],
+      "fix": "Inspect a newly built .app/.dmg for dictionary and owner files, then launch under an isolated empty OS home; never copy an existing ~/.permagent into release staging.",
+      "acceptance": "A clean install returns an empty pronunciation list and empty owner fields. Upgrade from a user profile retains that user's lexicon only within their own profile. Verify no lexicon words occur in bundle files."
+    }
+  ],
+  "setup_capability_notes": [
+    {
+      "capability": "local model",
+      "source_state": "Model manager agent tool lists installed models and switches to an installed model; it directs downloads to Settings. Wizard offers an interactive download/install path, not autonomous chat setup.",
+      "evidence": [
+        "crates/goose/src/agents/platform_extensions/model_manager.rs:26-36,59-65",
+        "ui/command-center/src/components/wizard/StepModel.tsx:361-400,445-448"
+      ]
+    },
+    {
+      "capability": "Tailscale",
+      "source_state": "Agent-facing instructions describe terminal installation, status/up, and login link. Status/serve routes exist. Actual install/login success is unverified and requires user identity handoff.",
+      "evidence": [
+        "crates/goose/src/agents/platform_extensions/project_manager.rs:553-579",
+        "crates/goose-server/src/routes/status.rs:107-176"
+      ]
+    }
+  ],
+  "scan_summary": {
+    "tracked_sensitive_file_names": "No tracked .env, .pem, .p12, .key, pronunciations.json, owner.yaml, or agent.yaml found in targeted git ls-files query.",
+    "active_prompt_text": "Targeted text scan of built-in prompt/skill/self-knowledge text and starter YAML found no absolute owner home paths, email literals, legacy persona name literals, or credential assignment markers; scanner scope was text resources, not arbitrary binary bytes.",
+    "public_text_assets": "10 frontend public text files scanned: no absolute user path, email, or credential marker hits. Public URLs and provenance references are present; no private values reproduced here.",
+    "source_email_literals": "Two generic UI placeholder emails at ui/command-center/src/components/settings/SettingsView.tsx:382 and ui/command-center/src/components/projects/PersonDetailModal.tsx:111; neither is saved user data. A source comment in ui/command-center/src/components/skills/skillHumanize.ts:132 contains an actual user-home-style example; comments may be stripped by bundling, but final artifact has not been inspected. This comment was outside the delegated fixture-file edit scope.",
+    "credential_pattern_false_positive": "crates/goose/src/config/secret_source.rs:38 is a documentation example for config key secret_sources; not an embedded credential. Keys relevant to review include secret_sources, secret_source_default, telemetry_posthog_key, telemetry_posthog_host, VITE_DAEMON_URL, VITE_API_BASE_URL, and VITE_DECISIONS_MOCK. No values copied."
+  },
+  "existing_tests_and_missing_checks": [
+    "Wizard flow test verifies local model startup/download is not automatic: ui/command-center/src/components/wizard/WizardShell.flow.test.tsx:215-247.",
+    "Owner identity default tests: crates/goose/src/config/agent_identity.rs:1249-1291.",
+    "Welcome-memory seed tests: crates/goose-server/src/automation/onboarding_seed.rs:139-177.",
+    "Telemetry opt-in tests: crates/goose/src/posthog.rs:657-746.",
+    "Pronunciation store tests use the real state path, so future isolated execution should set PERMAGENT_PATH_ROOT: crates/goose-server/src/voice/user_lexicon.rs:159-178.",
+    "Missing release checks: built-asset privacy scan, .app/.dmg contents scan, isolated fresh-home onboarding/lexicon verification, and pre-onboarding starter-fire gate test. No tests were run for this audit."
+  ],
+  "coordinator_followup": {
+    "frontend_build": "TypeScript and production Vite build passed. Source client now imports mock fixture module only behind build-time branch; normal emitted assets exclude fixture IDs, headline and relative path signatures.",
+    "frontend_artifact_scan": "FRONTEND_DISTRIBUTION_SCAN_2026-10-09.json: 619 files, 103386511 bytes; targeted owner-home and mock signatures absent; no owner.yaml, agent.yaml, pronunciations.json or .env filenames.",
+    "installed_baseline_filenames": "No owner.yaml, agent.yaml, pronunciations.json, config.yaml, secrets.yaml, .env or daemon_token.json found under installed .app Contents; filename-only inspection, not new native release approval.",
+    "pending": "New native package, starter backend patch/tests and blank-profile native setup still pending."
+  },
+  "latest_artifact_and_startup_verification": {
+    "frontend": "FRONTEND_DISTRIBUTION_SCAN_2026-10-09.json",
+    "daemon": "record-backend-tests-20261008-224156.json",
+    "blank_profile": "FRESH_PROFILE_VERIFICATION_2026-10-09.json",
+    "blank_profile_result": "PASS:15 checks on fresh startup and restart; empty owner/pronunciations/Brain/model configuration; all5 starters paused and awaiting review. Empty data root and HOME, same OS account, sanitized environment and disabled keyring.",
+    "limits": [
+      "Targeted frontend signatures are not an exhaustive personal-data audit.",
+      "Native final-package scan and native first-user UI acceptance remain separate.",
+      "Desktop computer-control setup and model download tools are not yet a complete agent-driven offline bootstrap."
+    ],
+    "starter_rust_tests": "20/20 PASS; record-backend-tests-20261008-231317.json",
+    "native_package": "native-record-package-verification-record-thumbnails-20261009.json: signed arm64, 4624 files, installed baseline unchanged",
+    "native_review": "NATIVE_THUMBNAIL_REVIEW_2026-10-09.json: filename scan clean; CUA timeout/window errors, no UI acceptance"
+  }
+}

@@ -27,13 +27,46 @@ import { PreTurnPreview } from './components/awareness/PreTurnPreview';
 import { trackChatGeometry } from './lib/chatWindow';
 import { VoiceOrb } from './components/voice/VoiceOrb';
 import { readLiveConversation, requestVoiceEnd } from './lib/voiceHandoff';
+import { ChatSetupCard } from './components/chat/ChatSetupCard';
+import { chatSetupState, modelSetupReadiness } from './components/chat/chatSetupState';
 // VoiceButton moved to ChatInput row (beside send button)
 
 export default function ChatApp() {
   const { gradient, colors, theme } = useTheme();
   const setAgentName = useCommandCenter(s => s.setAgentName);
+  const providers = useCommandCenter(s => s.providers);
+  const providersError = useCommandCenter(s => s.providersError);
+  const chatResolvedRoute = useCommandCenter(s => s.chatResolvedRoute);
+  const chatSessionRouteEvidence = useCommandCenter(s => s.chatSessionRouteEvidence);
+  const loadProviders = useCommandCenter(s => s.loadProviders);
+  const configRev = useCommandCenter(s => s.configRev);
+  const chatMessages = useCommandCenter(s => s.chatMessages);
+  const chatHistoryLoaded = useCommandCenter(s => s.chatHistoryLoaded);
+  const isStreaming = useCommandCenter(s => s.isStreaming);
+  const sessionLoadError = useCommandCenter(s => s.sessionLoadError);
+  const daemonAuthError = useCommandCenter(s => s.daemonAuthError);
+  const [providerCheckKnown, setProviderCheckKnown] = useState(false);
   const [inspectionOpen, setInspectionOpen] = useState(false);
   const [inputFocused, setInputFocused] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    setProviderCheckKnown(false);
+    void loadProviders().then(() => { if (active) setProviderCheckKnown(true); });
+    return () => { active = false; };
+  }, [loadProviders, configRev]);
+
+  const modelReadiness = modelSetupReadiness({
+    providers: providers ?? [], providerCheckKnown, providersError: !!providersError,
+    chatRoute: chatResolvedRoute, sessionRouteEvidence: chatSessionRouteEvidence,
+    hasConversation: (chatMessages?.length ?? 0) > 0,
+  });
+  const setupState = chatSetupState({
+    modelReadiness, historyLoaded: !!chatHistoryLoaded,
+    messageCount: chatMessages?.length ?? 0, streaming: !!isStreaming,
+    sessionLoadError: sessionLoadError ?? null, daemonAuthError: daemonAuthError ?? null,
+    voiceActive: !!readLiveConversation(),
+  });
 
   // Same as the main window: clear the inline page paint so the material shows.
   useEffect(() => clearPageBackgroundForVibrancy(), []);
@@ -201,12 +234,15 @@ export default function ChatApp() {
         <DropZone onDrop={handleDrop}>
           <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
             <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-              <MessageList />
+              {setupState ? <ChatSetupCard state={setupState} onRetry={() => {
+                setProviderCheckKnown(false);
+                void loadProviders().then(() => setProviderCheckKnown(true));
+              }} /> : <MessageList />}
             </div>
             <AwarenessIndicator onOpenInspection={() => setInspectionOpen(true)} />
             <PreTurnPreview visible={inputFocused} />
             <div onFocusCapture={() => setInputFocused(true)} onBlurCapture={() => setInputFocused(false)}>
-              <ChatInput ref={chatInputRef} />
+              <ChatInput ref={chatInputRef} modelReadiness={modelReadiness} />
             </div>
           </div>
         </DropZone>

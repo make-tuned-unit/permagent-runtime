@@ -171,8 +171,8 @@ fn record_starter_deletion_at(starter_id: &str, path: &std::path::Path) -> Resul
     Ok(())
 }
 
-/// Install starter recipes that don't already exist and haven't been disabled,
-/// then reconcile existing starters against embedded content.
+/// Install new starter recipes paused for user review, then reconcile existing
+/// starters without changing the user's enabled or paused choice.
 pub async fn seed_starter_recipes(scheduler: &dyn SchedulerTrait) {
     let existing_jobs = scheduler.list_scheduled_jobs().await;
     let existing_ids: Vec<&str> = existing_jobs.iter().map(|j| j.id.as_str()).collect();
@@ -229,7 +229,8 @@ pub async fn seed_starter_recipes(scheduler: &dyn SchedulerTrait) {
             cron: starter.cron.to_string(),
             last_run: None,
             currently_running: false,
-            paused: false,
+            paused: true,
+            requires_approval: true,
             current_session_id: None,
             process_start_time: None,
             worker_persona: starter.owner.map(str::to_string),
@@ -986,6 +987,16 @@ mod tests {
         seed_starter_recipes(&scheduler).await;
 
         let jobs = scheduler.list_scheduled_jobs().await;
+        assert_eq!(jobs.len(), STARTERS.len(), "all fresh starters should seed");
+        for starter in STARTERS {
+            let job = jobs.iter().find(|job| job.id == starter.id).unwrap();
+            assert!(job.paused, "{} must await review", starter.id);
+            assert!(
+                job.requires_approval,
+                "{} must require approval",
+                starter.id
+            );
+        }
         let si = jobs.iter().find(|j| j.id == "storage-insights").unwrap();
         assert_eq!(si.starter_id, Some("storage-insights".to_string()));
         assert_eq!(si.starter_version, Some(si_version()));
@@ -999,6 +1010,73 @@ mod tests {
         let recipes_dir = tmp.path().join("scheduled_recipes");
         let on_disk = std::fs::read_to_string(recipes_dir.join("storage-insights.yaml")).unwrap();
         assert_eq!(on_disk, STORAGE_INSIGHTS_YAML);
+    }
+
+    #[tokio::test]
+    async fn reseed_preserves_existing_enabled_and_paused_choices() {
+        let _ = crate::test_support::test_root();
+        let tmp = TempDir::new().unwrap();
+        let _guard =
+            env_lock::lock_env([("PERMAGENT_PATH_ROOT", Some(tmp.path().to_str().unwrap()))]);
+        let recipes_dir = tmp.path().join("scheduled_recipes");
+        std::fs::create_dir_all(&recipes_dir).unwrap();
+
+        let enabled = STARTERS
+            .iter()
+            .find(|starter| starter.id == "model_review")
+            .unwrap();
+        let paused = STARTERS
+            .iter()
+            .find(|starter| starter.id == "storage-insights")
+            .unwrap();
+        let existing_job = |starter: &StarterRecipe, is_paused: bool| {
+            let path = recipes_dir.join(format!("{}.yaml", starter.id));
+            std::fs::write(&path, starter.yaml).unwrap();
+            let mut job = make_job(
+                starter.id,
+                path.to_str().unwrap(),
+                &extract_version(starter.yaml),
+                &content_hash(starter.yaml),
+                false,
+            );
+            job.paused = is_paused;
+            job.requires_approval = false;
+            job
+        };
+        let scheduler = MockScheduler::new(vec![
+            existing_job(enabled, false),
+            existing_job(paused, true),
+        ]);
+
+        for _ in 0..2 {
+            seed_starter_recipes(&scheduler).await;
+            let jobs = scheduler.list_scheduled_jobs().await;
+            assert_eq!(jobs.len(), STARTERS.len(), "reseed must not duplicate jobs");
+            let enabled_job = jobs.iter().find(|job| job.id == enabled.id).unwrap();
+            assert!(!enabled_job.paused, "existing enabled job stays enabled");
+            assert!(!enabled_job.requires_approval);
+            let paused_job = jobs.iter().find(|job| job.id == paused.id).unwrap();
+            assert!(
+                paused_job.paused,
+                "existing manually paused job stays paused"
+            );
+            assert!(
+                !paused_job.requires_approval,
+                "manual pause is not approval-pending"
+            );
+            for starter in STARTERS
+                .iter()
+                .filter(|starter| starter.id != enabled.id && starter.id != paused.id)
+            {
+                let new_job = jobs.iter().find(|job| job.id == starter.id).unwrap();
+                assert!(new_job.paused, "{} remains held", starter.id);
+                assert!(
+                    new_job.requires_approval,
+                    "{} remains approval-pending",
+                    starter.id
+                );
+            }
+        }
     }
 
     // ── Test 6: workspace-snapshot no-op when versions match ──

@@ -12,6 +12,10 @@ describe('world ↔ agents id bridge', () => {
     // roster entry, so a "manage this agent" link would 404.
     expect(agentIdForWorldAgent('henry')).toBeNull();
     expect(agentIdForWorldAgent('reader')).toBeNull();
+    // Their work is visible elsewhere, but these World seats have no worker
+    // descriptor in the Settings → Agents registry.
+    expect(agentIdForWorldAgent('polybot')).toBeNull();
+    expect(agentIdForWorldAgent('picker')).toBeNull();
   });
 
   it('reports no in-world character for agents that have none', () => {
@@ -34,10 +38,21 @@ describe('world ↔ agents id bridge', () => {
   });
 
   it('round-trips every mapped id', () => {
-    for (const worldId of ['librarian', 'watcher', 'steward', 'strix', 'financier']) {
+    for (const worldId of [
+      'librarian', 'watcher', 'steward', 'strix', 'financier',
+      'forecaster', 'council', 'growth_measurement',
+    ]) {
       const agentId = agentIdForWorldAgent(worldId);
       expect(agentId).not.toBeNull();
       expect(worldAgentIdForAgent(agentId as string)).toBe(worldId);
+    }
+  });
+
+  it('uses the background registry ids for the newly linked World characters', () => {
+    for (const id of ['forecaster', 'council', 'growth_measurement']) {
+      expect(agentIdForWorldAgent(id)).toBe(id);
+      expect(worldAgentIdForAgent(id)).toBe(id);
+      expect(canonicalAgentId(id)).toBe(id);
     }
   });
 });

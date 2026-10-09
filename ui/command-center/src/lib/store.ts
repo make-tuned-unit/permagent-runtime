@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { api, apiFetch, extractSystemNotice, extractText, extractThinking, fileToBase64, hasToolActivity, readerIngest } from './api';
 import { getDaemonTokenError, onDaemonTokenError } from './daemonAuth';
 import { emitActivity, type ActivityEventName, type ActivitySourceSurface } from './emitActivity';
-import type { SessionSummary, DaemonMessage, SSEEvent, AppContextPayload, TokenState, HarnessRunView, SystemNotice } from './api';
+import type { SessionSummary, DaemonMessage, SSEEvent, AppContextPayload, TokenState, HarnessRunView, SystemNotice, ResolvedModelRoute } from './api';
 import { costFromFrame, parseBudgetProjection, type CodingSpend } from './costMeter';
 import { maybeSpeakReply, replyDedupeKey } from './speakReplies';
 import { readLiveConversation } from './voiceHandoff';
@@ -257,6 +257,9 @@ interface CommandCenterStore {
       state instead of an indistinguishable, permanent "Loading…". */
   providersError: boolean;
   currentModel: string | null;
+  /** Daemon-resolved Chat route, including role and session overrides. Null on
+      older daemons that do not expose the projection. */
+  chatResolvedRoute: ResolvedModelRoute | null;
   loadProviders: () => Promise<void>;
   /** Resolves `false` when the provider was not switched — see `deleteSkill`. */
   setDefaultProvider: (name: string, model: string) => Promise<boolean>;
@@ -271,6 +274,9 @@ interface CommandCenterStore {
   // --- Chat state ---
   chatMessages: ChatMessage[];
   chatSessionId: string | null;
+  /** A saved session names both a provider and model. Restoration can still
+      fail, so this is evidence to allow a retry, not proof of readiness. */
+  chatSessionRouteEvidence: boolean;
   /** Non-null when the last loadSessionMessages failed transiently (daemon
    *  hiccup, network) — the #568-lesson surface: MessageList renders it inline
    *  with a Retry instead of the old silent catch that disowned the session.
@@ -1100,6 +1106,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   providers: [],
   providersError: false,
   currentModel: null,
+  chatResolvedRoute: null,
   loadProviders: async () => {
     try {
       const configResp = await api.getConfig();
@@ -1110,6 +1117,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
       set({
         providersError: false,
         currentModel: currentModel || null,
+        chatResolvedRoute: configResp.resolved_routes?.chat ?? null,
         providers: raw.map(p => ({
           name: p.name,
           displayName: p.metadata.display_name,
@@ -1123,7 +1131,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
         })),
       });
     } catch {
-      set({ providers: [], providersError: true });
+      set({ providers: [], providersError: true, chatResolvedRoute: null });
     }
   },
 
@@ -1150,6 +1158,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   chatSessionId: (() => {
     try { return localStorage.getItem('permagent-chat-session-id'); } catch { return null; }
   })(),
+  chatSessionRouteEvidence: false,
   sessionLoadError: null,
   daemonAuthError: getDaemonTokenError(),
   chatHistoryLoaded: true,
@@ -1373,7 +1382,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
     try {
       const session = await api.createSession();
       sessionId = session.id;
-      set({ chatSessionId: sessionId });
+      set({ chatSessionId: sessionId, chatSessionRouteEvidence: false });
       try { localStorage.setItem('permagent-chat-session-id', sessionId); } catch { /* */ }
       get().connectSession(sessionId);
       return sessionId;
@@ -1670,7 +1679,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
       });
     }
     get().disconnectSession();
-    set({ chatSessionId: sessionId, chatMessages: [], isStreaming: false, _streamingMessageId: null, _activeRequestId: null });
+    set({ chatSessionId: sessionId, chatSessionRouteEvidence: false, chatMessages: [], isStreaming: false, _streamingMessageId: null, _activeRequestId: null });
     try { localStorage.setItem('permagent-chat-session-id', sessionId); } catch { /* */ }
     get().connectSession(sessionId);
     get().setActivePanel('chat');
@@ -1691,7 +1700,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
 
   switchToSession: async (sessionId: string) => {
     get().disconnectSession();
-    set({ chatSessionId: sessionId, chatMessages: [], isStreaming: false, _streamingMessageId: null, _activeRequestId: null });
+    set({ chatSessionId: sessionId, chatSessionRouteEvidence: false, chatMessages: [], isStreaming: false, _streamingMessageId: null, _activeRequestId: null });
     try { localStorage.setItem('permagent-chat-session-id', sessionId); } catch { /* */ }
     await get().loadSessionMessages(sessionId);
     // A 404 inside loadSessionMessages disowns the id (the session is gone);
@@ -1718,7 +1727,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
       throw e;
     }
     if (get().chatSessionId === sessionId) {
-      set({ chatSessionId: null, chatMessages: [] });
+      set({ chatSessionId: null, chatSessionRouteEvidence: false, chatMessages: [] });
       try { localStorage.removeItem('permagent-chat-session-id'); } catch { /* */ }
     }
     // loadSessions never throws (it latches sessionsError internally), so a
@@ -1942,6 +1951,9 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
     set({ sessionLoadError: null, chatHistoryLoaded: false });
     try {
       const session = await api.getSession(sessionId);
+      if (get().chatSessionId === sessionId) {
+        set({ chatSessionRouteEvidence: !!session.provider_name?.trim() && !!session.model_config?.model_name?.trim() });
+      }
       if (session.conversation && session.conversation.length > 0) {
         const responses = indexToolResponses(session.conversation);
         // Map before filtering so each fallback id keeps its conversation index.
@@ -1959,7 +1971,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
       if ((err as { status?: number }).status === 404) {
         // Session no longer exists — clear the stale ID and start fresh.
         console.warn('Session not found, will create new on next message');
-        set({ chatMessages: [], chatSessionId: null });
+        set({ chatMessages: [], chatSessionId: null, chatSessionRouteEvidence: false });
         try { localStorage.removeItem('permagent-chat-session-id'); } catch { /* */ }
       } else {
         console.error('Failed to load session messages:', err);

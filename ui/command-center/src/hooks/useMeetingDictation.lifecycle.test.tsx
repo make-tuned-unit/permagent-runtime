@@ -1154,12 +1154,18 @@ describe('retired recording and final capture errors', () => {
     const r = mount();
     act(() => r.h.setSystemAudio(true));
     await run(() => r.h.start(PROJECT_A));
+    const awaitTranscription = async (callCount: number) => {
+      await act(async () => {
+        await vi.waitFor(() => expect(transcribeAudio).toHaveBeenCalledTimes(callCount), { timeout: 1500 });
+        await transcribeAudio.mock.results[callCount - 1].value;
+      });
+    };
     act(() => emit('system_audio_chunk', '/tmp/silent.wav'));
-    await settle();
+    await awaitTranscription(1);
     expect(r.h.farChunksHeard).toBe(0);
     farTexts.set('/tmp/speech.wav', 'actual far side words');
     act(() => emit('system_audio_chunk', '/tmp/speech.wav'));
-    await settle();
+    await awaitTranscription(2);
     expect(r.h.farChunksHeard).toBe(1);
     act(() => r.h.discard());
     await settle();

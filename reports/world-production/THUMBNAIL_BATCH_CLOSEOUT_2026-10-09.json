@@ -1,0 +1,22 @@
+{
+  "ports_listening": {
+    "3001": true,
+    "3002": false,
+    "3003": false,
+    "5301": false,
+    "5302": false,
+    "5489": false
+  },
+  "production_daemon_pid_1439_present": true,
+  "owned_build_sessions_completed": true,
+  "owned_review_pid_27896_stopped": true,
+  "owned_preview_stopped": true,
+  "blank_native_daemon_not_started": true,
+  "disk_free_gib": {
+    "/System/Volumes/Data": 62.87,
+    "/Volumes/PermagentBuilds": 189.84,
+    "/Volumes/UNTITLED": 507.01
+  },
+  "build_guard_tests": "6/6 passed",
+  "native_ui": "UNVERIFIED: CUA timeoutReached then cgWindowNotFound"
+}

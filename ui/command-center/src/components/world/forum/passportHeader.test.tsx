@@ -123,3 +123,21 @@ describe('ForumPassport — no identity linked', () => {
     store.data = null;
   });
 });
+
+describe('World control and content materials', () => {
+  it('keeps passport content opaque without an independent backdrop filter', () => {
+    const body = ruleBody('.forum-passport');
+    expect(body).toMatch(/background:\s*var\(--forum-panel\)/);
+    expect(body).not.toMatch(/backdrop-filter|color-mix|--forum-glass/);
+  });
+
+  it('routes legacy Places rail glass through the shared transparency tokens', () => {
+    for (const selector of ['.forum-rail-list', '.forum-rail-handle']) {
+      const body = ruleBody(selector);
+      expect(body).toMatch(/--forum-glass/);
+      expect(body).toMatch(/backdrop-filter:\s*var\(--forum-blur\)/);
+      expect(body).toMatch(/-webkit-backdrop-filter:\s*var\(--forum-blur\)/);
+      expect(body).not.toMatch(/blur\(\d/);
+    }
+  });
+});

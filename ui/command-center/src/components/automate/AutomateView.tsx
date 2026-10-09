@@ -66,6 +66,8 @@ interface ScheduledJob {
   last_run: string | null;
   currently_running: boolean;
   paused: boolean;
+  /** Paused until the user enables this automation after review. */
+  requires_approval?: boolean;
   current_session_id: string | null;
   process_start_time: string | null;
   worker_persona: string | null;
@@ -1265,6 +1267,7 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionSta
   const { colors } = useTheme();
   const name = job.display_name || job.id;
   const desc = job.description || '';
+  const approvalPending = job.paused && job.requires_approval === true;
   const schedule = scheduleSummary(job);
   const cronHint = rawCronTooltip(job);
   const statusColor = job.currently_running ? colors.success : job.paused ? colors.textDim : colors.cyan;
@@ -1336,8 +1339,8 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionSta
           colour math and no hover/focus affordance on the ones that had a
           reason ("why did it fail?") to explain. */}
       <div data-testid="automation-chips" style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: space.sm, marginBottom: space.md }}>
-        <Chip kind="state" tone="accent" pulse={job.currently_running} data-testid="automation-state-chip">
-          {job.currently_running ? 'RUNNING' : job.paused ? 'PAUSED' : 'SCHEDULED'}
+        <Chip kind="state" tone={approvalPending ? 'warning' : 'accent'} pulse={job.currently_running} data-testid="automation-state-chip">
+          {job.currently_running ? 'RUNNING' : approvalPending ? 'REVIEW NEEDED' : job.paused ? 'PAUSED' : 'SCHEDULED'}
         </Chip>
         {!job.currently_running && runStatus && (
           <Chip
@@ -1359,6 +1362,9 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionSta
         )}
       </div>
       {desc && <div style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5, marginBottom: space.md, overflow: 'hidden', textOverflow: 'ellipsis', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' } as React.CSSProperties}>{desc}</div>}
+      {approvalPending && <div data-testid="automation-approval-note" style={{ fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5, marginBottom: space.md }}>
+        Paused for your review. It will follow its schedule only after you enable it.
+      </div>}
       <div style={{ fontSize: 10, color: colors.textDim, fontFamily: font.mono, marginBottom: failure.kind === 'historical' ? space.xs : space.lg }}>
         {cronHint ? (
           <Tooltip content={cronHint}><span tabIndex={0} style={{ outline: 'none' }}>{schedule}</span></Tooltip>
@@ -1382,8 +1388,10 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionSta
           <Button colors={colors} onClick={() => onKill(job.id)} flashSuccess={false} style={actionVars(colors, 'danger')}>Stop</Button>
         ) : (
           <>
-            <Button colors={colors} variant="primary" onClick={() => onRunNow(job.id)} style={PRIMARY_ACTION_VARS}>Run Now</Button>
-            {job.paused
+            {approvalPending
+              ? <Button colors={colors} variant="primary" onClick={onSelect} style={PRIMARY_ACTION_VARS}>Review to enable</Button>
+              : <Button colors={colors} variant="primary" onClick={() => onRunNow(job.id)} style={PRIMARY_ACTION_VARS}>Run Now</Button>}
+            {approvalPending ? null : job.paused
               ? <Button colors={colors} onClick={() => guardedAction(`${job.id}:unpause`, () => onUnpause(job.id), onActionDone)} style={actionVars(colors)}>Resume</Button>
               : <Button colors={colors} onClick={() => guardedAction(`${job.id}:pause`, () => onPause(job.id), onActionDone)} style={actionVars(colors)}>Pause</Button>}
           </>
@@ -1492,6 +1500,7 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, onOpenLas
 }) {
   const { colors } = useTheme();
   const name = job.display_name || job.id;
+  const approvalPending = job.paused && job.requires_approval === true;
   const statusColor = job.currently_running ? colors.success : job.paused ? colors.textDim : colors.cyan;
   const hasUpdate = job.starter_id && job.user_customized && job.embedded_version && job.version !== job.embedded_version;
   const detailFailure = lastFailure(job);
@@ -1516,6 +1525,9 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, onOpenLas
         {job.version && <span style={{ fontSize: textSize.micro, fontFamily: font.mono, color: colors.textDim }}>v{job.version}</span>}
       </div>
       {job.description && <div style={{ fontSize: textSize.small, color: colors.textMuted, lineHeight: 1.6, marginBottom: space.xxl }}>{job.description}</div>}
+      {approvalPending && <div data-testid="automation-approval-detail" style={{ marginBottom: space.xxl, padding: `${space.lg}px ${space.xxl}px`, borderRadius: radius.md, background: colors.surface, border: `1px solid ${colors.border}`, fontSize: textSize.caption, color: colors.textMuted, lineHeight: 1.5 }}>
+        Review this automation and its schedule before enabling it. It is paused and will not run until you choose Enable schedule.
+      </div>}
       {hasUpdate && (
         <div style={{ marginBottom: space.xxl, padding: `${space.lg}px ${space.xxl}px`, borderRadius: radius.md, background: withAlpha(colors.warning, 0.08), border: `1px solid ${withAlpha(colors.warning, 0.2)}`, fontSize: textSize.caption, color: colors.warning }}>
           Update available (v{job.embedded_version}). Reset to default to apply.
@@ -1523,7 +1535,7 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, onOpenLas
       )}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px 24px', marginBottom: detailFailure.kind !== 'none' ? 12 : 20 }}>
         <MetaField label="Schedule" value={scheduleSummary(job)} hint={rawCronTooltip(job)} />
-        <MetaField label="Status" value={job.currently_running ? 'Running' : job.paused ? 'Paused' : 'Active'} />
+        <MetaField label="Status" value={job.currently_running ? 'Running' : approvalPending ? 'Needs review' : job.paused ? 'Paused' : 'Active'} />
         <MetaField
           label={job.currently_running ? 'Started' : 'Last Run'}
           value={(() => {
@@ -1600,8 +1612,10 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, onOpenLas
           <Button colors={colors} onClick={() => onKill(job.id)} flashSuccess={false} style={actionVars(colors, 'danger')}>Stop</Button>
         ) : (
           <>
-            <Button colors={colors} variant="primary" onClick={() => onRunNow(job.id)} style={PRIMARY_ACTION_VARS}>Run Now</Button>
-            {job.paused
+            {approvalPending
+              ? <Button colors={colors} variant="primary" onClick={() => guardedAction(`${job.id}:unpause`, () => onUnpause(job.id), onActionDone)} style={PRIMARY_ACTION_VARS}>Enable schedule</Button>
+              : <Button colors={colors} variant="primary" onClick={() => onRunNow(job.id)} style={PRIMARY_ACTION_VARS}>Run Now</Button>}
+            {approvalPending ? null : job.paused
               ? <Button colors={colors} onClick={() => guardedAction(`${job.id}:unpause`, () => onUnpause(job.id), onActionDone)} style={actionVars(colors)}>Resume</Button>
               : <Button colors={colors} onClick={() => guardedAction(`${job.id}:pause`, () => onPause(job.id), onActionDone)} style={actionVars(colors)}>Pause</Button>}
           </>

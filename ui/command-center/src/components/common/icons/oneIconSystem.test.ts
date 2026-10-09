@@ -64,11 +64,6 @@ const DRAWINGS: Record<string, { count: number; why: string }> = {
     why: 'the 132x46 red string of memory — an animated signature mark with a '
       + 'gradient and a self-drawing dash offset, not a glyph',
   },
-  'components/settings/agents/AgentPortrait.tsx': {
-    count: 1,
-    why: 'generated identity art: a 64x64 per-agent silhouette built from a '
-      + 'variant spec, different for every agent',
-  },
   'components/settings/SettingsView.tsx': {
     count: 1,
     why: 'a QR code — a crispEdges module matrix, drawn from the payload',

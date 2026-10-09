@@ -79,6 +79,8 @@ export function ForumPlaceRail({
     handleRef.current?.focus();
   }, [open]);
 
+  // `aria-hidden` alone is unreliable when focus remains inside the rail;
+  // `inert` enforces the closed state in the accessibility tree.
   return (
     <div
       className="forum-rail"
@@ -108,8 +110,19 @@ export function ForumPlaceRail({
         role="radiogroup"
         aria-label="World places"
         aria-hidden={!open}
-        // `aria-hidden` alone is a promise WebKit will break the moment focus
-        // is inside here (see the effect above); `inert` is what enforces it.
+        onKeyDown={(event) => {
+          const offset = event.key === 'ArrowDown' || event.key === 'ArrowRight' ? 1
+            : event.key === 'ArrowUp' || event.key === 'ArrowLeft' ? -1 : 0;
+          if (!offset && event.key !== 'Home' && event.key !== 'End') return;
+          const buttons = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="radio"]')];
+          const current = buttons.indexOf(document.activeElement as HTMLButtonElement);
+          if (current < 0 || buttons.length === 0) return;
+          event.preventDefault();
+          const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1
+            : (current + offset + buttons.length) % buttons.length;
+          buttons[next].focus();
+          onSelect(places[next].id);
+        }}
         {...(open ? {} : { inert: '' })}
       >
         {places.map((place) => {
@@ -125,7 +138,7 @@ export function ForumPlaceRail({
               // announce fourteen independent pressed/unpressed buttons.
               role="radio"
               aria-checked={active}
-              tabIndex={open ? 0 : -1}
+              tabIndex={open && active ? 0 : -1}
               onClick={() => onSelect(place.id)}
             >
               <span className="forum-rail-place-name">{place.name}</span>

@@ -22,22 +22,24 @@ import { useCommandCenter } from '../../lib/store';
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
-const job = (paused: boolean) => ({
+const job = (paused: boolean, requiresApproval: boolean) => ({
   id: 'git-steward', source: 'x', cron: '0 0 6 * * 1-5', last_run: null, currently_running: false,
-  paused, current_session_id: null, process_start_time: null, worker_persona: null,
+  paused, requires_approval: requiresApproval, current_session_id: null, process_start_time: null, worker_persona: null,
   display_name: 'Git steward', description: null, starter_id: null, starter_version: null,
   user_customized: null, version: null, embedded_version: null,
 });
 
 let paused = true;
+let requiresApproval = false;
 let container: HTMLDivElement;
 let root: Root;
 beforeEach(() => {
   paused = true;
+  requiresApproval = false;
   useCommandCenter.setState({ loadSkills: async () => {}, loadProposals: async () => {}, skills: [], proposals: [] } as never);
   vi.mocked(apiFetch).mockReset().mockImplementation((async (url: string, init?: RequestInit) => {
-    if (url === '/schedule/list') return { jobs: [job(paused)] };
-    if (url === '/schedule/git-steward/unpause' && init?.method === 'POST') { paused = false; return undefined; }
+    if (url === '/schedule/list') return { jobs: [job(paused, requiresApproval)] };
+    if (url === '/schedule/git-steward/unpause' && init?.method === 'POST') { paused = false; requiresApproval = false; return undefined; }
     if (url.startsWith('/schedule/sessions_recent')) return { sessions: {} };
     if (url === '/config/extensions') return { extensions: [], warnings: [] };
     if (url === '/api/runs') return { runs: [] };
@@ -59,6 +61,7 @@ it('shows the card schedule in words and flips PAUSED right after a successful R
   expect(container.textContent).toContain('Weekdays at 6:00 AM');
   expect(container.textContent).not.toContain('Day 6 of every month');
   expect(container.textContent).toContain('PAUSED');
+  expect([...container.querySelectorAll('button')].some(b => b.textContent === 'Run Now')).toBe(true);
 
   const listCallsBefore = vi.mocked(apiFetch).mock.calls.filter(c => c[0] === '/schedule/list').length;
   const resume = [...container.querySelectorAll('button')].find(b => b.textContent === 'Resume')!;
@@ -73,4 +76,27 @@ it('shows the card schedule in words and flips PAUSED right after a successful R
   const listCallsAfter = vi.mocked(apiFetch).mock.calls.filter(c => c[0] === '/schedule/list').length;
   expect(listCallsAfter).toBeGreaterThan(listCallsBefore);
   expect(container.textContent).not.toContain('PAUSED');
+});
+
+it('holds an approval-pending automation for review and enables it through unpause', async () => {
+  requiresApproval = true;
+  await act(async () => { root.render(<AutomateView />); });
+  await settle();
+  expect(container.textContent).toContain('REVIEW NEEDED');
+  expect(container.querySelector('[data-testid="automation-approval-note"]')?.textContent).toContain('only after you enable it');
+  expect([...container.querySelectorAll('button')].some(b => b.textContent === 'Run Now')).toBe(false);
+  expect([...container.querySelectorAll('button')].some(b => b.textContent === 'Resume')).toBe(false);
+
+  const review = [...container.querySelectorAll('button')].find(b => b.textContent === 'Review to enable')!;
+  await act(async () => { review.click(); });
+  expect(container.querySelector('[data-testid="automation-approval-detail"]')?.textContent).toContain('will not run');
+  expect(container.textContent).toContain('Needs review');
+  expect([...container.querySelectorAll('button')].some(b => b.textContent === 'Run Now')).toBe(false);
+
+  const enable = [...container.querySelectorAll('button')].find(b => b.textContent === 'Enable schedule')!;
+  await act(async () => { enable.click(); });
+  await settle();
+  expect(apiFetch).toHaveBeenCalledWith('/schedule/git-steward/unpause', expect.objectContaining({ method: 'POST' }));
+  expect(container.querySelector('[data-testid="automation-approval-note"]')).toBeNull();
+  expect([...container.querySelectorAll('button')].some(b => b.textContent === 'Run Now')).toBe(true);
 });

@@ -55,6 +55,11 @@ const providers = (configured: Record<string, boolean> = {}, def = '') => [
     metadata: { name: 'ollama', display_name: 'Ollama', description: '', default_model: 'x', known_models: [],
       config_keys: [{ name: 'OLLAMA_HOST', required: true, secret: false, default: 'localhost' }] } },
 ];
+const ollamaStatus = (names: string[]) => ({
+  reachable: true,
+  installed: names.map(name => ({ name, size: 2e9, digest: 'd', modified_at: '' })),
+  running: [],
+});
 
 let container: HTMLDivElement;
 let root: Root;
@@ -238,6 +243,60 @@ describe('WizardShell', () => {
     expect(text()).toContain("Ollama isn't running on this Mac");
     expect((container.querySelector('main form button[type="submit"]') as HTMLButtonElement).disabled).toBe(true);
     expect(m.startOllama).not.toHaveBeenCalled();
+  });
+
+  it('local download: stream end alone cannot claim an unlisted model is installed', async () => {
+    m.getOllamaStatus.mockResolvedValue(ollamaStatus([]));
+    let resolvePull!: () => void;
+    m.pullOllamaModel.mockReturnValue({ promise: new Promise<void>(resolve => { resolvePull = resolve; }), abort: vi.fn() });
+    await start();
+    await submit();
+    await click(radio('local'));
+    await click(byText('button', 'Download'));
+    expect(text()).toContain('Downloading qwen3:8b');
+    await act(async () => { resolvePull(); });
+    await flush();
+    expect(m.getOllamaStatus).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('qwen3:8b was not found in Ollama');
+    expect(byText('button', 'Download')).toBeTruthy();
+    expect((container.querySelector('main form button[type="submit"]') as HTMLButtonElement).disabled).toBe(true);
+    expect(m.setProvider).not.toHaveBeenCalled();
+  });
+
+  it('local download: confirms installed inventory, then asks for a separate live check', async () => {
+    m.getOllamaStatus.mockResolvedValueOnce(ollamaStatus([])).mockResolvedValueOnce(ollamaStatus(['qwen3:8b']));
+    let resolvePull!: () => void;
+    m.pullOllamaModel.mockReturnValue({ promise: new Promise<void>(resolve => { resolvePull = resolve; }), abort: vi.fn() });
+    await start();
+    await submit();
+    await click(radio('local'));
+    await click(byText('button', 'Download'));
+    await act(async () => { resolvePull(); });
+    await flush();
+    expect(text()).toContain('qwen3:8b is installed in Ollama. Use this model to check it live.');
+    expect((container.querySelector('input[name="local-model"]') as HTMLInputElement).checked).toBe(true);
+    expect(primaryLabel()).toBe('Use this model');
+    expect(m.setProvider).not.toHaveBeenCalled();
+    expect(m.checkProvider).not.toHaveBeenCalled();
+    await submit();
+    expect(m.setProvider).toHaveBeenCalledWith('ollama', 'qwen3:8b');
+    expect(m.checkProvider).toHaveBeenCalledWith('ollama');
+  });
+
+  it('local download: stopping the progress stream does not claim Ollama stopped', async () => {
+    m.getOllamaStatus.mockResolvedValue(ollamaStatus([]));
+    let rejectPull!: (error: Error) => void;
+    const abort = vi.fn(() => rejectPull(Object.assign(new Error('client aborted'), { name: 'AbortError' })));
+    m.pullOllamaModel.mockReturnValue({ promise: new Promise<void>((_, reject) => { rejectPull = reject; }), abort });
+    await start();
+    await submit();
+    await click(radio('local'));
+    await click(byText('button', 'Download'));
+    await click(byText('button', 'Stop waiting'));
+    expect(abort).toHaveBeenCalledTimes(1);
+    expect(text()).toContain('Stopped waiting for download progress. Ollama may continue downloading.');
+    expect(text()).not.toContain('Download stopped.');
+    expect(byText('button', 'Download')).toBeTruthy();
   });
 
   it('no key and no local model: finishes with the limitation stated on the review', async () => {

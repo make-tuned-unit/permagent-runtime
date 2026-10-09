@@ -1,0 +1,46 @@
+{
+  "baseline": "Installed /Applications/Permagent.app, older than integration source; production daemon retained. Read-only native CUA inspection, no model calls, downloads, permissions or account changes.",
+  "checks": [
+    {
+      "surface": "Finance",
+      "result": "Opened and visually inspected current holdings, research, imports and settings affordances. Layout readable; no financial values or credentials retained in this report. No trading or scans invoked."
+    },
+    {
+      "surface": "Settings / Persona",
+      "result": "Existing pronunciation rows visible; source audit traces these to per-user state. Not proof of fresh-install defaults."
+    },
+    {
+      "surface": "Settings / Devices",
+      "result": "Tailscale installed/disconnected status and Have Agent set it up button visible. Remote access off; no change or pairing link created."
+    },
+    {
+      "surface": "Settings / Models",
+      "result": "Role pickers, API key navigation, installed Ollama inventory and distinct GGUF registry visible. No download/select/inference attempted."
+    },
+    {
+      "surface": "Settings / Tools",
+      "result": "Desktop Control visible with an off dot but no setup control; AX serializes cards as static text, omitting enabled/off status. Source patch adds status words; setup workflow remains open."
+    },
+    {
+      "surface": "Settings / Agents",
+      "result": "13 background entries and 9 dispatch personas visible. Forecaster details open and How this works expands. Older native baseline says no World presence and draws old SVG portrait; mapping and new-design thumbnail fixes pending fresh build."
+    },
+    {
+      "surface": "Settings / Appearance",
+      "result": "Theme group, glow slider, idle animation, density and Reduce Motion controls surfaced. Values not changed."
+    },
+    {
+      "surface": "Settings / Shortcuts",
+      "result": "Keyboard map rendered; claims workspace shortcuts only 1\u20135 although main rail advertises 1\u20139. Needs current-source verification."
+    },
+    {
+      "surface": "Settings / Privacy & data",
+      "result": "Screenshot shows privacy mode, prompt-log toggle, audit refresh and records. Native AX tree omitted entire pane even on full refresh, leaving rail/Chat only. No changes made; recheck fresh native shell."
+    }
+  ],
+  "limits": [
+    "Installed application is not the current branch build.",
+    "These checks establish navigation/rendering, not complete agent execution.",
+    "Fresh-user package/privacy and current-source native acceptance are pending."
+  ]
+}

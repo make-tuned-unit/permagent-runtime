@@ -1,0 +1,25 @@
+{
+  "exit_code": 1,
+  "reason": null,
+  "elapsed_s": 491.7,
+  "log": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/reports/world-production/frontend-full-suite-20261009.log",
+  "broad_run": {
+    "tests_total": 3958,
+    "passed": 3954,
+    "failed": 4,
+    "files": 491
+  },
+  "followup": "All four broad-run failures corrected and focused rechecks passed; do not report the original broad run as a single green full-suite result.",
+  "corrected_failures": [
+    "useMeetingDictation lifecycle test now awaits asynchronous FileReader work; production hook unchanged",
+    "AgentPortrait uses shared radius.md",
+    "Removed obsolete AgentPortrait SVG icon exemption",
+    "Moved ForumPlaceRail explanatory comment outside JSX"
+  ],
+  "latest_frontend_gates": {
+    "typecheck": "PASS after Ollama stream/inventory fixes, Node24, bounded3GiB",
+    "production_build": "PASS after Ollama stream/inventory fixes",
+    "ollama_focused_tests": "16/16 PASS",
+    "native_visual_acceptance": "PENDING: CUA cgWindowNotFound"
+  }
+}

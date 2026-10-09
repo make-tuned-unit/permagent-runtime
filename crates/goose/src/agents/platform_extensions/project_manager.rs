@@ -548,10 +548,9 @@ pub const FIRST_PARTY_ANALYTICS_FEATURE: crate::agents::self_knowledge::FeatureD
 /// opens into a workspace with two lenses: an Overview dashboard (summary, key
 /// facts, links, live task status) and the Kanban board. Static — always-on
 /// surface, co-located with the project tools that back it.
-/// Self-knowledge for the Devices pairing surface + the agent-driven tailnet
-/// runbook (MULTI_DEVICE.md, zero-strain ruling 2026-07-11): Henry sets
-/// the tailnet up himself with terminal commands; the user's only step is the
-/// Tailscale login click, which Henry opens for them.
+/// Self-knowledge for the Devices pairing surface and its tailnet setup path.
+/// Installation, account sign-in, Serve exposure and companion pairing are
+/// separate steps with separate user decisions and verifiable outcomes.
 pub const DEVICES_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
     crate::agents::self_knowledge::FeatureDescriptor {
         id: "devices",
@@ -568,21 +567,25 @@ pub const DEVICES_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
              when it last connected, and revoke its access from this surface. One Brain on the \
              hub — other devices connect to it, nothing syncs",
         why_it_matters:
-            "When the user wants Permagent on their phone or laptop, set the tailnet up FOR \
-             them with your terminal: (1) `tailscale status --json` — if it errors, install \
-             with `brew install --cask tailscale` and launch the app; (2) run \
-             `tailscale up` and when it prints a login URL, open_website it so they just \
-             click approve; (3) confirm with `tailscale status --json` (BackendState \
-             Running), read Self.DNSName, and tell them it now appears in Settings → \
-             Devices; (4) remind them the daemon needs HOST=0.0.0.0 to accept tailnet \
-             connections. Their only task is one login click — you do the rest",
+            "For another device, read Settings → Devices status (`/api/tailnet/status`) for \
+             installed, running and MagicDNS: installed does not mean connected. Explain any \
+             installation and wait for the user's approval before acting. If disconnected, \
+             help start Tailscale and open its login page; the user completes account sign-in. \
+             Recheck that Tailscale is running and has a MagicDNS name. Keep the Permagent \
+             daemon on localhost. Ask before enabling Tailscale Serve in Settings → Devices, \
+             then verify `/api/tailnet/access` reports a Serve URL. Finally create a one-time \
+             pairing link, have the user open it on the companion, and verify the device \
+             appears in paired devices. Report each confirmed stage; sign-in alone is not \
+             completed setup",
         state_source: crate::agents::self_knowledge::StateSource::Static,
         teaching: &[crate::agents::self_knowledge::TeachingStep {
             title: "Put Permagent in their pocket",
-            body: "Offer to set up multi-device: run the tailnet steps yourself (install, \
-                   up, open the login page for them), then walk them to Settings → \
-                   Devices, have them open the pairing URL on their phone, and greet them \
-                   there.",
+            body: "Offer multi-device setup: check installation, connection and Serve \
+                   separately; explain and wait for approval before installation or enabling \
+                   Serve, while the user completes account sign-in. Verify MagicDNS and the \
+                   Serve URL, then open Settings → Devices for a one-time pairing link. Have \
+                   the user open it on the companion and verify the device appears. Keep the \
+                   daemon on localhost.",
             open_surface: Some(crate::agents::self_knowledge::SurfaceRef {
                 tab: "Settings",
                 section: Some("devices"),

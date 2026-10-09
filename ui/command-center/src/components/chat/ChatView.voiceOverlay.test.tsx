@@ -25,6 +25,7 @@ const mocks = vi.hoisted(() => ({
   disconnectSession: vi.fn(),
   setAgentName: vi.fn(),
   getIdentity: vi.fn(),
+  loadProviders: vi.fn(),
   exit: vi.fn(),
 }));
 
@@ -35,6 +36,16 @@ vi.mock('../../lib/store', () => {
     connectSession: mocks.connectSession,
     disconnectSession: mocks.disconnectSession,
     setAgentName: mocks.setAgentName,
+    loadProviders: mocks.loadProviders,
+    providers: [],
+    providersError: false,
+    currentModel: null,
+    configRev: 0,
+    chatMessages: [],
+    chatHistoryLoaded: true,
+    isStreaming: false,
+    sessionLoadError: null,
+    daemonAuthError: null,
     identityRev: 0,
     agentName: 'Henry',
     sessions: [],
@@ -77,6 +88,7 @@ let root: Root;
 
 beforeEach(() => {
   mocks.getIdentity.mockRejectedValue(new Error('offline'));
+  mocks.loadProviders.mockResolvedValue(undefined);
   mocks.ensureSession.mockResolvedValue(null);
   container = document.createElement('div');
   document.body.appendChild(container);

@@ -1,0 +1,17 @@
+{
+  "stage": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/staged/Permagent Record Review (record-thumbnails-20261009).app",
+  "files": 4624,
+  "state_file_name_hits": [],
+  "native_launch": {
+    "attempted": true,
+    "cua": "timeoutReached then cgWindowNotFound",
+    "ui_verified": false,
+    "owned_pid": 27896,
+    "owned_process_stopped": true,
+    "external_review_daemon_started": false
+  },
+  "limits": [
+    "Filename-only package scan; embedded frontend signature scan and blank-profile HTTP startup have separate receipts.",
+    "No native visual acceptance or model inference claimed."
+  ]
+}

@@ -63,10 +63,12 @@ def main():
     root.mkdir(mode=0o700)
     state = root / 'state'
     state.mkdir(mode=0o700)
+    empty_home = root / 'home'
+    empty_home.mkdir(mode=0o700)
     if list(state.iterdir()):
         raise RuntimeError('State must begin empty')
     env = {
-        'HOME': os.environ['HOME'], 'PATH': '/usr/bin:/bin:/usr/sbin:/sbin', 'LANG': 'en_US.UTF-8',
+        'HOME': str(empty_home), 'PATH': '/usr/bin:/bin:/usr/sbin:/sbin', 'LANG': 'en_US.UTF-8',
         'PERMAGENT_PATH_ROOT': str(state), 'PERMAGENT_CONFIG': str(state / 'config.yaml'),
         'PERMAGENT_SPECTRAL_DB': str(state / 'spectral/permagent.db'),
         'PERMAGENT_DISABLE_KEYRING': '1', 'DYLD_LIBRARY_PATH': str(isolated.DEBUG),
@@ -78,7 +80,8 @@ def main():
         'PERMAGENT_OLLAMA_HOST': 'http://127.0.0.1:' + str(unavailable_service_port),
     }
     report = {'binary': binary, 'root': str(root), 'port': 3003, 'initialStateEmpty': True,
-              'method': 'real daemon empty data-root startup/restart; same OS home, no native/UI acceptance',
+              'method': 'real daemon empty data-root and HOME startup/restart; same OS account, no native/UI acceptance',
+              'initialHomeEmpty': True,
               'keyringDisabled': True, 'inheritedProviderOrCredentialEnvironment': False,
               'serviceOverrides': sorted(k for k in env if k.endswith('_ENABLED') or k.endswith('_HOST')),
               'phases': [], 'tokenLogged': False}
@@ -136,6 +139,10 @@ def main():
                               for key in ('GOOSE_PROVIDER', 'GOOSE_MODEL', 'wizard_complete', 'LOCAL_WHISPER_MODEL')}
                     status = request('/api/dictation/status', token)
                     memories = request('/api/brain/memories?limit=1', token)
+                    owner = request('/api/owner', token)
+                    pronunciations = request('/voice/pronunciations', token)
+                    schedules = request('/schedule/list', token)
+                    starter_jobs = [job for job in schedules.get('jobs', []) if job.get('starter_id')]
                     ontology = state / 'brain/ontology.toml'
                     ontology_hash = isolated.digest(ontology)
                     if first_ontology is None:
@@ -153,6 +160,15 @@ def main():
                                                            'model': None, 'inference_verified': False},
                         'brainReadable': isinstance(memories.get('memories'), list),
                         'brainEmpty': memories.get('total') == 0,
+                        'ownerEmpty': isinstance(owner, dict) and all(
+                            owner.get(key) is None for key in
+                            ('display_name', 'email', 'linked_person_id', 'linked_person_name')),
+                        'pronunciationsEmpty': pronunciations == {},
+                        'allStartersPresent': {job.get('starter_id') for job in starter_jobs} == set(isolated.STARTERS),
+                        'startersAwaitReview': bool(starter_jobs) and all(
+                            job.get('paused') is True and job.get('requires_approval') is True
+                            and job.get('currently_running') is False and job.get('last_run') is None
+                            for job in starter_jobs),
                         # Product migration seeds one neutral, folderless Personal project.
                         'onlyProductStarterProject': len(project_rows) == 1 and all(
                             project.get('id') == '00000000-0000-0000-0000-000000000001'

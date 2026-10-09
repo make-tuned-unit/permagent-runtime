@@ -578,23 +578,22 @@ describe('AgentsPanel', () => {
     expect(container.innerHTML).not.toContain(SEED_SECRET_VALUE);
   });
 
-  // The portrait is derived, not fetched: there are no per-character assets on
-  // disk, so the trim has to be the world's own AGENT_TRIM or the same agent
-  // would wear two faces. The expected colour is read from the palette here,
-  // never written as a literal.
+  // A Settings row and its detail header resolve to the same World wardrobe.
+  // The shared thumbnail renderer fills the image lazily when the row is
+  // visible; identity and accessible fallback stay correct before it loads.
   it('draws the agent portrait in the roster row and again in the profile header', async () => {
     mockRosterAndDetail();
     await mount();
 
     const listed = container.querySelector('[data-testid="agent-portrait-strix"]');
     expect(listed).toBeTruthy();
-    expect(listed?.getAttribute('data-variant')).toBe('strix');
+    expect(listed?.getAttribute('data-world-id')).toBe('strix');
     expect(listed?.getAttribute('data-trim-color')).toBe(AGENT_TRIM.strix);
 
     await open('worker-row-strix');
     const header = container.querySelector('[data-testid="agent-portrait-strix"]');
     expect(header).toBeTruthy();
-    expect(header?.getAttribute('data-variant')).toBe('strix');
+    expect(header?.getAttribute('data-world-id')).toBe('strix');
     expect(header?.getAttribute('data-trim-color')).toBe(AGENT_TRIM.strix);
   });
 
@@ -604,7 +603,7 @@ describe('AgentsPanel', () => {
 
     const blank = container.querySelector('[data-testid="agent-portrait-claude_code"]');
     expect(blank).toBeTruthy();
-    expect(blank?.getAttribute('data-variant')).toBe('unknown');
+    expect(blank?.getAttribute('data-world-id')).toBe('');
     // No character means no identity colour to borrow — never another agent's.
     expect(blank?.getAttribute('data-trim-color')).toBe('');
   });

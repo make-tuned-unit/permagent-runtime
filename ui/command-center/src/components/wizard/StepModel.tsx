@@ -307,7 +307,12 @@ function HostedPanel({ providers, onAction, onDone }: {
 
 type LocalState = 'checking' | 'down' | 'starting' | 'up' | 'error';
 
-interface Pull { model: string; percent: number; status: string }
+interface Pull { model: string; percent: number; status: string; verifying?: boolean }
+type OllamaStatus = Awaited<ReturnType<typeof api.getOllamaStatus>>;
+
+function installedModelName(model: string, installed: ReadonlyArray<{ name: string }>): string | null {
+  return installed.find(item => item.name === model || item.name === `${model}:latest`)?.name ?? null;
+}
 
 function gb(bytes: number): string {
   return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
@@ -324,27 +329,27 @@ function LocalPanel({ onAction, onDone }: {
   const [selected, setSelected] = useState('');
   const [suggested, setSuggested] = useState<{ model: string; sizeGB: number } | null>(null);
   const [pull, setPull] = useState<Pull | null>(null);
-  const [pullNote, setPullNote] = useState('');
+  const [pullNote, setPullNote] = useState<{ tone: 'ok' | 'warn' | 'error'; text: string } | null>(null);
   const [phase, setPhase] = useState<'idle' | 'testing' | 'ok' | 'error'>('idle');
   const [message, setMessage] = useState('');
   const abortRef = useRef<(() => void) | null>(null);
   const alive = useRef(true);
   useEffect(() => { alive.current = true; return () => { alive.current = false; abortRef.current?.(); }; }, []);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (): Promise<OllamaStatus | null> => {
     try {
       const status = await api.getOllamaStatus();
-      if (!alive.current) return false;
-      if (!status.reachable) { setState(s => (s === 'starting' ? s : 'down')); return false; }
+      if (!alive.current) return null;
+      if (!status.reachable) { setState(s => (s === 'starting' ? s : 'down')); return null; }
       setInstalled(status.installed.map(m => ({ name: m.name, size: m.size })));
       setSelected(cur => cur && status.installed.some(m => m.name === cur) ? cur : status.installed[0]?.name ?? '');
       setState('up');
-      return true;
+      return status;
     } catch (e) {
-      if (!alive.current) return false;
+      if (!alive.current) return null;
       setError(e instanceof Error ? e.message : String(e));
       setState('error');
-      return false;
+      return null;
     }
   }, []);
 
@@ -372,7 +377,9 @@ function LocalPanel({ onAction, onDone }: {
 
   const download = async (model: string) => {
     setPull({ model, percent: 0, status: 'Starting download…' });
-    setPullNote('');
+    setPullNote(null);
+    setPhase('idle');
+    setMessage('');
     const job = api.pullOllamaModel(model, data => {
       if (!alive.current) return;
       setPull(p => p && {
@@ -382,20 +389,29 @@ function LocalPanel({ onAction, onDone }: {
       });
     });
     abortRef.current = job.abort;
+    let streamFinished = false;
     try {
       await job.promise;
+      streamFinished = true;
       if (!alive.current) return;
+      abortRef.current = null;
+      setPull(p => p && { ...p, status: 'Checking installed models…', verifying: true });
+      const status = await refresh();
+      if (!alive.current) return;
+      if (!status) throw new Error('Could not verify the model in Ollama. Check its status and try again.');
+      const installedName = installedModelName(model, status.installed);
+      if (!installedName) throw new Error(`${model} was not found in Ollama after the download stream ended. Check installed models or retry.`);
+      setSelected(installedName);
       setPull(null);
-      await refresh();
-      setSelected(model);
+      setPullNote({ tone: 'ok', text: `${installedName} is installed in Ollama. Use this model to check it live.` });
     } catch (e) {
       if (!alive.current) return;
       setPull(null);
       setPullNote((e as Error).name === 'AbortError'
-        ? 'Download stopped. Ollama keeps what it fetched, so starting again picks up where it left off.'
-        : `Download failed: ${e instanceof Error ? e.message : String(e)}`);
+        ? { tone: 'warn', text: 'Stopped waiting for download progress. Ollama may continue downloading. Check installed models before retrying.' }
+        : { tone: 'error', text: `${streamFinished ? 'Download could not be verified' : 'Download failed'}: ${safeWizardError(e, 'the download failed')}` });
     } finally {
-      abortRef.current = null;
+      if (abortRef.current === job.abort) abortRef.current = null;
     }
   };
   const cancel = () => abortRef.current?.();
@@ -432,14 +448,14 @@ function LocalPanel({ onAction, onDone }: {
   }, [label, disabled, pending, pendingLabel, onAction]);
   useEffect(() => () => onAction(null), [onAction]);
 
-  const suggestionInstalled = !!suggested && installed.some(m => m.name === suggested.model || m.name === `${suggested.model}:latest`);
+  const suggestionInstalled = !!suggested && !!installedModelName(suggested.model, installed);
 
   return (
     <Panel>
       <div style={{ display: 'flex', flexDirection: 'column', gap: space.xl }}>
         {state === 'checking' && <StatusLine tone="info">Looking for Ollama on this Mac…</StatusLine>}
         {state === 'starting' && <StatusLine tone="info">Starting Ollama…</StatusLine>}
-        {state === 'error' && <StatusLine tone="error">Couldn't check for Ollama ({error}).</StatusLine>}
+        {state === 'error' && <StatusLine tone="error">Couldn't check for Ollama ({error}). <GhostLink onClick={refresh}>Try again</GhostLink></StatusLine>}
         {state === 'down' && (
           <>
             <StatusLine tone="warn">Ollama isn't running on this Mac. It runs models locally and is free.</StatusLine>
@@ -495,11 +511,11 @@ function LocalPanel({ onAction, onDone }: {
             </div>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: space.sm, gap: space.md }}>
               <span style={{ fontFamily: font.mono, fontSize: textSize.micro, color: colors.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{pull.status}</span>
-              <SecondaryButton onClick={cancel}>Cancel</SecondaryButton>
+              {!pull.verifying && <SecondaryButton onClick={cancel}>Stop waiting</SecondaryButton>}
             </div>
           </div>
         )}
-        {pullNote && <StatusLine tone="warn">{pullNote}</StatusLine>}
+        {pullNote && <StatusLine tone={pullNote.tone}>{pullNote.text}{pullNote.tone !== 'ok' && state === 'up' && <> <GhostLink onClick={() => { setPullNote(null); void refresh(); }}>Check installed models</GhostLink></>}</StatusLine>}
 
         {phase === 'testing' && <StatusLine tone="info">Checking {selected}…</StatusLine>}
         {phase === 'ok' && <StatusLine tone="ok">{message}</StatusLine>}

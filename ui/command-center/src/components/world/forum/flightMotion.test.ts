@@ -3,6 +3,7 @@ import {
   CEILING,
   TOUCHDOWN_HEIGHT,
   flightStep,
+  flightInputFromKeys,
   gearIsDown,
   idleInput,
   thrusterGlow,
@@ -36,6 +37,17 @@ function fly(state: FlightState, input: Parameters<typeof flightStep>[1], second
 }
 
 describe('flying the skiff', () => {
+  it('keeps intentional keyboard travel available for a reduced-motion flight', () => {
+    // Flight controls are independent of the visual motion preference. The
+    // rendered skiff quiets bank and camera lag, while these inputs still fly.
+    const input = flightInputFromKeys(new Set(['KeyW', 'ArrowLeft', 'Space', 'ShiftLeft']));
+    expect(input).toEqual({ thrust: 1, turn: 1, lift: 1, boost: true });
+    const next = flightStep(aloft(), input, 1 / 60, () => null);
+    expect(next.vz).toBeLessThan(0);
+    expect(next.vy).toBeGreaterThan(0);
+    expect(next.yaw).toBeGreaterThan(0);
+  });
+
   it('goes where it is pointed', () => {
     const flown = fly(aloft(), { ...idleInput, thrust: 1 }, 3, () => null);
     // Yaw 0 faces -Z, so ahead is -Z and the skiff should not drift sideways.

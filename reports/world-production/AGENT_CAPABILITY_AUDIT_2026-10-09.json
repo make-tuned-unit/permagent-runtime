@@ -1,0 +1,627 @@
+{
+  "scope": {
+    "revision": "e6ff7fa4",
+    "method": "Initial source and existing-test audit was read-only; no agent, model, or daemon execution was used as task evidence. A later isolated frontend thumbnail preview and focused tests validate only portrait rendering, not agent tasks.",
+    "interpretation": "World characters, Settings background workers, Settings dispatch personas, Automate run rows, and model routing tiers are different populations. Presence or a probe is not proof that a task ran."
+  },
+  "source_of_truth": {
+    "world_roster": "ui/command-center/src/components/world/agents/roster.ts:48",
+    "world_to_agents_bridge": "ui/command-center/src/lib/worldAgentIds.ts:11",
+    "background_registry": "crates/goose/src/agents/self_knowledge/mod.rs:145",
+    "dispatch_defaults": "crates/goose/src/config/agent_identity.rs:837",
+    "agents_api": "crates/goose-server/src/routes/agents_surface.rs:262",
+    "automate_runs": "ui/command-center/src/components/automate/RunRoster.tsx:1",
+    "model_tiers": "crates/goose/src/agents/platform_extensions/orchestrator.rs:6714"
+  },
+  "thumbnail_update": {
+    "implementation": "Settings Agents roster and detail now resolve linked IDs through worldAgentIds/portraitSpec and request stills from one lazy, serialized offscreen renderer using current heroRobot/createAgentWardrobe, with a cached image and neutral unavailable fallback. No per-row WebGL canvases or newly generated character designs.",
+    "source": [
+      "ui/command-center/src/components/settings/agents/AgentPortrait.tsx",
+      "ui/command-center/src/components/settings/agents/thumbnailCache.ts",
+      "ui/command-center/src/components/world/forum/heroRobot.ts",
+      "ui/command-center/src/components/world/forum/agentWardrobe.ts"
+    ],
+    "browser_qa": "Root reviewed an isolated Vite preview that imported the actual getAgentThumbnail module. All eight Settings-linked current World designs rendered at 192, 56, and 28 pixels. A first crop clipped Librarian/Council headwear; y=0.58 camera adjustment passed a second visual review with visible headwear and recognizable faces/wardrobe.",
+    "native_settings_status": "UNVERIFIED: current native app built and staged with verified current assets; CUA launch timed out, reattach returned cgWindowNotFound. Owned review app stopped; no final native visual acceptance.",
+    "agent_task_execution_status": "UNVERIFIED; portrait rendering proves neither agent tool execution nor task success.",
+    "focused_tests": "Frontend focused batches passed: 42 portrait/mapping assertions, 2 follow-up assertions, and 10 cache-retry/portrait/design-token/icon assertions. These test component wiring and cache behavior, not native app integration or agent execution.",
+    "surface_audit": {
+      "settings_agents_roster_and_detail": "AgentsPanel.tsx:673,1073,1096 uses AgentPortrait; mapped identities lazily request current hero-kit stills through thumbnailCache.ts. No obsolete SVG or character GLB thumbnail remains.",
+      "world_forum_portraits": "ForumView.tsx:599, AgentDeskProfile.tsx:21, and HabitatAgentDock.tsx:45 use HeroAgentPortrait from current heroRobot.ts/hero-kit-v3b.glb for desk, profile, and dock sizes.",
+      "world_picker": "AgentPicker.tsx:124-157 uses a trim-color swatch alongside names, not a character thumbnail or obsolete illustration.",
+      "world_in_scene": "WorldAgents.tsx and ForumAgents.tsx still instantiate AgentCharacterV2 with optional world/characters/*.glb armor via blenderArmor.ts; these are live 3D avatars, outside thumbnail scope and left unchanged.",
+      "other_persona_avatars": "HenryIdentityTab.tsx:100-104 and ui/goose2 persona views use configured/user-provided avatar URLs or files rather than bundled old agent-design thumbnails.",
+      "remaining_obsolete_thumbnail_surfaces": "None found in source audit; native Settings integration remains unverified."
+    },
+    "followup_ui_attempt": {
+      "method": "Owned loopback5301 actual Vite frontend, read-only production3001 intended",
+      "result": "No UI actions succeeded: CUA had no attachable window. Owned preview stopped; user browser tabs unchanged.",
+      "earlier_preview_result": "Eight actual current thumbnail captures visually passed at192/56/28px before window availability was lost."
+    },
+    "legacy_scene_scope": "AgentCharacterV2 older live avatar assets remain in intentional Previous campus and hero-asset-failure fallback; not used by the Settings or current World portrait surfaces.",
+    "native_build": "native-record-build-record-thumbnails-20261009-r2-20261008-230650.json",
+    "native_package": "native-record-package-verification-record-thumbnails-20261009.json",
+    "native_review": "NATIVE_THUMBNAIL_REVIEW_2026-10-09.json"
+  },
+  "world_characters": [
+    {
+      "world_id": "henry",
+      "canonical_identity": "primary persona / shared orchestrator session",
+      "role": "Coordinate conversation, tools, goals and specialists",
+      "wire": "daemon status poll",
+      "agents_api_id": null,
+      "execution": "interactive main agent; selected specialist briefs still enter this session",
+      "evidence": [
+        "ui/command-center/src/components/world/agents/roster.ts:49",
+        "ui/command-center/src/components/world/agents/stateSources.tsx:56",
+        "ui/command-center/src/components/world/forum/forumQuery.ts:3"
+      ],
+      "task_execution_status": "UNVERIFIED"
+    },
+    {
+      "world_id": "librarian",
+      "canonical_identity": "background worker librarian; dispatch key librarian is Pending",
+      "role": "Nightly Brain description, consolidation and pruning",
+      "wire": "daemon events",
+      "agents_api_id": "librarian",
+      "execution": "scheduled curation, not goal dispatch",
+      "evidence": [
+        "ui/command-center/src/components/world/agents/roster.ts:66",
+        "crates/goose/src/config/agent_identity.rs:977",
+        "crates/goose/src/agents/self_knowledge/mod.rs:148"
+      ],
+      "task_execution_status": "UNVERIFIED"
+    },
+    {
+      "world_id": "reader",
+      "canonical_identity": "Reader surface / local OCR ingest",
+      "role": "Interpret imported documents",
+      "wire": "sim ambient only",
+      "agents_api_id": null,
+      "execution": "ingest pipeline, not a dispatch persona",
+      "evidence": [
+        "ui/command-center/src/components/world/agents/roster.ts:77",
+        "ui/command-center/src/lib/worldAgentIds.ts:4"
+      ],
+      "task_execution_status": "UNVERIFIED"
+    },
+    {
+      "world_id": "watcher",
+      "canonical_identity": "background worker watcher / Echo",
+      "role": "Selective proactive nudges and sell-signal delivery",
+      "wire": "sim ambient; proactive_nudge is a real event",
+      "agents_api_id": "watcher",
+      "execution": "background loop; no direct dispatch",
+      "evidence": [
+        "ui/command-center/src/components/world/agents/roster.ts:93",
+        "ui/command-center/src/components/world/agents/stateSources.tsx:153",
+        "crates/goose/src/agents/self_knowledge/mod.rs:151"
+      ],
+      "task_execution_status": "UNVERIFIED"
+    },
+    {
+      "world_id": "steward",
+      "canonical_identity": "background worker git_steward; dispatch key steward is Pending",
+      "role": "Repo hygiene, CI investigation and approval proposals",
+      "wire": "daemon events",
+      "agents_api_id": "git_steward",
+      "execution": "sweep and scheduled recipe; not handed-off goal dispatch",
+      "evidence": [
+        "ui/command-center/src/components/world/agents/roster.ts:111",
+        "ui/command-center/src/lib/worldAgentIds.ts:14",
+        "crates/goose/src/config/agent_identity.rs:995"
+      ],
+      "task_execution_status": "UNVERIFIED"
+    },
+    {
+      "world_id": "strix",
+      "canonical_identity": "background worker strix / The Guard; dispatch key strix is Pending",
+      "role": "Static-only security sweep; reports findings",
+      "wire": "daemon events",
+      "agents_api_id": "strix",
+      "execution": "gated background sweep, not handed-off goal dispatch",
+      "evidence": [
+        "ui/command-center/src/components/world/agents/roster.ts:129",
+        "crates/goose/src/config/agent_identity.rs:1023"
+      ],
+      "task_execution_status": "UNVERIFIED"
+    },
+    {
+      "world_id": "financier",
+      "canonical_identity": "background worker financier; dispatch key financier is Pending",
+      "role": "Finance ledger, quotes, research, scanner and picks",
+      "wire": "daemon events",
+      "agents_api_id": "financier",
+      "execution": "Finance tools and loops; no trade execution and no goal dispatch",
+      "evidence": [
+        "ui/command-center/src/components/world/agents/roster.ts:147",
+        "crates/goose/src/config/agent_identity.rs:1042"
+      ],
+      "task_execution_status": "UNVERIFIED"
+    },
+    {
+      "world_id": "forecaster",
+      "canonical_identity": "background worker forecaster",
+      "role": "Public market signals and project scenarios",
+      "wire": "daemon events",
+      "agents_api_id": "forecaster",
+      "execution": "platform tool/background capability, not dispatch persona",
+      "evidence": [
+        "ui/command-center/src/components/world/agents/roster.ts:163",
+        "crates/goose/src/agents/self_knowledge/mod.rs:167",
+        "ui/command-center/src/lib/worldAgentIds.ts:11"
+      ],
+      "identity_link_status": "MAPPED_IN_WORKTREE_FOCUSED_TESTS_PASSED",
+      "task_execution_status": "UNVERIFIED"
+    },
+    {
+      "world_id": "council",
+      "canonical_identity": "background worker council",
+      "role": "Multi-provider decision debate",
+      "wire": "daemon events",
+      "agents_api_id": "council",
+      "execution": "gated weekly/background convene; not goal dispatch",
+      "evidence": [
+        "ui/command-center/src/components/world/agents/roster.ts:198",
+        "crates/goose/src/agents/self_knowledge/mod.rs:168",
+        "ui/command-center/src/lib/worldAgentIds.ts:11"
+      ],
+      "identity_link_status": "MAPPED_IN_WORKTREE_FOCUSED_TESTS_PASSED",
+      "task_execution_status": "UNVERIFIED"
+    },
+    {
+      "world_id": "polybot",
+      "canonical_identity": "separate trading process / Finance board",
+      "role": "Rule-driven trader process",
+      "wire": "static; board carries actual status",
+      "agents_api_id": null,
+      "execution": "separate process; no World event emitter and no dispatch persona",
+      "evidence": [
+        "ui/command-center/src/components/world/agents/roster.ts:219",
+        "ui/command-center/src/components/world/agents/stateSources.tsx:185"
+      ],
+      "task_execution_status": "UNVERIFIED"
+    },
+    {
+      "world_id": "picker",
+      "canonical_identity": "Finance close-scan worker",
+      "role": "Rank next-day candidates at close",
+      "wire": "daemon events",
+      "agents_api_id": null,
+      "execution": "close-scan loop, with Financier judging survivors; not a registered background descriptor",
+      "evidence": [
+        "ui/command-center/src/components/world/agents/roster.ts:235",
+        "crates/goose/src/agents/self_knowledge/mod.rs:145"
+      ],
+      "task_execution_status": "UNVERIFIED"
+    },
+    {
+      "world_id": "growth_measurement",
+      "canonical_identity": "background worker growth_measurement / The Grower",
+      "role": "Measure 7/14/28-day effects of shipped growth actions",
+      "wire": "daemon events",
+      "agents_api_id": "growth_measurement",
+      "execution": "six-hour background sweep, not goal dispatch",
+      "evidence": [
+        "ui/command-center/src/components/world/agents/roster.ts:254",
+        "crates/goose/src/agents/self_knowledge/mod.rs:153",
+        "ui/command-center/src/lib/worldAgentIds.ts:11"
+      ],
+      "identity_link_status": "MAPPED_IN_WORKTREE_FOCUSED_TESTS_PASSED",
+      "task_execution_status": "UNVERIFIED"
+    }
+  ],
+  "settings_agents": {
+    "background_worker_ids": [
+      "scheduler",
+      "librarian",
+      "git_steward",
+      "initiative",
+      "watcher",
+      "onboarding_coach",
+      "growth_measurement",
+      "playbook",
+      "concierge",
+      "strix",
+      "financier",
+      "forecaster",
+      "council"
+    ],
+    "background_contract": "All descriptors are listed, including gated-off ones; dispatchable=false; live_state is ok/not_queryable/unavailable and may describe a config flag or count rather than a running task.",
+    "background_evidence": [
+      "crates/goose/src/agents/self_knowledge/mod.rs:145",
+      "crates/goose/src/agents/self_knowledge/mod.rs:1190",
+      "crates/goose-server/src/routes/agents_surface.rs:282",
+      "crates/goose-server/src/routes/agents_surface.rs:298"
+    ],
+    "dispatch_personas": [
+      {
+        "key": "claude_code",
+        "engine": "external_cli",
+        "purpose": "coding goal",
+        "availability": "claude binary probe",
+        "grant_enforcement": "advisory",
+        "task_execution_status": "UNVERIFIED"
+      },
+      {
+        "key": "codex",
+        "engine": "external_cli",
+        "purpose": "coding goal",
+        "availability": "codex binary probe",
+        "grant_enforcement": "advisory",
+        "task_execution_status": "UNVERIFIED"
+      },
+      {
+        "key": "cursor",
+        "engine": "external_cli",
+        "purpose": "coding goal",
+        "availability": "cursor-agent binary probe",
+        "grant_enforcement": "advisory",
+        "task_execution_status": "UNVERIFIED"
+      },
+      {
+        "key": "permagent",
+        "engine": "internal_subagent",
+        "purpose": "coding goal, search and testing",
+        "availability": "always; model and extensions still matter",
+        "grant_enforcement": "enforced",
+        "task_execution_status": "UNVERIFIED"
+      },
+      {
+        "key": "reviewer",
+        "engine": "internal_subagent",
+        "purpose": "adversarial code review",
+        "availability": "always; Review role model resolution still matters",
+        "grant_enforcement": "enforced",
+        "task_execution_status": "UNVERIFIED"
+      },
+      {
+        "key": "librarian",
+        "engine": "pending",
+        "purpose": "identity for separate curation loop",
+        "availability": "local model probe can pass, but goal dispatch remains unavailable",
+        "grant_enforcement": "none",
+        "task_execution_status": "UNVERIFIED"
+      },
+      {
+        "key": "steward",
+        "engine": "pending",
+        "purpose": "identity for separate sweep/recipe",
+        "availability": "git probe can pass, but goal dispatch remains unavailable",
+        "grant_enforcement": "none",
+        "task_execution_status": "UNVERIFIED"
+      },
+      {
+        "key": "strix",
+        "engine": "pending",
+        "purpose": "identity for separate security sweep",
+        "availability": "Docker probe can pass, but goal dispatch remains unavailable",
+        "grant_enforcement": "none",
+        "task_execution_status": "UNVERIFIED"
+      },
+      {
+        "key": "financier",
+        "engine": "pending",
+        "purpose": "identity for Finance tools/loops",
+        "availability": "probe is not dispatchability",
+        "grant_enforcement": "none",
+        "task_execution_status": "UNVERIFIED"
+      }
+    ],
+    "dispatch_evidence": [
+      "crates/goose/src/config/agent_identity.rs:848",
+      "crates/goose/src/config/agent_identity.rs:1058",
+      "crates/goose/src/config/agent_identity.rs:1106",
+      "crates/goose/src/config/agent_identity.rs:667",
+      "crates/goose-server/src/routes/agents_surface.rs:398"
+    ],
+    "capabilities": "Third population is configured/platform extensions, not agents. Enablement and declared required-secret presence are shown; a global extension gate still applies, and grants narrow only internal subagents.",
+    "capability_evidence": [
+      "crates/goose-server/src/routes/agents_surface.rs:250",
+      "crates/goose-server/src/routes/agents_surface.rs:548",
+      "crates/goose/src/config/agent_identity.rs:667"
+    ]
+  },
+  "automate_and_routing": {
+    "automate": "Agents at work polls /api/runs every 4 seconds for worker, schedule and session rows. Only scheduled runs expose Stop/Resume; a worker/session row cannot be interrupted there. Failed poll shows retry, not a stale success claim.",
+    "automate_evidence": [
+      "ui/command-center/src/components/automate/RunRoster.tsx:1",
+      "ui/command-center/src/components/automate/RunRoster.tsx:47",
+      "ui/command-center/src/components/automate/RunRoster.tsx:335"
+    ],
+    "routing_roles": [
+      "orchestrate",
+      "hard",
+      "edit",
+      "mechanical",
+      "review",
+      "local"
+    ],
+    "routing_contract": "routing_roster is model tiers, not agent identities. It resolves configured then derived models and returns unavailable when neither exists. list_workers separately probes agent.yaml personas and excludes Pending engines from effective availability; goal dispatch checks the worker and rejects unavailable tier/pin rather than silently substituting.",
+    "routing_evidence": [
+      "crates/goose/src/agents/platform_extensions/orchestrator.rs:6714",
+      "crates/goose/src/agents/platform_extensions/orchestrator.rs:11023",
+      "crates/goose/src/agents/platform_extensions/orchestrator.rs:11084",
+      "crates/goose/src/agents/platform_extensions/orchestrator.rs:11326"
+    ]
+  },
+  "computer_use": {
+    "app_navigation": "navigate_app/app_action/open_item emit app events and explicitly say screen delivery is unconfirmed; phone/watch voice origins are blocked. World place sections are limited to six compact habitats; desk tabs are UI-only.",
+    "app_observation": "observe_app reads bounded structured data on 20 surfaces; World observation reads agent.yaml dispatch personas and availability, not the 12 World characters or camera/job proof.",
+    "browser": "Browser tools can open the embedded Build browser, read its open tab, fetch public pages server-side, snapshot refs and click/type/select. The embedded bridge needs a desktop app; read_webpage refuses private/loopback hosts. An act requires a bound per-session snapshot identity and should re-snapshot afterward.",
+    "desktop": "Native control is macOS AX only, default disabled twice (extension and DESKTOP_CONTROL_ENABLED), and also needs Accessibility trust. It exposes status/apps/tree/click/type by ref; no screenshots, pixel actions, keyboard shortcuts, scrolling, launch of arbitrary apps or generalized OS workflow are implemented in this extension. Secure fields are refused and action tools are permission annotated.",
+    "evidence": [
+      "crates/goose/src/agents/platform_extensions/app_conductor.rs:107",
+      "crates/goose/src/agents/platform_extensions/app_conductor.rs:206",
+      "crates/goose/src/agents/platform_extensions/app_conductor.rs:260",
+      "crates/goose/src/agents/platform_extensions/app_perception.rs:44",
+      "crates/goose/src/agents/platform_extensions/app_perception.rs:1900",
+      "crates/goose/src/agents/platform_extensions/browser.rs:503",
+      "crates/goose/src/agents/platform_extensions/browser.rs:617",
+      "crates/goose/src/agents/platform_extensions/browser.rs:701",
+      "crates/goose/src/agents/platform_extensions/desktop/mod.rs:1",
+      "crates/goose/src/agents/platform_extensions/desktop/mod.rs:92"
+    ]
+  },
+  "findings": [
+    {
+      "priority": "P1",
+      "id": "world-settings-id-drift",
+      "finding": "World has Forecaster, Council and Grower characters whose background-worker ids exist in /api/agents, but worldAgentIds maps only the older five. World cannot offer their Manage Agent link and Settings cannot offer Open in World for them. Polybot and Picker also lack mappings, but neither has an Agents background descriptor, so an honest no-link status is correct there.",
+      "evidence": [
+        "ui/command-center/src/components/world/agents/roster.ts:163",
+        "ui/command-center/src/components/world/agents/roster.ts:198",
+        "ui/command-center/src/components/world/agents/roster.ts:254",
+        "ui/command-center/src/lib/worldAgentIds.ts:11",
+        "ui/command-center/src/components/settings/agents/AgentsPanel.tsx:115",
+        "ui/command-center/src/lib/worldAgentIds.test.ts:36"
+      ],
+      "resolution": "Mapping and tests updated in current worktree; test execution and runtime navigation remain UNVERIFIED.",
+      "status": "FIXED_IN_SOURCE_UNVERIFIED"
+    },
+    {
+      "priority": "P1",
+      "id": "observe-world-scope",
+      "finding": "The agent-facing observe_app world result is only agent.yaml personas and probes. It cannot answer which World character is actually active, nor see several visible characters that are not dispatch personas. Its prose calls this the World-view worker roster, which risks overclaiming if the assistant answers a World-status request from it alone.",
+      "evidence": [
+        "crates/goose/src/agents/platform_extensions/app_perception.rs:1900",
+        "crates/goose/src/agents/platform_extensions/app_perception.rs:1940",
+        "ui/command-center/src/components/world/agents/roster.ts:48"
+      ]
+    },
+    {
+      "priority": "P2",
+      "id": "status-wires-are-not-work-proof",
+      "finding": "Reader and Watcher ambient states are simulated; Polybot is static. Daemon-wired World seats initialize idle and later apply events. The desk states that presence alone does not confirm a connection or running job; acceptance must check a task receipt or backing store before reporting work done.",
+      "evidence": [
+        "ui/command-center/src/components/world/agents/roster.ts:13",
+        "ui/command-center/src/components/world/agents/stateSources.tsx:111",
+        "ui/command-center/src/components/world/forum/AgentDeskProfile.tsx:39"
+      ]
+    },
+    {
+      "priority": "P2",
+      "id": "specialist-brief-is-shared-chat",
+      "finding": "Asking a named World specialist sends context into the shared orchestrator session. It does not directly call that worker, so a successful send is not specialist execution. The UI correctly says this; end-to-end acceptance must test follow-through and evidence separately.",
+      "evidence": [
+        "ui/command-center/src/components/world/forum/forumQuery.ts:3",
+        "ui/command-center/src/components/world/forum/forumQuery.ts:25",
+        "ui/command-center/src/components/world/forum/ForumView.tsx:602"
+      ]
+    },
+    {
+      "priority": "P2",
+      "id": "native-os-scope",
+      "finding": "Desktop Control cannot fulfill generic screenshot/coordinate/scroll/shortcut/launch workflows, and is disabled by default. Those tasks need a truthful unsupported or blocked result rather than a claim of full computer use.",
+      "evidence": [
+        "crates/goose/src/agents/platform_extensions/desktop/mod.rs:1",
+        "crates/goose/src/agents/platform_extensions/desktop/mod.rs:92",
+        "crates/goose/src/agents/platform_extensions/desktop/mod.rs:153",
+        "crates/goose/src/agents/platform_extensions/desktop/mod.rs:238"
+      ]
+    }
+  ],
+  "isolated_acceptance_scenarios": [
+    {
+      "id": "roster-identity",
+      "setup": "Temp agent.yaml with defaults plus one customized worker; mock /api/agents/roster and World roster",
+      "action": "Compare all 12 World ids, 13 descriptors and nine default personas; traverse all available World\u2194Settings links",
+      "pass": "Expected identities round-trip, non-agent characters explicitly lack links, and a customization is not overwritten"
+    },
+    {
+      "id": "background-gates",
+      "setup": "Temp config and fake schedule/worker states",
+      "action": "Toggle Guard, Council, Steward and Concierge gates; fetch Agents roster",
+      "pass": "Rows remain visible off, gate labels match real config, status distinguishes off/idle/unavailable, no run is inferred from a passing probe"
+    },
+    {
+      "id": "dispatch-routing",
+      "setup": "Disposable git worktree, mocked provider or low-cost isolated model, fake CLI binaries and explicit role map",
+      "action": "list_workers, routing_roster, check_worker, dispatch a tiny write-and-verify goal; repeat with missing binary, Pending persona, unavailable tier and denied grant",
+      "pass": "Only executable worker runs; worktree artifact plus verification and receipt exist; every refused path gives a reason and no success claim"
+    },
+    {
+      "id": "world-specialist-request",
+      "setup": "Isolated conversation and simulated specialist selection",
+      "action": "Send Query, Job and Capability briefs from World; inspect session and goal records",
+      "pass": "Message reaches shared orchestrator; UI never claims direct specialist execution; jobs either produce a tracked receipt/evidence or clear inability"
+    },
+    {
+      "id": "automate-run-status",
+      "setup": "Fake /api/runs and /schedule/list with running, failed, paused, stale and unreachable cases",
+      "action": "Poll, Stop a schedule, Resume a paused schedule, fail a stop",
+      "pass": "Counts and status agree with scheduler, only schedule rows have functional controls, errors are visible, and stale success is not shown"
+    },
+    {
+      "id": "observe-and-navigate",
+      "setup": "Disposable app session; event sink plus bounded fixture database",
+      "action": "observe_app world/automate/settings, navigate_app World and compact section, open_item known goal; repeat with invalid section, disconnected UI and phone origin",
+      "pass": "Structured facts and truncation are explicit; invalid/phone paths refuse; navigation is reported as sent rather than confirmed when no UI receipt exists"
+    },
+    {
+      "id": "browser-actions",
+      "setup": "Isolated embedded webview with a local fixture form; no production browser",
+      "action": "open, snapshot, type/select/click, then reuse stale ref; close webview; try read_webpage on localhost/private host",
+      "pass": "Action effects observed in webview and fresh snapshot; stale/no-tab/private-host failures are explicit; no success without page effect"
+    },
+    {
+      "id": "desktop-ax",
+      "setup": "Disposable macOS test app with button, text and secure field; isolated Accessibility grant",
+      "action": "status/apps/tree/click/type, mutate tree before click, try secure field and disabled flag",
+      "pass": "Real AX effect only for fresh refs and allowed fields; stale/secure/disabled/no-permission paths refuse truthfully"
+    },
+    {
+      "id": "background-workers",
+      "setup": "Copied disposable stores and fake clock/events for each loop",
+      "action": "Exercise Librarian, Watcher, Steward, Guard, Financier, Forecaster, Council, Grower, Picker plus Reader/Polybot status seams",
+      "pass": "Every actual run has source-specific receipt or state transition; skipped/off/static/simulated work never appears completed; no trading order or destructive git operation occurs without its separate contract"
+    }
+  ],
+  "existing_test_evidence": [
+    "ui/command-center/src/lib/worldAgentIds.test.ts:1",
+    "ui/command-center/src/components/settings/agents/AgentsPanel.test.tsx:4",
+    "ui/command-center/src/components/world/agents/stateSources.test.tsx:1",
+    "ui/command-center/src/components/world/forum/ForumView.conversation.test.tsx:1",
+    "crates/goose/src/config/agent_identity.rs:1778",
+    "crates/goose/src/agents/self_knowledge/mod.rs:1426",
+    "crates/goose/src/agents/platform_extensions/browser.rs:1108",
+    "crates/goose/src/agents/platform_extensions/desktop/mod.rs:571",
+    "crates/goose/src/agents/platform_extensions/app_perception.rs:2369",
+    "crates/goose/src/agents/platform_extensions/orchestrator.rs:42135"
+  ],
+  "verification_state": "World\u2194Settings canonical identity mapping and thumbnail component/cache behavior passed focused frontend batches (42, 2, and 10 assertions). Root visually reviewed actual getAgentThumbnail browser preview for all eight linked designs at 192/56/28 pixels after the y=0.58 crop correction. Source audit found no additional obsolete thumbnail surface. Native installed Settings integration and every agent task success/failure scenario remain UNVERIFIED; rendering and mapping do not prove agent execution.",
+  "per_agent_execution_verification": [
+    {
+      "id": "henry",
+      "success": "A bounded request yields an actual tool/result trace and a response grounded in that result.",
+      "failure": "Unreachable tool or cancelled turn is stated as such without completed-work claim.",
+      "status": "UNVERIFIED"
+    },
+    {
+      "id": "librarian",
+      "success": "Seeded memory receives a generated description and completion event backed by stored row.",
+      "failure": "Ollama absent or curation error leaves row pending and exposes error/skip.",
+      "status": "UNVERIFIED"
+    },
+    {
+      "id": "reader",
+      "success": "Isolated document ingest yields extracted text and source/ingest receipt.",
+      "failure": "Unreadable or unsupported file returns explicit failure; ambient World motion never implies ingestion.",
+      "status": "UNVERIFIED"
+    },
+    {
+      "id": "watcher",
+      "success": "Seeded qualifying signal produces at most one real nudge with event/receipt.",
+      "failure": "No qualifying signal or muted gate yields no fabricated nudge; sim pose remains ambient.",
+      "status": "UNVERIFIED"
+    },
+    {
+      "id": "git_steward",
+      "success": "Disposable repo sweep records truthful hygiene/CI finding or proposal.",
+      "failure": "Disabled sweep or unavailable git reports off/skip; destructive operation remains pending approval.",
+      "status": "UNVERIFIED"
+    },
+    {
+      "id": "strix",
+      "success": "Opt-in disposable project scan creates static-only findings with provenance.",
+      "failure": "Off gate, missing Docker/Strix or failed preflight is skip/error, never clean-scan success.",
+      "status": "UNVERIFIED"
+    },
+    {
+      "id": "financier",
+      "success": "Fixture quote/ledger query returns sourced figures and persisted allowed board change.",
+      "failure": "Market outage or absent data is explicit; no order or invented price.",
+      "status": "UNVERIFIED"
+    },
+    {
+      "id": "forecaster",
+      "success": "Fixture public signal creates sourced scenario/forecast artifact.",
+      "failure": "Source outage or sparse evidence is unavailable/uncertain, not a confident prediction.",
+      "status": "UNVERIFIED"
+    },
+    {
+      "id": "council",
+      "success": "Opt-in multi-provider fixture produces attributed positions and chair report with event.",
+      "failure": "Off gate or all-member failure returns no consensus claim and an error status.",
+      "status": "UNVERIFIED"
+    },
+    {
+      "id": "polybot",
+      "success": "Finance board reports the separate process and its real configured state.",
+      "failure": "Process off/unreachable remains off/unknown; static World seat never simulates a trade.",
+      "status": "UNVERIFIED"
+    },
+    {
+      "id": "picker",
+      "success": "Fixture close scan ranks candidates, writes scan receipt and emits picker event.",
+      "failure": "No eligible candidates or feed outage yields empty/error, not a tomorrow pick.",
+      "status": "UNVERIFIED"
+    },
+    {
+      "id": "growth_measurement",
+      "success": "Seeded action/window writes a baseline, comparison and supported verdict.",
+      "failure": "Missing baseline or confounder yields inconclusive/confounded, not helped.",
+      "status": "UNVERIFIED"
+    },
+    {
+      "id": "scheduler",
+      "success": "One disposable due job runs once and records run status in Automate.",
+      "failure": "Paused/missed/three-failure auto-pause states remain visible and do not run silently.",
+      "status": "UNVERIFIED"
+    },
+    {
+      "id": "initiative",
+      "success": "Seeded repeated command yields one reviewable automation suggestion.",
+      "failure": "Insufficient pattern or off gate yields none, not an already-created schedule.",
+      "status": "UNVERIFIED"
+    },
+    {
+      "id": "onboarding_coach",
+      "success": "Seeded unused feature yields a rare, relevant suggestion and learned status after use.",
+      "failure": "Already-used feature or cadence guard suppresses repeat suggestion.",
+      "status": "UNVERIFIED"
+    },
+    {
+      "id": "playbook",
+      "success": "Opt-in decision history yields a sourced pattern/proposal.",
+      "failure": "Off gate or sparse history yields no asserted learned rule.",
+      "status": "UNVERIFIED"
+    },
+    {
+      "id": "concierge",
+      "success": "Opt-in fixture email yields triage and draft awaiting approval.",
+      "failure": "Off gate or inbox access failure yields no sent/replied claim.",
+      "status": "UNVERIFIED"
+    },
+    {
+      "id": "claude_code",
+      "success": "Disposable worktree goal leaves required edit, passing check and reviewable commit/receipt.",
+      "failure": "Missing CLI, denied permission, timeout or exit-zero-no-artifact cannot pass goal review.",
+      "status": "UNVERIFIED"
+    },
+    {
+      "id": "codex",
+      "success": "Disposable worktree goal proves sandbox write, verification and receipt.",
+      "failure": "Read-only sandbox, rejected patch or exit-zero-no-artifact cannot be marked done.",
+      "status": "UNVERIFIED"
+    },
+    {
+      "id": "cursor",
+      "success": "Disposable worktree goal uses positional prompt and leaves verified artifact.",
+      "failure": "Missing CLI, interactive hang or denied sandbox action returns bounded failure.",
+      "status": "UNVERIFIED"
+    },
+    {
+      "id": "permagent",
+      "success": "Internal Edit-role worker uses narrowed tools to change/verify disposable worktree.",
+      "failure": "Denied grant, missing model or failing test blocks completion and reports exact cause.",
+      "status": "UNVERIFIED"
+    },
+    {
+      "id": "reviewer",
+      "success": "Read-only independent review returns APPROVE or justified concerns against diff/tests.",
+      "failure": "Insufficient evidence returns UNCERTAIN; no file change and no rubber-stamp.",
+      "status": "UNVERIFIED"
+    }
+  ]
+}

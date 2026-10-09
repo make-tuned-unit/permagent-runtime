@@ -1,0 +1,30 @@
+{
+  "artifact": "Production Vite frontend after Ollama stream error/inventory verification fixes; normal environment, no mock flag",
+  "manifest_sha256": "3a97d38fbde64e95eaf8687bc9195698ddbb84dfeac2ccf33bc5a09ab2d599c6",
+  "manifest_method": "SHA256 of sorted file path/hash/byte records serialized with json.dumps(sort_keys=True)",
+  "files_scanned": 619,
+  "bytes_scanned": 103388897,
+  "patterns": {
+    "owner_home": [],
+    "fixture_relative_path": [],
+    "fixture_decision_id": [],
+    "fixture_headline": []
+  },
+  "state_files": [],
+  "limits": [
+    "Targeted signatures and state filenames; not a general proof of absence of personal data.",
+    "Native release app/binary and fresh-profile acceptance remain separate."
+  ],
+  "native_frontend": {
+    "manifest_sha256": "008386496cffeb330c4e0f71c455ea7e3352a58a453623d7a033e6cc421aae54",
+    "files_scanned": 619,
+    "bytes_scanned": 103388820,
+    "patterns": {
+      "owner_home": [],
+      "fixture_relative_path": [],
+      "fixture_decision_id": []
+    },
+    "artifact": "Current Tauri review build frontend, localhost3002; embedded-asset verification passed",
+    "package_scan": "NATIVE_THUMBNAIL_REVIEW_2026-10-09.json"
+  }
+}

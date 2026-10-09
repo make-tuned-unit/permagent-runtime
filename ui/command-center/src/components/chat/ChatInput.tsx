@@ -1,13 +1,15 @@
 import { useState, useRef, useEffect, useCallback, useImperativeHandle, forwardRef, type CSSProperties } from 'react';
 import { FiSend, FiLoader, FiPaperclip } from 'react-icons/fi';
 import { useCommandCenter } from '../../lib/store';
-import { takeWizardIntent } from '../../lib/wizardIntent';
+import { CHAT_SETUP_INTENT_EVENT, CHAT_SETUP_INTENT_KEY, discardChatSetupIntent, peekChatSetupIntent, peekWizardIntent, takeChatSetupIntent, takeWizardIntent } from '../../lib/wizardIntent';
 import { ease, font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { AttachmentChip } from './AttachmentChip';
 import { Button } from '../common/Button';
 import { VoiceButton } from '../voice/VoiceButton';
 import { useOrchestratorName } from '../world/shared/useOrchestratorName';
+import { openChatModelSetup } from './ChatSetupCard';
+import type { ModelSetupReadiness } from './chatSetupState';
 
 import { Tooltip } from '../common/Tooltip';
 const MAX_FILE_SIZE = 50 * 1024 * 1024;
@@ -20,9 +22,15 @@ export interface ChatInputHandle {
   addFiles: (files: File[]) => void;
 }
 
-export const ChatInput = forwardRef<ChatInputHandle>(function ChatInput(_props, ref) {
+interface ChatInputProps {
+  modelReadiness?: ModelSetupReadiness;
+}
+
+export const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(function ChatInput({ modelReadiness }, ref) {
   const { colors } = useTheme();
   const isStreaming = useCommandCenter(s => s.isStreaming);
+  const chatWindowOpen = useCommandCenter(s => s.chatWindowOpen);
+  const ownsSetupIntent = new URLSearchParams(window.location.search).get('view') === 'chat' || !chatWindowOpen;
   // The configured name, then the store's — which defaults to the literal
   // "Agent", so "Message Agent" is exactly what must not reach the screen.
   const configuredName = useOrchestratorName();
@@ -31,7 +39,8 @@ export const ChatInput = forwardRef<ChatInputHandle>(function ChatInput(_props, 
   const sendMessage = useCommandCenter(s => s.sendMessage);
   const stopStreaming = useCommandCenter(s => s.stopStreaming);
 
-  const [input, setInput] = useState('');
+  const [input, setInput] = useState(() => peekWizardIntent() ?? '');
+  const [pendingSetup, setPendingSetup] = useState(() => peekChatSetupIntent());
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   // Local "cancel requested" state: set on Stop click, cleared when the turn
   // actually settles (isStreaming → false via the Finish event). Kept out of the
@@ -41,11 +50,17 @@ export const ChatInput = forwardRef<ChatInputHandle>(function ChatInput(_props, 
   // re-armed button — indistinguishable from never having pressed Stop, on the
   // highest-traffic control in the app.
   const [stopFailed, setStopFailed] = useState(false);
+  const [needsModelNotice, setNeedsModelNotice] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const disabled = isStreaming;
   /** One line, drawn over the field — see the placeholder span below. */
   const placeholder = disabled ? `${agentName} is replying…` : `Message ${agentName}`;
+
+  useEffect(() => {
+    const seed = peekWizardIntent();
+    if (seed && textareaRef.current?.value === seed) takeWizardIntent();
+  }, []);
 
   useEffect(() => {
     const el = textareaRef.current;
@@ -54,14 +69,48 @@ export const ChatInput = forwardRef<ChatInputHandle>(function ChatInput(_props, 
     el.style.height = `${Math.min(el.scrollHeight, 120)}px`;
   }, [input]);
 
-  // First-conversation hand-off: the wizard's intent step pre-fills the
-  // composer (one-shot) so the user can edit or send it as-is — this is the
-  // "prepare context for your first conversation" the wizard promises.
+  // A mounted dock receives the custom event; a detached window receives the
+  // storage event. The persisted request also survives opening Chat later.
   useEffect(() => {
-    const seed = takeWizardIntent();
-    if (seed) setInput(prev => (prev ? prev : seed));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    const refresh = () => setPendingSetup(peekChatSetupIntent());
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === CHAT_SETUP_INTENT_KEY) refresh();
+    };
+    window.addEventListener(CHAT_SETUP_INTENT_EVENT, refresh);
+    window.addEventListener('storage', onStorage);
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    if ('__TAURI_INTERNALS__' in window) {
+      void import('@tauri-apps/api/event')
+        .then(({ listen }) => listen(CHAT_SETUP_INTENT_EVENT, refresh))
+        .then(fn => { if (disposed) fn(); else { unlisten = fn; refresh(); } })
+        .catch(() => {});
+    }
+    refresh();
+    return () => {
+      disposed = true;
+      unlisten?.();
+      window.removeEventListener(CHAT_SETUP_INTENT_EVENT, refresh);
+      window.removeEventListener('storage', onStorage);
+    };
   }, []);
+
+  // Never replace a draft already in the composer. Once it is sent or cleared,
+  // promote the setup request into the field for review and editing.
+  useEffect(() => {
+    if (!pendingSetup || !ownsSetupIntent) return;
+    if (input.trim() === pendingSetup.trim()) {
+      takeChatSetupIntent();
+      setPendingSetup(null);
+    } else if (!input && pendingFiles.length === 0) {
+      const intent = takeChatSetupIntent();
+      if (intent) { setInput(intent); setPendingSetup(null); }
+    }
+  }, [input, pendingFiles.length, pendingSetup, ownsSetupIntent]);
+
+  useEffect(() => {
+    if (modelReadiness !== 'needs-model') setNeedsModelNotice(false);
+  }, [modelReadiness]);
 
   // Once the turn settles (Finish/Error flips isStreaming off), drop the
   // transient "stopping" state so the composer returns to its idle Send button.
@@ -90,6 +139,10 @@ export const ChatInput = forwardRef<ChatInputHandle>(function ChatInput(_props, 
   const handleSend = async () => {
     const msg = input.trim();
     if ((!msg && pendingFiles.length === 0) || disabled) return;
+    if (modelReadiness === 'needs-model') {
+      setNeedsModelNotice(true);
+      return;
+    }
 
     const files = [...pendingFiles];
     setInput('');
@@ -142,6 +195,14 @@ export const ChatInput = forwardRef<ChatInputHandle>(function ChatInput(_props, 
 
   return (
     <div className="p-3" style={{ borderTop: `1px solid ${colors.border}`, backgroundColor: colors.surface }}>
+      {pendingSetup && (input || pendingFiles.length > 0) && input.trim() !== pendingSetup.trim() && (
+        <details style={{ marginBottom: space.md, color: colors.textMuted, fontFamily: font.body, fontSize: textSize.caption }}>
+          <summary style={{ cursor: 'pointer' }}>Tailscale setup request is ready. Your current draft is unchanged.</summary>
+          <p style={{ margin: `${space.sm}px 0 0`, whiteSpace: 'pre-wrap' }}>{pendingSetup}</p>
+          <p style={{ margin: `${space.sm}px 0 0` }}>Send or clear your current draft to edit this request in the composer.</p>
+          <Button colors={colors} variant="bare" type="button" onClick={() => { if (discardChatSetupIntent()) setPendingSetup(null); }}>Dismiss setup request</Button>
+        </details>
+      )}
       {pendingFiles.length > 0 && (
         <div className="flex flex-wrap gap-1.5 mb-2">
           {pendingFiles.map((f, i) => (
@@ -156,6 +217,12 @@ export const ChatInput = forwardRef<ChatInputHandle>(function ChatInput(_props, 
           style={{ fontFamily: font.body, color: colors.danger }}
         >
           Couldn't stop the reply — the agent may still be running. Try again.
+        </div>
+      )}
+      {needsModelNotice && modelReadiness === 'needs-model' && (
+        <div role="alert" style={{ marginBottom: space.md, color: colors.warning, fontFamily: font.body, fontSize: textSize.caption }}>
+          No model is configured, so this draft has not been sent. Set up a model, then send it.
+          <Button colors={colors} variant="bare" type="button" onClick={openChatModelSetup}>Open model setup</Button>
         </div>
       )}
       <div className="flex items-end" style={{ gap: space.md }}>

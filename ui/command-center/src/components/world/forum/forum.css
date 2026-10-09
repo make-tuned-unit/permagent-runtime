@@ -396,9 +396,9 @@
   border-left: 2px solid var(--forum-bronze);
   border-radius: 12px;
   padding: 10px 14px 12px;
-  background: color-mix(in srgb, var(--forum-panel) 88%, transparent);
-  backdrop-filter: blur(9px);
-  box-shadow: 0 10px 34px rgba(0, 0, 0, 0.22);
+  /* Identity details are desk content, so this card stays opaque under both
+     the regular and Reduce Transparency appearances. */
+  background: var(--forum-panel);
   color: var(--forum-text);
 }
 /* The header is two phrases that each stay whole, and it wraps between them.
@@ -528,12 +528,13 @@
   max-height: 100%;
   overflow-y: auto;
   overscroll-behavior: contain;
-  background: color-mix(in srgb, var(--forum-panel) 88%, transparent);
-  backdrop-filter: blur(10px);
+  background: var(--forum-glass);
+  backdrop-filter: var(--forum-blur);
+  -webkit-backdrop-filter: var(--forum-blur);
   border: 1px solid var(--forum-border);
   border-left: 0;
   border-radius: 0 14px 14px 0;
-  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.28);
+  box-shadow: var(--forum-shadow);
   transform: translateX(0);
   transition: transform 420ms cubic-bezier(0.22, 1, 0.36, 1), opacity 320ms ease;
 }
@@ -578,7 +579,7 @@
    rail back, so it must never travel with the thing it reopens. */
 .forum-rail-handle {
   pointer-events: auto;
-  --pa-btn-bg: color-mix(in srgb, var(--forum-panel) 88%, transparent);
+  --pa-btn-bg: var(--forum-glass);
   --pa-btn-pad: 10px 8px;
   --pa-btn-radius: 0 12px 12px 0;
   align-self: flex-start;
@@ -589,7 +590,8 @@
   margin-left: 0;
   border: 1px solid var(--forum-border);
   border-left: 0;
-  backdrop-filter: blur(10px);
+  backdrop-filter: var(--forum-blur);
+  -webkit-backdrop-filter: var(--forum-blur);
 }
 /* On a short world the lane can give the rail less height than the handle's
    vertical "PLACES" label, and an uncapped handle then hangs down over the

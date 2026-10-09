@@ -8,7 +8,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { stashWizardIntent, takeWizardIntent } from './wizardIntent';
+import { peekChatSetupIntent, stashChatSetupIntent, stashWizardIntent, takeChatSetupIntent, takeWizardIntent } from './wizardIntent';
 
 // In-memory localStorage stub (the node test env has no DOM storage).
 function installStorage(): Map<string, string> {
@@ -61,5 +61,24 @@ describe('wizardIntent hand-off', () => {
     });
     expect(() => stashWizardIntent('x')).not.toThrow();
     expect(takeWizardIntent()).toBeNull();
+  });
+});
+
+describe('Chat setup hand-off', () => {
+  it('persists a reviewable request until Chat consumes it once', () => {
+    expect(stashChatSetupIntent('  Help me set up Tailscale  ')).toBe(true);
+    expect(peekChatSetupIntent()).toBe('Help me set up Tailscale');
+    expect(takeChatSetupIntent()).toBe('Help me set up Tailscale');
+    expect(takeChatSetupIntent()).toBeNull();
+  });
+
+  it('refuses an empty request and reports unavailable storage', () => {
+    expect(stashChatSetupIntent('  ')).toBe(false);
+    vi.stubGlobal('localStorage', {
+      getItem: () => { throw new Error('denied'); },
+      setItem: () => { throw new Error('denied'); },
+      removeItem: () => { throw new Error('denied'); },
+    });
+    expect(stashChatSetupIntent('Set up Tailscale')).toBe(false);
   });
 });

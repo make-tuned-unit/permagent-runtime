@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   disconnectSession: vi.fn(),
   setAgentName: vi.fn(),
   getIdentity: vi.fn(),
+  loadProviders: vi.fn(),
   loadSessions: vi.fn(),
   switchToSession: vi.fn(),
 }));
@@ -21,6 +22,17 @@ vi.mock('../../lib/store', () => {
     connectSession: mocks.connectSession,
     disconnectSession: mocks.disconnectSession,
     setAgentName: mocks.setAgentName,
+    loadProviders: mocks.loadProviders,
+    providers: [],
+    providersError: false,
+    currentModel: null,
+    configRev: 0,
+    chatMessages: [],
+    chatHistoryLoaded: true,
+    isStreaming: false,
+    sessionLoadError: null,
+    daemonAuthError: null,
+    voiceConversation: null,
     identityRev: 0,
     agentName: 'Henry',
     sessions: [],
@@ -60,6 +72,7 @@ function deferred<T>() {
 beforeEach(() => {
   Object.values(mocks).forEach(mock => mock.mockReset());
   mocks.getIdentity.mockRejectedValue(new Error('offline'));
+  mocks.loadProviders.mockResolvedValue(undefined);
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);

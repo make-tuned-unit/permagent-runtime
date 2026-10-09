@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
 import { act } from 'react-dom/test-utils';
 import { ForumPlaceRail } from './ForumPlaceRail';
@@ -41,7 +41,7 @@ let root: Root | null = null;
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
-function renderRail(open: boolean) {
+function renderRail(open: boolean, activeId = PLACES[0].id, onSelect: (id: string) => void = () => {}) {
   if (!host) {
     host = document.createElement('div');
     // Attached to the document, or nothing in here can hold focus.
@@ -51,10 +51,10 @@ function renderRail(open: boolean) {
   act(() => root!.render(
     <ForumPlaceRail
       places={PLACES}
-      activeId={PLACES[0].id}
+      activeId={activeId}
       open={open}
       colors={getThemedColors()}
-      onSelect={() => {}}
+      onSelect={onSelect}
       onToggle={() => {}}
       onHold={() => {}}
     />,
@@ -94,7 +94,9 @@ describe('the closed place rail leaves the accessibility tree', () => {
     const open = renderRail(true);
     const openTabIndexes = [...open.querySelectorAll('.forum-rail-place')]
       .map(b => b.getAttribute('tabindex'));
-    expect(new Set(openTabIndexes)).toEqual(new Set(['0']));
+    expect(openTabIndexes.filter(index => index === '0')).toHaveLength(1);
+    expect(openTabIndexes[0]).toBe('0');
+    expect(openTabIndexes.slice(1).every(index => index === '-1')).toBe(true);
   });
 
   it('returns focus to the handle when it closes under the keyboard', () => {
@@ -119,5 +121,45 @@ describe('the closed place rail leaves the accessibility tree', () => {
     renderRail(false);
     expect(document.activeElement).toBe(outside);
     outside.remove();
+  });
+});
+
+describe('place radio keyboard navigation', () => {
+  it('moves focus and selection with arrows, wrapping at each end', () => {
+    const onSelect = vi.fn();
+    const list = renderRail(true, PLACES[0].id, onSelect);
+    const radios = [...list.querySelectorAll<HTMLButtonElement>('[role="radio"]')];
+    const lastRadio = radios[radios.length - 1];
+    const lastPlace = PLACES[PLACES.length - 1];
+    act(() => radios[0].focus());
+    act(() => radios[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true })));
+    expect(document.activeElement).toBe(lastRadio);
+    expect(onSelect).toHaveBeenLastCalledWith(lastPlace.id);
+
+    renderRail(true, lastPlace.id, onSelect);
+    expect(lastRadio.tabIndex).toBe(0);
+    expect(radios[0].tabIndex).toBe(-1);
+    act(() => lastRadio.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true })));
+    expect(document.activeElement).toBe(radios[0]);
+    expect(onSelect).toHaveBeenLastCalledWith(PLACES[0].id);
+  });
+
+  it('uses Home and End without stealing Escape from the existing close handler', () => {
+    const onSelect = vi.fn();
+    const list = renderRail(true, PLACES[0].id, onSelect);
+    const radios = [...list.querySelectorAll<HTMLButtonElement>('[role="radio"]')];
+    const lastRadio = radios[radios.length - 1];
+    const lastPlace = PLACES[PLACES.length - 1];
+    act(() => radios[0].focus());
+    act(() => radios[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true, cancelable: true })));
+    expect(document.activeElement).toBe(lastRadio);
+    expect(onSelect).toHaveBeenLastCalledWith(lastPlace.id);
+    act(() => lastRadio.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true, cancelable: true })));
+    expect(document.activeElement).toBe(radios[0]);
+    expect(onSelect).toHaveBeenLastCalledWith(PLACES[0].id);
+
+    onSelect.mockClear();
+    act(() => radios[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })));
+    expect(onSelect).not.toHaveBeenCalled();
   });
 });

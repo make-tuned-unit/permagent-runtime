@@ -50,6 +50,7 @@ import { GmailConnectSection } from './GmailConnectSection';
 import { ProviderModelPicker } from './ProviderModelPicker';
 import { MemoryFeedPanel } from './MemoryFeedPanel';
 import { OnChainIdentitySection } from './OnChainIdentitySection';
+import { stashChatSetupIntent } from '../../lib/wizardIntent';
 
 // The PreviewBadge/PreviewNotice machinery (2026-07-10 audit) is gone: every
 // preview-only control has been either wired to real state or removed
@@ -876,7 +877,10 @@ export function ToolsPanel({ goto }: PanelProps) {
                   {(ext.env_keys?.length ?? 0) > 0 && ` · needs ${ext.env_keys!.join(', ')}`}
                 </div>
               </div>
-              <div style={{ width: 8, height: 8, borderRadius: '50%', background: ext.enabled ? colors.success : colors.textDim, flexShrink: 0 }} />
+              <span style={{ display: 'flex', alignItems: 'center', gap: space.sm, fontSize: textSize.micro, color: colors.textMuted, flexShrink: 0 }}>
+                <span aria-hidden="true" style={{ width: 8, height: 8, borderRadius: '50%', background: ext.enabled ? colors.success : colors.textDim }} />
+                {ext.enabled ? 'Enabled' : 'Off'}
+              </span>
             </div>
           ))}
         </div>
@@ -1444,7 +1448,7 @@ export const SHORTCUT_GROUPS: Array<{ g: string; items: Array<[string, string[]]
   { g: 'Global', items: [
     ['Open or close Settings', ['⌘', ',']],
     ['Close Settings', ['Esc']],
-    ['Switch workspace 1–5', ['⌘', '1–5']],
+    ['Switch workspace 1–9', ['⌘', '1–9']],
   ]},
   { g: 'Chat', items: [
     ['Send message', ['↵']],
@@ -1806,6 +1810,7 @@ function DevicesPanel() {
   const agentName = useCommandCenter(s => s.agentName);
   const [host, setHost] = useState('');
   const [copied, setCopied] = useState(false);
+  const [setupDraftError, setSetupDraftError] = useState(false);
   const [tailnet, setTailnet] = useState<{ installed: boolean; running: boolean; magic_dns_name: string | null } | null>(null);
   // Reachability is TWO facts: what the user asked for (`enabled`, persisted)
   // and whether the running daemon is actually on the tailnet (`effective`).
@@ -2054,23 +2059,27 @@ function DevicesPanel() {
           {tailnet?.running ? (
             <span style={{ fontSize: textSize.caption, color: colors.cyan }}>● Connected{tailnet.magic_dns_name ? ` — ${tailnet.magic_dns_name}` : ''}</span>
           ) : (
-            <Tooltip content={`Copies a setup request and opens chat — ${agentName} runs the terminal steps for you.`}>
+            <Tooltip content={`Opens an editable request in Chat for ${agentName} to help with Tailscale setup.`}>
             <Button
               colors={colors}
+              type="button"
               style={ghost(colors)}
               onClick={() => {
-                navigator.clipboard.writeText(
-                  'Set up Tailscale on this machine so my other devices can reach Permagent: '
-                  + 'check if it is installed, install it if not, bring it up (open the login '
-                  + 'page for me in the browser when it appears), then tell me my MagicDNS name '
-                  + 'and confirm the Devices pairing page shows it.'
-                ).catch(() => {});
-                navigateToTool('chat');
+                const saved = stashChatSetupIntent(
+                  'Help me set up Tailscale so my other devices can reach Permagent. Check its current status first. '
+                  + 'If installation or sign-in is needed, explain each step and wait for my approval before acting. '
+                  + 'Open the sign-in page for me if needed. Keep the Permagent daemon on localhost; use Tailscale Serve '
+                  + 'for tailnet access. Verify the MagicDNS name and Serve URL, then help me create a pairing link in '
+                  + 'Settings → Devices. Tell me what you verified and what still needs my action.'
+                );
+                setSetupDraftError(!saved);
+                if (saved) useCommandCenter.getState().openChatDock();
               }}
             >Have {agentName} set it up</Button>
             </Tooltip>
           )}
         </Row>
+        {setupDraftError && <div role="alert" style={{ color: colors.danger, fontSize: textSize.caption }}>Couldn't open the setup draft. Try again.</div>}
         <Row
           label="Hub address"
           hint={access?.serve_url

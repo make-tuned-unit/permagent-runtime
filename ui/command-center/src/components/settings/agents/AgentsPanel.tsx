@@ -977,7 +977,7 @@ export function AgentsPanel({ goto }: PanelProps) {
 
       <Section
         title="What your agents can use"
-        sub="Tools your agents can call — not agents themselves. Turn one on or off under Tools."
+        sub="Tools your agents can call. Review their configured status in Tools."
       >
         <div style={{ display: 'flex', flexDirection: 'column', gap: space.md }}>
           {roster.capabilities.map(cap => (

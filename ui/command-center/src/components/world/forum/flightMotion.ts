@@ -57,6 +57,16 @@ export type FlightState = {
 
 export const idleInput: FlightInput = { thrust: 0, turn: 0, lift: 0, boost: false };
 
+/** Intentional travel remains available when Reduce Motion is enabled. */
+export function flightInputFromKeys(keys: ReadonlySet<string>): FlightInput {
+  return {
+    thrust: Number(keys.has('ArrowUp') || keys.has('KeyW')) - Number(keys.has('ArrowDown') || keys.has('KeyS')),
+    turn: Number(keys.has('ArrowLeft') || keys.has('KeyA')) - Number(keys.has('ArrowRight') || keys.has('KeyD')),
+    lift: Number(keys.has('Space')) - Number(keys.has('KeyC')),
+    boost: keys.has('ShiftLeft') || keys.has('ShiftRight'),
+  };
+}
+
 /**
  * What the world is under a point: the height of the nearest surface below,
  * and whether it can be landed on. Water and steep faces are not landable.

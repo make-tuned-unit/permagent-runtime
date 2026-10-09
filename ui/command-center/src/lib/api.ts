@@ -486,6 +486,8 @@ export interface Session {
   conversation?: DaemonMessage[] | null;
   schedule_id?: string | null;
   provider_name?: string | null;
+  /** Saved model route used when restoring an existing chat session. */
+  model_config?: { model_name: string } | null;
 }
 
 /** Lean session projection returned by the LIST path (GET /api/sessions).
@@ -2656,21 +2658,44 @@ export const api = {
       if (!reader) throw new Error('No response body');
       const decoder = new TextDecoder();
       let buffer = '';
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-        for (const line of lines) {
-          const trimmed = line.replace(/^data:\s*/, '').trim();
-          if (!trimmed) continue;
-          try { onProgress(JSON.parse(trimmed)); } catch { /* skip non-JSON */ }
+      let eventType = '';
+      const readLine = (line: string) => {
+        const trimmed = line.trim();
+        if (!trimmed) { eventType = ''; return; }
+        if (trimmed.startsWith('event:')) { eventType = trimmed.slice(6).trim(); return; }
+        if (!trimmed.startsWith('data:')) return;
+        const body = trimmed.slice(5).trim();
+        let data: unknown;
+        try { data = JSON.parse(body); }
+        catch {
+          if (eventType === 'error') throw new Error(body || 'Ollama download failed');
+          return; // Ignore malformed progress, not download errors.
         }
-      }
-      if (buffer.trim()) {
-        const trimmed = buffer.replace(/^data:\s*/, '').trim();
-        try { onProgress(JSON.parse(trimmed)); } catch { /* skip non-JSON */ }
+        const progress = data && typeof data === 'object' ? data as { status?: unknown; error?: unknown; total?: number; completed?: number } : null;
+        if (eventType === 'error' || typeof progress?.error === 'string') {
+          throw new Error(typeof progress?.error === 'string' ? progress.error
+            : eventType === 'error' && typeof data === 'string' ? data : 'Ollama download failed');
+        }
+        if (typeof progress?.status === 'string') onProgress(progress as { status: string; total?: number; completed?: number });
+      };
+      let finished = false;
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+          for (const line of lines) readLine(line);
+        }
+        buffer += decoder.decode();
+        for (const line of buffer.split('\n')) readLine(line);
+        finished = true;
+      } finally {
+        // An error frame or a failing progress handler exits before EOF.
+        // Close this client stream without suggesting the server pull stopped.
+        if (!finished) { try { await reader.cancel(); } catch { /* preserve the original error */ } }
+        try { reader.releaseLock(); } catch { /* preserve the original error */ }
       }
     })();
     return { promise, abort: () => controller.abort() };

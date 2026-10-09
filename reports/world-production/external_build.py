@@ -70,8 +70,19 @@ def main():
     env.update(PERMAGENT_BUILD_TARGET=str(TARGET), CARGO_TARGET_DIR=str(TARGET), TMPDIR=str(TEMP),
                CARGO_BUILD_JOBS='1', CARGO_INCREMENTAL='0', WORKTREES_ROOT=str(LANE.parent))
     env['PATH'] = '/Users/j/Documents/dev/permagent-runtime/bin:' + env.get('PATH', '')
-    # Keep the repository's lane/target lock as well as this external-lane lock.
-    command = [str(LANE / 'scripts/build-guard.sh'), '--min-free-gb', '25', '--', *command]
+    # The native runner already wraps Tauri in this exact repository guard.
+    # Wrapping that runner again makes its child wait on its own parent's lock.
+    # Recognize only the direct, known Python entry point; all other commands
+    # still receive the repository guard here. The external flock and all
+    # volume/deadline checks remain active in either case.
+    native_runner = (
+        len(command) >= 2
+        # Apple's /usr/bin shim reports the Xcode interpreter as sys.executable.
+        and Path(command[0]).resolve() in {Path(sys.executable).resolve(), Path('/usr/bin/python3')}
+        and Path(command[1]).resolve() == LANE / 'reports/world-production/run_guarded_native.py'
+    )
+    if not native_runner:
+        command = [str(LANE / 'scripts/build-guard.sh'), '--min-free-gb', '25', '--', *command]
     log_path = ROOT / 'logs' / (time.strftime('%Y%m%d-%H%M%S') + f'-{os.getpid()}.log')
     def interrupted(signum, _frame):
         raise KeyboardInterrupt(f'Signal {signum}')

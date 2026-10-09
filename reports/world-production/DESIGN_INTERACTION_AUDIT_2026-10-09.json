@@ -1,0 +1,79 @@
+{
+  "branch": "world/production-20261006",
+  "head": "e6ff7fa4",
+  "scope": "Source-only design and interaction audit. No UI, native runtime, model, or haptic acceptance was performed.",
+  "conventions": [
+    "Shared theme tokens define glass/glassHi; common/Glass.tsx owns backdrop filter and removes it under Reduce Transparency.",
+    "The World uses themed colors, a compact default habitat, a separate legacy campus, and CSS-scoped HUD/desk styling.",
+    "The in-app Reduce Motion preference and the OS media query flow through getReduceMotion(); CSS transitions are globally collapsed.",
+    "Native NSHapticFeedbackManager is wired only to successful People field saves and is a browser no-op.",
+    "observe_app reads bounded domain data, while app_conductor sends navigation/action requests; neither confirms visible rendering or modal focus."
+  ],
+  "findings": [
+    {
+      "priority": "P1",
+      "title": "Reduce Motion disables all skiff control",
+      "evidence": ["ui/command-center/src/components/world/forum/ForumFlight.tsx:108", "ui/command-center/src/components/world/forum/ForumFlight.tsx:110", "ui/command-center/src/components/world/forum/ForumFlight.tsx:119", "ui/command-center/src/styles/tokens.ts:943"],
+      "impact": "With OS or in-app Reduce Motion enabled, Arrow/WASD, Space and C are ignored because input becomes idleInput; the user cannot fly to or land at world destinations. Existing velocity may still decay, while the camera continues to chase.",
+      "reproduce": "In native macOS Settings > Accessibility > Display, enable Reduce Motion, then open World > Previous campus > Fly the skiff. Press W/Up, arrows, Space and C. Repeat with the app's own Reduce Motion setting in a browser preview. Compare to motion enabled.",
+      "fix": "Keep user flight input and landing physics active. Suppress only incidental banking, camera interpolation, thruster animation and other nonessential motion; ensure an immediate or stable camera follows intentional travel.",
+      "lightweight_test": "A focused flight input/component test with Reduce Motion true should prove forward/turn/lift input reaches flightStep; pure flightMotion tests alone do not cover the current input gate.",
+      "implementation_outcome": "Implemented after the initial source audit: ForumFlight now passes keyboard input to flightStep with Reduce Motion enabled, while removing incidental hull bank and camera lag. flightMotion.test.ts exercises the extracted input mapping and travel physics. Native visual and motion acceptance remains pending."
+    },
+    {
+      "priority": "P2",
+      "title": "World passport retains translucent content and blur under Reduce Transparency",
+      "evidence": ["ui/command-center/src/components/world/forum/forum.css:394", "ui/command-center/src/components/world/forum/forum.css:399", "ui/command-center/src/components/world/forum/forum.css:400", "ui/command-center/src/components/world/forum/ForumPassport.tsx:74", "ui/command-center/src/components/world/forum/ForumView.tsx:335", "ui/command-center/src/components/common/Glass.tsx:59"],
+      "impact": "The passport is a content card inside the Agent Desk, but its CSS hard-codes translucent fill and backdrop blur. The native Reduce Transparency bridge only updates the token-backed --forum-blur surfaces, so this card stays translucent. The CSS file is outside the TS-only backdropFilter fitness gate.",
+      "reproduce": "Link an optional identity or view the unlinked passport in World > Agent desk > Meet > Identity & passport; enable macOS Reduce Transparency or the app setting while it is open. Inspect computed background/backdrop-filter and compare with the outer World HUD.",
+      "fix": "Make the passport an opaque content card using --forum-panel and remove its filter. Review the legacy .forum-rail-list and .forum-rail-handle CSS blur(10px) rules for the same preference; compact selectors override them, but the campus path does not.",
+      "lightweight_test": "A CSS contract test or DOM computed-style check under Reduce Transparency should assert no passport filter and opaque fill; include the legacy campus rail.",
+      "implementation_outcome": "Implemented after the initial source audit: the passport content card uses opaque --forum-panel with no backdrop filter; legacy rail list and handle use the existing --forum-glass and --forum-blur tokens, which honor Reduce Transparency. Native computed-style and visual acceptance remains pending."
+    },
+    {
+      "priority": "P2",
+      "title": "Places advertises radio semantics without radio keyboard behavior",
+      "evidence": ["ui/command-center/src/components/world/forum/ForumPlaceRail.tsx:104", "ui/command-center/src/components/world/forum/ForumPlaceRail.tsx:108", "ui/command-center/src/components/world/forum/ForumPlaceRail.tsx:126", "ui/command-center/src/components/world/forum/ForumPlaceRail.tsx:128"],
+      "impact": "Every place radio has tabIndex=0 and there is no arrow-key handler. The rail remains clickable and Tab-operable, but keyboard and screen-reader users encounter 14 tab stops and cannot use expected Up/Down radio selection.",
+      "reproduce": "Open World > Places, focus the first place with Tab, then press Down/Up. Observe that selection stays unchanged; Tab through all place controls. Repeat with VoiceOver in the native app.",
+      "fix": "Use roving tabIndex on the checked radio, handle Up/Down/Home/End to move focus and selection, or change to ordinary buttons/list semantics if per-place Tab stops are intentional.",
+      "lightweight_test": "Extend railAccessibility.test.tsx with keyboard navigation, selected-state and focus assertions.",
+      "implementation_outcome": "Implemented after the initial source audit: one selected radio stays in the Tab order; Arrow keys wrap and Home/End move focus and request selection. Existing Escape behavior remains separate. railAccessibility.test.tsx passed all 7 tests in the focused run; native VoiceOver acceptance remains pending."
+    },
+    {
+      "priority": "P2",
+      "title": "Agent can navigate to World places but cannot open its visible desk views",
+      "evidence": ["crates/goose/src/agents/self_knowledge/app_navigation.md:13", "crates/goose/src/agents/platform_extensions/app_conductor.rs:127", "ui/command-center/src/hooks/useAppNavigate.ts:166", "ui/command-center/src/components/world/forum/ForumView.tsx:591"],
+      "impact": "The human UI exposes Agent desk, Meet, Learn, Evidence, Brief and Chat. The conductor catalog has no World app_action, and navigate_app World sections accept only place IDs. The self-knowledge explicitly says these desk tabs require UI interaction. Thus an agent cannot fulfill a request such as 'show me the Evidence lesson' through app_conductor, even though it can reach the World place.",
+      "reproduce": "In the running app, ask the agent to take the user to World Evidence or open the Brief editor. Inspect the emitted app navigation/action and final visible view without sending a brief or starting a model job. The supported World section only selects a place.",
+      "fix": "If full agent driveability is a product requirement, add a narrow validated World desk action/section vocabulary mirrored in Rust, frontend dispatch, and self-knowledge; separate opening a draft from sending it. Keep result wording honest because the bus only confirms request delivery.",
+      "lightweight_test": "Extend conductor/catalog mirror and useAppNavigate section tests for each new World desk target, plus one frontend dispatch test for open/close and tab selection."
+    },
+    {
+      "priority": "P3",
+      "title": "A live Reduce Motion change does not stop an in-progress World camera sweep",
+      "evidence": ["ui/command-center/src/components/world/forum/HabitatScene.tsx:59", "ui/command-center/src/components/world/forum/HabitatScene.tsx:68", "ui/command-center/src/components/world/forum/HabitatScene.tsx:74", "ui/command-center/src/components/world/forum/useForumReducedMotion.ts:12"],
+      "impact": "The camera checks Reduce Motion only when a transition starts. If the preference changes during its 850ms sweep, useFrame continues the transition until completion. The portrait already has a reactive motion hook that could serve as the pattern.",
+      "reproduce": "Start a place-to-place camera transition in compact World and toggle the app Reduce Motion setting during travel, or toggle the OS setting while the app is visible. Look for whether the camera settles immediately. This needs live visual verification.",
+      "fix": "On a preference change, finish or cancel the current transition immediately, then keep direct camera placement for future navigation.",
+      "lightweight_test": "A focused HabitatNavigation test should begin a transition, flip the preference, advance a frame and assert the transition has settled."
+    }
+  ],
+  "post_audit_validation": {
+    "status": "Uncommitted frontend changes and focused validation after the initial source audit; findings above retain their original baseline evidence and reproduction steps.",
+    "focused_tests": [
+      "useMeetingDictation.lifecycle.test.tsx: 61 passed after a test-only completion wait fix; no dictation hook behavior changed.",
+      "railAccessibility.test.tsx: 7 passed; noStrayJsxComments.test.ts: 4 passed. Combined focused run: 72/72 passed (dictation-rail-jsx-focused-vitest.log).",
+      "Ollama WizardShell.flow.test.tsx: 12 passed; apiOllamaPull.test.ts: 4 passed. Combined focused run: 16/16 passed (ollama-focused-tests.log)."
+    ],
+    "frontend_checks": "Command-center TypeScript noEmit and Vite production build passed with Node 24 and a bounded 3 GiB heap (ollama-typecheck-r2.log; ollama-production-build.log). The earlier 1 GiB typecheck attempt exhausted its heap and is not a source failure.",
+    "ollama_cross_reference": "The subsequent StepModel/api.ts work described in CHAT_SETUP_AUDIT_2026-10-09.json G5 surfaces SSE errors, verifies installed inventory after stream completion, and says Stop waiting for a client abort. It does not create a durable server job, prove server cancellation, or validate a live model download.",
+    "remaining": "The World agent desk navigation and mid-transition Reduce Motion findings above have no implementation outcome claimed here. Native macOS visual, motion, VoiceOver, and haptic acceptance remains outstanding; current CUA inspection could not attach to Chrome or Permagent (cgWindowNotFound)."
+  },
+  "validated_source_only": [
+    "The successful People save invokes hapticSuccess() after the PATCH resolves; the native command is registered and invokes NSHapticFeedbackManager. No source-backed claim is made about felt feedback on hardware.",
+    "The compact World desk and Places rail already restore focus when closed; do not replace those working paths in a broad redesign.",
+    "The browser fallback intentionally makes the native haptic call a no-op and uses CSS-based glass tokens."
+  ],
+  "acceptance_needed": "Root should verify appearance, motion, haptic sensation, keyboard navigation and agent navigation in the native macOS build, then compare browser fallback. Source review and tests do not establish visual/motion/haptic acceptance."
+}

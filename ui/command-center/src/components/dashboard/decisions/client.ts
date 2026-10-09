@@ -181,10 +181,20 @@ export const realDecisionsClient: DecisionsClient = {
   },
 };
 
-import { mockDecisionsClient } from './mockDecisions';
-
 const useMock = import.meta.env.VITE_DECISIONS_MOCK === '1';
 
+// Keep fixture initialization and strings out of the normal release graph.
+// A static import executes mock module side effects even when useMock is false.
+const mockClient = () => import('./mockDecisions').then(module => module.mockDecisionsClient);
+
 export const decisionsClient: DecisionsClient = useMock
-  ? mockDecisionsClient
+  ? {
+      list: async (...args) => (await mockClient()).list(...args),
+      answer: async (...args) => (await mockClient()).answer(...args),
+      history: async () => (await mockClient()).history(),
+      evidence: async (...args) => (await mockClient()).evidence(...args),
+      dispatchEvidence: async (...args) => (await mockClient()).dispatchEvidence(...args),
+      cancelGoal: async (...args) => (await mockClient()).cancelGoal(...args),
+      discardStaged: async (...args) => (await mockClient()).discardStaged(...args),
+    }
   : realDecisionsClient;

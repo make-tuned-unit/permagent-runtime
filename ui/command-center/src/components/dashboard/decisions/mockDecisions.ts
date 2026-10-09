@@ -142,7 +142,7 @@ const PENDING: Decision[] = [
       session_id: '20260925_14',
       request_id: 'req-8812',
       tool_name: 'developer__shell',
-      arguments: { command: 'git log --oneline -5', cwd: '/Users/you/dev/permagent-runtime' },
+      arguments: { command: 'git log --oneline -5', cwd: './example-project' },
     },
     created_at: minutesAgo(9),
   }),
@@ -224,7 +224,7 @@ export const MOCK_PENDING_DECISIONS: readonly Decision[] = PENDING;
 
 const DISPATCH_EVIDENCE: Record<string, DispatchEvidenceData> = {
   'goal-event-analytics': {
-    worktree_path: '/Users/you/dev/.permagent-goal-worktrees/cli-01a0d5ea',
+    worktree_path: './example-project/.worktrees/cli-01a0d5ea',
     baseline_commit: '9c21e0b',
     head_commit: null,
     commits: [],
@@ -236,7 +236,7 @@ const DISPATCH_EVIDENCE: Record<string, DispatchEvidenceData> = {
     worker_summary: '',
   },
   'goal-queue-saving': {
-    worktree_path: '/Users/you/dev/.permagent-goal-worktrees/cli-f69980d2',
+    worktree_path: './example-project/.worktrees/cli-f69980d2',
     baseline_commit: 'a1190cd',
     head_commit: '7d4f9ea',
     commits: ['7d4f9ea Create thread: Canada renewable energy and emissions targets'],

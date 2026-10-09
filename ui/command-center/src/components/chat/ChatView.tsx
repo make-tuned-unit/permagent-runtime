@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useCommandCenter } from '../../lib/store';
 import { api } from '../../lib/api';
 import { MessageList } from './MessageList';
@@ -12,6 +12,8 @@ import { VoiceOrb } from '../voice/VoiceOrb';
 import { DiscussNotice } from './DiscussNotice';
 import { useTheme } from '../../styles/useTheme';
 import { DropZone } from './DropZone';
+import { ChatSetupCard } from './ChatSetupCard';
+import { chatSetupState, modelSetupReadiness } from './chatSetupState';
 
 export function ChatView() {
   const { colors } = useTheme();
@@ -19,6 +21,24 @@ export function ChatView() {
   const ensureSession = useCommandCenter(s => s.ensureSession);
   const connectSession = useCommandCenter(s => s.connectSession);
   const setAgentName = useCommandCenter(s => s.setAgentName);
+  const providers = useCommandCenter(s => s.providers);
+  const providersError = useCommandCenter(s => s.providersError);
+  const chatResolvedRoute = useCommandCenter(s => s.chatResolvedRoute);
+  const chatSessionRouteEvidence = useCommandCenter(s => s.chatSessionRouteEvidence);
+  const loadProviders = useCommandCenter(s => s.loadProviders);
+  const configRev = useCommandCenter(s => s.configRev);
+  const chatMessages = useCommandCenter(s => s.chatMessages);
+  const chatHistoryLoaded = useCommandCenter(s => s.chatHistoryLoaded);
+  const isStreaming = useCommandCenter(s => s.isStreaming);
+  const sessionLoadError = useCommandCenter(s => s.sessionLoadError);
+  const daemonAuthError = useCommandCenter(s => s.daemonAuthError);
+  const [providerCheckKnown, setProviderCheckKnown] = useState(false);
+  useEffect(() => {
+    let active = true;
+    setProviderCheckKnown(false);
+    void loadProviders().then(() => { if (active) setProviderCheckKnown(true); });
+    return () => { active = false; };
+  }, [loadProviders, configRev]);
   const chatInputRef = useRef<ChatInputHandle>(null);
   // #629 multi-client liveness: re-read identity when `identity_changed`
   // arrives on /events (persona edited on another device).
@@ -62,6 +82,17 @@ export function ChatView() {
   // Without this guard the dock rendered a second orb simultaneously.
   const chatWindowOpen = useCommandCenter(s => s.chatWindowOpen);
   const voiceOverlay = Boolean(voiceConversation && !chatWindowOpen && !worldConversationActive);
+  const modelReadiness = modelSetupReadiness({
+    providers: providers ?? [], providerCheckKnown, providersError: !!providersError,
+    chatRoute: chatResolvedRoute, sessionRouteEvidence: chatSessionRouteEvidence,
+    hasConversation: (chatMessages?.length ?? 0) > 0,
+  });
+  const setupState = chatSetupState({
+    modelReadiness, historyLoaded: !!chatHistoryLoaded,
+    messageCount: chatMessages?.length ?? 0, streaming: !!isStreaming,
+    sessionLoadError: sessionLoadError ?? null, daemonAuthError: daemonAuthError ?? null,
+    voiceActive: !!voiceConversation,
+  });
 
   return (
     <DropZone zoneId="chat-dock-drop" priority={20} onDrop={(files) => chatInputRef.current?.addFiles(files)}>
@@ -75,7 +106,10 @@ export function ChatView() {
         <ModelPicker />
       </div>
 
-      <MessageList />
+      {setupState ? <ChatSetupCard state={setupState} onRetry={() => {
+        setProviderCheckKnown(false);
+        void loadProviders().then(() => setProviderCheckKnown(true));
+      }} /> : <MessageList />}
       <SkillPromptBanner />
       <RoleRoutingPrompt />
       {/* Meeting-recorder dock slot: MeetingRecorder portals its live panel
@@ -88,7 +122,7 @@ export function ChatView() {
           Approve / Reject / Add note / Discuss buttons; the user asked for
           them out of chat on 2026-09-20. The Decision Inbox on Home is where
           they live, and Henry still raises them in conversation. */}
-      <ChatInput ref={chatInputRef} />
+      <ChatInput ref={chatInputRef} modelReadiness={modelReadiness} />
 
       {/* The decisions go INSIDE the orb, not over it. They used to be a second
           absolutely-positioned layer (`bottom: space.huge`, `zIndex: 70`) above
