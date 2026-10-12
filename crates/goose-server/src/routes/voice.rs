@@ -7657,6 +7657,31 @@ mod tests {
         }
     }
 
+    /// Releases a held synthesis when dropped, so a failed assertion in a test
+    /// that blocks the fake TTS cannot leave a `spawn_blocking` thread parked on
+    /// the condvar forever: dropping the test's runtime waits for blocking
+    /// tasks, so a plain panic there turned into a test that never finished.
+    struct ReleaseHold(Arc<(Mutex<bool>, Condvar)>);
+
+    impl Drop for ReleaseHold {
+        fn drop(&mut self) {
+            *self.0 .0.lock().unwrap_or_else(|e| e.into_inner()) = false;
+            self.0 .1.notify_all();
+        }
+    }
+
+    /// Wait (bounded) until the fake has been called `n` times. The warm job's
+    /// synthesis runs on a blocking thread that has to be scheduled first; a
+    /// fixed 15-20 ms sleep was not always enough on a loaded machine.
+    async fn wait_for_calls(calls: &Arc<Mutex<Vec<String>>>, n: usize) {
+        for _ in 0..2000 {
+            if calls.lock().unwrap_or_else(|e| e.into_inner()).len() >= n {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    }
+
     async fn warm_test_setup() {
         reset_registry_for_test().await;
         set_test_warm_clock(std::time::Instant::now());
@@ -7674,6 +7699,7 @@ mod tests {
         let _serial = WARM_TEST_SERIAL.lock().await;
         warm_test_setup().await;
         let hold = Arc::new((Mutex::new(true), Condvar::new()));
+        let _release = ReleaseHold(hold.clone());
         let fake = WarmTestFakeTts::blocking(hold.clone());
         let calls = fake.calls.clone();
         let tts = fake.arc();
@@ -7686,7 +7712,7 @@ mod tests {
                 join_tts_provider_warm(key, tts, None).await;
             }));
         }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        wait_for_calls(&calls, 1).await;
         assert_eq!(calls.lock().unwrap_or_else(|e| e.into_inner()).len(), 1);
         *hold.0.lock().unwrap_or_else(|e| e.into_inner()) = false;
         hold.1.notify_all();
@@ -7701,6 +7727,7 @@ mod tests {
         let _serial = WARM_TEST_SERIAL.lock().await;
         warm_test_setup().await;
         let hold = Arc::new((Mutex::new(true), Condvar::new()));
+        let _release = ReleaseHold(hold.clone());
         let fake = WarmTestFakeTts::blocking(hold.clone());
         let calls = fake.calls.clone();
         let tts = fake.arc();
@@ -7712,7 +7739,7 @@ mod tests {
                 join_tts_provider_warm(key, tts, None).await;
             }
         });
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        wait_for_calls(&calls, 1).await;
         assert_eq!(calls.lock().unwrap_or_else(|e| e.into_inner()).len(), 1);
         let second = tokio::spawn(async move {
             join_tts_provider_warm(key, tts, None).await;
@@ -7781,6 +7808,7 @@ mod tests {
         let _serial = WARM_TEST_SERIAL.lock().await;
         warm_test_setup().await;
         let hold = Arc::new((Mutex::new(true), Condvar::new()));
+        let _release = ReleaseHold(hold.clone());
         let fake = WarmTestFakeTts::blocking(hold.clone());
         let calls = fake.calls.clone();
         let tts = fake.arc();
@@ -7790,7 +7818,7 @@ mod tests {
         let warm = tokio::spawn(async move {
             join_tts_provider_warm(key, tts, None).await;
         });
-        tokio::time::sleep(std::time::Duration::from_millis(15)).await;
+        wait_for_calls(&calls, 1).await;
         assert!(
             !warm.is_finished(),
             "the warm is still inside the held synthesis"
@@ -7807,6 +7835,7 @@ mod tests {
         let _serial = WARM_TEST_SERIAL.lock().await;
         warm_test_setup().await;
         let hold = Arc::new((Mutex::new(true), Condvar::new()));
+        let _release = ReleaseHold(hold.clone());
         let fake = WarmTestFakeTts::blocking(hold.clone());
         let calls = fake.calls.clone();
         let tts = fake.arc();
@@ -7818,7 +7847,7 @@ mod tests {
                 join_tts_provider_warm(key, tts, None).await;
             }
         });
-        tokio::time::sleep(std::time::Duration::from_millis(15)).await;
+        wait_for_calls(&calls, 1).await;
         let on_start = tokio::spawn(async move {
             join_tts_provider_warm(key, tts, None).await;
         });
