@@ -576,6 +576,28 @@ fn enforce_harness_coordinator_route(
     explicit_override: bool,
     interactive: bool,
 ) -> (ResolvedProviderConfig, Option<String>) {
+    enforce_harness_coordinator_route_in(
+        resolved,
+        coding_harness,
+        configured_fallback,
+        explicit_override,
+        interactive,
+        &permagent::config::RoleContext::live(),
+    )
+}
+
+/// [`enforce_harness_coordinator_route`] over an explicit [`RoleContext`], so
+/// the reroute rules can be tested without depending on which provider keys
+/// the machine running the tests happens to have (a reroute only targets a
+/// provider the user can actually use).
+fn enforce_harness_coordinator_route_in(
+    resolved: ResolvedProviderConfig,
+    coding_harness: bool,
+    configured_fallback: Option<permagent::config::RoleModel>,
+    explicit_override: bool,
+    interactive: bool,
+    ctx: &permagent::config::RoleContext,
+) -> (ResolvedProviderConfig, Option<String>) {
     if !coding_harness {
         return (resolved, None);
     }
@@ -585,10 +607,11 @@ fn enforce_harness_coordinator_route(
     // shows exactly the coordinator this launch will run. Only the wording and
     // the model-config plumbing live here.
     use permagent::config::HarnessGateOutcome;
-    let decision = permagent::config::gate_harness_coordinator(
+    let decision = permagent::config::gate_harness_coordinator_in(
         permagent::config::RoleModel::new(&resolved.provider_name, &resolved.model_name),
         configured_fallback,
         explicit_override,
+        ctx,
     );
     let eligibility = decision.eligibility;
     let target = match decision.outcome {
@@ -2252,8 +2275,16 @@ mod tests {
             model_name: "qwen25-16k:latest".into(),
             model_config: permagent::model::ModelConfig::new("qwen25-16k:latest").unwrap(),
         };
-        let (routed, notice) =
-            enforce_harness_coordinator_route(resolved, true, None, false, false);
+        // Every provider usable: the reroute target must not depend on which
+        // API keys the machine running the tests has.
+        let (routed, notice) = enforce_harness_coordinator_route_in(
+            resolved,
+            true,
+            None,
+            false,
+            false,
+            &permagent::config::RoleContext::permissive(),
+        );
         assert_eq!(routed.provider_name, "openai");
         assert_eq!(routed.model_name, "gpt-5.4-mini");
         assert_eq!(routed.model_config.model_name, "gpt-5.4-mini");
@@ -2285,8 +2316,16 @@ mod tests {
             model_name: "MiniMax-M2.5".into(),
             model_config: permagent::model::ModelConfig::new("MiniMax-M2.5").unwrap(),
         };
-        let (routed, notice) =
-            enforce_harness_coordinator_route(resolved, true, None, false, false);
+        // Every provider usable: the reroute target must not depend on which
+        // API keys the machine running the tests has.
+        let (routed, notice) = enforce_harness_coordinator_route_in(
+            resolved,
+            true,
+            None,
+            false,
+            false,
+            &permagent::config::RoleContext::permissive(),
+        );
         assert_eq!(routed.provider_name, "openai");
         assert_eq!(routed.model_name, "gpt-5.4-mini");
         assert!(notice

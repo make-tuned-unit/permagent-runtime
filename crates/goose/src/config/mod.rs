@@ -40,7 +40,8 @@ pub use local_model::{
 };
 pub use model_roles::{
     assess_harness_coordinator, assess_harness_coordinator_in, effective_harness_route,
-    effective_harness_route_from_config, gate_harness_coordinator, resolve_role_model,
+    effective_harness_route_from_config, gate_harness_coordinator, gate_harness_coordinator_in,
+    resolve_role_model,
     role_model_from_config, trusted_default_models, CoordinatorEligibility, EffectiveHarnessRoute,
     HarnessGateDecision, HarnessGateOutcome, ModelRole, ProviderAvailability, RoleContext,
     RoleModel, RoleModelSource, RoleResolution, DEFAULT_TRUSTED_DEFAULT_MODELS,
