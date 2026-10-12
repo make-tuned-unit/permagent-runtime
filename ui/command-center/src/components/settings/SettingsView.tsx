@@ -1990,7 +1990,7 @@ function PairingQrCode({ value, size = 112 }: { value: string; size?: number }) 
  *  code (`#claim=`) that the new device exchanges for its own token on first
  *  load (see api.ts pendingClaimCode/exchangeClaim) — so each companion is a
  *  named, individually revocable entry in the registry below. */
-function DevicesPanel() {
+export function DevicesPanel() {
   const { colors } = useThemeHook();
   const agentName = useCommandCenter(s => s.agentName);
   const [host, setHost] = useState('');
@@ -2008,7 +2008,10 @@ function DevicesPanel() {
   const [accessBusy, setAccessBusy] = useState(false);
 
   // ── Device registry (#628) ──
+  // null = no response yet; the failure flag is separate so "still loading"
+  // never reads as "daemon unreachable".
   const [devices, setDevices] = useState<DeviceInfo[] | null>(null);
+  const [devicesFailed, setDevicesFailed] = useState(false);
   const [pairName, setPairName] = useState('');
   const [claim, setClaim] = useState<{ code: string; expiresAt: string } | null>(null);
   const [pairError, setPairError] = useState<string | null>(null);
@@ -2016,7 +2019,9 @@ function DevicesPanel() {
   const [editName, setEditName] = useState('');
   const [confirmRevokeId, setConfirmRevokeId] = useState<string | null>(null);
   const loadDevices = useCallback(() => {
-    api.listDevices().then(setDevices).catch(() => setDevices(null));
+    api.listDevices()
+      .then(list => { setDevices(list); setDevicesFailed(false); })
+      .catch(() => { setDevices(null); setDevicesFailed(true); });
   }, []);
   // Live last-seen: the middleware stamps it on every authenticated device
   // request; a light poll keeps "last seen 2m ago" honest while the panel is
@@ -2117,8 +2122,8 @@ function DevicesPanel() {
       {/* #628: the device registry — named companions, last-seen, revocation. */}
       <Section title="Paired devices" sub="Every companion has its own key. Revoking one locks out that device only — nothing else re-pairs.">
         {devices === null && (
-          <div style={{ fontSize: textSize.caption, color: colors.textDim, padding: '6px 0' }}>
-            Device list unavailable — is the daemon reachable?
+          <div data-testid="devices-status" style={{ fontSize: textSize.caption, color: colors.textDim, padding: '6px 0' }}>
+            {devicesFailed ? 'Device list unavailable — is the daemon reachable?' : 'Loading devices…'}
           </div>
         )}
         {devices?.length === 0 && (
