@@ -3797,8 +3797,10 @@ mod tests {
             true, // headless
             &manager,
             "budget gate detail",
-            "zai",
-            "glm-4.7",
+            // 5f303da3 journals the route (provider + model) with the reservation, so
+            // the auto-answer must name the live call's route — the one the retry uses.
+            fixture.get_name(),
+            &fixture.get_model_config().model_name,
         )
         .await;
         assert_eq!(
