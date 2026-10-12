@@ -648,3 +648,12 @@ describe('download-converted navigation closes its dead tab', () => {
     expect(BROWSER_TSX).toContain('lastSavedFilename');
   });
 });
+
+describe('empty-state quick links', () => {
+  it('lists plain destinations only, never an OAuth endpoint', () => {
+    const m = BROWSER_TSX.match(/\{\[('[^\]]*)\]\.map\(\(site\)/);
+    expect(m, 'quick-link list not found').not.toBeNull();
+    expect(m![1]).not.toContain('accounts.');
+    expect(m![1].split(',').length).toBeLessThanOrEqual(4);
+  });
+});

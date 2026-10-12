@@ -1423,7 +1423,7 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
                 focus the address bar
               </p>
               <div className="mt-6 flex flex-wrap gap-2 justify-center">
-                {['google.com', 'github.com', 'accounts.google.com'].map((site) => (
+                {['google.com', 'github.com'].map((site) => (
                   <Button
                     key={site}
                     colors={colors}
