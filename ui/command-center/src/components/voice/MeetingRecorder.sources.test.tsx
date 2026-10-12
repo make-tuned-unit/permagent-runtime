@@ -37,7 +37,7 @@ vi.mock('../../lib/dictationReadiness', () => ({
 }));
 
 import { MeetingRecorder } from './MeetingRecorder';
-import { requestRecordOpen, useAppNavigationRequests } from '../../lib/appNavigationRequests';
+import { useAppNavigationRequests } from '../../lib/appNavigationRequests';
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -67,12 +67,6 @@ async function flush() {
     await new Promise(r => setTimeout(r, 0));
     await new Promise(r => requestAnimationFrame(() => r(null)));
   });
-}
-
-function tab(shift = false) {
-  const ev = new KeyboardEvent('keydown', { key: 'Tab', shiftKey: shift, bubbles: true, cancelable: true });
-  (document.activeElement ?? document.body).dispatchEvent(ev);
-  return ev;
 }
 
 describe('Record sources with system audio available', () => {
