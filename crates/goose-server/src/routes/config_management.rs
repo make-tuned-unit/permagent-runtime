@@ -496,7 +496,7 @@ pub async fn remove_config(
     Ok(Json(format!("Removed key {}", query.key)))
 }
 
-const SECRET_MASK_SHOW_LEN: usize = 8;
+const SECRET_MASK_SHOW_LEN: usize = 4;
 
 fn mask_secret(secret: Value) -> String {
     let as_string = match secret {
@@ -2182,6 +2182,16 @@ mod tests {
             fields,
             ["key", "kind", "label", "reference", "resolves", "error"]
         );
+    }
+
+    /// A saved key shows at most four characters in Settings -> Keys (the UI
+    /// clamps to four too); short secrets show less, never more than half.
+    #[test]
+    fn mask_secret_shows_at_most_four_characters() {
+        let masked = mask_secret(Value::String("sk-live-c0ffee1234567890".to_string()));
+        assert_eq!(masked, format!("sk-l{}", "*".repeat(20)));
+        assert_eq!(mask_secret(Value::String("abcdef".to_string())), "abc***");
+        assert_eq!(mask_secret(Value::String("ab".to_string())), "a*");
     }
 
     /// The test endpoint's evidence is a MASK, produced by the same
