@@ -96,8 +96,10 @@ const LOCATION_LABEL: Partial<Record<ToolType, string>> = {
   finance: 'Open Finance',
 };
 
-/** The grid every row (and the skeleton) shares: label / fed / on / status / source / brain. */
-const GRID_COLUMNS = 'minmax(0,1fr) 92px 44px 150px 84px 60px';
+/** The grid every row (and the skeleton) shares: label / fed / on / source / brain.
+ *  A failure chip lives in the label cell: its own column sat empty on every
+ *  healthy row, a bordered blank between the switch and the Source button. */
+const GRID_COLUMNS = 'minmax(0,1fr) 92px 44px 84px 60px';
 
 function isFailing(row: FeedSourceStatus, chatDead: number): boolean {
   if (row.source === 'chat') return chatDead > 0;
@@ -112,7 +114,6 @@ function SkeletonRow({ colors }: { colors: ReturnType<typeof useTheme>['colors']
     <div style={{ display: 'contents' }}>
       <div style={{ padding: `${space.sm}px 0`, borderBottom: `1px solid ${colors.border}` }}>{bar(160)}</div>
       <div style={{ padding: `${space.sm}px 0`, borderBottom: `1px solid ${colors.border}` }}>{bar(60)}</div>
-      <div style={{ padding: `${space.sm}px 0`, borderBottom: `1px solid ${colors.border}` }} />
       <div style={{ padding: `${space.sm}px 0`, borderBottom: `1px solid ${colors.border}` }} />
       <div style={{ padding: `${space.sm}px 0`, borderBottom: `1px solid ${colors.border}` }} />
       <div style={{ padding: `${space.sm}px 0`, borderBottom: `1px solid ${colors.border}` }} />
@@ -233,7 +234,7 @@ export function MemoryFeedPanel() {
   if (loading && !data) {
     return (
       <div data-testid="memory-feed-panel">
-        <div style={{ display: 'grid', gridTemplateColumns: GRID_COLUMNS, columnGap: space.md }}>
+        <div style={{ display: 'grid', gridTemplateColumns: GRID_COLUMNS }}>
           {[0, 1, 2, 3].map(i => <SkeletonRow key={i} colors={colors} />)}
         </div>
       </div>
@@ -298,7 +299,7 @@ export function MemoryFeedPanel() {
         )}
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: GRID_COLUMNS, columnGap: space.md, alignItems: 'center' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: GRID_COLUMNS, alignItems: 'stretch' }}>
         {sources.map(row => {
           const location = SOURCE_LOCATION[row.source];
           const isChat = row.source === 'chat';
@@ -306,7 +307,7 @@ export function MemoryFeedPanel() {
           const dead = isChat ? chatDead : row.dead;
           const failing = isFailing(row, chatDead);
           const cellStyle: CSSProperties = {
-            padding: `${space.sm}px 0`, borderBottom: `1px solid ${colors.border}`, minHeight: 40,
+            padding: `${space.sm}px ${space.md}px ${space.sm}px 0`, borderBottom: `1px solid ${colors.border}`, minHeight: 40,
             display: 'flex', alignItems: 'center',
           };
 
@@ -329,6 +330,19 @@ export function MemoryFeedPanel() {
                   {dead > 0 && <span style={{ color: colors.danger }}> · {dead} failed</span>}
                   {pending > 0 && <span> · {pending} queued</span>}
                 </div>
+                {row.enabled && failing && (
+                  <div style={{ marginTop: space.xxs }}>
+                    <Chip
+                      kind="static"
+                      tone="danger"
+                      quiet
+                      data-testid={`memory-feed-error-${row.source}`}
+                      title={row.last_error ?? 'Delivery to the Brain has been failing.'}
+                    >
+                      {dead > 0 ? `${dead} failed` : 'Failing'}
+                    </Chip>
+                  </div>
+                )}
               </div>
 
               {/* Fed */}
@@ -349,23 +363,6 @@ export function MemoryFeedPanel() {
                   }
                   label={`Feed ${row.label} to the Brain`}
                 />
-              </div>
-
-              {/* Status — the "Off" state now lives on the toggle itself
-                  (coordinator review, 2026-09-25); this cell is only ever a
-                  failure, never a redundant second "off" indicator. */}
-              <div style={cellStyle}>
-                {row.enabled && failing && (
-                  <Chip
-                    kind="static"
-                    tone="danger"
-                    quiet
-                    data-testid={`memory-feed-error-${row.source}`}
-                    title={row.last_error ?? 'Delivery to the Brain has been failing.'}
-                  >
-                    {dead > 0 ? `${dead} failed` : 'Failing'}
-                  </Chip>
-                )}
               </div>
 
               {/* Source */}
