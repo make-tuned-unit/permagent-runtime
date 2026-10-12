@@ -26,7 +26,10 @@ export function getApiBaseUrl(): string { return API_BASE_URL; }
  * most the first 4 (enough to tell two keys apart, or read a vendor prefix). */
 export function clampMaskedSecret<T extends string | null | undefined>(masked: T): T {
   if (typeof masked !== 'string') return masked;
-  const lead = masked.length - masked.replace(/^[^*]+/, '').length;
+  // Only the daemon's "prefix + asterisks" form; other shapes pass through.
+  const m = /^([^*]+)(\*+)$/.exec(masked);
+  if (!m) return masked;
+  const lead = m[1].length;
   if (lead <= 4) return masked;
   return (masked.slice(0, 4) + '*'.repeat(lead - 4) + masked.slice(lead)) as T;
 }
