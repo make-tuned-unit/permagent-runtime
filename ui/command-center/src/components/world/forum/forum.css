@@ -19,7 +19,11 @@
   position:relative;
   min-width:0;
   min-height:0;
-  overflow:hidden}
+  overflow:hidden;
+  /* The HUD reflows by the world's own width (see the forum-stage queries at
+     the end of this file), not the window's: a docked chat narrows the world
+     without touching the viewport. */
+  container:forum-stage / inline-size}
 /* The canvas host is its own stacking context, level with the world floor.
    Everything drei's <Html> draws — the place tags, the agents' nameplates,
    the Mesh plaque — is portalled into this div with a z-index up to
@@ -863,4 +867,26 @@
   .forum-shell[data-habitat=true][data-desk='closed'] { grid-template-rows:minmax(0,1fr); }
   .forum-shell[data-habitat=true] .forum-panel { padding:16px 20px; }
   .agent-desk-profile-heading { grid-template-columns:112px minmax(0,1fr); }
+}
+
+/* ── Narrow forum: desk under the world, HUD reflowed ─────────────────
+   With the Agent desk and the chat dock both open, the world is whatever is
+   left of the window — 318 px at 1280, 62 px at 1024 — and the title card
+   ran under the desk toggle. Below FORUM_NARROW_SHELL_PX the desk stacks
+   beneath the world (same shape the phone layout above uses), and below
+   ~520 px of world the title card collapses to its heading and the toolbar
+   becomes a column, so "Agent desk" stays in reach. */
+.forum-shell[data-narrow='true'][data-desk='open'] {
+  grid-template-columns:minmax(0,1fr);
+  grid-template-rows:minmax(240px,40%) minmax(0,1fr);
+}
+.forum-shell[data-narrow='true'][data-desk='open'] .forum-panel { border-left:0; border-top:1px solid var(--forum-border); padding:16px 20px; }
+@container forum-stage (max-width:520px) {
+  .forum-shell[data-habitat=true] .forum-brand { padding:8px 12px; gap:8px; }
+  .forum-shell[data-habitat=true] .forum-brand .eyebrow { display:none; }
+  .forum-shell[data-habitat=true] .forum-brand h1 { font-size:16px!important; line-height:20px!important; margin:0; }
+  .forum-shell[data-habitat=true] .forum-lane-left { --forum-gutter:12px; top:12px; max-width:calc(100% - 156px); }
+  .forum-shell .habitat-view-tools { top:12px; right:12px; flex-direction:column; align-items:stretch; gap:2px; padding:4px; }
+  .habitat-view-tools > .pa-btn:last-child { margin-left:0; }
+  .habitat-view-tools .pa-btn { min-height:28px; --pa-btn-pad:5px 10px; white-space:nowrap; }
 }

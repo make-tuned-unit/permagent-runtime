@@ -12,6 +12,8 @@
  * skill the user named themselves alone.
  */
 
+import { clampPreview } from '../../lib/humanLabel';
+
 export interface HumanizableSkill {
   id: string;
   name: string;
@@ -137,6 +139,12 @@ function folderOf(path: string): string | null {
   return dirs.slice(-2).join('/');
 }
 
+/** `https://www.example.com/a/b` → `example.com`; null when it is not a URL. */
+function hostOf(value: string): string | null {
+  if (!/^https?:\/\//i.test(value)) return null;
+  try { return new URL(value).hostname.replace(/^www\./, '') || null; } catch { return null; }
+}
+
 export interface HumanSkill {
   /** The readable title ("Write a file in permagent-runtime/docs"). */
   title: string;
@@ -159,13 +167,16 @@ export function humanizeSkill(skill: HumanizableSkill): HumanSkill {
   let variant: string | null = null;
   if (sig.argValue && !sig.redacted) {
     const key = sig.argKey?.toLowerCase() ?? '';
-    if (PATH_KEYS.has(key) || (sig.argValue.includes('/') && key !== 'command')) {
+    const host = hostOf(sig.argValue);
+    if (host) {
+      variant = `on ${host}`;
+    } else if (PATH_KEYS.has(key) || (sig.argValue.includes('/') && key !== 'command')) {
       const folder = folderOf(sig.argValue);
       variant = folder ? `in ${folder}` : sig.argValue;
     } else if (key === 'command') {
-      variant = `“${sig.argValue}”`;
+      variant = `“${clampPreview(sig.argValue)}”`;
     } else {
-      variant = `${sig.argKey}: ${sig.argValue}`;
+      variant = `${sig.argKey}: ${clampPreview(sig.argValue)}`;
     }
   }
   return {

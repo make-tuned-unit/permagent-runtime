@@ -1,3 +1,4 @@
+import { humanizeId } from '../../lib/humanLabel';
 import { useEffect, useState, useCallback, useRef, useMemo, useId } from 'react';
 import type { CSSProperties } from 'react';
 import { FiChevronRight, FiFolder, FiMessageSquare, FiSearch } from 'react-icons/fi';
@@ -496,7 +497,7 @@ export function AutomateView() {
       const prev = prevRunningRef.current;
       for (const id of prev) {
         if (!nowRunning.has(id)) {
-          const name = newJobs.find(j => j.id === id)?.display_name || id;
+          const name = newJobs.find(j => j.id === id)?.display_name || humanizeId(id);
           // The banner is the gateway to the produced result (Review button) —
           // give it a longer life than a plain "completed" note, and only let
           // the timer clear ITS OWN toast (not a newer completion's).
@@ -996,7 +997,7 @@ export function AutomateView() {
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: space.xxs }}>
                 {allRuns.map(run => {
-                  const displayName = jobNameMap.get(run.jobId) || run.jobId;
+                  const displayName = jobNameMap.get(run.jobId) || humanizeId(run.jobId);
                   return (
                     /* Keeps the element, takes the rules: this row IS the button
                        and its four pieces are flex children OF it (a `flex: 1`
@@ -1024,7 +1025,9 @@ export function AutomateView() {
                       } as CSSProperties}
                     >
                       <span style={{ fontSize: textSize.micro, color: colors.success }}>&#10003;</span>
-                      <span style={{ fontSize: textSize.caption, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{displayName}</span>
+                      <Tooltip content={run.jobId} disabled={displayName === run.jobId}>
+                        <span style={{ fontSize: textSize.caption, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{displayName}</span>
+                      </Tooltip>
                       <span style={{ fontSize: 10, color: colors.textDim, fontFamily: font.mono, flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>{run.messageCount} msgs</span>
                       <span style={{ fontSize: 10, color: colors.textDim, flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>{timeAgo(run.createdAt)}</span>
                     </button>
@@ -1270,7 +1273,7 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, actionSta
   selected: boolean;
 }) {
   const { colors } = useTheme();
-  const name = job.display_name || job.id;
+  const name = job.display_name || humanizeId(job.id);
   const desc = job.description || '';
   const approvalPending = job.paused && job.requires_approval === true;
   const schedule = scheduleSummary(job);
@@ -1504,7 +1507,7 @@ job, onRunNow, onPause, onUnpause, onDelete, onKill, onResetToDefault, onOpenLas
   onActionDone: (key: string, afterRefresh?: () => void) => void;
 }) {
   const { colors } = useTheme();
-  const name = job.display_name || job.id;
+  const name = job.display_name || humanizeId(job.id);
   const approvalPending = job.paused && job.requires_approval === true;
   const statusColor = job.currently_running ? colors.success : job.paused ? colors.textDim : colors.cyan;
   const hasUpdate = job.starter_id && job.user_customized && job.embedded_version && job.version !== job.embedded_version;

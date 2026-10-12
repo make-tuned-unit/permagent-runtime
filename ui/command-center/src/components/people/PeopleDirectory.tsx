@@ -431,13 +431,19 @@ export function PeopleDirectory() {
                   borderRadius: isOrganisation(p) ? 2 : radius.pill,
                   background: isOrganisation(p) ? colors.warning : colors.cyan,
                 }} />
-                <span style={{ fontSize: textSize.caption, fontWeight: 600 }}>
+                {/* The name never wraps and keeps its own width; the role and
+                    company give way first (one clipped line, full text on
+                    hover), so a docked panel cannot stack a name over two
+                    lines beside a long title. */}
+                <span style={{ fontSize: textSize.caption, fontWeight: 600, flexShrink: 0, maxWidth: '40%', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                   {isSelf(p) ? 'You' : p.display_name}
                 </span>
                 {(p.role || p.company) && (
-                  <span style={{ fontSize: textSize.micro, color: colors.textDim }}>
-                    {[p.role, p.company].filter(Boolean).join(' · ')}
-                  </span>
+                  <Tooltip content={[p.role, p.company].filter(Boolean).join(' · ')}>
+                    <span style={{ fontSize: textSize.micro, color: colors.textDim, flex: '0 1 auto', minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {[p.role, p.company].filter(Boolean).join(' · ')}
+                    </span>
+                  </Tooltip>
                 )}
                 {/* A flag, not a status: nothing is watching for this to change
                     and it will say the same thing tomorrow. `kind="static"`
