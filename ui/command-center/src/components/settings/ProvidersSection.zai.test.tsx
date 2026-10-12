@@ -198,12 +198,29 @@ describe('Status badge on keyless providers', () => {
     allowed.getProviders.mockResolvedValue([OPENAI_CONNECTED, LM_STUDIO_KEYLESS] as never);
     await render();
 
-    const keyless = container.querySelector('[data-testid="provider-status-lmstudio"]')!;
     const keyed = container.querySelector('[data-testid="provider-status-openai"]')!;
-    expect(keyless.textContent).toBe('No key needed');
     expect(keyed.textContent).toContain('Connected');
+    await act(async () => {
+      container.querySelector('[data-testid="providers-tab-ready"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    const keyless = container.querySelector('[data-testid="provider-status-lmstudio"]')!;
+    expect(keyless.textContent).toBe('No key needed');
     // Same placement: the status badge is the first chip in each card's badge group.
     expect(keyless.parentElement!.firstElementChild).toBe(keyless);
     expect(keyed.parentElement!.firstElementChild).toBe(keyed);
+  });
+});
+
+describe('tab counts agree with badges', () => {
+  it('counts a keyless provider under Ready to use, never Connected', async () => {
+    allowed.getProviders.mockResolvedValue([OPENAI_CONNECTED, LM_STUDIO_KEYLESS, ZAI_PROVIDER] as never);
+    await render();
+    const tab = (id: string) => container.querySelector(`[data-testid="providers-tab-${id}"]`) as HTMLButtonElement;
+    expect(tab('connected').textContent).toBe('Connected (1)');
+    expect(tab('ready').textContent).toBe('Ready to use (1)');
+    expect(tab('providers').textContent).toBe('Providers (1)');
+    await act(async () => { tab('ready').dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+    expect(container.querySelector('[data-testid="provider-status-lmstudio"]')!.textContent).toBe('No key needed');
+    expect(container.textContent).not.toContain('OpenAI');
   });
 });

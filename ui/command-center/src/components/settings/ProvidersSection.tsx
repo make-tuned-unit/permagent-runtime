@@ -40,12 +40,12 @@ export function ProvidersSection() {
   const [tab, setTab] = useState<ProviderTab | null>(null);
   const [secretSources, setSecretSources] = useState<SecretSourcesResponse | undefined>();
 
-  const { connected, available } = useMemo(
+  const { connected, ready, available } = useMemo(
     () => partitionProviders(providers),
     [providers],
   );
-  const activeTab = tab ?? initialProviderTab(connected.length);
-  const visible = activeTab === 'connected' ? connected : available;
+  const activeTab = tab ?? initialProviderTab(connected.length, ready.length);
+  const visible = activeTab === 'connected' ? connected : activeTab === 'ready' ? ready : available;
 
   // Fetched here rather than in the modal so the card badge and the modal
   // cannot disagree about where a key comes from. Failure is silent on purpose:
@@ -102,7 +102,7 @@ export function ProvidersSection() {
     setConfiguring(null);
     void Promise.resolve(loadProviders()).then(() => {
       const next = useCommandCenter.getState().providers.find(p => p.name === provider.name);
-      if (next?.isConfigured && !wasConfigured) setTab('connected');
+      if (next?.isConfigured && !wasConfigured) setTab(next.configKeys.some(k => k.secret) ? 'connected' : 'ready');
     });
     loadSecretSources();
   }, [loadProviders, loadSecretSources]);
@@ -143,8 +143,9 @@ export function ProvidersSection() {
         >
           {([
             ['connected', 'Connected', connected.length],
+            ['ready', 'Ready to use', ready.length],
             ['providers', 'Providers', available.length],
-          ] as const).map(([id, label, count]) => {
+          ] as const).filter(([id, , count]) => id !== 'ready' || count > 0 || activeTab === 'ready').map(([id, label, count]) => {
             const selected = activeTab === id;
             return (
               // A `role="tab"` inside a tablist: `Button` would flatten the
@@ -212,13 +213,15 @@ export function ProvidersSection() {
 
       <div
         role="tabpanel"
-        aria-label={activeTab === 'connected' ? 'Connected providers' : 'Available providers'}
+        aria-label={activeTab === 'connected' ? 'Connected providers' : activeTab === 'ready' ? 'Providers ready to use' : 'Available providers'}
       >
       {providers.length > 0 && visible.length === 0 && (
         <div className="text-xs py-4 text-center" style={{ fontFamily: font.body, color: colors.textMuted }}>
           {activeTab === 'connected'
             ? 'No keys connected yet. Open Providers and add one — it moves here.'
-            : 'Every listed provider is already connected.'}
+            : activeTab === 'ready'
+              ? 'No key-free providers are set up.'
+              : 'Every listed provider is already set up.'}
         </div>
       )}
 

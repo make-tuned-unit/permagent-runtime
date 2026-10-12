@@ -55,3 +55,23 @@ describe('initialProviderTab', () => {
     expect(initialProviderTab(0)).toBe('providers');
   });
 });
+
+describe('keyless providers are not "Connected"', () => {
+  const keyed = { configKeys: [{ name: 'K', required: true, secret: true }] };
+  const keyless = { configKeys: [{ name: 'HOST', required: false, secret: false }] };
+  it('puts a configured provider with no secret in ready, not connected', () => {
+    const { connected, ready, available } = partitionProviders([
+      { ...p({ name: 'openai', displayName: 'OpenAI', isConfigured: true }), ...keyed },
+      { ...p({ name: 'lmstudio', displayName: 'LM Studio', isConfigured: true }), ...keyless },
+      { ...p({ name: 'ollama', displayName: 'Ollama' }), ...keyless },
+    ]);
+    expect(connected.map(x => x.name)).toEqual(['openai']);
+    expect(ready.map(x => x.name)).toEqual(['lmstudio']);
+    expect(available.map(x => x.name)).toEqual(['ollama']);
+  });
+  it('opens on ready when only key-free providers are set up', () => {
+    expect(initialProviderTab(0, 2)).toBe('ready');
+    expect(initialProviderTab(1, 2)).toBe('connected');
+    expect(initialProviderTab(0, 0)).toBe('providers');
+  });
+});
