@@ -90,7 +90,10 @@ function NotificationBellRow({ open, onHover, onLeave }: {
         label={unread > 0 ? `Notifications (${unread > 9 ? '9+' : unread})` : 'Notifications'}
         active={trayOpen}
         open={open}
-        onHover={onHover}
+        // The tray opens beside this row; its own tooltip would sit on top of
+        // the tray's first lines ("Notifications" covered "Open Decisions on
+        // Home"). No label while the tray is open.
+        onHover={trayOpen ? undefined : onHover}
         onLeave={onLeave}
         onClick={() => {
           // Mark read on CLOSE so the unread highlight is visible while open.
