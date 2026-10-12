@@ -115,9 +115,11 @@ export function LearnedList({ skills, proposals, onOpenSkill, onSaveProposal, on
                 {single
                   ? <span style={{ width: 12, flexShrink: 0 }} />
                   : <FiChevronRight size={12} style={{ flexShrink: 0, color: colors.textDim, transform: isOpen ? 'rotate(90deg)' : 'none' }} />}
-                <span data-testid="learned-group-label" style={{ fontSize: textSize.small, fontWeight: 600, flex: 1, minWidth: 0, overflowWrap: 'anywhere', color: archived ? colors.textMuted : colors.text }}>
-                  {single ? single.human.title : group.label}
-                </span>
+                <Tooltip content={single?.human.raw ?? group.label} disabled={!single?.human.raw}>
+                  <span data-testid="learned-group-label" style={{ fontSize: textSize.small, fontWeight: 600, flex: 1, minWidth: 0, overflowWrap: 'anywhere', color: archived ? colors.textMuted : colors.text }}>
+                    {single ? single.human.title : group.label}
+                  </span>
+                </Tooltip>
                 {!single && <span style={count}>{group.items.length} patterns</span>}
                 {archived && <span style={count}>archived</span>}
                 <Tooltip content={MATCHES_HINT}>

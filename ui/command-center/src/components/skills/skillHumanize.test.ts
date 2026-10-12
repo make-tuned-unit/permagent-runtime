@@ -123,3 +123,16 @@ describe('matchesLabel', () => {
     expect(matchesLabel(37)).toBe('matched 37×');
   });
 });
+
+describe('humanizeSkill argument previews', () => {
+  it('names a URL by its host instead of "in https:"', () => {
+    const h = humanizeSkill({ id: '1', name: 'open_website:-url=https://www.example.com/a/b?q=1', description: 'open_website: url=https://www.example.com/a/b?q=1', toolUsed: 'open_website' });
+    expect(h.title).toBe('Open website on example.com');
+  });
+  it('clamps a long argument dump to a short preview', () => {
+    const h = humanizeSkill({ id: '2', name: 'x', description: 'todo_write: content=# Goal: ' + 'word '.repeat(60), toolUsed: 'todo_write' });
+    expect(h.title.length).toBeLessThan(90);
+    expect(h.title.endsWith('…')).toBe(true);
+    expect(h.raw).toContain('word word word word word word word word word word word word');
+  });
+});
