@@ -18854,11 +18854,26 @@ async fn finish_headless_auto_land(
     // Serialized card PASS/reviewer metadata is display-only. A native code
     // candidate requires the actual Approved run's in-memory binding.
     if native_binding.is_none() {
-        match crate::goal_candidates::resolve_candidate(pool, &card.id).await {
-            Ok(crate::goal_candidates::LineageResolution::NoGit) => {}
-            _ => {
-                tracing::warn!(goal_id=%card.id, "automatic approval refused: no native Approved review binding");
-                return;
+        // Only a goal with a native execution binding needs the Approved run's
+        // binding; one with no native binding row is a legacy goal, which
+        // `decisions_effects::apply_decision_effect_with_auto_land` lands on
+        // the same rule (`authority='native'` rows only). Without this the
+        // `Unverifiable("No native original goal binding")` resolution refused
+        // every legacy goal, so headless auto-land never landed anything.
+        let native_rows: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM goal_execution_bindings WHERE goal_id=? AND authority='native'",
+        )
+        .bind(&card.id)
+        .fetch_one(pool)
+        .await
+        .unwrap_or(1);
+        if native_rows != 0 {
+            match crate::goal_candidates::resolve_candidate(pool, &card.id).await {
+                Ok(crate::goal_candidates::LineageResolution::NoGit) => {}
+                _ => {
+                    tracing::warn!(goal_id=%card.id, "automatic approval refused: no native Approved review binding");
+                    return;
+                }
             }
         }
     }
