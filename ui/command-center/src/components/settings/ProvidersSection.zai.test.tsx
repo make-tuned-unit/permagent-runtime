@@ -178,3 +178,32 @@ describe('Connected vs Providers tabs', () => {
   });
 });
 
+
+const LM_STUDIO_KEYLESS = {
+  name: 'lmstudio',
+  is_configured: true,
+  is_default: false,
+  provider_type: 'Builtin',
+  metadata: {
+    display_name: 'LM Studio',
+    description: 'Local models',
+    default_model: 'local',
+    known_models: [{ name: 'local' }],
+    config_keys: [{ name: 'LMSTUDIO_HOST', required: false, secret: false }],
+  },
+};
+
+describe('Status badge on keyless providers', () => {
+  it('says "No key needed" for a provider with no secret, "Connected" for a keyed one, same slot on both', async () => {
+    allowed.getProviders.mockResolvedValue([OPENAI_CONNECTED, LM_STUDIO_KEYLESS] as never);
+    await render();
+
+    const keyless = container.querySelector('[data-testid="provider-status-lmstudio"]')!;
+    const keyed = container.querySelector('[data-testid="provider-status-openai"]')!;
+    expect(keyless.textContent).toBe('No key needed');
+    expect(keyed.textContent).toContain('Connected');
+    // Same placement: the status badge is the first chip in each card's badge group.
+    expect(keyless.parentElement!.firstElementChild).toBe(keyless);
+    expect(keyed.parentElement!.firstElementChild).toBe(keyed);
+  });
+});

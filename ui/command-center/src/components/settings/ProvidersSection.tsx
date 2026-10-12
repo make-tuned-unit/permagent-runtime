@@ -227,6 +227,9 @@ export function ProvidersSection() {
         // default needs no label, and labelling it would bury the one case
         // worth noticing.
         const keyName = p.configKeys.find(k => k.secret)?.name ?? '';
+        // No secret to store (a local runtime): "Connected" would claim a
+        // handshake nobody made, so the badge says what is true.
+        const keyless = !p.configKeys.some(k => k.secret);
         const sourceEntry = findKeySource(secretSources?.keys, keyName);
         const sourceProblem = keyStatusMessage(sourceEntry);
         return (
@@ -251,6 +254,35 @@ export function ProvidersSection() {
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-2">
+              {/* Status first on every card so it sits in the same place whatever
+                  other chips (source, Default) a card carries. */}
+              {p.isConfigured ? (
+                keyless ? (
+                  <span
+                    data-testid={`provider-status-${p.name}`}
+                    className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded"
+                    style={{ backgroundColor: `${colors.textMuted}26`, color: colors.textMuted }}
+                  >
+                    No key needed
+                  </span>
+                ) : (
+                  <span
+                    data-testid={`provider-status-${p.name}`}
+                    className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded"
+                    style={{ backgroundColor: `${colors.success}26`, color: colors.success }}
+                  >
+                    <FiCheck size={10} /> Connected
+                  </span>
+                )
+              ) : (
+                <span
+                  data-testid={`provider-status-${p.name}`}
+                  className="text-[10px] px-2 py-0.5 rounded"
+                  style={{ backgroundColor: `${colors.textMuted}26`, color: colors.textMuted }}
+                >
+                  Not configured
+                </span>
+              )}
               {sourceEntry && (
                 // A chip that only carries an explanation is not focusable on
                 // its own, and the adoption note is explicit: give a
@@ -276,21 +308,6 @@ export function ProvidersSection() {
                   style={{ backgroundColor: colors.cyanSoft, color: colors.cyan }}
                 >
                   <FiStar size={10} /> Default
-                </span>
-              )}
-              {p.isConfigured ? (
-                <span
-                  className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded"
-                  style={{ backgroundColor: `${colors.success}26`, color: colors.success }}
-                >
-                  <FiCheck size={10} /> Connected
-                </span>
-              ) : (
-                <span
-                  className="text-[10px] px-2 py-0.5 rounded"
-                  style={{ backgroundColor: `${colors.textMuted}26`, color: colors.textMuted }}
-                >
-                  Not configured
                 </span>
               )}
             </div>
