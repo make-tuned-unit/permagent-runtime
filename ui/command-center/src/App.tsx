@@ -26,7 +26,7 @@ import { fileToBase64 } from './lib/api';
 import { createChatWindow } from './lib/chatWindow';
 import type { LayoutNode } from './lib/store';
 import { useAppNavigate } from './hooks/useAppNavigate';
-import { getOpenOnLaunch } from './lib/openOnLaunch';
+import { applyOpenOnLaunch, getOpenOnLaunch } from './lib/openOnLaunch';
 import { useVersionSkew } from './hooks/useVersionSkew';
 import { useDictationReadiness } from './lib/dictationReadiness';
 import { Button } from './components/common/Button';
@@ -244,16 +244,18 @@ function App() {
   }, [setActivePanel]);
 
   // "Open on launch" (Settings → Preferences, LIVE): once workspaces have
-  // loaded, land on the user's chosen destination. 'default' keeps the
-  // existing behavior (default workspace). Applied exactly once per launch.
+  // loaded, land on the user's chosen destination: Home by default,
+  // the persisted last workspace on 'last'. Applied exactly once per launch.
   const workspacesLoaded = useCommandCenter(s => s.workspacesLoaded);
   const launchApplied = useRef(false);
+  const launchWorkspaces = useCommandCenter(s => s.workspaces);
+  const launchActiveId = useCommandCenter(s => s.activeWorkspaceId);
+  const switchWorkspace = useCommandCenter(s => s.switchWorkspace);
   useEffect(() => {
     if (phase !== 'app' || !workspacesLoaded || launchApplied.current) return;
     launchApplied.current = true;
-    const pref = getOpenOnLaunch();
-    if (pref !== 'default') navigateToTool(pref);
-  }, [phase, workspacesLoaded]);
+    applyOpenOnLaunch(getOpenOnLaunch(), { workspaces: launchWorkspaces, activeWorkspaceId: launchActiveId }, { switchWorkspace, navigateToTool });
+  }, [phase, workspacesLoaded, launchWorkspaces, launchActiveId, switchWorkspace]);
 
   // Cmd+, opens settings (macOS convention)
   useEffect(() => {

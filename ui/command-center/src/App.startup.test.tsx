@@ -78,7 +78,7 @@ vi.mock('./components/version/VersionSkewBanner', () => ({ VersionSkewBanner: ()
 vi.mock('./hooks/useAppNavigate', () => ({ useAppNavigate: () => undefined }));
 vi.mock('./hooks/useVersionSkew', () => ({ useVersionSkew: () => ({}) }));
 vi.mock('./lib/repaintOnRegain', () => ({ onRepaintRegain: () => () => {}, forceCompositorRepaint: () => {} }));
-vi.mock('./lib/openOnLaunch', () => ({ getOpenOnLaunch: () => 'default' }));
+vi.mock('./lib/openOnLaunch', () => ({ getOpenOnLaunch: () => 'default', applyOpenOnLaunch: vi.fn() }));
 vi.mock('./lib/chatWindow', () => ({ createChatWindow: vi.fn() }));
 
 import App, { classifyStartupConfig } from './App';
