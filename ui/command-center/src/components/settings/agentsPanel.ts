@@ -214,7 +214,7 @@ export function requiredSecretsLabel(rs: RequiredSecrets): string {
   if (rs.items.length === 0) {
     return rs.truncated
       ? truncatedNote(0)
-      : 'declared secret list is empty';
+      : 'declares no secrets';
   }
   const parts = rs.items.map(s => `${s.name}: ${s.present ? 'present' : 'absent'}`);
   let text = parts.join(', ');
