@@ -288,6 +288,31 @@ export function Tooltip({
   useEffect(() => () => clear(), [clear]);
   useTooltipDismiss(open, hide);
 
+  // The anchor box is read once, when the tooltip opens. A control that opens
+  // while its container is still settling (a modal's close button, focused on
+  // mount) moves right after, leaving the bubble stranded far from it — "Close"
+  // floated ~100px under the X in the card dialog. Re-read the box while open.
+  useEffect(() => {
+    if (!open) return;
+    let raf = 0;
+    let frames = 0;
+    const resync = () => {
+      const el = triggerRef.current;
+      if (el) {
+        const next = el.getBoundingClientRect();
+        setAnchor(prev => (
+          prev && Math.abs(prev.top - next.top) < 0.5 && Math.abs(prev.left - next.left) < 0.5
+            && Math.abs(prev.width - next.width) < 0.5 && Math.abs(prev.height - next.height) < 0.5
+            ? prev
+            : next
+        ));
+      }
+      if (++frames < 30) raf = requestAnimationFrame(resync);
+    };
+    raf = requestAnimationFrame(resync);
+    return () => cancelAnimationFrame(raf);
+  }, [open]);
+
   const child = Children.only(children);
   const childProps = child.props as Record<string, unknown>;
 
