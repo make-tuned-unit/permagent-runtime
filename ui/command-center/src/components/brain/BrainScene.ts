@@ -1058,7 +1058,11 @@ export class BrainScene {
    *  loop; going inactive just lets the next `animate()` decline to reschedule. */
   setActive(active: boolean) {
     this.active = active;
-    if (active) this.scheduleFrame();
+    // Size the renderer and composer BEFORE the first frame: a scene built
+    // while List mode had the container collapsed holds 0x0 render targets, and
+    // drawing into them logged ~200 "Framebuffer is incomplete" warnings in the
+    // first seconds after switching to Graph. resize() also arms the frame.
+    if (active) this.resize();
   }
 
   private animate = () => {
