@@ -9731,14 +9731,17 @@ pub(crate) async fn dispatch_goal_fn(
         }
     }
     if zero_progress_breaker == ZeroProgressBreaker::Escalate {
-        let mut escalation = serde_json::Map::new();
-        escalation.insert(
-            goal_transition::ZERO_PROGRESS_ESCALATION_USED_METADATA_KEY.to_string(),
-            serde_json::json!(true),
-        );
-        if let Err(error) =
-            cards::merge_card_metadata(&pool, card_id, serde_json::Value::Object(escalation), false)
-                .await
+        // The key is protected (`PROTECTED_GOAL_METADATA_KEYS`), so the generic
+        // card writer (`cards::merge_card_metadata` -> `update_card`) refuses it
+        // and the escalation was never recorded as spent; write it through the
+        // orchestrator's own goal-metadata writer like the other breaker state.
+        if let Err(error) = persist_card_meta(&pool, card_id, |m| {
+            m.insert(
+                goal_transition::ZERO_PROGRESS_ESCALATION_USED_METADATA_KEY.to_string(),
+                serde_json::json!(true),
+            );
+        })
+        .await
         {
             tracing::warn!("Failed to project started worker escalation: {error}");
         }
