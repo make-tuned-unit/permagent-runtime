@@ -25,6 +25,11 @@ export interface RecentSession {
 }
 export interface DashboardData { agent: DashboardAgent; stats: DashboardStats; in_flight: InFlightSession[]; recent: RecentSession[] }
 
+/** A dashboard read that has not answered by now is treated as failed. Without
+ * a limit, a daemon whose /api/dashboard never answers left Home on the loading
+ * logo forever, with no error and no Try again. */
+export const DASHBOARD_TIMEOUT_MS = 20_000;
+
 export function useDashboard() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -33,11 +38,18 @@ export function useDashboard() {
   const [lastOkAt, setLastOkAt] = useState<number | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval>>();
   const requestGeneration = useRef(0);
+  /** A read is outstanding. The 15 s poll must not stack a new read on a slow
+   *  one — each new read supersedes the older, so a hung daemon's timeouts
+   *  would always be discarded and the failure never surfaced. */
+  const inFlight = useRef(false);
 
   const fetchDashboard = useCallback(async () => {
     const generation = ++requestGeneration.current;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), DASHBOARD_TIMEOUT_MS);
+    inFlight.current = true;
     try {
-      const result = await apiFetch<DashboardData>('/api/dashboard');
+      const result = await apiFetch<DashboardData>('/api/dashboard', { signal: controller.signal });
       if (generation !== requestGeneration.current) return;
       setData(result);
       setError(false);
@@ -47,6 +59,9 @@ export function useDashboard() {
       // Surface the failure instead of spinning forever — a failed poll while
       // data is already on screen keeps the stale dashboard, not an alarm.
       setError(true);
+    } finally {
+      clearTimeout(timeout);
+      if (generation === requestGeneration.current) inFlight.current = false;
     }
     if (generation !== requestGeneration.current) return;
     setLoading(false);
@@ -54,7 +69,7 @@ export function useDashboard() {
 
   useEffect(() => {
     fetchDashboard();
-    intervalRef.current = setInterval(fetchDashboard, 15_000);
+    intervalRef.current = setInterval(() => { if (!inFlight.current) void fetchDashboard(); }, 15_000);
     return () => {
       clearInterval(intervalRef.current);
       ++requestGeneration.current;
