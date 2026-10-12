@@ -657,3 +657,9 @@ describe('empty-state quick links', () => {
     expect(m![1].split(',').length).toBeLessThanOrEqual(4);
   });
 });
+
+describe('address normalization', () => {
+  it('has no vendor search endpoint baked in', () => {
+    expect(BROWSER_TSX).not.toMatch(/google\.com\/search/);
+  });
+});

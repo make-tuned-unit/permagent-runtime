@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect, useImperativeHandle, forwardRef, type CSSProperties } from 'react';
 import { useCommandCenter } from '../../lib/store';
+import { SEARCH_TEMPLATE_KEY, getSearchTemplate, resolveAddress } from './addressInput';
 import { concentric, duration, ease, font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
@@ -103,14 +104,6 @@ function getUrlProtocol(url: string): 'https' | 'http' | 'other' {
   return 'other';
 }
 
-function normalizeUrl(input: string): string {
-  const trimmed = input.trim();
-  if (!trimmed) return '';
-  if (/^https?:\/\//i.test(trimmed)) return trimmed;
-  if (/^[a-zA-Z0-9-]+\.[a-zA-Z]{2,}/.test(trimmed)) return `https://${trimmed}`;
-  return `https://www.google.com/search?q=${encodeURIComponent(trimmed)}`;
-}
-
 // ── Module-level state persists across workspace switches (mount/unmount) ──
 let persistedTabs: BrowserTab[] | null = null;
 let persistedActiveTabId: string | null = null;
@@ -129,6 +122,8 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
   const pendingBrowserUrl = useCommandCenter(s => s.pendingBrowserUrl);
   const clearPendingBrowserUrl = useCommandCenter(s => s.clearPendingBrowserUrl);
 
+  const [searchHint, setSearchHint] = useState(false);
+  const [searchDraft, setSearchDraft] = useState('');
   const [tabs, setTabs] = useState<BrowserTab[]>(() => {
     if (initialTab) return [initialTab];
     if (!detached && persistedTabs) return persistedTabs;
@@ -902,7 +897,14 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
   // buttons) would otherwise report a dead click as a success.
   const handleNavigate = useCallback(
     async (url: string): Promise<boolean> => {
-      const normalized = normalizeUrl(url);
+      const resolved = resolveAddress(url, getSearchTemplate());
+      if (resolved.kind === 'needs-search-setup') {
+        // Not a URL and no search engine chosen: say so, never pick a vendor.
+        setSearchHint(true);
+        return false;
+      }
+      setSearchHint(false);
+      const normalized = resolved.kind === 'url' ? resolved.url : '';
       if (!normalized || !apiRef.current) return false;
 
       const tab = tabs.find((t) => t.id === activeTabId);
@@ -1370,7 +1372,7 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
               autoCorrect="off"
               spellCheck={false}
               list={`browser-history-${ownerWindowLabel}`}
-              placeholder="Search or enter URL..."
+              placeholder={getSearchTemplate() ? 'Search or enter URL...' : 'Enter a URL...'}
               // text-xs / py-1.5 / pr-3 kept as classes so the URL row's box
               // (and the flex-1 webview leftover) stays pixel-identical.
               className="browser-url-input flex-1 bg-transparent text-xs py-1.5 pr-3 outline-none"
@@ -1387,6 +1389,32 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
             <style>{`.browser-url-input::placeholder { color: ${colors.textMuted}; opacity: 0.6; }`}</style>
           </div>
         </div>
+
+        {searchHint && (
+          <form
+            data-testid="browser-search-hint"
+            role="status"
+            onSubmit={(e) => {
+              e.preventDefault();
+              const value = searchDraft.trim();
+              if (!/^https?:\/\/.+%s/i.test(value)) return;
+              try { localStorage.setItem(SEARCH_TEMPLATE_KEY, value); } catch { /* not remembered */ }
+              setSearchHint(false);
+              setSearchDraft('');
+            }}
+            style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: textSize.micro, color: colors.textMuted, fontFamily: font.body, padding: '2px 12px 4px' }}
+          >
+            <span>Web search isn't set up. Enter a full address, or choose a search engine:</span>
+            <input
+              aria-label="Search address, with %s where the query goes"
+              value={searchDraft}
+              onChange={(e) => setSearchDraft(e.target.value)}
+              placeholder="https://…/search?q=%s"
+              style={{ flex: 1, minWidth: 0, background: 'transparent', border: `1px solid ${colors.border}`, borderRadius: radius.xs, padding: '2px 6px', color: colors.text, fontFamily: font.mono, fontSize: textSize.micro }}
+            />
+            <button type="submit" style={{ color: colors.cyan, background: 'none', border: 'none', cursor: 'pointer', fontSize: textSize.micro }}>Save</button>
+          </form>
+        )}
 
         {/* Bookmarks + saved tab sets row (#790) — daemon-persisted state */}
         <BookmarksBar
