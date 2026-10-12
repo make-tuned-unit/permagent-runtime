@@ -202,6 +202,10 @@ function App() {
   const [phase, setPhase] = useState<'splash' | 'loading' | 'unavailable' | 'wizard' | 'app'>('splash');
 
   const dictationReadiness = useDictationReadiness(phase === 'app');
+  // Transcription only matters when recording; the banner must not nag on every
+  // view for the whole session, so it can be dismissed (the Record sheet keeps
+  // its own message and retry).
+  const [dictationBannerDismissed, setDictationBannerDismissed] = useState(false);
 
   // Subscribe to AppNavigate events from the agent
   useAppNavigate();
@@ -372,10 +376,11 @@ function App() {
       <div className="flex flex-col flex-1 min-w-0" style={NATIVE_WINDOW_IS_OPAQUE ? undefined : { background: gradient.shell }}>
         <div data-tauri-drag-region style={{ height: TITLEBAR_HEIGHT, flexShrink: 0 }} />
         <VersionSkewBanner skew={versionSkew} />
-        {dictationReadiness.status !== 'ready' && (
+        {(dictationReadiness.status === 'unavailable' || dictationReadiness.status === 'error') && !dictationBannerDismissed && (
           <div role="status" style={{ padding: `${space.md}px ${space.xxl}px`, color: colors.text, background: colors.surface, fontSize: textSize.caption, display: 'flex', gap: space.xl, alignItems: 'center' }}>
             <span style={{ flex: 1 }}>{dictationReadiness.message} Recording is available after this check succeeds.</span>
-            {dictationReadiness.status !== 'checking' && <Button colors={colors} onClick={dictationReadiness.retry}>Retry transcription setup</Button>}
+            <Button colors={colors} onClick={dictationReadiness.retry}>Retry transcription setup</Button>
+            <Button colors={colors} onClick={() => setDictationBannerDismissed(true)}>Dismiss</Button>
           </div>
         )}
         <div className="flex flex-1 min-h-0">
