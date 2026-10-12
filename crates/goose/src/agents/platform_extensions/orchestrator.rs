@@ -38644,15 +38644,16 @@ mod tests {
         .unwrap();
         // The salvage path refuses to land without the native binding the
         // real review mints, so seed the durable evidence behind one.
-        let (binding, _worktree_owner) = crate::goal_candidates::test_support::seed_native_review_binding(
-            &pool,
-            &card.id,
-            crate::projects::PERSONAL_PROJECT_ID,
-            repo.path(),
-            &head,
-            &session_id,
-        )
-        .await;
+        let (binding, _worktree_owner) =
+            crate::goal_candidates::test_support::seed_native_review_binding(
+                &pool,
+                &card.id,
+                crate::projects::PERSONAL_PROJECT_ID,
+                repo.path(),
+                &head,
+                &session_id,
+            )
+            .await;
         let card = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
 
         let outcome = land_salvage_approved_by_reviewer(
@@ -38770,15 +38771,16 @@ mod tests {
         })
         .await
         .unwrap();
-        let (binding, _worktree_owner) = crate::goal_candidates::test_support::seed_native_review_binding(
-            &pool,
-            &card.id,
-            crate::projects::PERSONAL_PROJECT_ID,
-            repo.path(),
-            &head,
-            &session_id,
-        )
-        .await;
+        let (binding, _worktree_owner) =
+            crate::goal_candidates::test_support::seed_native_review_binding(
+                &pool,
+                &card.id,
+                crate::projects::PERSONAL_PROJECT_ID,
+                repo.path(),
+                &head,
+                &session_id,
+            )
+            .await;
         let card = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
 
         // FORCE the land refusal: advance the trunk past the point the goal

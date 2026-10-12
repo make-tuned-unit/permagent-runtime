@@ -962,9 +962,15 @@ pub(crate) mod test_support {
             .await
             .unwrap()
             .unwrap();
-        crate::native_provider_calls::record(pool, "physical-call-1", &call, "openai", "gpt-5.4-mini")
-            .await
-            .unwrap();
+        crate::native_provider_calls::record(
+            pool,
+            "physical-call-1",
+            &call,
+            "openai",
+            "gpt-5.4-mini",
+        )
+        .await
+        .unwrap();
         crate::native_provider_calls::mark_dispatch_possible(pool, "physical-call-1", &call)
             .await
             .unwrap();
