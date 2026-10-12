@@ -215,9 +215,12 @@ function PillarCard({
           {saved.metrics && saved.metrics.length > 0 && (
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: space.sm, marginTop: 'auto' }}>
               {saved.metrics.map((m, i) => (
-                <Tooltip content={m.label}>
-                  <span tabIndex={0} style={{ outline: 'none' }}>
-                    <span key={i} style={{
+                <Tooltip key={i} content={m.label}>
+                  <span tabIndex={0} style={{ outline: 'none', maxWidth: '100%' }}>
+                    <span style={{
+                      // inline-block: a chip that wraps must stay one padded box,
+                      // not split its border and fill across the line break.
+                      display: 'inline-block',
                       // Chips must never exceed the card: wrap long label·value
                       // pairs inside the pill instead of bleeding across the grid.
                       fontSize: textSize.micro, fontFamily: font.mono, lineHeight: 1.4,
