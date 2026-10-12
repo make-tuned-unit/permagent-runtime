@@ -1,3 +1,4 @@
+import { humanizeId } from '../../lib/humanLabel';
 import { useEffect, type CSSProperties } from 'react';
 import { useCommandCenter } from '../../lib/store';
 import { summarizeTraceEvent } from '../../lib/traceEvents';
@@ -66,7 +67,9 @@ export function ExecutionTrace({ onClose }: { onClose?: () => void } = {}) {
                 <span className="text-[10px] shrink-0" style={{ fontFamily: font.mono, color: colors.textMuted }}>
                   {new Date(ev.timestamp).toLocaleTimeString()}
                 </span>
-                <span className="text-[11px] shrink-0" style={{ fontFamily: font.mono, color: ev.severity === 'error' ? colors.danger : colors.cyan }}>{ev.event_type}</span>
+                <Tooltip content={ev.event_type}>
+                  <span tabIndex={0} className="text-[11px] shrink-0" style={{ fontFamily: font.body, outline: 'none', color: ev.severity === 'error' ? colors.danger : colors.cyan }}>{humanizeId(ev.event_type)}</span>
+                </Tooltip>
                 {summary && (
                   <Tooltip content={summary}>
                     <span tabIndex={0} style={{ outline: 'none' }}>
