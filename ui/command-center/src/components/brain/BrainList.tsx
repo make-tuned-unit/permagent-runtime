@@ -373,9 +373,11 @@ export function BrainList({
           </>
         )}
 
-        {showMemories && displayMemories.map(mem => (
+        {showMemories && displayMemories.map((mem, index) => (
           <MemoryRow
-            key={mem.id}
+            // Search can return the same memory id more than once (several
+            // matching passages): the id alone logged a duplicate-key error.
+            key={`${mem.id}:${index}`}
             memory={mem}
             selected={mem.id === selectedId}
             highlightTerms={isSearch ? searchQuery!.trim().toLowerCase().split(/\s+/) : []}
