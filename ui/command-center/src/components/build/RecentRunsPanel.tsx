@@ -15,6 +15,7 @@
  */
 
 import { useEffect, useId, useState, type CSSProperties } from 'react';
+import { FiChevronDown, FiChevronRight } from 'react-icons/fi';
 import { api, type HarnessRunView } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
 import { useTheme } from '../../styles/useTheme';
@@ -26,6 +27,12 @@ import { StateBlock } from '../common/StateBlock';
 
 const POLL_MS = 15_000;
 const PREVIEW_RUNS = 3;
+/** Whether the panel is folded to its header line. Default expanded. */
+export const RECENT_RUNS_COLLAPSED_KEY = 'permagent.build.recentRuns.collapsed';
+
+function readCollapsed(): boolean {
+  try { return localStorage.getItem(RECENT_RUNS_COLLAPSED_KEY) === '1'; } catch { return false; }
+}
 
 function statusTone(status: HarnessRunView['status']): ChipTone {
   switch (status) {
@@ -97,6 +104,12 @@ export function RecentRunsPanel() {
     | { kind: 'ready'; runs: HarnessRunView[]; fetchedAt: number }
   >({ kind: 'loading' });
   const [showAll, setShowAll] = useState(false);
+  const [collapsed, setCollapsed] = useState(readCollapsed);
+  const toggleCollapsed = () => {
+    const next = !collapsed;
+    setCollapsed(next);
+    try { localStorage.setItem(RECENT_RUNS_COLLAPSED_KEY, next ? '1' : '0'); } catch { /* private window: still folds, just not remembered */ }
+  };
   const listId = useId();
   const [expanded, setExpanded] = useState<string | null>(null);
 
@@ -127,20 +140,30 @@ export function RecentRunsPanel() {
     }}>
       <div style={{
         display: 'flex', alignItems: 'center', gap: space.md, flexShrink: 0,
-        padding: `${space.md}px ${space.xl}px`, borderBottom: `1px solid ${colors.border}`,
+        padding: `${space.md}px ${space.xl}px`, borderBottom: collapsed ? 'none' : `1px solid ${colors.border}`,
       }}>
-        <span style={{
-          fontSize: textSize.micro, color: colors.textDim, fontFamily: font.mono,
-          textTransform: 'uppercase', letterSpacing: '0.04em', flex: 1,
-        }}>
-          Recent runs
-        </span>
-        {state.kind === 'ready' && (
+        <button
+          type="button"
+          data-testid="recent-runs-toggle"
+          aria-expanded={!collapsed}
+          aria-controls={listId}
+          onClick={toggleCollapsed}
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: space.sm, flex: 1, minWidth: 0,
+            background: 'none', border: 'none', padding: 0, cursor: 'pointer', textAlign: 'left',
+            fontSize: textSize.micro, color: colors.textDim, fontFamily: font.mono,
+            textTransform: 'uppercase', letterSpacing: '0.04em',
+          }}
+        >
+          {collapsed ? <FiChevronRight size={12} aria-hidden="true" /> : <FiChevronDown size={12} aria-hidden="true" />}
+          <span>Recent runs{state.kind === 'ready' ? ` · ${state.runs.length}` : ''}</span>
+        </button>
+        {!collapsed && state.kind === 'ready' && (
           <span style={{ fontSize: textSize.micro }}>
             <AsOf asOf={state.fetchedAt} prefix="Updated" />
           </span>
         )}
-        {state.kind === 'ready' && state.runs.length > PREVIEW_RUNS && (
+        {!collapsed && state.kind === 'ready' && state.runs.length > PREVIEW_RUNS && (
           <Button colors={colors} variant="bare" type="button" flashSuccess={false}
             aria-expanded={showAll} aria-controls={listId} onClick={() => setShowAll(v => !v)}>
             {showAll ? 'Show fewer' : `View all ${state.runs.length}`}
@@ -148,7 +171,7 @@ export function RecentRunsPanel() {
         )}
       </div>
 
-      <div id={listId} style={{ minHeight: 0, overflowY: 'auto', overscrollBehavior: 'contain' }}>
+      <div id={listId} hidden={collapsed} style={{ display: collapsed ? 'none' : undefined, minHeight: 0, overflowY: 'auto', overscrollBehavior: 'contain' }}>
       {state.kind === 'loading' && (
         <div style={{ display: 'flex', flexDirection: 'column' }}>
           {[0, 1, 2].map(i => (

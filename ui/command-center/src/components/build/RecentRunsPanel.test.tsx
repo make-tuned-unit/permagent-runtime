@@ -45,3 +45,32 @@ it('previews three of 100 runs and keeps all history/evidence inside a bounded s
   expect(transcripts()).toHaveLength(3);
   expect(vi.mocked(api.getHarnessRunHistory)).toHaveBeenCalledTimes(1);
 });
+
+it('folds to a one-line header with the count, is keyboard-operable, and remembers it across a reload', async () => {
+  localStorage.removeItem('permagent.build.recentRuns.collapsed');
+  await act(async () => { root.render(<RecentRunsPanel />); });
+  const toggle = () => host.querySelector<HTMLButtonElement>('[data-testid="recent-runs-toggle"]')!;
+  expect(toggle().tagName).toBe('BUTTON'); // a real button: Enter/Space work natively
+  expect(toggle().getAttribute('aria-expanded')).toBe('true'); // default expanded
+  expect(toggle().textContent).toContain('Recent runs · 100');
+  expect(transcripts()).toHaveLength(3);
+
+  act(() => toggle().click());
+  expect(toggle().getAttribute('aria-expanded')).toBe('false');
+  expect(toggle().textContent).toContain('Recent runs · 100');
+  const list = document.getElementById(toggle().getAttribute('aria-controls')!)!;
+  expect(list.hidden).toBe(true);
+  expect(host.textContent).not.toContain('View all');
+  expect(localStorage.getItem('permagent.build.recentRuns.collapsed')).toBe('1');
+
+  // A reload: a fresh mount reads the stored choice.
+  act(() => root.unmount());
+  root = createRoot(host);
+  await act(async () => { root.render(<RecentRunsPanel />); });
+  expect(toggle().getAttribute('aria-expanded')).toBe('false');
+
+  act(() => toggle().click());
+  expect(toggle().getAttribute('aria-expanded')).toBe('true');
+  expect(localStorage.getItem('permagent.build.recentRuns.collapsed')).toBe('0');
+  localStorage.removeItem('permagent.build.recentRuns.collapsed');
+});
