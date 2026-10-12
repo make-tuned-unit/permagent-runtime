@@ -94,6 +94,9 @@ export function BrainView() {
   // the scene's own framing needs to know how much of the canvas they cover
   // so the graph doesn't fit itself under the bar.
   const headerRef = useRef<HTMLDivElement>(null);
+  // The header can wrap to a second row on a narrow window; the list below it
+  // starts where the header actually ends, not at a fixed one-row offset.
+  const [headerHeight, setHeaderHeight] = useState(0);
   const sliderBarRef = useRef<HTMLDivElement>(null);
   // The list must end above the time slider's MEASURED top edge (QA
   // 2026-10-07 Q15: the slider sat over the last entity row). Slider height +
@@ -348,7 +351,11 @@ export function BrainView() {
   // it swaps between the collapsed button and the open panel).
   useEffect(() => {
     recomputeInsets();
-    const obs = new ResizeObserver(recomputeInsets);
+    const obs = new ResizeObserver(() => {
+      if (headerRef.current) setHeaderHeight(headerRef.current.offsetHeight);
+      recomputeInsets();
+    });
+    if (headerRef.current) setHeaderHeight(headerRef.current.offsetHeight);
     [containerRef.current, headerRef.current, sliderBarRef.current].forEach(el => {
       if (el) obs.observe(el);
     });
@@ -450,7 +457,7 @@ export function BrainView() {
 
       {/* List view */}
       {viewMode === 'list' && (
-        <div style={{ position: 'absolute', inset: 0, top: 64, bottom: Math.max(64, sliderClearance) }}>
+        <div style={{ position: 'absolute', inset: 0, top: Math.max(64, space.xxl + headerHeight), bottom: Math.max(64, sliderClearance) }}>
           <BrainList
             onSelect={onSelect}
             selectedId={selected?.id ?? null}
@@ -535,7 +542,9 @@ export function BrainView() {
       {/* Header */}
       <div ref={headerRef} style={{
         position: 'absolute', top: space.xxl, left: space.xxl, right: space.xxl, zIndex: 10,
-        display: 'flex', alignItems: 'center', gap: space.xl,
+        // Wrap, don't squeeze: at 1024 the search field was crushed to a stub
+        // that read "try". The list/graph inset follows the measured height.
+        display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: space.xl,
       }}>
         {/* Mind label — a capsule badge, not a "control", so it keeps the pill
             shape regardless of D5 (D5 governs buttons, not branding chrome). */}
@@ -551,7 +560,7 @@ export function BrainView() {
         </div>
 
         {/* Search */}
-        <div style={{ flex: 1, maxWidth: 360 }}>
+        <div style={{ flex: '1 1 200px', minWidth: 200, maxWidth: 360 }}>
           <input
             value={search} onChange={e => setSearch(e.target.value)}
             onKeyDown={e => {
