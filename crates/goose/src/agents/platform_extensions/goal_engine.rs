@@ -3893,8 +3893,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn prompt_token_substitution_replaces_only_the_token() {
+    #[tokio::test]
+    async fn prompt_token_substitution_replaces_only_the_token() {
+        let dir = tempfile::tempdir().unwrap();
         let engine = ExternalCliEngine {
             bin: "claude".to_string(),
             args: vec![
@@ -3903,7 +3904,7 @@ mod tests {
                 "--dangerously-skip-permissions".to_string(),
             ],
             persona_override: None,
-            session_manager: Arc::new(SessionManager::instance()),
+            session_manager: Arc::new(SessionManager::new(dir.path().to_path_buf())),
         };
         let prompt = engine.build_prompt("Implement the thing");
         let resolved: Vec<String> = engine
@@ -3926,8 +3927,9 @@ mod tests {
         assert_eq!(resolved[2], "--dangerously-skip-permissions");
     }
 
-    #[test]
-    fn build_prompt_prepends_persona_block() {
+    #[tokio::test]
+    async fn build_prompt_prepends_persona_block() {
+        let dir = tempfile::tempdir().unwrap();
         let engine = ExternalCliEngine {
             bin: "claude".to_string(),
             args: vec![],
@@ -3935,7 +3937,7 @@ mod tests {
                 "You are Claude Code.".to_string(),
                 "Claude Code".to_string(),
             )),
-            session_manager: Arc::new(SessionManager::instance()),
+            session_manager: Arc::new(SessionManager::new(dir.path().to_path_buf())),
         };
         let prompt = engine.build_prompt("Do the work");
         // #522: the commit-only brief is appended after the persona + goal.
@@ -4003,13 +4005,14 @@ mod tests {
         );
     }
 
-    #[test]
-    fn external_cli_rejects_acp_adapters_instead_of_misreporting_support() {
+    #[tokio::test]
+    async fn external_cli_rejects_acp_adapters_instead_of_misreporting_support() {
+        let dir = tempfile::tempdir().unwrap();
         let engine = ExternalCliEngine {
             bin: "claude-agent-acp".to_string(),
             args: vec![PROMPT_TOKEN.to_string()],
             persona_override: None,
-            session_manager: Arc::new(SessionManager::instance()),
+            session_manager: Arc::new(SessionManager::new(dir.path().to_path_buf())),
         };
         let error = engine
             .validate_adapter()
@@ -4145,6 +4148,16 @@ mod tests {
         };
 
         let worker_id = engine.create_worker_session(&task).await.unwrap();
+        // 4a1b5ba3 moved identity inheritance out of `create_worker_session`
+        // into `prepare`, right after it; mirror that sequence here.
+        inherit_worker_metadata(
+            &manager,
+            &worker_id,
+            task.budget_task_id.as_deref(),
+            task.goal_id.as_deref(),
+        )
+        .await
+        .unwrap();
         assert!(!worker_id.starts_with("cli-"));
         let worker = manager.get_session(&worker_id, false).await.unwrap();
         assert_eq!(worker.session_type, SessionType::SubAgent);
@@ -4717,11 +4730,12 @@ mod tests {
     /// the CLI in the user's project root.
     #[tokio::test]
     async fn external_cli_without_baseline_errors_clearly() {
+        let dir = tempfile::tempdir().unwrap();
         let engine = ExternalCliEngine {
             bin: "claude".to_string(),
             args: vec![PROMPT_TOKEN.to_string()],
             persona_override: None,
-            session_manager: Arc::new(SessionManager::instance()),
+            session_manager: Arc::new(SessionManager::new(dir.path().to_path_buf())),
         };
         let task = GoalTask {
             start_permit: None,
