@@ -55,7 +55,7 @@ class BuildGuardTests(unittest.TestCase):
                 stack.enter_context(patch.object(guard, 'REPORTS', Path(temp)))
                 stack.enter_context(patch.object(guard, 'TARGET', Path(temp).resolve() / 'target'))
                 stack.enter_context(patch.object(guard, 'preflight'))
-                stack.enter_context(patch.object(guard, 'free_gib', return_value=19.57))
+                stack.enter_context(patch.object(guard, 'free_gib', return_value=7.57))
                 stack.enter_context(patch.object(guard.shutil, 'which', return_value='/usr/bin/node'))
                 stack.enter_context(patch.object(guard.subprocess, 'Popen', return_value=Mock(pid=321)))
                 stopped = stack.enter_context(patch.object(guard, 'stop_owned_group', side_effect=PermissionError('fixture cleanup denied')))
@@ -68,7 +68,7 @@ class BuildGuardTests(unittest.TestCase):
                 summaries = [p for p in Path(temp).glob('*.json') if p.name != 'native-review-config.json']
                 self.assertEqual(len(summaries), 1)
                 summary = json.loads(summaries[0].read_text())
-                self.assertIn('19.57', summary['reason'])
+                self.assertIn('7.57', summary['reason'])
                 self.assertIn('PermissionError', summary['cleanup_error'])
                 self.assertFalse(summary['owned_group_stopped'])
                 stopped.assert_called_once()  # Never re-enter cleanup from its own exception.

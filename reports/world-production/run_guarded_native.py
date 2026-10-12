@@ -4,7 +4,8 @@
 Run after the coordinator releases the heavy-build slot:
   python3 reports/world-production/run_guarded_native.py r29
 
-25 GiB startup minimum, 20 GiB continuous floor, 30 minute deadline. Signals
+Per-volume guards (internal 12/8, TARGET's external volume 25/20 GiB start/floor,
+user-approved 2026-10-09), 30 minute deadline. Signals
 only the new process group owned by this runner; never global cargo/rustc PIDs.
 """
 from __future__ import annotations
@@ -27,8 +28,16 @@ LANE = Path(__file__).resolve().parents[2]
 TARGET = Path(os.environ.get('PERMAGENT_BUILD_TARGET', str(LANE.parent / '.shared-target/world-production-20261006')))
 REPORTS = LANE / 'reports/world-production'
 DATA_VOLUME = Path('/System/Volumes/Data')
-START_GIB = 25
-FLOOR_GIB = 20
+# Per-volume guards (GiB), user-approved 2026-10-09 and mirrored from
+# external_build.py (which imports this module, so it cannot be imported here).
+# The internal volume carries only swap and small fixtures: 12 start / 8 floor.
+# The volume holding TARGET (the external image) keeps 25 start / 20 floor.
+INTERNAL_START_GIB = 12
+INTERNAL_FLOOR_GIB = 8
+EXTERNAL_START_GIB = 25
+EXTERNAL_FLOOR_GIB = 20
+START_GIB = INTERNAL_START_GIB  # internal value; build-guard.sh checks the internal volume
+FLOOR_GIB = INTERNAL_FLOOR_GIB
 DEADLINE_SECONDS = 30 * 60
 GIB = 1024 ** 3
 
@@ -43,6 +52,46 @@ def digest(path: Path) -> str:
 
 def free_gib() -> float:
     return shutil.disk_usage(DATA_VOLUME).free / GIB
+
+
+def mount_of(path: Path) -> Path:
+    path = Path(path)
+    while not path.exists() and path != path.parent:
+        path = path.parent
+    return Path(os.path.realpath(path)) if os.path.ismount(path) else _mount_walk(path)
+
+
+def _mount_walk(path: Path) -> Path:
+    path = Path(os.path.realpath(path))
+    while not os.path.ismount(path) and path != path.parent:
+        path = path.parent
+    return path
+
+
+def guard_volumes() -> dict:
+    """name -> (start GiB, floor GiB); internal always, TARGET volume if external."""
+    volumes = {str(DATA_VOLUME): (INTERNAL_START_GIB, INTERNAL_FLOOR_GIB)}
+    mount = mount_of(TARGET)
+    if os.path.realpath(mount) != os.path.realpath(DATA_VOLUME) and str(mount) != '/':
+        volumes[str(mount)] = (EXTERNAL_START_GIB, EXTERNAL_FLOOR_GIB)
+    return volumes
+
+
+def volume_free() -> dict:
+    free = {}
+    for name in guard_volumes():
+        free[name] = free_gib() if name == str(DATA_VOLUME) else shutil.disk_usage(name).free / GIB
+    return free
+
+
+def startup_shortfall(free: dict):
+    short = {n: (round(v, 2), guard_volumes()[n][0]) for n, v in free.items() if v < guard_volumes()[n][0]}
+    return f'Refusing build below startup minimum (GiB free, required): {short}' if short else None
+
+
+def floor_breach(free: dict):
+    low = {n: (round(v, 2), guard_volumes()[n][1]) for n, v in free.items() if v < guard_volumes()[n][1]}
+    return f'Free space fell below floor (GiB free, floor): {low}' if low else None
 
 
 def group_alive(pgid: int) -> bool:
@@ -147,8 +196,9 @@ def preflight(record_review: bool = False) -> None:
         csp = config.get('app', {}).get('security', {}).get('csp', '')
         if ':3001' in csp or 'http://127.0.0.1:3002' not in csp or 'ws://127.0.0.1:3002' not in csp:
             raise RuntimeError('Record review CSP must target 3002 and exclude 3001')
-    if free_gib() < START_GIB:
-        raise RuntimeError(f'Refusing build below {START_GIB} GiB startup minimum: {free_gib():.2f} GiB')
+    shortfall = startup_shortfall(volume_free())
+    if shortfall:
+        raise RuntimeError(shortfall)
 
 
 def main() -> int:
@@ -199,6 +249,7 @@ def main() -> int:
     cleanup_error = None
     rc = 1
     minimum_free = free_gib()
+    minimum_by_volume = dict(volume_free())
     samples = []
     preservation = DaemonPreservation(TARGET)
     preservation_error = None
@@ -218,12 +269,17 @@ def main() -> int:
                                     stdin=subprocess.DEVNULL, stdout=log,
                                     stderr=subprocess.STDOUT, start_new_session=True)
             while True:
-                current_free = free_gib()
+                by_volume = volume_free()
+                current_free = by_volume[str(DATA_VOLUME)]
                 minimum_free = min(minimum_free, current_free)
+                for name, value in by_volume.items():
+                    minimum_by_volume[name] = min(minimum_by_volume.get(name, value), value)
                 elapsed = time.monotonic() - started
-                samples.append({'elapsed_s': round(elapsed, 2), 'free_gib': round(current_free, 3)})
-                if current_free < FLOOR_GIB:
-                    reason = f'Free space fell below {FLOOR_GIB} GiB ({current_free:.2f} GiB)'
+                samples.append({'elapsed_s': round(elapsed, 2), 'free_gib': round(current_free, 3),
+                                'volumes_gib': {n: round(v, 3) for n, v in by_volume.items()}})
+                breach = floor_breach(by_volume)
+                if breach:
+                    reason = breach
                     break
                 if elapsed >= DEADLINE_SECONDS:
                     reason = '30 minute native build deadline exceeded'
@@ -288,7 +344,9 @@ def main() -> int:
             'daemon_preservation_error': preservation_error,
             'elapsed_s': round(time.monotonic() - started, 2),
             'minimum_free_gib': round(minimum_free, 3), 'samples': samples,
+            'minimum_free_by_volume_gib': {n: round(v, 3) for n, v in minimum_by_volume.items()},
             'startup_minimum_gib': START_GIB, 'continuous_floor_gib': FLOOR_GIB,
+            'volume_guards_gib': {n: {'start': a, 'floor': b} for n, (a, b) in guard_volumes().items()},
             'timeout_s': DEADLINE_SECONDS, 'staged': False, 'launched': False,
         }
         binary = TARGET / 'debug/permagent-app'

@@ -32,6 +32,11 @@ OLLAMA_DENIED_PORT = 43009
 DISK_PATHS = (Path('/System/Volumes/Data'), Path('/Volumes/PermagentBuilds'), Path('/Volumes/UNTITLED'))
 START_FREE = 25 * 1024**3
 RUN_FREE = 20 * 1024**3
+# Internal volume uses the user-approved 2026-10-09 thresholds (12 start / 8 floor),
+# the same numbers as external_build.py; every external volume keeps 25/20.
+INTERNAL_VOLUME = Path('/System/Volumes/Data')
+INTERNAL_START_FREE = 12 * 1024**3
+INTERNAL_RUN_FREE = 8 * 1024**3
 READINESS_SECONDS = 120
 
 
@@ -42,7 +47,12 @@ def check_disks(floor: int) -> dict[str, float]:
         if not path.is_dir():
             raise RuntimeError(f'Required volume is unavailable: {path}')
         available = shutil.disk_usage(path).free
-        if available < floor:
+        required = floor
+        if path == INTERNAL_VOLUME and floor == START_FREE:
+            required = INTERNAL_START_FREE
+        elif path == INTERNAL_VOLUME and floor == RUN_FREE:
+            required = INTERNAL_RUN_FREE
+        if available < required:
             raise RuntimeError(f'Disk safety floor reached on {path}')
         free[str(path)] = round(available / 1024**3, 2)
     return free

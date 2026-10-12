@@ -37,6 +37,7 @@ def main():
     started = time.monotonic()
     proc = None
     minimum_free = guard.free_gib()
+    minimum_by_volume = dict(guard.volume_free())
     reason = None
     cleanup_attempted = False
     cleanup_error = None
@@ -51,10 +52,14 @@ def main():
             proc = subprocess.Popen(command, cwd=guard.LANE, env=env, stdin=subprocess.DEVNULL,
                                     stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
             while True:
-                free = guard.free_gib()
+                by_volume = guard.volume_free()
+                free = by_volume[str(guard.DATA_VOLUME)]
                 minimum_free = min(minimum_free, free)
-                if free < guard.FLOOR_GIB:
-                    reason = f'Free disk below {guard.FLOOR_GIB} GiB: {free:.2f}'
+                for name, value in by_volume.items():
+                    minimum_by_volume[name] = min(minimum_by_volume.get(name, value), value)
+                breach = guard.floor_breach(by_volume)
+                if breach:
+                    reason = breach
                     break
                 if time.monotonic() - started >= guard.DEADLINE_SECONDS:
                     reason = 'Native test deadline exceeded'
@@ -87,6 +92,7 @@ def main():
         summary = dict(command=command, log=str(log_path), exit_code=rc, reason=reason, cleanup_error=cleanup_error,
                        owned_group_stopped=cleanup_attempted and cleanup_error is None,
                        elapsed_s=round(time.monotonic() - started, 2), minimum_free_gib=round(minimum_free, 3),
+                       minimum_free_by_volume_gib={n: round(v, 3) for n, v in minimum_by_volume.items()},
                        startup_minimum_gib=guard.START_GIB, continuous_floor_gib=guard.FLOOR_GIB,
                        timeout_s=guard.DEADLINE_SECONDS, staged=False, launched=False)
         summary_path.write_text(json.dumps(summary, indent=2) + '\n')
