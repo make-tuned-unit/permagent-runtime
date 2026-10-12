@@ -144,6 +144,7 @@ export function RecentRunsPanel() {
       }}>
         <button
           type="button"
+          className="pa-btn"
           data-testid="recent-runs-toggle"
           aria-expanded={!collapsed}
           aria-controls={listId}

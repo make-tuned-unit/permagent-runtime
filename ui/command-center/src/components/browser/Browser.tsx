@@ -1412,7 +1412,7 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
               placeholder="https://…/search?q=%s"
               style={{ flex: 1, minWidth: 0, background: 'transparent', border: `1px solid ${colors.border}`, borderRadius: radius.xs, padding: '2px 6px', color: colors.text, fontFamily: font.mono, fontSize: textSize.micro }}
             />
-            <button type="submit" style={{ color: colors.cyan, background: 'none', border: 'none', cursor: 'pointer', fontSize: textSize.micro }}>Save</button>
+            <Button colors={colors} variant="bare" type="submit" flashSuccess={false}>Save</Button>
           </form>
         )}
 
