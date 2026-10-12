@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, type CSSProperties } from 'react';
+import { useState, useEffect, useCallback, useRef, useLayoutEffect, type CSSProperties } from 'react';
 import {
   FiCommand, FiCpu, FiDatabase, FiEdit3, FiKey, FiLock, FiServer,
   FiShield, FiSliders, FiSmartphone, FiSun, FiUser, FiUsers,
@@ -2401,6 +2401,13 @@ export function SettingsView() {
   // webview focus stayed on <body> and the keys did nothing). Only taken from
   // <body> or the section rail, never from a field the user is typing in.
   const scrollRef = useRef<HTMLDivElement>(null);
+  // The scroll container is shared by every pane, so switching panes kept the
+  // old scroll offset (Tools scrolled down, then Models opened mid-page). A
+  // layout effect runs before any pane's own passive "scroll to this anchor"
+  // effect, so deep links still land where they point.
+  useLayoutEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = 0;
+  }, [pane]);
   useEffect(() => {
     const active = document.activeElement;
     if (active && active !== document.body && !active.closest('[data-settings-rail]')) return;
