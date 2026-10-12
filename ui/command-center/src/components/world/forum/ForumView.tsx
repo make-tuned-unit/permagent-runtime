@@ -174,6 +174,30 @@ function useOnScreen(ref: RefObject<HTMLElement | null>): boolean {
   }, [ref]);
   return onScreen;
 }
+/** Below this shell width, an open Agent desk stacks under the world instead
+ *  of sitting beside it: with the chat dock open at 1280 (or 1024) the 370 px
+ *  desk column left 318 px (62 px) of world and the HUD ran over itself. */
+export const FORUM_NARROW_SHELL_PX = 720;
+
+/** True while the forum's own box is narrower than `threshold` — the panel it
+ *  lives in, not the window, so a docked chat shrinks it. No ResizeObserver
+ *  (jsdom, old WebViews) means "not narrow": the side-by-side layout. */
+function useNarrowShell(ref: RefObject<HTMLElement | null>, threshold: number): boolean {
+  const [narrow, setNarrow] = useState(false);
+  useEffect(() => {
+    if (typeof ResizeObserver === 'undefined') return;
+    const el = ref.current;
+    if (!el) return;
+    const observer = new ResizeObserver(entries => {
+      const width = entries[entries.length - 1].contentRect.width;
+      setNarrow(width > 1 && width < threshold);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [ref, threshold]);
+  return narrow;
+}
+
 /** The corner control that puts a card away. Small, quiet, always in the same
  *  place, and labelled for a screen reader with the card it closes. */
 function DismissCard({ label, onDismiss }: { label: string; onDismiss: () => void }) {
@@ -261,6 +285,8 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
   const [pageVisible, setPageVisible] = useState(!document.hidden);
   useEffect(() => { const change = () => setPageVisible(!document.hidden); document.addEventListener('visibilitychange', change); return () => document.removeEventListener('visibilitychange', change); }, []);
   const worldRef = useRef<HTMLElement>(null);
+  const shellRef = useRef<HTMLElement>(null);
+  const narrowShell = useNarrowShell(shellRef, FORUM_NARROW_SHELL_PX);
   const deskToggleRef = useRef<HTMLButtonElement>(null);
   const [walking,setWalking] = useState(false);
   const [interactionPrompt,setInteractionPrompt] = useState<string|null>(null);
@@ -446,7 +472,7 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
         setBrief('Using our conversation and existing goals, identify a missing capability that would help. Build and test it with the existing tools, preserve the established permissions, and save a reusable skill with evidence of what it can do.');
         setCriteria('Demonstrate the capability on a representative task; record tests, limitations and the registered skill.');
       }}/>;
-  return <main className="forum-shell" style={style} data-habitat={compact} data-conversation={conversation} data-appearance={appearance} data-desk={deskOpen ? 'open' : 'closed'}>
+  return <main ref={shellRef} className="forum-shell" style={style} data-narrow={narrowShell} data-habitat={compact} data-conversation={conversation} data-appearance={appearance} data-desk={deskOpen ? 'open' : 'closed'}>
     <section
       ref={worldRef}
       className="forum-world"
