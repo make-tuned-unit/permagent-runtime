@@ -1,5 +1,5 @@
 /** @vitest-environment jsdom */
-import { beforeEach, afterEach, expect, it, vi } from 'vitest';
+import { beforeEach, afterEach, expect, describe, it, vi } from 'vitest';
 import { createRoot, Root } from 'react-dom/client';
 import { act } from 'react-dom/test-utils';
 import { execFileSync } from 'node:child_process';
@@ -129,4 +129,45 @@ it('Escape closes the Agent desk first, and only the next Escape collapses the p
   expect(rail.getAttribute('data-open')).toBe('open');
   press();
   expect(rail.getAttribute('data-open')).toBe('closed');
+});
+
+describe('Escape belongs to the screen that is showing', () => {
+  // The desk's open/closed choice is remembered; start each case from a fresh one.
+  beforeEach(() => { localStorage.clear(); act(() => root.unmount()); root = createRoot(host); act(() => root.render(<ForumView />)); });
+  const shell = () => host.querySelector('main.forum-shell')!;
+  const esc = (target: EventTarget) => act(() => { target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true, cancelable: true })); });
+
+  it('a hidden World never consumes Escape', () => {
+    act(() => root.render(<ForumView visible={false} />));
+    expect(shell().getAttribute('data-desk')).toBe('open');
+    const press = new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true, cancelable: true });
+    act(() => { document.body.dispatchEvent(press); });
+    expect(shell().getAttribute('data-desk')).toBe('open');
+    expect(press.defaultPrevented).toBe(false);
+  });
+
+  it('Escape typed in the Chat dock (outside the world) is left for the dock', () => {
+    const dock = document.createElement('textarea');
+    document.body.append(dock);
+    esc(dock);
+    expect(shell().getAttribute('data-desk')).toBe('open');
+    dock.remove();
+  });
+
+  it('Escape inside an open dialog is left for the dialog', () => {
+    const dialog = document.createElement('div');
+    dialog.setAttribute('role', 'dialog');
+    dialog.setAttribute('aria-modal', 'true');
+    const input = document.createElement('input');
+    dialog.append(input);
+    document.body.append(dialog);
+    esc(input);
+    expect(shell().getAttribute('data-desk')).toBe('open');
+    dialog.remove();
+  });
+
+  it('with the world showing and nothing else focused, Escape closes the desk', () => {
+    esc(document.body);
+    expect(shell().getAttribute('data-desk')).toBe('closed');
+  });
 });

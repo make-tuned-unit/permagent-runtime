@@ -465,21 +465,28 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
   }, [deskOpen]);
   // Escape peels the most recent layer first: an open Agent desk closes before
   // the place rail collapses. Capture phase on window, so it runs ahead of the
-  // rail's own focus-scoped handler and stops the same keypress there. Walking,
-  // flying, the Agora and the conversation own Escape themselves and are left
-  // alone.
+  // rail's own focus-scoped handler and stops the same keypress there. It is
+  // scoped to THIS world being the one on screen (`onPanel`) and to a keypress
+  // that belongs to it: Escape typed in the Chat dock, a dialog, a menu or any
+  // other screen is theirs, and a hidden World must never consume it. Walking,
+  // flying, the Agora and the conversation own Escape themselves.
   useEffect(() => {
-    if (!deskOpen || walking || flying || agoraOpen || conversation) return;
+    if (!onPanel || !deskOpen || walking || flying || agoraOpen || conversation) return;
     const key = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' && e.code !== 'Escape') return;
       if (e.defaultPrevented) return;
+      const target = e.target instanceof Element ? e.target : null;
+      const bare = !target || target === document.body || target === document.documentElement;
+      if (!bare && !shellRef.current?.contains(target)) return;
+      if (target?.closest('[role="dialog"], [aria-modal="true"], [role="menu"], [role="listbox"]')) return;
+      if (document.querySelector('[role="dialog"][aria-modal="true"], dialog[open]')) return;
       e.preventDefault();
       e.stopPropagation();
       toggleDesk();
     };
     window.addEventListener('keydown', key, true);
     return () => window.removeEventListener('keydown', key, true);
-  }, [deskOpen, walking, flying, agoraOpen, conversation, toggleDesk]);
+  }, [onPanel, deskOpen, walking, flying, agoraOpen, conversation, toggleDesk]);
 
   // The HUD rests when you are not driving; flying counts as driving.
   const hud = useHudPresence({ walking: walking || flying, enabled: !agoraOpen });
