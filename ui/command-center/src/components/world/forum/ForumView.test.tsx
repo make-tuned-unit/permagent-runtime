@@ -115,3 +115,18 @@ it('asks the renderer for a shadow map type three has not deprecated', () => {
   // ...and the shadow-casting sun light itself is untouched.
   expect(canvas.props?.frameloop).toBeTruthy();
 });
+
+it('Escape closes the Agent desk first, and only the next Escape collapses the place rail', () => {
+  const shell = host.querySelector('main.forum-shell')!;
+  const rail = host.querySelector('.forum-rail')!;
+  expect(shell.getAttribute('data-desk')).toBe('open');
+  expect(rail.getAttribute('data-open')).toBe('open');
+  const railButton = rail.querySelector('[aria-label="World places"] button') as HTMLButtonElement;
+  act(() => railButton.focus());
+  const press = () => act(() => { railButton.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true, cancelable: true })); });
+  press();
+  expect(shell.getAttribute('data-desk')).toBe('closed');
+  expect(rail.getAttribute('data-open')).toBe('open');
+  press();
+  expect(rail.getAttribute('data-open')).toBe('closed');
+});

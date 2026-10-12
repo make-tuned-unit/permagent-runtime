@@ -463,6 +463,23 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
     catch { /* a private window still gets the toggle, just not the memory */ }
     setDeskOpen(next);
   }, [deskOpen]);
+  // Escape peels the most recent layer first: an open Agent desk closes before
+  // the place rail collapses. Capture phase on window, so it runs ahead of the
+  // rail's own focus-scoped handler and stops the same keypress there. Walking,
+  // flying, the Agora and the conversation own Escape themselves and are left
+  // alone.
+  useEffect(() => {
+    if (!deskOpen || walking || flying || agoraOpen || conversation) return;
+    const key = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' && e.code !== 'Escape') return;
+      if (e.defaultPrevented) return;
+      e.preventDefault();
+      e.stopPropagation();
+      toggleDesk();
+    };
+    window.addEventListener('keydown', key, true);
+    return () => window.removeEventListener('keydown', key, true);
+  }, [deskOpen, walking, flying, agoraOpen, conversation, toggleDesk]);
 
   // The HUD rests when you are not driving; flying counts as driving.
   const hud = useHudPresence({ walking: walking || flying, enabled: !agoraOpen });
