@@ -458,7 +458,7 @@ function CalendarPostRow({
             </div>
           )}
           {post.description && (
-            <div style={{ fontSize: textSize.caption, color: colors.textMuted, marginTop: space.xs, lineHeight: 1.5 }}>{post.description}</div>
+            <div style={{ fontSize: textSize.caption, color: colors.textMuted, marginTop: space.xs, lineHeight: 1.5, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{post.description}</div>
           )}
         </>
       )}

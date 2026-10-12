@@ -677,6 +677,13 @@ export function Dashboard() {
                 position: 'relative',
                 minHeight: 0,
                 overflow: 'hidden',
+                // Outside Customize the cell is capped by `maxHeight`, not
+                // sized, so a card's `height: 100%` has nothing to resolve
+                // against and a long card (the Council report) painted at its
+                // full content height and was clipped mid-line by this cell
+                // with no way to scroll. A flex column lets the card shrink to
+                // the cap, which gives its own scroll body a real height.
+                ...(isEditMode ? null : { display: 'flex', flexDirection: 'column' }),
                 userSelect: isEditMode ? 'none' : 'auto',
                 ...focusGeometry,
               } as CSSProperties}

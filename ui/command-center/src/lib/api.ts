@@ -21,6 +21,19 @@ const API_BASE_URL = (
 
 export function getApiBaseUrl(): string { return API_BASE_URL; }
 
+/** The daemon masks a secret as its first (up to) 8 characters plus asterisks —
+ * 8 characters of a random key is a real disclosure on a shared screen. Show at
+ * most the first 4 (enough to tell two keys apart, or read a vendor prefix). */
+export function clampMaskedSecret<T extends string | null | undefined>(masked: T): T {
+  if (typeof masked !== 'string') return masked;
+  // Only the daemon's "prefix + asterisks" form; other shapes pass through.
+  const m = /^([^*]+)(\*+)$/.exec(masked);
+  if (!m) return masked;
+  const lead = m[1].length;
+  if (lead <= 4) return masked;
+  return (masked.slice(0, 4) + '*'.repeat(lead - 4) + masked.slice(lead)) as T;
+}
+
 // Daemon Bearer token — loaded at runtime from Tauri IPC (not baked into the build).
 let _daemonToken: string | null = null;
 let _daemonTokenPromise: Promise<string | null> | null = null;
@@ -1975,7 +1988,7 @@ export const api = {
   readSecretConfig: (key: string) =>
     apiFetch<{ maskedValue?: string } | null>('/config/read', {
       method: 'POST', body: JSON.stringify({ key, is_secret: true }),
-    }),
+    }).then(r => (r && typeof r.maskedValue === 'string' ? { ...r, maskedValue: clampMaskedSecret(r.maskedValue) } : r)),
 
   // Extensions / MCP tools
   /**
@@ -2211,7 +2224,7 @@ export const api = {
     apiFetch<{ ok: boolean; maskedValue?: string | null; error?: string | null }>(
       '/config/secret-sources/test',
       { method: 'POST', body: JSON.stringify({ key, source }) },
-    ),
+    ).then(r => (r && typeof r.maskedValue === 'string' ? { ...r, maskedValue: clampMaskedSecret(r.maskedValue) } : r)),
 
   /** Ship a finished coding-harness session's transcript tail; the daemon
    *  summarizes it and the Brain remembers what the user was building. */

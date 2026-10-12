@@ -16,6 +16,7 @@
  * caller of this one instead of a second implementation of it.
  */
 
+import { LAUNCHER_FOOTER_ATTR } from '../chat/ChatLauncher';
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { CSSProperties, ReactNode } from 'react';
@@ -351,7 +352,10 @@ export function DetailModal({
 
         {/* Footer */}
         {footer && (
-          <div style={{
+          // A docked (contained) panel ends at the window's bottom-right corner,
+          // exactly where the floating chat pill sits — it covered "Merge into…"
+          // in the person panel. Opt the footer in so the pill rises clear of it.
+          <div {...(modal ? {} : { [LAUNCHER_FOOTER_ATTR]: '' })} style={{
             padding: `${space.xl}px 18px`, flexShrink: 0,
             borderTop: '1px solid', ...edge(edges.bottom),
             display: 'flex', alignItems: 'center', gap: space.lg, justifyContent: 'flex-end',

@@ -155,6 +155,16 @@
   padding:0;
   border:1px solid var(--forum-border);
   border-radius:50%}
+/* The demonstrations nav holds three LABELLED buttons (Arrival table, Garden
+   archive, Water workshop); 34px circles clipped the words. */
+.forum-shell .garden-lesson .lesson-steps {
+  flex-wrap:wrap}
+.forum-shell .garden-lesson .lesson-steps .pa-btn {
+  width:auto;
+  height:auto;
+  min-height:34px;
+  padding:6px 14px;
+  border-radius:999px}
 .forum-shell .lesson-steps .pa-btn[aria-pressed=true] {
   border-color:var(--forum-accent);
   color:var(--forum-accent);
@@ -299,7 +309,20 @@
   overflow-wrap:anywhere;
   margin:16px -12px}
 .forum-conversation {
-  min-width:0}
+  min-width:0;
+  display:flex;
+  flex-direction:column;
+  align-items:flex-start;
+  gap:12px}
+.forum-conversation p {
+  margin:0}
+.forum-conversation .forum-transcript {
+  align-self:stretch;
+  margin:4px -12px}
+/* The transcript's -12px side margin is for message bubbles; the empty-state
+   sentence must stay on the panel's own text edge. */
+.forum-conversation .forum-transcript > p {
+  margin:0 12px}
 
 .forum-agent-portrait { display:flex; flex-direction:column; align-items:stretch; border-left:2px solid; background:var(--forum-bg); border-radius:var(--forum-radius); margin-bottom:18px; padding:8px 12px; gap:10px; }
 .forum-agent-portrait .hero-agent-portrait { width:220px; max-width:100%; height:260px; flex-shrink:0; align-self:center; }

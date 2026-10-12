@@ -1408,11 +1408,7 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
               <FiShield size={48} className="mx-auto mb-4" style={{ color: colors.textMuted }} />
               <h3 className="text-lg mb-2" style={{ fontFamily: font.display, fontWeight: 600, color: colors.text }}>Desktop App Required</h3>
               <p className="text-xs max-w-md" style={{ fontFamily: font.body, color: colors.textMuted }}>
-                The embedded browser requires the Permagent desktop app. Run{' '}
-                <code className="px-1.5 py-0.5 rounded" style={{ fontFamily: font.mono, backgroundColor: colors.codeBg, color: colors.codeText }}>
-                  npm run tauri:dev
-                </code>{' '}
-                to use this feature.
+                The embedded browser requires the Permagent desktop app. Open Build in the desktop app to use it.
               </p>
             </div>
           </div>

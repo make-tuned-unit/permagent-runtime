@@ -17,6 +17,7 @@
  * silent catch. Styled strictly with the shared Panel shell + theme tokens.
  */
 
+import { plainText } from '../../lib/plainText';
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import { FiExternalLink, FiRefreshCw } from 'react-icons/fi';
 import { api } from '../../lib/api';
@@ -158,13 +159,13 @@ export function MemoriesPanel({ project }: { project: Project }) {
                     fontSize: textSize.caption, color: colors.text, lineHeight: 1.5,
                     display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
                   }}>
-                    {m.description || m.content || '(empty memory)'}
+                    {plainText(m.description || m.content || '') || '(empty memory)'}
                   </div>
                   <div style={{ fontSize: 10, color: colors.textDim, marginTop: space.xs, display: 'flex', gap: space.md, alignItems: 'center', minWidth: 0 }}>
                     <span style={{ flexShrink: 0 }}>{relativeTime(m.associated_at)}</span>
                     {m.description && m.content && (
                       <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: font.mono, opacity: 0.85 }}>
-                        {m.content}
+                        {plainText(m.content)}
                       </span>
                     )}
                   </div>

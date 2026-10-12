@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, type CSSProperties } from 'react';
+import { useState, useEffect, useCallback, useRef, useLayoutEffect, type CSSProperties } from 'react';
 import {
   FiCommand, FiCpu, FiDatabase, FiEdit3, FiKey, FiLock, FiServer,
   FiShield, FiSliders, FiSmartphone, FiSun, FiUser, FiUsers,
@@ -23,7 +23,7 @@ import { usePersona } from './useSettings';
 import { useOwner } from './useOwner';
 import { PersonSearchPicker } from '../people/PersonSearchPicker';
 import type { Person } from '../projects/types';
-import { resolveSettingsSection } from './sections';
+import { resolveSettingsSection, panelForSection } from './sections';
 import { trustEnvOverrideNotice } from './autonomy';
 import { VoicePicker } from '../voice/VoicePicker';
 import { PronunciationSection } from '../voice/PronunciationSection';
@@ -2386,6 +2386,19 @@ export function SettingsView() {
     }
   }, [pendingSettingsSection, setPendingSettingsSection]);
 
+  // A pane's own "Open <section> →" link. History's four segments are not
+  // Settings panes (they left for the History destination), so a link such as
+  // Autonomy's "Open Spend" must route there like every other deep link does;
+  // handing the key to `setSection` left Settings with no pane: a blank column.
+  const gotoSection = useCallback((key: string) => {
+    if (panelForSection(key) === 'history') {
+      setPendingSettingsSection(key);
+      setActivePanel('history');
+      return;
+    }
+    setSection(key);
+  }, [setPendingSettingsSection, setActivePanel]);
+
   const dismiss = useCallback(() => setActivePanel('chat'), [setActivePanel]);
   useEffect(() => {
     const h = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.preventDefault(); dismiss(); } };
@@ -2401,6 +2414,13 @@ export function SettingsView() {
   // webview focus stayed on <body> and the keys did nothing). Only taken from
   // <body> or the section rail, never from a field the user is typing in.
   const scrollRef = useRef<HTMLDivElement>(null);
+  // The scroll container is shared by every pane, so switching panes kept the
+  // old scroll offset (Tools scrolled down, then Models opened mid-page). A
+  // layout effect runs before any pane's own passive "scroll to this anchor"
+  // effect, so deep links still land where they point.
+  useLayoutEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = 0;
+  }, [pane]);
   useEffect(() => {
     const active = document.activeElement;
     if (active && active !== document.body && !active.closest('[data-settings-rail]')) return;
@@ -2461,7 +2481,7 @@ export function SettingsView() {
         <div className="pa-set-body">
           {/* `section`, not `pane` — History needs the segment the caller asked
               for, and every other panel ignores it. */}
-          {Panel && <Panel goto={setSection} section={section} />}
+          {Panel && <Panel goto={gotoSection} section={section} />}
         </div>
       </div>
     </div>

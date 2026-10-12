@@ -15,6 +15,7 @@ import { PublishSequencePanel } from './PublishSequencePanel';
 import { CardDetailModal } from './CardDetailModal';
 import type { Project, BoardColumn, Card } from './types';
 import { usePersona } from '../settings/useSettings';
+import { plainText } from '../../lib/plainText';
 import { Chip } from '../common/Chip';
 
 import { Tooltip } from '../common/Tooltip';
@@ -400,6 +401,13 @@ function readStrixFindings(metadata: Record<string, unknown>): StrixFinding[] {
     typeof (f as StrixFinding).severity === 'string');
 }
 
+/** Scanner text arrives as markdown (`**pkg**`, backticks); this panel renders
+ * plain text, so the markers would show as literal asterisks. */
+const plainFindingText = plainText;
+const clampLines = (n: number): CSSProperties => ({
+  display: '-webkit-box', WebkitLineClamp: n, WebkitBoxOrient: 'vertical', overflow: 'hidden',
+});
+
 function StrixFindingsPanel({ project }: { project: Project }) {
   const { colors } = useTheme();
   const findings = readStrixFindings(project.metadataJson);
@@ -456,15 +464,15 @@ function StrixFindingsPanel({ project }: { project: Project }) {
               {f.severity}
             </span>
             <div style={{ minWidth: 0 }}>
-              <div style={{ fontSize: textSize.caption, color: colors.text, lineHeight: 1.5 }}>{f.title}</div>
+              <div style={{ fontSize: textSize.caption, color: colors.text, lineHeight: 1.5, ...clampLines(2) }}>{plainFindingText(f.title)}</div>
               <div style={{ fontSize: 10, color: colors.textDim, marginTop: space.xxs, display: 'flex', gap: space.md, flexWrap: 'wrap' }}>
                 {f.cwe && <span>{f.cwe}</span>}
                 {f.location && <span style={{ fontFamily: font.mono }}>{f.location}</span>}
                 <span>{formatDate(f.found_at)}</span>
               </div>
-              {f.remediation && (
-                <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: space.xxs, lineHeight: 1.5 }}>
-                  {f.remediation}
+              {f.remediation && plainFindingText(f.remediation) !== plainFindingText(f.title) && (
+                <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: space.xxs, lineHeight: 1.5, ...clampLines(3) }}>
+                  {plainFindingText(f.remediation)}
                 </div>
               )}
             </div>
