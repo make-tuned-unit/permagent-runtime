@@ -843,7 +843,12 @@ export function AutomateView() {
           </>}
         />
 
-        <div ref={scrollRootRef} style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: `${space.xxxl}px 32px 40px` }}>
+        <div ref={scrollRootRef} style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '0 32px 40px' }}>
+
+        {/* The top inset is a spacer, not container padding: with padding the
+            sticky jump bar stuck 32px below the header and rows scrolled
+            visibly through that strip above it (Q21, still reproducible). */}
+        <div aria-hidden style={{ height: space.xxxl }} />
 
         {/* A5: sticky jump bar — the page is one long scroll, and Learned was
             reachable only by scrolling past everything above it. */}
