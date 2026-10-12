@@ -744,8 +744,8 @@ pub fn parse_actions(text: &str) -> Vec<GrowthAction> {
             };
             Some(GrowthAction {
                 title: clip_at_word(&title, TITLE_MAX_CHARS),
-                evidence: evidence.chars().take(400).collect(),
-                recommendation: recommendation.chars().take(600).collect(),
+                evidence: evidence.chars().take(2000).collect(),
+                recommendation: recommendation.chars().take(2000).collect(),
                 steps,
                 artifact_kind,
                 artifact,
@@ -3101,6 +3101,31 @@ mod tests {
         let a = &parse_actions(reply)[0];
         assert_eq!(a.artifact_kind, "none");
         assert!(a.artifact.is_none());
+    }
+
+    /// Q14/N17: evidence and recommendation were cut at 400/600 characters, so
+    /// the UI showed sentences ending mid-word. Text up to 2000 characters
+    /// survives whole; the UI clamps and expands on its side.
+    #[test]
+    fn long_evidence_and_recommendation_are_not_cut_mid_sentence() {
+        let evidence = format!("{} end-of-evidence.", "word ".repeat(150));
+        let recommendation = format!("{} end-of-recommendation.", "word ".repeat(200));
+        assert!(evidence.chars().count() > 400 && recommendation.chars().count() > 600);
+        let reply = serde_json::json!({"actions":[{
+            "title":"t","evidence":evidence,"recommendation":recommendation
+        }]})
+        .to_string();
+        let a = &parse_actions(&reply)[0];
+        assert_eq!(a.evidence, evidence);
+        assert_eq!(a.recommendation, recommendation);
+        let huge = "x".repeat(5000);
+        let reply = serde_json::json!({"actions":[{
+            "title":"t","evidence":huge,"recommendation":huge
+        }]})
+        .to_string();
+        let a = &parse_actions(&reply)[0];
+        assert_eq!(a.evidence.chars().count(), 2000);
+        assert_eq!(a.recommendation.chars().count(), 2000);
     }
 
     #[test]
