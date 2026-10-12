@@ -88,7 +88,7 @@ describe('Record picker focus', () => {
       .find(l => l.textContent?.includes('Record my microphone'))!.querySelector('input')!;
     expect(mic.checked).toBe(true);
     expect(dialog()!.textContent).toContain('Microphone is the only recording source available here');
-    expect(dialog()!.textContent).not.toContain('Turn it off to record only');
+    expect(dialog()!.textContent).not.toContain('To record call audio only');
     act(() => mic.click());
     expect(mic.checked).toBe(false);
     expect(dialog()!.querySelector('[role="alert"]')?.textContent).toMatch(/at least one source/);

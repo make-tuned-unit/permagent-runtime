@@ -583,7 +583,7 @@ export function MeetingRecorder({ open }: { open: boolean }) {
                 <span>
                   <span style={{ color: colors.text, fontWeight: 600 }}>Record my microphone</span>
                   {' '}— this device's current input. {canCaptureSystem
-                    ? 'Turn it off to record only the call’s audio.'
+                    ? 'To record call audio only, enable system audio and turn off your microphone.'
                     : 'Microphone is the only recording source available here. Use the desktop app to also capture call audio.'}
                 </span>
               </label>
