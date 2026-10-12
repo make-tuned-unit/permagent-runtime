@@ -1676,7 +1676,17 @@ export interface HarnessRunView {
 
 export const api = {
   // Health
-  getHealth: () => apiFetch<{ status: string }>('/status'),
+  /** Does the hub answer? `/status` replies with the plain text `ok`, which
+   *  apiFetch's JSON parse rejects with a SyntaxError — an answer, not an
+   *  outage, so only a failure to get a response counts as "down". */
+  getHealth: async (): Promise<boolean> => {
+    try {
+      await apiFetch<unknown>('/status');
+      return true;
+    } catch (e) {
+      return e instanceof SyntaxError;
+    }
+  },
 
   // ── Device registry (#628): per-device pairing tokens ──────────────
 

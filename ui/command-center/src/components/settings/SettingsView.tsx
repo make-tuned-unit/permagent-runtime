@@ -2064,7 +2064,7 @@ function DevicesPanel() {
   const [detail, setDetail] = useState(0); // progressive disclosure depth
   const [hubUp, setHubUp] = useState<boolean | null>(null);
   useEffect(() => {
-    apiFetch<{ status: string }>('/status').then(() => setHubUp(true)).catch(() => setHubUp(false));
+    api.getHealth().then(setHubUp);
   }, []);
   return (
     <div>
