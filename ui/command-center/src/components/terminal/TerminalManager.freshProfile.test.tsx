@@ -105,3 +105,48 @@ describe('fresh profile terminal tabs, slow spawn', () => {
     expect(panes()).toBe(1);
   });
 });
+
+/**
+ * Native explanation of the F7 screenshot (2026-10-12). The "fresh profile"
+ * smoke ran the bundle `ai.permagent.record-review-20261007`, whose WebKit
+ * localStorage is per bundle id, not per daemon profile. Its
+ * `permagent.terminal.state.v1` held TWO tabs, both labelled "j" (folder of
+ * /Users/j), with ids stamped 2026-10-08 14:30 and 14:40 — created in earlier
+ * review sessions, long before the smoke. So the two tabs were the restored
+ * client record, not a default plus a restore and not a double create. These
+ * cases pin that a returning client gets exactly its saved tabs back.
+ */
+describe('a returning client restores exactly its saved tabs', () => {
+  const saved = {
+    tabs: [
+      { id: 'tab-1791481242199-1', label: 'j', sessionId: 'pty-old-1', cwd: '/Users/j' },
+      { id: 'tab-1791480600668-1', label: 'j', sessionId: 'pty-old-2', cwd: '/Users/j' },
+    ],
+    activeTabId: 'tab-1791480600668-1',
+    detachedSessionIds: [],
+  };
+  const tabIdsInStorage = () => JSON.parse(localStorage.getItem('permagent.terminal.state.v1')!).tabs.map((t: { id: string }) => t.id);
+
+  it('two saved tabs whose shells died come back as two tabs, no extra default', async () => {
+    localStorage.setItem('permagent.terminal.state.v1', JSON.stringify(saved));
+    await act(async () => { root.render(<TerminalManager />); });
+    await settle();
+    expect(panes()).toBe(2);
+    expect(tabIdsInStorage()).toEqual(saved.tabs.map(t => t.id));
+  });
+
+  it('a live shell no saved tab claims is not adopted as a third tab', async () => {
+    localStorage.setItem('permagent.terminal.state.v1', JSON.stringify(saved));
+    backend.sessions.push({ session_id: 'pty-stray', cwd: '/Users/j', started_at: 'x', alive: true, produced: 1 });
+    await act(async () => { root.render(<TerminalManager />); });
+    await settle();
+    expect(panes()).toBe(2);
+  });
+
+  it('one saved tab restores as one tab', async () => {
+    localStorage.setItem('permagent.terminal.state.v1', JSON.stringify({ ...saved, tabs: [saved.tabs[0]], activeTabId: saved.tabs[0].id }));
+    await act(async () => { root.render(<TerminalManager />); });
+    await settle();
+    expect(panes()).toBe(1);
+  });
+});
