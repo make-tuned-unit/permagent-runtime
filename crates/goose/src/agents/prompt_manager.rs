@@ -1130,7 +1130,12 @@ mod tests {
     /// Permagent can do. Measured at 19,257 tokens (`qwen-local`, the largest
     /// overlay) when this gate was added; the headroom is ~4%, enough for a
     /// descriptor edit and nowhere near enough to hide a new always-on section.
-    const UNSCOPED_PREFIX_TOKEN_CEILING: usize = 20_000;
+    ///
+    /// Raised 20_000 -> 22_000 (2026-10-12): the new "App map and navigation
+    /// boundaries" contract (World places, Record picker, ~1.7k tokens) rides in
+    /// the cached stable prefix and takes the unscoped total to ~21.8k. The
+    /// follow-up is to condense the map, not to drop it.
+    const UNSCOPED_PREFIX_TOKEN_CEILING: usize = 22_000;
 
     /// Hard ceiling on the SCOPED prefix — the `GooseCli` family: the
     /// interactive CLI, the coding harness, in-process goal workers and Summon
