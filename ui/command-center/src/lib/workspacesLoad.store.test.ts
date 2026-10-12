@@ -91,3 +91,22 @@ describe('loadWorkspaces error latch', () => {
     expect(state.workspaces.map(({ id }) => id)).toEqual(['w1']);
   });
 });
+
+describe('which workspace a relaunch lands on', () => {
+  const home = { ...workspace, id: 'home', name: 'Home', sortOrder: 0, layoutJson: { type: 'panel', tool: 'dashboard' } };
+  const build = { ...workspace, id: 'build', name: 'Build', sortOrder: 1, isDefault: false };
+
+  it('restores the daemon-persisted last workspace, not the first one', async () => {
+    getWorkspaces.mockResolvedValue([home, build]);
+    getActiveWorkspace.mockResolvedValue({ workspaceId: 'build' });
+    await useCommandCenter.getState().loadWorkspaces();
+    expect(useCommandCenter.getState().activeWorkspaceId).toBe('build');
+  });
+
+  it('falls back to the first workspace (Home) when nothing is persisted', async () => {
+    getWorkspaces.mockResolvedValue([home, build]);
+    getActiveWorkspace.mockResolvedValue({ workspaceId: null });
+    await useCommandCenter.getState().loadWorkspaces();
+    expect(useCommandCenter.getState().activeWorkspaceId).toBe('home');
+  });
+});
