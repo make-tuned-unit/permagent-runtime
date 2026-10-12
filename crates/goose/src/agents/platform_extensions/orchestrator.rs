@@ -30197,6 +30197,40 @@ async fn land_salvage_approved_by_reviewer(
         }
     };
 
+    // The receipt of HOW this pass was earned. Landing no longer depends on
+    // it (the native binding is the authority, and a serialized card PASS is
+    // display-only), but the card and its audit trail must still say that the
+    // pass is an independent reviewer's sign-off with no automated check
+    // behind it, distinct from a genuine verify. This used to be written by
+    // `auto_land_headless_goal` before the salvage path started calling
+    // `finish_headless_auto_land` directly with the binding.
+    if let Err(e) = cards::set_goal_verdict_and_program_receipts(
+        pool,
+        &card.id,
+        serde_json::json!({
+            "status": "pass",
+            "source": "headless_auto_unverified_reviewer_approval",
+            "reviewer": {
+                "checked": checked,
+                "reviewer_provider": reviewer_provider,
+                "reviewer_model": reviewer_model,
+                "note": verify_note,
+            },
+            "recorded_at": chrono::Utc::now().to_rfc3339(),
+        }),
+        None,
+    )
+    .await
+    {
+        tracing::warn!(
+            target: "permagentd::brain",
+            goal_id = %card.id,
+            "reviewer-approved salvage: could not record the approval receipt for goal '{}' \
+             ({e}); landing continues on the native binding",
+            card.title
+        );
+    }
+
     let refreshed = cards::get_card(pool, &card.id).await.ok().flatten();
     let had_worktree_to_land = refreshed.is_some();
     if let Some(refreshed) = refreshed {
@@ -38608,6 +38642,17 @@ mod tests {
         })
         .await
         .unwrap();
+        // The salvage path refuses to land without the native binding the
+        // real review mints, so seed the durable evidence behind one.
+        let (binding, _worktree_owner) = crate::goal_candidates::test_support::seed_native_review_binding(
+            &pool,
+            &card.id,
+            crate::projects::PERSONAL_PROJECT_ID,
+            repo.path(),
+            &head,
+            &session_id,
+        )
+        .await;
         let card = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
 
         let outcome = land_salvage_approved_by_reviewer(
@@ -38620,7 +38665,7 @@ mod tests {
                           new risk",
                 reviewer_provider: "test-reviewer-provider",
                 reviewer_model: "test-reviewer-model",
-                native_binding: None,
+                native_binding: Some(&binding),
             },
             Some("coord-session-1"),
         )
@@ -38725,6 +38770,15 @@ mod tests {
         })
         .await
         .unwrap();
+        let (binding, _worktree_owner) = crate::goal_candidates::test_support::seed_native_review_binding(
+            &pool,
+            &card.id,
+            crate::projects::PERSONAL_PROJECT_ID,
+            repo.path(),
+            &head,
+            &session_id,
+        )
+        .await;
         let card = cards::get_card(&pool, &card.id).await.unwrap().unwrap();
 
         // FORCE the land refusal: advance the trunk past the point the goal
@@ -38757,7 +38811,7 @@ mod tests {
                           new risk",
                 reviewer_provider: "test-reviewer-provider",
                 reviewer_model: "test-reviewer-model",
-                native_binding: None,
+                native_binding: Some(&binding),
             },
             Some("coord-session-1"),
         )

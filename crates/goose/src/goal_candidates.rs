@@ -855,3 +855,151 @@ pub(crate) async fn revalidate_review_binding_for_landing_tx(
     check_expected_tx(tx, &approved.goal_id, Some(approved)).await?;
     Ok(())
 }
+
+/// Test-only seeding of a REAL native review binding for tests that drive the
+/// salvage-landing path. `land_salvage_approved_by_reviewer` refuses to land
+/// without a binding the native review path minted, so such tests must stand
+/// up the same durable evidence production does (frozen goal binding, a
+/// sealed terminal attempt with a clean worktree at the candidate head, and
+/// positive physical call evidence) rather than pass `None`.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+    use crate::agents::platform_extensions::execution_receipt::ReceiptState;
+    use crate::goal_attempts::{self, ClaimInput, StartPermit};
+
+    fn git_sync(root: &Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .output()
+            .expect("git must be on PATH");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// Removes the candidate worktree directory (it lives outside the test's
+    /// own tempdir) when dropped.
+    pub(crate) struct WorktreeGuard(PathBuf);
+    impl Drop for WorktreeGuard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// `repo` is a git repo on `main`; `candidate_head` a commit reachable from
+    /// another branch. The `sessions` row for `session` must already exist.
+    /// Returns the binding and a guard that owns the candidate worktree.
+    pub(crate) async fn seed_native_review_binding(
+        pool: &Pool<Sqlite>,
+        goal: &str,
+        project_id: &str,
+        repo: &Path,
+        candidate_head: &str,
+        session: &str,
+    ) -> (NativeReviewBinding, WorktreeGuard) {
+        let root = std::fs::canonicalize(repo).unwrap();
+        let anchor = git_sync(&root, &["rev-parse", "main"]);
+        sqlx::query("INSERT INTO goal_execution_bindings(goal_id,project_id,task_id,coordinator_session_id,contract_json,contract_sha256,authority,canonical_root,initial_git_head,root_status) VALUES(?,?,'task','coordinator',?,'fixture-digest','native',?,?,'resolved')")
+            .bind(goal).bind(project_id)
+            .bind("{\"task_id\":\"task\",\"text\":\"Original frozen requirements\"}")
+            .bind(root.to_string_lossy().as_ref()).bind(&anchor)
+            .execute(pool).await.unwrap();
+        let claim = format!("claim-{goal}");
+        sqlx::query("UPDATE cards SET metadata_json=json_set(metadata_json,'$.dispatch_claim_id',?) WHERE id=?")
+            .bind(&claim).bind(goal).execute(pool).await.unwrap();
+        let (head, _) = dispatch_baseline(pool, goal, &root).await.unwrap().unwrap();
+        let head = head.unwrap();
+        let mut tx = pool.begin().await.unwrap();
+        goal_attempts::claim_tx(
+            &mut tx,
+            goal,
+            project_id,
+            &ClaimInput {
+                claim_id: claim.clone(),
+                lifecycle_id: "test".into(),
+                worker_key: "test-worker".into(),
+                execution_root: Some(root.to_string_lossy().into_owned()),
+                input_head: Some(head.clone()),
+            },
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        // The prepared-worker check pins the worktree to
+        // `<repo parent>/.permagent-goal-worktrees/<session>`, so it has to be
+        // created there; the guard removes it when the test ends.
+        let worktree = crate::agents::platform_extensions::goal_engine::create_goal_worktree(
+            &root, &head, session,
+        )
+        .await
+        .unwrap();
+        let holder = WorktreeGuard(worktree.clone());
+        let permit = StartPermit {
+            pool: pool.clone(),
+            goal_id: goal.into(),
+            claim_id: claim.clone(),
+        };
+        permit
+            .prepare_worker(session, &worktree, Some("task"))
+            .await
+            .unwrap();
+        permit.mark_provider_accounting(session).await.unwrap();
+        let mut tx = pool.begin().await.unwrap();
+        goal_attempts::finalize_tx(&mut tx, goal, &claim, Some(session), None)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        permit.start().await.unwrap();
+        // The worker's "work": the candidate commit, checked out clean.
+        git_sync(&worktree, &["checkout", "-q", "--detach", candidate_head]);
+        let call = goal_attempts::worker_binding(pool, session)
+            .await
+            .unwrap()
+            .unwrap();
+        crate::native_provider_calls::record(pool, "physical-call-1", &call, "openai", "gpt-5.4-mini")
+            .await
+            .unwrap();
+        crate::native_provider_calls::mark_dispatch_possible(pool, "physical-call-1", &call)
+            .await
+            .unwrap();
+        observe_worker_terminal(
+            pool,
+            goal,
+            &claim,
+            session,
+            TerminalState::Succeeded,
+            "test native terminal",
+            ReceiptState::Failed,
+        )
+        .await
+        .unwrap();
+        let LineageResolution::Verified(lineage) = resolve_candidate(pool, goal).await.unwrap()
+        else {
+            panic!("seeded candidate must resolve as verified");
+        };
+        let ContributorEvidence::Known {
+            families,
+            invocation_ids,
+            ..
+        } = contributor_evidence(pool, &lineage).await.unwrap()
+        else {
+            panic!("seeded candidate must carry known contributor evidence");
+        };
+        let expected = revalidate_candidate(pool, &lineage).await.unwrap();
+        (
+            NativeReviewBinding {
+                lineage,
+                families,
+                invocation_ids,
+                expected,
+            },
+            holder,
+        )
+    }
+}
