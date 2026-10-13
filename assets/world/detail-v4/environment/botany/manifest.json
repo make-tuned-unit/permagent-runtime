@@ -1,0 +1,1730 @@
+{
+  "schema": "permagent.world.detail-v4.botany.v1",
+  "lane": "W4 (Astra ruling 2026-10-12)",
+  "status": "candidate \u2014 not published",
+  "generated": "2026-10-13T01:57:11Z",
+  "blender": "5.2.1 LTS",
+  "metersPerUnit": 1,
+  "runtimeUp": "Y",
+  "source_scripts": {
+    "scripts/blender/world_detail/botany_lib.py": "7a801a35d700a6289660e7a64dd7829430069f47fd762a83d39139b6d0b0093b",
+    "scripts/blender/world_detail/botany_scatter.py": "041aecbda68302755b45d73c813ba161588b0018d83f3c51cddb5fd1b98451b9",
+    "scripts/blender/world_detail/botany_species.py": "4ef526bb02037ce58dda08df7bb1677af611128d8f7a586d2ec1d952988779db",
+    "scripts/blender/world_detail/build_botany.py": "a514ef6ca243658789b0888ad4cf27cd1b4d56f2b3ae79d7c2242f1a14ff41ce",
+    "scripts/blender/world_detail/detail_lib.py": "cfe3a2e52bfce5931940080aa41607b8b2903a9f35c96f2e63ec559e4e95b780",
+    "scripts/blender/world_detail/places_export.py": "f0eff0f026a9134e300b2c9111e52410e00e0f3589e1df0df034ed37990c5a60"
+  },
+  "provenance": {
+    "geometry": "authored procedurally in Blender by these scripts; no third-party or generated meshes",
+    "textures": "bark, foliage atlas (true alpha, colour-dilated) and gradient palette drawn with numpy in botany_lib.py; no AI imagery, no downloads",
+    "license": "project-authored",
+    "species_claim": "readable garden forms; no claim of scientific species identity"
+  },
+  "instancing_contract": {
+    "structure": "root empty <species_id> -> one mesh node <species_id>_mesh (identity transform, <= 2 primitives) + anchor empties; build one InstancedMesh per (species, LOD, primitive, spatial cell)",
+    "wind": "wind_root / wind_sway / wind_tip empties on every species and LOD; extras carry profile, amplitude, frequency, stiffness and the weight rule; no extra vertex attributes (no COLOR_0, which three.js would multiply into base colour)",
+    "alpha": "only \"Foliage \u2022 alpha-tested atlas\" is MASK (cutoff 0.5) + doubleSided; use alphaTest, never transparent sorting; shadow casters need a depth material with the same alphaTest",
+    "scatter": "botany/scatter.json"
+  },
+  "assets": [
+    {
+      "name": "canopy-olive",
+      "class": "botany",
+      "form": "canopy tree",
+      "alpha_strategy": "LOD0 + LOD1 alpha-tested sprig/cluster cards (MASK 0.5, double-sided, colour-dilated atlas); trunk and branches are geometry",
+      "budget": {
+        "source": "ruling: canopy tree",
+        "lod0": 6000,
+        "lod1": 2000,
+        "lod2": 500
+      },
+      "shadow": {
+        "lod0": true,
+        "lod1": true,
+        "note": "alpha-tested depth (customDepthMaterial with alphaTest)"
+      },
+      "lods": {
+        "lod0": {
+          "bytes": 388852,
+          "sha256": "6a61f9cd37c5c2c0ab9f03234802d5a1c93839dda125242a19bb900d2b02ef88",
+          "triangles": 4444,
+          "primitives_draw_calls": 2,
+          "meshes": 1,
+          "nodes": 7,
+          "materials": [
+            "Bark \u2022 grey olive",
+            "Foliage \u2022 alpha-tested atlas"
+          ],
+          "extensions_required": [
+            "EXT_texture_webp"
+          ],
+          "material_modes": [
+            {
+              "name": "Bark \u2022 grey olive",
+              "alphaMode": "OPAQUE",
+              "alphaCutoff": null,
+              "doubleSided": false
+            },
+            {
+              "name": "Foliage \u2022 alpha-tested atlas",
+              "alphaMode": "MASK",
+              "alphaCutoff": null,
+              "doubleSided": true
+            }
+          ],
+          "images": [
+            {
+              "name": "bark_normal",
+              "mime": "image/webp",
+              "width": 256,
+              "height": 256,
+              "bytes": 2696,
+              "colorspace": "linear",
+              "decoded_bytes_with_mips": 349525
+            },
+            {
+              "name": "bark_basecolor",
+              "mime": "image/webp",
+              "width": 512,
+              "height": 512,
+              "bytes": 6436,
+              "colorspace": "sRGB",
+              "decoded_bytes_with_mips": 1398101
+            },
+            {
+              "name": "foliage_atlas_basecolor_alpha",
+              "mime": "image/webp",
+              "width": 1024,
+              "height": 1024,
+              "bytes": 38730,
+              "colorspace": "sRGB",
+              "decoded_bytes_with_mips": 5592405
+            }
+          ],
+          "texture_decoded_bytes": 7340031,
+          "node_names": [
+            "anchor_crown_base",
+            "anchor_soil_contact",
+            "canopy_olive_mesh",
+            "wind_root",
+            "wind_sway",
+            "wind_tip",
+            "canopy_olive"
+          ],
+          "file": "canopy-olive.lod0.glb",
+          "blender_triangles": 4444,
+          "mesh_node": "canopy_olive_mesh"
+        },
+        "lod1": {
+          "bytes": 122684,
+          "sha256": "e9b2d006151fd3606fefc3bae6131dc469efd2121a8469ede9e608bca8b20c33",
+          "triangles": 880,
+          "primitives_draw_calls": 2,
+          "meshes": 1,
+          "nodes": 6,
+          "materials": [
+            "Bark \u2022 grey olive",
+            "Foliage \u2022 alpha-tested atlas"
+          ],
+          "extensions_required": [
+            "EXT_texture_webp"
+          ],
+          "material_modes": [
+            {
+              "name": "Bark \u2022 grey olive",
+              "alphaMode": "OPAQUE",
+              "alphaCutoff": null,
+              "doubleSided": false
+            },
+            {
+              "name": "Foliage \u2022 alpha-tested atlas",
+              "alphaMode": "MASK",
+              "alphaCutoff": null,
+              "doubleSided": true
+            }
+          ],
+          "images": [
+            {
+              "name": "bark_normal",
+              "mime": "image/webp",
+              "width": 256,
+              "height": 256,
+              "bytes": 2696,
+              "colorspace": "linear",
+              "decoded_bytes_with_mips": 349525
+            },
+            {
+              "name": "bark_basecolor",
+              "mime": "image/webp",
+              "width": 512,
+              "height": 512,
+              "bytes": 6436,
+              "colorspace": "sRGB",
+              "decoded_bytes_with_mips": 1398101
+            },
+            {
+              "name": "foliage_atlas_basecolor_alpha",
+              "mime": "image/webp",
+              "width": 1024,
+              "height": 1024,
+              "bytes": 38730,
+              "colorspace": "sRGB",
+              "decoded_bytes_with_mips": 5592405
+            }
+          ],
+          "texture_decoded_bytes": 7340031,
+          "node_names": [
+            "anchor_soil_contact",
+            "canopy_olive_mesh",
+            "wind_root",
+            "wind_sway",
+            "wind_tip",
+            "canopy_olive"
+          ],
+          "file": "canopy-olive.lod1.glb",
+          "blender_triangles": 880,
+          "mesh_node": "canopy_olive_mesh"
+        }
+      },
+      "measure": {
+        "height_m": 5.298,
+        "lowest_m": -0.124,
+        "spread_radius_m": 3.133,
+        "crown_base_m": 2.579,
+        "branch_min_z_outside_0.45m_m": -0.094
+      },
+      "bounds": {
+        "min": [
+          -3.0022,
+          -0.1243,
+          -3.0064
+        ],
+        "max": [
+          3.1177,
+          5.2984,
+          2.7922
+        ],
+        "size": [
+          6.1199,
+          5.4227,
+          5.7986
+        ]
+      },
+      "pivot": {
+        "origin": "soil contact under the stem/trunk centre (vine: top attachment point)",
+        "gltf": [
+          0,
+          0,
+          0
+        ]
+      },
+      "anchors": [
+        {
+          "name": "wind_root",
+          "kind": "wind",
+          "parent": "canopy_olive",
+          "gltf_position_in_root": [
+            0.0,
+            0.0,
+            -0.0
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "zero-motion pivot (soil contact / attachment)",
+          "wind_profile": "tree",
+          "wind_amplitude_m": 0.14,
+          "wind_frequency_hz": 0.35,
+          "wind_stiffness": 0.8,
+          "wind_weight_rule": "weight = smoothstep(0, 1, (y - wind_root.y) / (wind_tip.y - wind_root.y)); offset = amp * weight^2"
+        },
+        {
+          "name": "wind_sway",
+          "kind": "wind",
+          "parent": "canopy_olive",
+          "gltf_position_in_root": [
+            0.0,
+            2.3,
+            -0.0
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "primary sway pivot (trunk top / clump centre)",
+          "wind_profile": "tree",
+          "wind_amplitude_m": 0.14,
+          "wind_frequency_hz": 0.35,
+          "wind_stiffness": 0.8,
+          "wind_weight_rule": "weight = smoothstep(0, 1, (y - wind_root.y) / (wind_tip.y - wind_root.y)); offset = amp * weight^2"
+        },
+        {
+          "name": "wind_tip",
+          "kind": "wind",
+          "parent": "canopy_olive",
+          "gltf_position_in_root": [
+            0.0,
+            5.0,
+            -0.0
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "height of full-amplitude motion",
+          "wind_profile": "tree",
+          "wind_amplitude_m": 0.14,
+          "wind_frequency_hz": 0.35,
+          "wind_stiffness": 0.8,
+          "wind_weight_rule": "weight = smoothstep(0, 1, (y - wind_root.y) / (wind_tip.y - wind_root.y)); offset = amp * weight^2"
+        },
+        {
+          "name": "anchor_soil_contact",
+          "kind": "contact",
+          "parent": "canopy_olive",
+          "gltf_position_in_root": [
+            0.0,
+            0.0,
+            -0.0
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "origin; set on the soil/bed surface. Root flare / stems sink up to 0.10 m below it"
+        },
+        {
+          "name": "anchor_crown_base",
+          "kind": "clearance",
+          "parent": "canopy_olive",
+          "gltf_position_in_root": [
+            0.0,
+            2.579,
+            -0.0
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "lowest foliage at scale 1.0; scale >= 2.3 / this keeps 2.3 m headroom at the drip line"
+        }
+      ],
+      "collision": {
+        "type": "cylinder",
+        "radius": 0.3,
+        "height": 2.4,
+        "blocking": true,
+        "note": "trunk only; crown base is above head height (see crown_base_m)",
+        "center": [
+          0,
+          1.2,
+          0
+        ],
+        "file": "canopy-olive.collision.glb",
+        "bytes": 3096,
+        "sha256": "4e2d2e8590d9e8d1047c6166a52ec340badcdfe340c98614d757676ff8b31292",
+        "triangles": 48
+      },
+      "source_blend": {
+        "file": "canopy-olive.blend",
+        "sha256": "f2a5395b805e70c4efe97dff31fda44905855e23f6283bf4bff9722e49f64a13",
+        "bytes": 253065,
+        "contains": "LOD0 + collision proxy; LOD1 is regenerated by the script"
+      },
+      "lod_switch": {
+        "lod0_to_lod1_distance_m": 30,
+        "hysteresis": 0.1,
+        "note": "distance at fov 58 for scale 1; scale the threshold by instance scale"
+      }
+    },
+    {
+      "name": "shrub-laurel",
+      "class": "botany",
+      "form": "broadleaf shrub",
+      "alpha_strategy": "LOD0 geometry leaves (opaque palette); LOD1 alpha-tested sprig cards",
+      "budget": {
+        "source": "ruling: shrub / groundcover patch",
+        "lod0": 1500,
+        "lod1": 500,
+        "lod2": 120
+      },
+      "shadow": {
+        "lod0": true,
+        "lod1": false,
+        "note": "LOD1 shadow off"
+      },
+      "lods": {
+        "lod0": {
+          "bytes": 78884,
+          "sha256": "bd3144341ea7c6874c626d22eb0a58d1089792a3ba97cb274fd4b1e8425a89a1",
+          "triangles": 1358,
+          "primitives_draw_calls": 1,
+          "meshes": 1,
+          "nodes": 6,
+          "materials": [
+            "Botany \u2022 leaf and stem palette"
+          ],
+          "extensions_required": [
+            "EXT_texture_webp"
+          ],
+          "material_modes": [
+            {
+              "name": "Botany \u2022 leaf and stem palette",
+              "alphaMode": "OPAQUE",
+              "alphaCutoff": null,
+              "doubleSided": true
+            }
+          ],
+          "images": [
+            {
+              "name": "botany_palette_basecolor",
+              "mime": "image/webp",
+              "width": 128,
+              "height": 128,
+              "bytes": 438,
+              "colorspace": "sRGB",
+              "decoded_bytes_with_mips": 87381
+            }
+          ],
+          "texture_decoded_bytes": 87381,
+          "node_names": [
+            "anchor_soil_contact",
+            "shrub_laurel_mesh",
+            "wind_root",
+            "wind_sway",
+            "wind_tip",
+            "shrub_laurel"
+          ],
+          "file": "shrub-laurel.lod0.glb",
+          "blender_triangles": 1358,
+          "mesh_node": "shrub_laurel_mesh"
+        },
+        "lod1": {
+          "bytes": 54068,
+          "sha256": "5554798216794641883033067947b1e5e2b81ed59e0e6ad85dd41a5d3bd5bc68",
+          "triangles": 225,
+          "primitives_draw_calls": 2,
+          "meshes": 1,
+          "nodes": 6,
+          "materials": [
+            "Botany \u2022 leaf and stem palette",
+            "Foliage \u2022 alpha-tested atlas"
+          ],
+          "extensions_required": [
+            "EXT_texture_webp"
+          ],
+          "material_modes": [
+            {
+              "name": "Botany \u2022 leaf and stem palette",
+              "alphaMode": "OPAQUE",
+              "alphaCutoff": null,
+              "doubleSided": true
+            },
+            {
+              "name": "Foliage \u2022 alpha-tested atlas",
+              "alphaMode": "MASK",
+              "alphaCutoff": null,
+              "doubleSided": true
+            }
+          ],
+          "images": [
+            {
+              "name": "botany_palette_basecolor",
+              "mime": "image/webp",
+              "width": 128,
+              "height": 128,
+              "bytes": 438,
+              "colorspace": "sRGB",
+              "decoded_bytes_with_mips": 87381
+            },
+            {
+              "name": "foliage_atlas_basecolor_alpha",
+              "mime": "image/webp",
+              "width": 1024,
+              "height": 1024,
+              "bytes": 38730,
+              "colorspace": "sRGB",
+              "decoded_bytes_with_mips": 5592405
+            }
+          ],
+          "texture_decoded_bytes": 5679786,
+          "node_names": [
+            "anchor_soil_contact",
+            "shrub_laurel_mesh",
+            "wind_root",
+            "wind_sway",
+            "wind_tip",
+            "shrub_laurel"
+          ],
+          "file": "shrub-laurel.lod1.glb",
+          "blender_triangles": 225,
+          "mesh_node": "shrub_laurel_mesh"
+        }
+      },
+      "measure": {
+        "height_m": 0.886,
+        "lowest_m": -0.05,
+        "spread_radius_m": 0.84
+      },
+      "bounds": {
+        "min": [
+          -0.6761,
+          -0.05,
+          -0.8131
+        ],
+        "max": [
+          0.8401,
+          0.8859,
+          0.7901
+        ],
+        "size": [
+          1.5162,
+          0.9359,
+          1.6032
+        ]
+      },
+      "pivot": {
+        "origin": "soil contact under the stem/trunk centre (vine: top attachment point)",
+        "gltf": [
+          0,
+          0,
+          0
+        ]
+      },
+      "anchors": [
+        {
+          "name": "wind_root",
+          "kind": "wind",
+          "parent": "shrub_laurel",
+          "gltf_position_in_root": [
+            0.0,
+            0.0,
+            -0.0
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "zero-motion pivot (soil contact / attachment)",
+          "wind_profile": "shrub",
+          "wind_amplitude_m": 0.05,
+          "wind_frequency_hz": 0.6,
+          "wind_stiffness": 0.6,
+          "wind_weight_rule": "weight = smoothstep(0, 1, (y - wind_root.y) / (wind_tip.y - wind_root.y)); offset = amp * weight^2"
+        },
+        {
+          "name": "wind_sway",
+          "kind": "wind",
+          "parent": "shrub_laurel",
+          "gltf_position_in_root": [
+            0.0,
+            0.3,
+            -0.0
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "primary sway pivot (trunk top / clump centre)",
+          "wind_profile": "shrub",
+          "wind_amplitude_m": 0.05,
+          "wind_frequency_hz": 0.6,
+          "wind_stiffness": 0.6,
+          "wind_weight_rule": "weight = smoothstep(0, 1, (y - wind_root.y) / (wind_tip.y - wind_root.y)); offset = amp * weight^2"
+        },
+        {
+          "name": "wind_tip",
+          "kind": "wind",
+          "parent": "shrub_laurel",
+          "gltf_position_in_root": [
+            0.0,
+            1.0,
+            -0.0
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "height of full-amplitude motion",
+          "wind_profile": "shrub",
+          "wind_amplitude_m": 0.05,
+          "wind_frequency_hz": 0.6,
+          "wind_stiffness": 0.6,
+          "wind_weight_rule": "weight = smoothstep(0, 1, (y - wind_root.y) / (wind_tip.y - wind_root.y)); offset = amp * weight^2"
+        },
+        {
+          "name": "anchor_soil_contact",
+          "kind": "contact",
+          "parent": "shrub_laurel",
+          "gltf_position_in_root": [
+            0.0,
+            0.0,
+            -0.0
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "origin; set on the soil/bed surface. Root flare / stems sink up to 0.10 m below it"
+        }
+      ],
+      "collision": {
+        "type": "cylinder",
+        "radius": 0.55,
+        "height": 1.0,
+        "blocking": true,
+        "note": "shrub mass; planted inside beds",
+        "center": [
+          0,
+          0.5,
+          0
+        ],
+        "file": "shrub-laurel.collision.glb",
+        "bytes": 3072,
+        "sha256": "743e5f3a7483d02bcb2fbcd3bf3d8ddbc5e9fafd550bdf03b11452365ad7b200",
+        "triangles": 48
+      },
+      "source_blend": {
+        "file": "shrub-laurel.blend",
+        "sha256": "d766cb44a0c6cb2382dab53f322907257891af865f75fa55dc43ab972a742ed4",
+        "bytes": 144951,
+        "contains": "LOD0 + collision proxy; LOD1 is regenerated by the script"
+      },
+      "lod_switch": {
+        "lod0_to_lod1_distance_m": 16,
+        "hysteresis": 0.1,
+        "note": "distance at fov 58 for scale 1; scale the threshold by instance scale"
+      }
+    },
+    {
+      "name": "fern-sword",
+      "class": "botany",
+      "form": "fern groundcover",
+      "alpha_strategy": "geometry only (no alpha; avoids the rejected solid-disk fern card)",
+      "budget": {
+        "source": "ruling: shrub/groundcover patch, fern uses smaller",
+        "lod0": 1200,
+        "lod1": 450
+      },
+      "shadow": {
+        "lod0": false,
+        "lod1": false,
+        "note": "receives only"
+      },
+      "lods": {
+        "lod0": {
+          "bytes": 67584,
+          "sha256": "afc241454eec95b2da95a10fc2664a6e04318615c4d3add16b63071a71fae62d",
+          "triangles": 1134,
+          "primitives_draw_calls": 1,
+          "meshes": 1,
+          "nodes": 6,
+          "materials": [
+            "Botany \u2022 leaf and stem palette"
+          ],
+          "extensions_required": [
+            "EXT_texture_webp"
+          ],
+          "material_modes": [
+            {
+              "name": "Botany \u2022 leaf and stem palette",
+              "alphaMode": "OPAQUE",
+              "alphaCutoff": null,
+              "doubleSided": true
+            }
+          ],
+          "images": [
+            {
+              "name": "botany_palette_basecolor",
+              "mime": "image/webp",
+              "width": 128,
+              "height": 128,
+              "bytes": 438,
+              "colorspace": "sRGB",
+              "decoded_bytes_with_mips": 87381
+            }
+          ],
+          "texture_decoded_bytes": 87381,
+          "node_names": [
+            "anchor_soil_contact",
+            "fern_sword_mesh",
+            "wind_root",
+            "wind_sway",
+            "wind_tip",
+            "fern_sword"
+          ],
+          "file": "fern-sword.lod0.glb",
+          "blender_triangles": 1134,
+          "mesh_node": "fern_sword_mesh"
+        },
+        "lod1": {
+          "bytes": 27896,
+          "sha256": "90936ecebe1d063fae4080885eafd797ae9a0d7a7a998f339a5b00bdb4c383fc",
+          "triangles": 413,
+          "primitives_draw_calls": 1,
+          "meshes": 1,
+          "nodes": 6,
+          "materials": [
+            "Botany \u2022 leaf and stem palette"
+          ],
+          "extensions_required": [
+            "EXT_texture_webp"
+          ],
+          "material_modes": [
+            {
+              "name": "Botany \u2022 leaf and stem palette",
+              "alphaMode": "OPAQUE",
+              "alphaCutoff": null,
+              "doubleSided": true
+            }
+          ],
+          "images": [
+            {
+              "name": "botany_palette_basecolor",
+              "mime": "image/webp",
+              "width": 128,
+              "height": 128,
+              "bytes": 438,
+              "colorspace": "sRGB",
+              "decoded_bytes_with_mips": 87381
+            }
+          ],
+          "texture_decoded_bytes": 87381,
+          "node_names": [
+            "anchor_soil_contact",
+            "fern_sword_mesh",
+            "wind_root",
+            "wind_sway",
+            "wind_tip",
+            "fern_sword"
+          ],
+          "file": "fern-sword.lod1.glb",
+          "blender_triangles": 413,
+          "mesh_node": "fern_sword_mesh"
+        }
+      },
+      "measure": {
+        "height_m": 0.519,
+        "lowest_m": -0.004,
+        "spread_radius_m": 0.961
+      },
+      "bounds": {
+        "min": [
+          -0.9482,
+          -0.0039,
+          -0.9484
+        ],
+        "max": [
+          0.7674,
+          0.5194,
+          0.8401
+        ],
+        "size": [
+          1.7156,
+          0.5233,
+          1.7885
+        ]
+      },
+      "pivot": {
+        "origin": "soil contact under the stem/trunk centre (vine: top attachment point)",
+        "gltf": [
+          0,
+          0,
+          0
+        ]
+      },
+      "anchors": [
+        {
+          "name": "wind_root",
+          "kind": "wind",
+          "parent": "fern_sword",
+          "gltf_position_in_root": [
+            0.0,
+            0.0,
+            -0.0
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "zero-motion pivot (soil contact / attachment)",
+          "wind_profile": "groundcover",
+          "wind_amplitude_m": 0.04,
+          "wind_frequency_hz": 0.9,
+          "wind_stiffness": 0.5,
+          "wind_weight_rule": "weight = smoothstep(0, 1, (y - wind_root.y) / (wind_tip.y - wind_root.y)); offset = amp * weight^2"
+        },
+        {
+          "name": "wind_sway",
+          "kind": "wind",
+          "parent": "fern_sword",
+          "gltf_position_in_root": [
+            0.0,
+            0.2,
+            -0.0
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "primary sway pivot (trunk top / clump centre)",
+          "wind_profile": "groundcover",
+          "wind_amplitude_m": 0.04,
+          "wind_frequency_hz": 0.9,
+          "wind_stiffness": 0.5,
+          "wind_weight_rule": "weight = smoothstep(0, 1, (y - wind_root.y) / (wind_tip.y - wind_root.y)); offset = amp * weight^2"
+        },
+        {
+          "name": "wind_tip",
+          "kind": "wind",
+          "parent": "fern_sword",
+          "gltf_position_in_root": [
+            0.0,
+            0.6,
+            -0.0
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "height of full-amplitude motion",
+          "wind_profile": "groundcover",
+          "wind_amplitude_m": 0.04,
+          "wind_frequency_hz": 0.9,
+          "wind_stiffness": 0.5,
+          "wind_weight_rule": "weight = smoothstep(0, 1, (y - wind_root.y) / (wind_tip.y - wind_root.y)); offset = amp * weight^2"
+        },
+        {
+          "name": "anchor_soil_contact",
+          "kind": "contact",
+          "parent": "fern_sword",
+          "gltf_position_in_root": [
+            0.0,
+            0.0,
+            -0.0
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "origin; set on the soil/bed surface. Root flare / stems sink up to 0.10 m below it"
+        }
+      ],
+      "collision": {
+        "type": "cylinder",
+        "radius": 0.45,
+        "height": 0.6,
+        "blocking": false,
+        "note": "soft; walk-through",
+        "center": [
+          0,
+          0.3,
+          0
+        ],
+        "file": "fern-sword.collision.glb",
+        "bytes": 3088,
+        "sha256": "72ed6c9d6a36639f860304908df73a9da3eb35cb7fcb436e28828a4373f7aa79",
+        "triangles": 48
+      },
+      "source_blend": {
+        "file": "fern-sword.blend",
+        "sha256": "a7b832aa900bc24a8db10a68490f2d2d36be10c32623540876d0572abea237f2",
+        "bytes": 127246,
+        "contains": "LOD0 + collision proxy; LOD1 is regenerated by the script"
+      },
+      "lod_switch": {
+        "lod0_to_lod1_distance_m": 11,
+        "hysteresis": 0.1,
+        "note": "distance at fov 58 for scale 1; scale the threshold by instance scale"
+      }
+    },
+    {
+      "name": "flower-coneflower",
+      "class": "botany",
+      "form": "flowering accent",
+      "alpha_strategy": "geometry only",
+      "budget": {
+        "source": "ruling: flower clusters use smaller budgets",
+        "lod0": 1000,
+        "lod1": 400
+      },
+      "shadow": {
+        "lod0": false,
+        "lod1": false,
+        "note": "small flowers never cast"
+      },
+      "lods": {
+        "lod0": {
+          "bytes": 58408,
+          "sha256": "9e54e0a3d453c9f79500937b0787cfafaae29e1f2502baa881d5d007ec1033b6",
+          "triangles": 1000,
+          "primitives_draw_calls": 1,
+          "meshes": 1,
+          "nodes": 6,
+          "materials": [
+            "Botany \u2022 leaf and stem palette"
+          ],
+          "extensions_required": [
+            "EXT_texture_webp"
+          ],
+          "material_modes": [
+            {
+              "name": "Botany \u2022 leaf and stem palette",
+              "alphaMode": "OPAQUE",
+              "alphaCutoff": null,
+              "doubleSided": true
+            }
+          ],
+          "images": [
+            {
+              "name": "botany_palette_basecolor",
+              "mime": "image/webp",
+              "width": 128,
+              "height": 128,
+              "bytes": 438,
+              "colorspace": "sRGB",
+              "decoded_bytes_with_mips": 87381
+            }
+          ],
+          "texture_decoded_bytes": 87381,
+          "node_names": [
+            "anchor_soil_contact",
+            "flower_coneflower_mesh",
+            "wind_root",
+            "wind_sway",
+            "wind_tip",
+            "flower_coneflower"
+          ],
+          "file": "flower-coneflower.lod0.glb",
+          "blender_triangles": 1000,
+          "mesh_node": "flower_coneflower_mesh"
+        },
+        "lod1": {
+          "bytes": 23044,
+          "sha256": "069ed0ce2fa0572dba258ca669f5aa9e105ca04aa84500d95d9d4f5fe40b5f7a",
+          "triangles": 312,
+          "primitives_draw_calls": 1,
+          "meshes": 1,
+          "nodes": 6,
+          "materials": [
+            "Botany \u2022 leaf and stem palette"
+          ],
+          "extensions_required": [
+            "EXT_texture_webp"
+          ],
+          "material_modes": [
+            {
+              "name": "Botany \u2022 leaf and stem palette",
+              "alphaMode": "OPAQUE",
+              "alphaCutoff": null,
+              "doubleSided": true
+            }
+          ],
+          "images": [
+            {
+              "name": "botany_palette_basecolor",
+              "mime": "image/webp",
+              "width": 128,
+              "height": 128,
+              "bytes": 438,
+              "colorspace": "sRGB",
+              "decoded_bytes_with_mips": 87381
+            }
+          ],
+          "texture_decoded_bytes": 87381,
+          "node_names": [
+            "anchor_soil_contact",
+            "flower_coneflower_mesh",
+            "wind_root",
+            "wind_sway",
+            "wind_tip",
+            "flower_coneflower"
+          ],
+          "file": "flower-coneflower.lod1.glb",
+          "blender_triangles": 312,
+          "mesh_node": "flower_coneflower_mesh"
+        }
+      },
+      "measure": {
+        "height_m": 0.808,
+        "lowest_m": -0.001,
+        "spread_radius_m": 0.272
+      },
+      "bounds": {
+        "min": [
+          -0.2298,
+          -0.0012,
+          -0.2569
+        ],
+        "max": [
+          0.248,
+          0.8082,
+          0.2689
+        ],
+        "size": [
+          0.4778,
+          0.8094,
+          0.5258
+        ]
+      },
+      "pivot": {
+        "origin": "soil contact under the stem/trunk centre (vine: top attachment point)",
+        "gltf": [
+          0,
+          0,
+          0
+        ]
+      },
+      "anchors": [
+        {
+          "name": "wind_root",
+          "kind": "wind",
+          "parent": "flower_coneflower",
+          "gltf_position_in_root": [
+            0.0,
+            0.0,
+            -0.0
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "zero-motion pivot (soil contact / attachment)",
+          "wind_profile": "groundcover",
+          "wind_amplitude_m": 0.05,
+          "wind_frequency_hz": 1.0,
+          "wind_stiffness": 0.4,
+          "wind_weight_rule": "weight = smoothstep(0, 1, (y - wind_root.y) / (wind_tip.y - wind_root.y)); offset = amp * weight^2"
+        },
+        {
+          "name": "wind_sway",
+          "kind": "wind",
+          "parent": "flower_coneflower",
+          "gltf_position_in_root": [
+            0.0,
+            0.25,
+            -0.0
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "primary sway pivot (trunk top / clump centre)",
+          "wind_profile": "groundcover",
+          "wind_amplitude_m": 0.05,
+          "wind_frequency_hz": 1.0,
+          "wind_stiffness": 0.4,
+          "wind_weight_rule": "weight = smoothstep(0, 1, (y - wind_root.y) / (wind_tip.y - wind_root.y)); offset = amp * weight^2"
+        },
+        {
+          "name": "wind_tip",
+          "kind": "wind",
+          "parent": "flower_coneflower",
+          "gltf_position_in_root": [
+            0.0,
+            0.82,
+            -0.0
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "height of full-amplitude motion",
+          "wind_profile": "groundcover",
+          "wind_amplitude_m": 0.05,
+          "wind_frequency_hz": 1.0,
+          "wind_stiffness": 0.4,
+          "wind_weight_rule": "weight = smoothstep(0, 1, (y - wind_root.y) / (wind_tip.y - wind_root.y)); offset = amp * weight^2"
+        },
+        {
+          "name": "anchor_soil_contact",
+          "kind": "contact",
+          "parent": "flower_coneflower",
+          "gltf_position_in_root": [
+            0.0,
+            0.0,
+            -0.0
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "origin; set on the soil/bed surface. Root flare / stems sink up to 0.10 m below it"
+        }
+      ],
+      "collision": {
+        "type": "cylinder",
+        "radius": 0.3,
+        "height": 0.8,
+        "blocking": false,
+        "note": "soft",
+        "center": [
+          0,
+          0.4,
+          0
+        ],
+        "file": "flower-coneflower.collision.glb",
+        "bytes": 3108,
+        "sha256": "d170805b499157300e966e5e44a1aa008aa2f68f5f2af3d5bacae38140ac3f9c",
+        "triangles": 48
+      },
+      "source_blend": {
+        "file": "flower-coneflower.blend",
+        "sha256": "67fdc30c03f0407ede71371368a7eb4ef2b9a0e972461e76e999db8721ddc9ab",
+        "bytes": 118424,
+        "contains": "LOD0 + collision proxy; LOD1 is regenerated by the script"
+      },
+      "lod_switch": {
+        "lod0_to_lod1_distance_m": 11,
+        "hysteresis": 0.1,
+        "note": "distance at fov 58 for scale 1; scale the threshold by instance scale"
+      }
+    },
+    {
+      "name": "grass-fountain",
+      "class": "botany",
+      "form": "ornamental grass tussock",
+      "alpha_strategy": "geometry blades only",
+      "budget": {
+        "source": "ruling: groundcover patch",
+        "lod0": 1000,
+        "lod1": 300
+      },
+      "shadow": {
+        "lod0": false,
+        "lod1": false,
+        "note": "receives only"
+      },
+      "lods": {
+        "lod0": {
+          "bytes": 46816,
+          "sha256": "4207322b7d7414bca50957b7ceb3003b1f7d7179768c59d8960fcc8d34d271a4",
+          "triangles": 913,
+          "primitives_draw_calls": 1,
+          "meshes": 1,
+          "nodes": 6,
+          "materials": [
+            "Botany \u2022 leaf and stem palette"
+          ],
+          "extensions_required": [
+            "EXT_texture_webp"
+          ],
+          "material_modes": [
+            {
+              "name": "Botany \u2022 leaf and stem palette",
+              "alphaMode": "OPAQUE",
+              "alphaCutoff": null,
+              "doubleSided": true
+            }
+          ],
+          "images": [
+            {
+              "name": "botany_palette_basecolor",
+              "mime": "image/webp",
+              "width": 128,
+              "height": 128,
+              "bytes": 438,
+              "colorspace": "sRGB",
+              "decoded_bytes_with_mips": 87381
+            }
+          ],
+          "texture_decoded_bytes": 87381,
+          "node_names": [
+            "anchor_soil_contact",
+            "grass_fountain_mesh",
+            "wind_root",
+            "wind_sway",
+            "wind_tip",
+            "grass_fountain"
+          ],
+          "file": "grass-fountain.lod0.glb",
+          "blender_triangles": 913,
+          "mesh_node": "grass_fountain_mesh"
+        },
+        "lod1": {
+          "bytes": 10332,
+          "sha256": "5c21f649f9363d7487c99b78d28c55e6a9ef8d946c3bba1306e0e726f07604ce",
+          "triangles": 120,
+          "primitives_draw_calls": 1,
+          "meshes": 1,
+          "nodes": 6,
+          "materials": [
+            "Botany \u2022 leaf and stem palette"
+          ],
+          "extensions_required": [
+            "EXT_texture_webp"
+          ],
+          "material_modes": [
+            {
+              "name": "Botany \u2022 leaf and stem palette",
+              "alphaMode": "OPAQUE",
+              "alphaCutoff": null,
+              "doubleSided": true
+            }
+          ],
+          "images": [
+            {
+              "name": "botany_palette_basecolor",
+              "mime": "image/webp",
+              "width": 128,
+              "height": 128,
+              "bytes": 438,
+              "colorspace": "sRGB",
+              "decoded_bytes_with_mips": 87381
+            }
+          ],
+          "texture_decoded_bytes": 87381,
+          "node_names": [
+            "anchor_soil_contact",
+            "grass_fountain_mesh",
+            "wind_root",
+            "wind_sway",
+            "wind_tip",
+            "grass_fountain"
+          ],
+          "file": "grass-fountain.lod1.glb",
+          "blender_triangles": 120,
+          "mesh_node": "grass_fountain_mesh"
+        }
+      },
+      "measure": {
+        "height_m": 0.896,
+        "lowest_m": -0.008,
+        "spread_radius_m": 0.865
+      },
+      "bounds": {
+        "min": [
+          -0.8525,
+          -0.0079,
+          -0.727
+        ],
+        "max": [
+          0.7662,
+          0.8964,
+          0.7143
+        ],
+        "size": [
+          1.6187,
+          0.9043,
+          1.4413
+        ]
+      },
+      "pivot": {
+        "origin": "soil contact under the stem/trunk centre (vine: top attachment point)",
+        "gltf": [
+          0,
+          0,
+          0
+        ]
+      },
+      "anchors": [
+        {
+          "name": "wind_root",
+          "kind": "wind",
+          "parent": "grass_fountain",
+          "gltf_position_in_root": [
+            0.0,
+            0.0,
+            -0.0
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "zero-motion pivot (soil contact / attachment)",
+          "wind_profile": "grass",
+          "wind_amplitude_m": 0.1,
+          "wind_frequency_hz": 0.8,
+          "wind_stiffness": 0.3,
+          "wind_weight_rule": "weight = smoothstep(0, 1, (y - wind_root.y) / (wind_tip.y - wind_root.y)); offset = amp * weight^2"
+        },
+        {
+          "name": "wind_sway",
+          "kind": "wind",
+          "parent": "grass_fountain",
+          "gltf_position_in_root": [
+            0.0,
+            0.15,
+            -0.0
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "primary sway pivot (trunk top / clump centre)",
+          "wind_profile": "grass",
+          "wind_amplitude_m": 0.1,
+          "wind_frequency_hz": 0.8,
+          "wind_stiffness": 0.3,
+          "wind_weight_rule": "weight = smoothstep(0, 1, (y - wind_root.y) / (wind_tip.y - wind_root.y)); offset = amp * weight^2"
+        },
+        {
+          "name": "wind_tip",
+          "kind": "wind",
+          "parent": "grass_fountain",
+          "gltf_position_in_root": [
+            0.0,
+            0.75,
+            -0.0
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "height of full-amplitude motion",
+          "wind_profile": "grass",
+          "wind_amplitude_m": 0.1,
+          "wind_frequency_hz": 0.8,
+          "wind_stiffness": 0.3,
+          "wind_weight_rule": "weight = smoothstep(0, 1, (y - wind_root.y) / (wind_tip.y - wind_root.y)); offset = amp * weight^2"
+        },
+        {
+          "name": "anchor_soil_contact",
+          "kind": "contact",
+          "parent": "grass_fountain",
+          "gltf_position_in_root": [
+            0.0,
+            0.0,
+            -0.0
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "origin; set on the soil/bed surface. Root flare / stems sink up to 0.10 m below it"
+        }
+      ],
+      "collision": {
+        "type": "cylinder",
+        "radius": 0.4,
+        "height": 0.75,
+        "blocking": false,
+        "note": "soft",
+        "center": [
+          0,
+          0.375,
+          0
+        ],
+        "file": "grass-fountain.collision.glb",
+        "bytes": 3084,
+        "sha256": "677efdcdf0adbb32cedee1d0174fb3b35959ed42938da5b61d98abb5f64492d7",
+        "triangles": 48
+      },
+      "source_blend": {
+        "file": "grass-fountain.blend",
+        "sha256": "2cb0b45baeff7ac0a5dc3663db87c743488b709cf17f888b13cf28741716bdc9",
+        "bytes": 118846,
+        "contains": "LOD0 + collision proxy; LOD1 is regenerated by the script"
+      },
+      "lod_switch": {
+        "lod0_to_lod1_distance_m": 11,
+        "hysteresis": 0.1,
+        "note": "distance at fov 58 for scale 1; scale the threshold by instance scale"
+      }
+    },
+    {
+      "name": "iris-water",
+      "class": "botany",
+      "form": "water-edge sword-leaf clump",
+      "alpha_strategy": "geometry only",
+      "budget": {
+        "source": "ruling: groundcover patch",
+        "lod0": 800,
+        "lod1": 300
+      },
+      "shadow": {
+        "lod0": false,
+        "lod1": false,
+        "note": "receives only"
+      },
+      "lods": {
+        "lod0": {
+          "bytes": 23452,
+          "sha256": "1c212fd09837b17f116bc8ea2ac4ad45330fbc47c5501ff0226342fe6b48563f",
+          "triangles": 422,
+          "primitives_draw_calls": 1,
+          "meshes": 1,
+          "nodes": 6,
+          "materials": [
+            "Botany \u2022 leaf and stem palette"
+          ],
+          "extensions_required": [
+            "EXT_texture_webp"
+          ],
+          "material_modes": [
+            {
+              "name": "Botany \u2022 leaf and stem palette",
+              "alphaMode": "OPAQUE",
+              "alphaCutoff": null,
+              "doubleSided": true
+            }
+          ],
+          "images": [
+            {
+              "name": "botany_palette_basecolor",
+              "mime": "image/webp",
+              "width": 128,
+              "height": 128,
+              "bytes": 438,
+              "colorspace": "sRGB",
+              "decoded_bytes_with_mips": 87381
+            }
+          ],
+          "texture_decoded_bytes": 87381,
+          "node_names": [
+            "anchor_soil_contact",
+            "iris_water_mesh",
+            "wind_root",
+            "wind_sway",
+            "wind_tip",
+            "iris_water"
+          ],
+          "file": "iris-water.lod0.glb",
+          "blender_triangles": 422,
+          "mesh_node": "iris_water_mesh"
+        },
+        "lod1": {
+          "bytes": 9108,
+          "sha256": "8f1f5bf5dca49e4296e92986e1fb0ffc90010fd886c8fde1dc0da5fe2c3a4777",
+          "triangles": 117,
+          "primitives_draw_calls": 1,
+          "meshes": 1,
+          "nodes": 6,
+          "materials": [
+            "Botany \u2022 leaf and stem palette"
+          ],
+          "extensions_required": [
+            "EXT_texture_webp"
+          ],
+          "material_modes": [
+            {
+              "name": "Botany \u2022 leaf and stem palette",
+              "alphaMode": "OPAQUE",
+              "alphaCutoff": null,
+              "doubleSided": true
+            }
+          ],
+          "images": [
+            {
+              "name": "botany_palette_basecolor",
+              "mime": "image/webp",
+              "width": 128,
+              "height": 128,
+              "bytes": 438,
+              "colorspace": "sRGB",
+              "decoded_bytes_with_mips": 87381
+            }
+          ],
+          "texture_decoded_bytes": 87381,
+          "node_names": [
+            "anchor_soil_contact",
+            "iris_water_mesh",
+            "wind_root",
+            "wind_sway",
+            "wind_tip",
+            "iris_water"
+          ],
+          "file": "iris-water.lod1.glb",
+          "blender_triangles": 117,
+          "mesh_node": "iris_water_mesh"
+        }
+      },
+      "measure": {
+        "height_m": 1.031,
+        "lowest_m": -0.001,
+        "spread_radius_m": 0.253
+      },
+      "bounds": {
+        "min": [
+          -0.1757,
+          -0.0006,
+          -0.1719
+        ],
+        "max": [
+          0.2286,
+          1.0309,
+          0.237
+        ],
+        "size": [
+          0.4043,
+          1.0315,
+          0.4089
+        ]
+      },
+      "pivot": {
+        "origin": "soil contact under the stem/trunk centre (vine: top attachment point)",
+        "gltf": [
+          0,
+          0,
+          0
+        ]
+      },
+      "anchors": [
+        {
+          "name": "wind_root",
+          "kind": "wind",
+          "parent": "iris_water",
+          "gltf_position_in_root": [
+            0.0,
+            0.0,
+            -0.0
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "zero-motion pivot (soil contact / attachment)",
+          "wind_profile": "grass",
+          "wind_amplitude_m": 0.05,
+          "wind_frequency_hz": 0.8,
+          "wind_stiffness": 0.5,
+          "wind_weight_rule": "weight = smoothstep(0, 1, (y - wind_root.y) / (wind_tip.y - wind_root.y)); offset = amp * weight^2"
+        },
+        {
+          "name": "wind_sway",
+          "kind": "wind",
+          "parent": "iris_water",
+          "gltf_position_in_root": [
+            0.0,
+            0.2,
+            -0.0
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "primary sway pivot (trunk top / clump centre)",
+          "wind_profile": "grass",
+          "wind_amplitude_m": 0.05,
+          "wind_frequency_hz": 0.8,
+          "wind_stiffness": 0.5,
+          "wind_weight_rule": "weight = smoothstep(0, 1, (y - wind_root.y) / (wind_tip.y - wind_root.y)); offset = amp * weight^2"
+        },
+        {
+          "name": "wind_tip",
+          "kind": "wind",
+          "parent": "iris_water",
+          "gltf_position_in_root": [
+            0.0,
+            0.95,
+            -0.0
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "height of full-amplitude motion",
+          "wind_profile": "grass",
+          "wind_amplitude_m": 0.05,
+          "wind_frequency_hz": 0.8,
+          "wind_stiffness": 0.5,
+          "wind_weight_rule": "weight = smoothstep(0, 1, (y - wind_root.y) / (wind_tip.y - wind_root.y)); offset = amp * weight^2"
+        },
+        {
+          "name": "anchor_soil_contact",
+          "kind": "contact",
+          "parent": "iris_water",
+          "gltf_position_in_root": [
+            0.0,
+            0.0,
+            -0.0
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "origin; set on the soil/bed surface. Root flare / stems sink up to 0.10 m below it"
+        }
+      ],
+      "collision": {
+        "type": "cylinder",
+        "radius": 0.25,
+        "height": 0.95,
+        "blocking": false,
+        "note": "soft; may stand 0.05 m into shallow water at the coping",
+        "center": [
+          0,
+          0.475,
+          0
+        ],
+        "file": "iris-water.collision.glb",
+        "bytes": 3028,
+        "sha256": "573c09fdde8fccada2e7a564aa0121a3a54c8f3e3e8d8557de432e977d209d53",
+        "triangles": 48
+      },
+      "source_blend": {
+        "file": "iris-water.blend",
+        "sha256": "06c84c83bdb31204541d9145ddd90b8563b26acad6a44f1d3cb614b218adb6ef",
+        "bytes": 104921,
+        "contains": "LOD0 + collision proxy; LOD1 is regenerated by the script"
+      },
+      "lod_switch": {
+        "lod0_to_lod1_distance_m": 12,
+        "hysteresis": 0.1,
+        "note": "distance at fov 58 for scale 1; scale the threshold by instance scale"
+      }
+    },
+    {
+      "name": "vine-pendant",
+      "class": "botany",
+      "form": "hanging climbing vine",
+      "alpha_strategy": "LOD0 geometry leaves; LOD1 sprig cards",
+      "budget": {
+        "source": "lane: hanging strand",
+        "lod0": 600,
+        "lod1": 200
+      },
+      "shadow": {
+        "lod0": false,
+        "lod1": false,
+        "note": "receives only"
+      },
+      "lods": {
+        "lod0": {
+          "bytes": 18272,
+          "sha256": "effb71c8d23e4d44ae6cc22ff08eb14a133499fd3011203f0c74481da7fa7e35",
+          "triangles": 268,
+          "primitives_draw_calls": 1,
+          "meshes": 1,
+          "nodes": 6,
+          "materials": [
+            "Botany \u2022 leaf and stem palette"
+          ],
+          "extensions_required": [
+            "EXT_texture_webp"
+          ],
+          "material_modes": [
+            {
+              "name": "Botany \u2022 leaf and stem palette",
+              "alphaMode": "OPAQUE",
+              "alphaCutoff": null,
+              "doubleSided": true
+            }
+          ],
+          "images": [
+            {
+              "name": "botany_palette_basecolor",
+              "mime": "image/webp",
+              "width": 128,
+              "height": 128,
+              "bytes": 438,
+              "colorspace": "sRGB",
+              "decoded_bytes_with_mips": 87381
+            }
+          ],
+          "texture_decoded_bytes": 87381,
+          "node_names": [
+            "anchor_soil_contact",
+            "vine_pendant_mesh",
+            "wind_root",
+            "wind_sway",
+            "wind_tip",
+            "vine_pendant"
+          ],
+          "file": "vine-pendant.lod0.glb",
+          "blender_triangles": 268,
+          "mesh_node": "vine_pendant_mesh"
+        },
+        "lod1": {
+          "bytes": 46416,
+          "sha256": "87a10370f615693c8c43508c9ea6152ab74c53453cd7894787584b153b9d5fd3",
+          "triangles": 75,
+          "primitives_draw_calls": 2,
+          "meshes": 1,
+          "nodes": 6,
+          "materials": [
+            "Botany \u2022 leaf and stem palette",
+            "Foliage \u2022 alpha-tested atlas"
+          ],
+          "extensions_required": [
+            "EXT_texture_webp"
+          ],
+          "material_modes": [
+            {
+              "name": "Botany \u2022 leaf and stem palette",
+              "alphaMode": "OPAQUE",
+              "alphaCutoff": null,
+              "doubleSided": true
+            },
+            {
+              "name": "Foliage \u2022 alpha-tested atlas",
+              "alphaMode": "MASK",
+              "alphaCutoff": null,
+              "doubleSided": true
+            }
+          ],
+          "images": [
+            {
+              "name": "botany_palette_basecolor",
+              "mime": "image/webp",
+              "width": 128,
+              "height": 128,
+              "bytes": 438,
+              "colorspace": "sRGB",
+              "decoded_bytes_with_mips": 87381
+            },
+            {
+              "name": "foliage_atlas_basecolor_alpha",
+              "mime": "image/webp",
+              "width": 1024,
+              "height": 1024,
+              "bytes": 38730,
+              "colorspace": "sRGB",
+              "decoded_bytes_with_mips": 5592405
+            }
+          ],
+          "texture_decoded_bytes": 5679786,
+          "node_names": [
+            "anchor_soil_contact",
+            "vine_pendant_mesh",
+            "wind_root",
+            "wind_sway",
+            "wind_tip",
+            "vine_pendant"
+          ],
+          "file": "vine-pendant.lod1.glb",
+          "blender_triangles": 75,
+          "mesh_node": "vine_pendant_mesh"
+        }
+      },
+      "measure": {
+        "height_m": 0.0,
+        "lowest_m": -1.403,
+        "spread_radius_m": 0.128
+      },
+      "bounds": {
+        "min": [
+          -0.125,
+          -1.4029,
+          -0.0777
+        ],
+        "max": [
+          0.0883,
+          0.0005,
+          0.1131
+        ],
+        "size": [
+          0.2133,
+          1.4034,
+          0.1908
+        ]
+      },
+      "pivot": {
+        "origin": "soil contact under the stem/trunk centre (vine: top attachment point)",
+        "gltf": [
+          0,
+          0,
+          0
+        ]
+      },
+      "anchors": [
+        {
+          "name": "wind_root",
+          "kind": "wind",
+          "parent": "vine_pendant",
+          "gltf_position_in_root": [
+            0.0,
+            0.0,
+            -0.0
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "zero-motion pivot (soil contact / attachment)",
+          "wind_profile": "hanging",
+          "wind_amplitude_m": 0.12,
+          "wind_frequency_hz": 0.5,
+          "wind_stiffness": 0.3,
+          "wind_weight_rule": "weight = smoothstep(0, 1, (y - wind_root.y) / (wind_tip.y - wind_root.y)); offset = amp * weight^2"
+        },
+        {
+          "name": "wind_sway",
+          "kind": "wind",
+          "parent": "vine_pendant",
+          "gltf_position_in_root": [
+            0.0,
+            -0.5,
+            -0.0
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "primary sway pivot (trunk top / clump centre)",
+          "wind_profile": "hanging",
+          "wind_amplitude_m": 0.12,
+          "wind_frequency_hz": 0.5,
+          "wind_stiffness": 0.3,
+          "wind_weight_rule": "weight = smoothstep(0, 1, (y - wind_root.y) / (wind_tip.y - wind_root.y)); offset = amp * weight^2"
+        },
+        {
+          "name": "wind_tip",
+          "kind": "wind",
+          "parent": "vine_pendant",
+          "gltf_position_in_root": [
+            0.0,
+            -1.4,
+            -0.0
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "height of full-amplitude motion",
+          "wind_profile": "hanging",
+          "wind_amplitude_m": 0.12,
+          "wind_frequency_hz": 0.5,
+          "wind_stiffness": 0.3,
+          "wind_weight_rule": "weight = smoothstep(0, 1, (y - wind_root.y) / (wind_tip.y - wind_root.y)); offset = amp * weight^2"
+        },
+        {
+          "name": "anchor_soil_contact",
+          "kind": "contact",
+          "parent": "vine_pendant",
+          "gltf_position_in_root": [
+            0.0,
+            0.0,
+            -0.0
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "origin; set on the soil/bed surface. Root flare / stems sink up to 0.10 m below it"
+        }
+      ],
+      "collision": {
+        "type": "none",
+        "blocking": false,
+        "note": "hangs from an arbor/rail; origin is the attachment point; bottom at -1.4 m, so mount at >= 3.7 m above a route for 2.3 m headroom",
+        "file": null
+      },
+      "source_blend": {
+        "file": "vine-pendant.blend",
+        "sha256": "e7899af867e0b7fa4155a33e235ad4b15da01469e3170d5280d969be5bda5ca2",
+        "bytes": 101034,
+        "contains": "LOD0 + collision proxy; LOD1 is regenerated by the script"
+      },
+      "lod_switch": {
+        "lod0_to_lod1_distance_m": 14,
+        "hysteresis": 0.1,
+        "note": "distance at fov 58 for scale 1; scale the threshold by instance scale"
+      }
+    }
+  ]
+}

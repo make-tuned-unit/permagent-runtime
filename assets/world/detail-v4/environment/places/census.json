@@ -1,0 +1,2231 @@
+{
+  "schema": "permagent.world.detail-v4.places.census.v1",
+  "generated": "2026-10-13T01:57:18Z",
+  "assets": [
+    {
+      "asset": "archive-bookcase",
+      "class": "place",
+      "budget_source": "ruling: hero table / bookcase",
+      "lod0": {
+        "file": "archive-bookcase.lod0.glb",
+        "triangles": 10732,
+        "primitives_draw_calls": 2,
+        "bytes": 792356,
+        "materials": [
+          "Timber \u2022 oiled walnut",
+          "Trim \u2022 places palette"
+        ],
+        "texture_decoded_bytes": 7088810
+      },
+      "lod1": {
+        "file": "archive-bookcase.lod1.glb",
+        "triangles": 1900,
+        "primitives_draw_calls": 2,
+        "bytes": 249756,
+        "materials": [
+          "Timber \u2022 oiled walnut",
+          "Trim \u2022 places palette"
+        ],
+        "texture_decoded_bytes": 7088810
+      },
+      "textures": [
+        {
+          "name": "walnut_normal",
+          "mime": "image/jpeg",
+          "width": 512,
+          "height": 512,
+          "colorspace": "linear",
+          "bytes": 49139
+        },
+        {
+          "name": "walnut_basecolor",
+          "mime": "image/jpeg",
+          "width": 1024,
+          "height": 1024,
+          "colorspace": "sRGB",
+          "bytes": 43487
+        },
+        {
+          "name": "trim_places_palette_palette_basecolor",
+          "mime": "image/jpeg",
+          "width": 96,
+          "height": 96,
+          "colorspace": "sRGB",
+          "bytes": 1019
+        },
+        {
+          "name": "trim_places_palette_palette_orm",
+          "mime": "image/jpeg",
+          "width": 96,
+          "height": 96,
+          "colorspace": "linear",
+          "bytes": 1013
+        }
+      ],
+      "collision_bytes": 2052,
+      "placements": 3,
+      "checks": {
+        "lod0_triangles": {
+          "value": 10732,
+          "ceiling": 12000,
+          "pass": true
+        },
+        "lod1_triangles": {
+          "value": 1900,
+          "ceiling": 4000,
+          "pass": true
+        },
+        "lod1_reduces": {
+          "value": 0.177,
+          "pass": true
+        },
+        "max_texture_px": {
+          "value": 1024,
+          "ceiling": 1024,
+          "pass": true
+        },
+        "primitives_lod0": {
+          "value": 2,
+          "ceiling": 6,
+          "pass": true
+        },
+        "collision_glb": {
+          "value": "archive-bookcase.collision.glb",
+          "pass": true
+        },
+        "anchors": {
+          "value": [
+            "approach",
+            "gaze",
+            "interact",
+            "reach",
+            "slot"
+          ],
+          "pass": true
+        },
+        "approach_anchor": {
+          "value": true,
+          "pass": true
+        }
+      },
+      "pass": true
+    },
+    {
+      "asset": "archive-folio-stand",
+      "class": "place",
+      "budget_source": "ruling: repeated desk / bench / planter",
+      "lod0": {
+        "file": "archive-folio-stand.lod0.glb",
+        "triangles": 1524,
+        "primitives_draw_calls": 2,
+        "bytes": 192092,
+        "materials": [
+          "Timber \u2022 oiled walnut",
+          "Trim \u2022 places palette"
+        ],
+        "texture_decoded_bytes": 7088810
+      },
+      "lod1": {
+        "file": "archive-folio-stand.lod1.glb",
+        "triangles": 856,
+        "primitives_draw_calls": 2,
+        "bytes": 158604,
+        "materials": [
+          "Timber \u2022 oiled walnut",
+          "Trim \u2022 places palette"
+        ],
+        "texture_decoded_bytes": 7088810
+      },
+      "textures": [
+        {
+          "name": "walnut_normal",
+          "mime": "image/jpeg",
+          "width": 512,
+          "height": 512,
+          "colorspace": "linear",
+          "bytes": 49139
+        },
+        {
+          "name": "walnut_basecolor",
+          "mime": "image/jpeg",
+          "width": 1024,
+          "height": 1024,
+          "colorspace": "sRGB",
+          "bytes": 43487
+        },
+        {
+          "name": "trim_places_palette_palette_basecolor",
+          "mime": "image/jpeg",
+          "width": 96,
+          "height": 96,
+          "colorspace": "sRGB",
+          "bytes": 1019
+        },
+        {
+          "name": "trim_places_palette_palette_orm",
+          "mime": "image/jpeg",
+          "width": 96,
+          "height": 96,
+          "colorspace": "linear",
+          "bytes": 1013
+        }
+      ],
+      "collision_bytes": 2060,
+      "placements": 2,
+      "checks": {
+        "lod0_triangles": {
+          "value": 1524,
+          "ceiling": 6000,
+          "pass": true
+        },
+        "lod1_triangles": {
+          "value": 856,
+          "ceiling": 2000,
+          "pass": true
+        },
+        "lod1_reduces": {
+          "value": 0.562,
+          "pass": true
+        },
+        "max_texture_px": {
+          "value": 1024,
+          "ceiling": 1024,
+          "pass": true
+        },
+        "primitives_lod0": {
+          "value": 2,
+          "ceiling": 6,
+          "pass": true
+        },
+        "collision_glb": {
+          "value": "archive-folio-stand.collision.glb",
+          "pass": true
+        },
+        "anchors": {
+          "value": [
+            "approach",
+            "contact",
+            "interact",
+            "panel_slot"
+          ],
+          "pass": true
+        },
+        "approach_anchor": {
+          "value": true,
+          "pass": true
+        }
+      },
+      "pass": true
+    },
+    {
+      "asset": "bench-long",
+      "class": "place",
+      "budget_source": "ruling: repeated desk / bench / planter",
+      "lod0": {
+        "file": "bench-long.lod0.glb",
+        "triangles": 2520,
+        "primitives_draw_calls": 3,
+        "bytes": 301080,
+        "materials": [
+          "Stone \u2022 warm limestone",
+          "Timber \u2022 oiled walnut",
+          "Trim \u2022 places palette"
+        ],
+        "texture_decoded_bytes": 8836436
+      },
+      "lod1": {
+        "file": "bench-long.lod1.glb",
+        "triangles": 880,
+        "primitives_draw_calls": 3,
+        "bytes": 205592,
+        "materials": [
+          "Stone \u2022 warm limestone",
+          "Timber \u2022 oiled walnut",
+          "Trim \u2022 places palette"
+        ],
+        "texture_decoded_bytes": 8836436
+      },
+      "textures": [
+        {
+          "name": "limestone_normal",
+          "mime": "image/jpeg",
+          "width": 256,
+          "height": 256,
+          "colorspace": "linear",
+          "bytes": 10081
+        },
+        {
+          "name": "limestone_basecolor",
+          "mime": "image/jpeg",
+          "width": 512,
+          "height": 512,
+          "colorspace": "sRGB",
+          "bytes": 33580
+        },
+        {
+          "name": "walnut_normal",
+          "mime": "image/jpeg",
+          "width": 512,
+          "height": 512,
+          "colorspace": "linear",
+          "bytes": 49139
+        },
+        {
+          "name": "walnut_basecolor",
+          "mime": "image/jpeg",
+          "width": 1024,
+          "height": 1024,
+          "colorspace": "sRGB",
+          "bytes": 43487
+        },
+        {
+          "name": "trim_places_palette_palette_basecolor",
+          "mime": "image/jpeg",
+          "width": 96,
+          "height": 96,
+          "colorspace": "sRGB",
+          "bytes": 1019
+        },
+        {
+          "name": "trim_places_palette_palette_orm",
+          "mime": "image/jpeg",
+          "width": 96,
+          "height": 96,
+          "colorspace": "linear",
+          "bytes": 1013
+        }
+      ],
+      "collision_bytes": 2032,
+      "placements": 2,
+      "checks": {
+        "lod0_triangles": {
+          "value": 2520,
+          "ceiling": 6000,
+          "pass": true
+        },
+        "lod1_triangles": {
+          "value": 880,
+          "ceiling": 2000,
+          "pass": true
+        },
+        "lod1_reduces": {
+          "value": 0.349,
+          "pass": true
+        },
+        "max_texture_px": {
+          "value": 1024,
+          "ceiling": 1024,
+          "pass": true
+        },
+        "primitives_lod0": {
+          "value": 3,
+          "ceiling": 6,
+          "pass": true
+        },
+        "collision_glb": {
+          "value": "bench-long.collision.glb",
+          "pass": true
+        },
+        "anchors": {
+          "value": [
+            "approach",
+            "seat"
+          ],
+          "pass": true
+        },
+        "approach_anchor": {
+          "value": true,
+          "pass": true
+        }
+      },
+      "pass": true
+    },
+    {
+      "asset": "bench-short",
+      "class": "place",
+      "budget_source": "ruling: repeated desk / bench / planter",
+      "lod0": {
+        "file": "bench-short.lod0.glb",
+        "triangles": 1812,
+        "primitives_draw_calls": 3,
+        "bytes": 259284,
+        "materials": [
+          "Stone \u2022 warm limestone",
+          "Timber \u2022 oiled walnut",
+          "Trim \u2022 places palette"
+        ],
+        "texture_decoded_bytes": 8836436
+      },
+      "lod1": {
+        "file": "bench-short.lod1.glb",
+        "triangles": 660,
+        "primitives_draw_calls": 3,
+        "bytes": 190920,
+        "materials": [
+          "Stone \u2022 warm limestone",
+          "Timber \u2022 oiled walnut",
+          "Trim \u2022 places palette"
+        ],
+        "texture_decoded_bytes": 8836436
+      },
+      "textures": [
+        {
+          "name": "limestone_normal",
+          "mime": "image/jpeg",
+          "width": 256,
+          "height": 256,
+          "colorspace": "linear",
+          "bytes": 10081
+        },
+        {
+          "name": "limestone_basecolor",
+          "mime": "image/jpeg",
+          "width": 512,
+          "height": 512,
+          "colorspace": "sRGB",
+          "bytes": 33580
+        },
+        {
+          "name": "walnut_normal",
+          "mime": "image/jpeg",
+          "width": 512,
+          "height": 512,
+          "colorspace": "linear",
+          "bytes": 49139
+        },
+        {
+          "name": "walnut_basecolor",
+          "mime": "image/jpeg",
+          "width": 1024,
+          "height": 1024,
+          "colorspace": "sRGB",
+          "bytes": 43487
+        },
+        {
+          "name": "trim_places_palette_palette_basecolor",
+          "mime": "image/jpeg",
+          "width": 96,
+          "height": 96,
+          "colorspace": "sRGB",
+          "bytes": 1019
+        },
+        {
+          "name": "trim_places_palette_palette_orm",
+          "mime": "image/jpeg",
+          "width": 96,
+          "height": 96,
+          "colorspace": "linear",
+          "bytes": 1013
+        }
+      ],
+      "collision_bytes": 2036,
+      "placements": 1,
+      "checks": {
+        "lod0_triangles": {
+          "value": 1812,
+          "ceiling": 6000,
+          "pass": true
+        },
+        "lod1_triangles": {
+          "value": 660,
+          "ceiling": 2000,
+          "pass": true
+        },
+        "lod1_reduces": {
+          "value": 0.364,
+          "pass": true
+        },
+        "max_texture_px": {
+          "value": 1024,
+          "ceiling": 1024,
+          "pass": true
+        },
+        "primitives_lod0": {
+          "value": 3,
+          "ceiling": 6,
+          "pass": true
+        },
+        "collision_glb": {
+          "value": "bench-short.collision.glb",
+          "pass": true
+        },
+        "anchors": {
+          "value": [
+            "approach",
+            "seat"
+          ],
+          "pass": true
+        },
+        "approach_anchor": {
+          "value": true,
+          "pass": true
+        }
+      },
+      "pass": true
+    },
+    {
+      "asset": "maker-workbench",
+      "class": "place",
+      "budget_source": "ruling: hero table / bookcase",
+      "lod0": {
+        "file": "maker-workbench.lod0.glb",
+        "triangles": 2620,
+        "primitives_draw_calls": 2,
+        "bytes": 299596,
+        "materials": [
+          "Timber \u2022 oiled walnut",
+          "Trim \u2022 places palette"
+        ],
+        "texture_decoded_bytes": 7088810
+      },
+      "lod1": {
+        "file": "maker-workbench.lod1.glb",
+        "triangles": 1364,
+        "primitives_draw_calls": 2,
+        "bytes": 204496,
+        "materials": [
+          "Timber \u2022 oiled walnut",
+          "Trim \u2022 places palette"
+        ],
+        "texture_decoded_bytes": 7088810
+      },
+      "textures": [
+        {
+          "name": "walnut_normal",
+          "mime": "image/jpeg",
+          "width": 512,
+          "height": 512,
+          "colorspace": "linear",
+          "bytes": 49139
+        },
+        {
+          "name": "walnut_basecolor",
+          "mime": "image/jpeg",
+          "width": 1024,
+          "height": 1024,
+          "colorspace": "sRGB",
+          "bytes": 43487
+        },
+        {
+          "name": "trim_places_palette_palette_basecolor",
+          "mime": "image/jpeg",
+          "width": 96,
+          "height": 96,
+          "colorspace": "sRGB",
+          "bytes": 1019
+        },
+        {
+          "name": "trim_places_palette_palette_orm",
+          "mime": "image/jpeg",
+          "width": 96,
+          "height": 96,
+          "colorspace": "linear",
+          "bytes": 1013
+        }
+      ],
+      "collision_bytes": 2048,
+      "placements": 1,
+      "checks": {
+        "lod0_triangles": {
+          "value": 2620,
+          "ceiling": 12000,
+          "pass": true
+        },
+        "lod1_triangles": {
+          "value": 1364,
+          "ceiling": 4000,
+          "pass": true
+        },
+        "lod1_reduces": {
+          "value": 0.521,
+          "pass": true
+        },
+        "max_texture_px": {
+          "value": 1024,
+          "ceiling": 1024,
+          "pass": true
+        },
+        "primitives_lod0": {
+          "value": 2,
+          "ceiling": 6,
+          "pass": true
+        },
+        "collision_glb": {
+          "value": "maker-workbench.collision.glb",
+          "pass": true
+        },
+        "anchors": {
+          "value": [
+            "approach",
+            "contact",
+            "interact",
+            "reach"
+          ],
+          "pass": true
+        },
+        "approach_anchor": {
+          "value": true,
+          "pass": true
+        }
+      },
+      "pass": true
+    },
+    {
+      "asset": "maker-result-shelf",
+      "class": "place",
+      "budget_source": "ruling: hero table / bookcase",
+      "lod0": {
+        "file": "maker-result-shelf.lod0.glb",
+        "triangles": 2548,
+        "primitives_draw_calls": 3,
+        "bytes": 258140,
+        "materials": [
+          "Ceramic \u2022 warm ivory",
+          "Timber \u2022 oiled walnut",
+          "Trim \u2022 places palette"
+        ],
+        "texture_decoded_bytes": 7088810
+      },
+      "lod1": {
+        "file": "maker-result-shelf.lod1.glb",
+        "triangles": 1144,
+        "primitives_draw_calls": 3,
+        "bytes": 180672,
+        "materials": [
+          "Ceramic \u2022 warm ivory",
+          "Timber \u2022 oiled walnut",
+          "Trim \u2022 places palette"
+        ],
+        "texture_decoded_bytes": 7088810
+      },
+      "textures": [
+        {
+          "name": "walnut_normal",
+          "mime": "image/jpeg",
+          "width": 512,
+          "height": 512,
+          "colorspace": "linear",
+          "bytes": 49139
+        },
+        {
+          "name": "walnut_basecolor",
+          "mime": "image/jpeg",
+          "width": 1024,
+          "height": 1024,
+          "colorspace": "sRGB",
+          "bytes": 43487
+        },
+        {
+          "name": "trim_places_palette_palette_basecolor",
+          "mime": "image/jpeg",
+          "width": 96,
+          "height": 96,
+          "colorspace": "sRGB",
+          "bytes": 1019
+        },
+        {
+          "name": "trim_places_palette_palette_orm",
+          "mime": "image/jpeg",
+          "width": 96,
+          "height": 96,
+          "colorspace": "linear",
+          "bytes": 1013
+        }
+      ],
+      "collision_bytes": 2056,
+      "placements": 1,
+      "checks": {
+        "lod0_triangles": {
+          "value": 2548,
+          "ceiling": 12000,
+          "pass": true
+        },
+        "lod1_triangles": {
+          "value": 1144,
+          "ceiling": 4000,
+          "pass": true
+        },
+        "lod1_reduces": {
+          "value": 0.449,
+          "pass": true
+        },
+        "max_texture_px": {
+          "value": 1024,
+          "ceiling": 1024,
+          "pass": true
+        },
+        "primitives_lod0": {
+          "value": 3,
+          "ceiling": 6,
+          "pass": true
+        },
+        "collision_glb": {
+          "value": "maker-result-shelf.collision.glb",
+          "pass": true
+        },
+        "anchors": {
+          "value": [
+            "approach",
+            "interact",
+            "slot"
+          ],
+          "pass": true
+        },
+        "approach_anchor": {
+          "value": true,
+          "pass": true
+        }
+      },
+      "pass": true
+    },
+    {
+      "asset": "maker-progress-stand",
+      "class": "place",
+      "budget_source": "ruling: repeated desk / bench / planter",
+      "lod0": {
+        "file": "maker-progress-stand.lod0.glb",
+        "triangles": 1368,
+        "primitives_draw_calls": 3,
+        "bytes": 192416,
+        "materials": [
+          "Ceramic \u2022 warm ivory",
+          "Timber \u2022 oiled walnut",
+          "Trim \u2022 places palette"
+        ],
+        "texture_decoded_bytes": 7088810
+      },
+      "lod1": {
+        "file": "maker-progress-stand.lod1.glb",
+        "triangles": 684,
+        "primitives_draw_calls": 3,
+        "bytes": 150664,
+        "materials": [
+          "Ceramic \u2022 warm ivory",
+          "Timber \u2022 oiled walnut",
+          "Trim \u2022 places palette"
+        ],
+        "texture_decoded_bytes": 7088810
+      },
+      "textures": [
+        {
+          "name": "walnut_normal",
+          "mime": "image/jpeg",
+          "width": 512,
+          "height": 512,
+          "colorspace": "linear",
+          "bytes": 49139
+        },
+        {
+          "name": "walnut_basecolor",
+          "mime": "image/jpeg",
+          "width": 1024,
+          "height": 1024,
+          "colorspace": "sRGB",
+          "bytes": 43487
+        },
+        {
+          "name": "trim_places_palette_palette_basecolor",
+          "mime": "image/jpeg",
+          "width": 96,
+          "height": 96,
+          "colorspace": "sRGB",
+          "bytes": 1019
+        },
+        {
+          "name": "trim_places_palette_palette_orm",
+          "mime": "image/jpeg",
+          "width": 96,
+          "height": 96,
+          "colorspace": "linear",
+          "bytes": 1013
+        }
+      ],
+      "collision_bytes": 2064,
+      "placements": 1,
+      "checks": {
+        "lod0_triangles": {
+          "value": 1368,
+          "ceiling": 6000,
+          "pass": true
+        },
+        "lod1_triangles": {
+          "value": 684,
+          "ceiling": 2000,
+          "pass": true
+        },
+        "lod1_reduces": {
+          "value": 0.5,
+          "pass": true
+        },
+        "max_texture_px": {
+          "value": 1024,
+          "ceiling": 1024,
+          "pass": true
+        },
+        "primitives_lod0": {
+          "value": 3,
+          "ceiling": 6,
+          "pass": true
+        },
+        "collision_glb": {
+          "value": "maker-progress-stand.collision.glb",
+          "pass": true
+        },
+        "anchors": {
+          "value": [
+            "approach",
+            "contact",
+            "interact",
+            "panel_slot",
+            "slot"
+          ],
+          "pass": true
+        },
+        "approach_anchor": {
+          "value": true,
+          "pass": true
+        }
+      },
+      "pass": true
+    },
+    {
+      "asset": "observatory-forecast-plinth",
+      "class": "place",
+      "budget_source": "ruling: telescope or hero instrument",
+      "lod0": {
+        "file": "observatory-forecast-plinth.lod0.glb",
+        "triangles": 1784,
+        "primitives_draw_calls": 3,
+        "bytes": 153968,
+        "materials": [
+          "Panel \u2022 dark glass slot",
+          "Stone \u2022 warm limestone",
+          "Trim \u2022 places palette"
+        ],
+        "texture_decoded_bytes": 1845930
+      },
+      "lod1": {
+        "file": "observatory-forecast-plinth.lod1.glb",
+        "triangles": 674,
+        "primitives_draw_calls": 3,
+        "bytes": 95168,
+        "materials": [
+          "Panel \u2022 dark glass slot",
+          "Stone \u2022 warm limestone",
+          "Trim \u2022 places palette"
+        ],
+        "texture_decoded_bytes": 1845930
+      },
+      "textures": [
+        {
+          "name": "limestone_normal",
+          "mime": "image/jpeg",
+          "width": 256,
+          "height": 256,
+          "colorspace": "linear",
+          "bytes": 10081
+        },
+        {
+          "name": "limestone_basecolor",
+          "mime": "image/jpeg",
+          "width": 512,
+          "height": 512,
+          "colorspace": "sRGB",
+          "bytes": 33580
+        },
+        {
+          "name": "trim_places_palette_palette_basecolor",
+          "mime": "image/jpeg",
+          "width": 96,
+          "height": 96,
+          "colorspace": "sRGB",
+          "bytes": 1019
+        },
+        {
+          "name": "trim_places_palette_palette_orm",
+          "mime": "image/jpeg",
+          "width": 96,
+          "height": 96,
+          "colorspace": "linear",
+          "bytes": 1013
+        }
+      ],
+      "collision_bytes": 2084,
+      "placements": 1,
+      "checks": {
+        "lod0_triangles": {
+          "value": 1784,
+          "ceiling": 12000,
+          "pass": true
+        },
+        "lod1_triangles": {
+          "value": 674,
+          "ceiling": 4000,
+          "pass": true
+        },
+        "lod1_reduces": {
+          "value": 0.378,
+          "pass": true
+        },
+        "max_texture_px": {
+          "value": 512,
+          "ceiling": 1024,
+          "pass": true
+        },
+        "primitives_lod0": {
+          "value": 3,
+          "ceiling": 6,
+          "pass": true
+        },
+        "collision_glb": {
+          "value": "observatory-forecast-plinth.collision.glb",
+          "pass": true
+        },
+        "anchors": {
+          "value": [
+            "approach",
+            "gaze",
+            "interact",
+            "panel_slot"
+          ],
+          "pass": true
+        },
+        "approach_anchor": {
+          "value": true,
+          "pass": true
+        }
+      },
+      "pass": true
+    },
+    {
+      "asset": "observatory-telescope",
+      "class": "place",
+      "budget_source": "ruling: telescope or hero instrument",
+      "lod0": {
+        "file": "observatory-telescope.lod0.glb",
+        "triangles": 4840,
+        "primitives_draw_calls": 5,
+        "bytes": 327168,
+        "materials": [
+          "Stone \u2022 warm limestone",
+          "Trim \u2022 places palette",
+          "Ceramic \u2022 warm ivory"
+        ],
+        "texture_decoded_bytes": 1845930
+      },
+      "lod1": {
+        "file": "observatory-telescope.lod1.glb",
+        "triangles": 1584,
+        "primitives_draw_calls": 4,
+        "bytes": 144424,
+        "materials": [
+          "Stone \u2022 warm limestone",
+          "Ceramic \u2022 warm ivory",
+          "Trim \u2022 places palette"
+        ],
+        "texture_decoded_bytes": 1845930
+      },
+      "textures": [
+        {
+          "name": "limestone_normal",
+          "mime": "image/jpeg",
+          "width": 256,
+          "height": 256,
+          "colorspace": "linear",
+          "bytes": 10081
+        },
+        {
+          "name": "limestone_basecolor",
+          "mime": "image/jpeg",
+          "width": 512,
+          "height": 512,
+          "colorspace": "sRGB",
+          "bytes": 33580
+        },
+        {
+          "name": "trim_places_palette_palette_basecolor",
+          "mime": "image/jpeg",
+          "width": 96,
+          "height": 96,
+          "colorspace": "sRGB",
+          "bytes": 1019
+        },
+        {
+          "name": "trim_places_palette_palette_orm",
+          "mime": "image/jpeg",
+          "width": 96,
+          "height": 96,
+          "colorspace": "linear",
+          "bytes": 1013
+        }
+      ],
+      "collision_bytes": 2892,
+      "placements": 1,
+      "checks": {
+        "lod0_triangles": {
+          "value": 4840,
+          "ceiling": 12000,
+          "pass": true
+        },
+        "lod1_triangles": {
+          "value": 1584,
+          "ceiling": 4000,
+          "pass": true
+        },
+        "lod1_reduces": {
+          "value": 0.327,
+          "pass": true
+        },
+        "max_texture_px": {
+          "value": 512,
+          "ceiling": 1024,
+          "pass": true
+        },
+        "primitives_lod0": {
+          "value": 5,
+          "ceiling": 6,
+          "pass": true
+        },
+        "collision_glb": {
+          "value": "observatory-telescope.collision.glb",
+          "pass": true
+        },
+        "anchors": {
+          "value": [
+            "approach",
+            "gaze",
+            "interact",
+            "reach"
+          ],
+          "pass": true
+        },
+        "approach_anchor": {
+          "value": true,
+          "pass": true
+        }
+      },
+      "pass": true
+    },
+    {
+      "asset": "observatory-plinth-steps",
+      "class": "place",
+      "budget_source": "lane: architectural kit module (ruling: <= 250k LOD0 across unique modules)",
+      "lod0": {
+        "file": "observatory-plinth-steps.lod0.glb",
+        "triangles": 520,
+        "primitives_draw_calls": 2,
+        "bytes": 75488,
+        "materials": [
+          "Stone \u2022 warm limestone",
+          "Trim \u2022 places palette"
+        ],
+        "texture_decoded_bytes": 1845930
+      },
+      "lod1": {
+        "file": "observatory-plinth-steps.lod1.glb",
+        "triangles": 264,
+        "primitives_draw_calls": 2,
+        "bytes": 67808,
+        "materials": [
+          "Stone \u2022 warm limestone",
+          "Trim \u2022 places palette"
+        ],
+        "texture_decoded_bytes": 1845930
+      },
+      "textures": [
+        {
+          "name": "limestone_normal",
+          "mime": "image/jpeg",
+          "width": 256,
+          "height": 256,
+          "colorspace": "linear",
+          "bytes": 10081
+        },
+        {
+          "name": "limestone_basecolor",
+          "mime": "image/jpeg",
+          "width": 512,
+          "height": 512,
+          "colorspace": "sRGB",
+          "bytes": 33580
+        },
+        {
+          "name": "trim_places_palette_palette_basecolor",
+          "mime": "image/jpeg",
+          "width": 96,
+          "height": 96,
+          "colorspace": "sRGB",
+          "bytes": 1019
+        },
+        {
+          "name": "trim_places_palette_palette_orm",
+          "mime": "image/jpeg",
+          "width": 96,
+          "height": 96,
+          "colorspace": "linear",
+          "bytes": 1013
+        }
+      ],
+      "collision_bytes": 2056,
+      "placements": 1,
+      "checks": {
+        "lod0_triangles": {
+          "value": 520,
+          "ceiling": 1500,
+          "pass": true
+        },
+        "lod1_triangles": {
+          "value": 264,
+          "ceiling": 500,
+          "pass": true
+        },
+        "lod1_reduces": {
+          "value": 0.508,
+          "pass": true
+        },
+        "max_texture_px": {
+          "value": 512,
+          "ceiling": 1024,
+          "pass": true
+        },
+        "primitives_lod0": {
+          "value": 2,
+          "ceiling": 6,
+          "pass": true
+        },
+        "collision_glb": {
+          "value": "observatory-plinth-steps.collision.glb",
+          "pass": true
+        },
+        "anchors": {
+          "value": [
+            "approach",
+            "contact"
+          ],
+          "pass": true
+        },
+        "approach_anchor": {
+          "value": true,
+          "pass": true
+        }
+      },
+      "pass": true
+    },
+    {
+      "asset": "conservatory-measurement-panel",
+      "class": "place",
+      "budget_source": "ruling: repeated desk / bench / planter",
+      "lod0": {
+        "file": "conservatory-measurement-panel.lod0.glb",
+        "triangles": 2012,
+        "primitives_draw_calls": 6,
+        "bytes": 288644,
+        "materials": [
+          "Ceramic \u2022 warm ivory",
+          "Display \u2022 jade phosphor",
+          "Panel \u2022 dark glass slot",
+          "Stone \u2022 warm limestone",
+          "Timber \u2022 oiled walnut",
+          "Trim \u2022 places palette"
+        ],
+        "texture_decoded_bytes": 8836436
+      },
+      "lod1": {
+        "file": "conservatory-measurement-panel.lod1.glb",
+        "triangles": 1070,
+        "primitives_draw_calls": 6,
+        "bytes": 228144,
+        "materials": [
+          "Ceramic \u2022 warm ivory",
+          "Display \u2022 jade phosphor",
+          "Panel \u2022 dark glass slot",
+          "Stone \u2022 warm limestone",
+          "Timber \u2022 oiled walnut",
+          "Trim \u2022 places palette"
+        ],
+        "texture_decoded_bytes": 8836436
+      },
+      "textures": [
+        {
+          "name": "limestone_normal",
+          "mime": "image/jpeg",
+          "width": 256,
+          "height": 256,
+          "colorspace": "linear",
+          "bytes": 10081
+        },
+        {
+          "name": "limestone_basecolor",
+          "mime": "image/jpeg",
+          "width": 512,
+          "height": 512,
+          "colorspace": "sRGB",
+          "bytes": 33580
+        },
+        {
+          "name": "walnut_normal",
+          "mime": "image/jpeg",
+          "width": 512,
+          "height": 512,
+          "colorspace": "linear",
+          "bytes": 49139
+        },
+        {
+          "name": "walnut_basecolor",
+          "mime": "image/jpeg",
+          "width": 1024,
+          "height": 1024,
+          "colorspace": "sRGB",
+          "bytes": 43487
+        },
+        {
+          "name": "trim_places_palette_palette_basecolor",
+          "mime": "image/jpeg",
+          "width": 96,
+          "height": 96,
+          "colorspace": "sRGB",
+          "bytes": 1019
+        },
+        {
+          "name": "trim_places_palette_palette_orm",
+          "mime": "image/jpeg",
+          "width": 96,
+          "height": 96,
+          "colorspace": "linear",
+          "bytes": 1013
+        }
+      ],
+      "collision_bytes": 2064,
+      "placements": 1,
+      "checks": {
+        "lod0_triangles": {
+          "value": 2012,
+          "ceiling": 6000,
+          "pass": true
+        },
+        "lod1_triangles": {
+          "value": 1070,
+          "ceiling": 2000,
+          "pass": true
+        },
+        "lod1_reduces": {
+          "value": 0.532,
+          "pass": true
+        },
+        "max_texture_px": {
+          "value": 1024,
+          "ceiling": 1024,
+          "pass": true
+        },
+        "primitives_lod0": {
+          "value": 6,
+          "ceiling": 6,
+          "pass": true
+        },
+        "collision_glb": {
+          "value": "conservatory-measurement-panel.collision.glb",
+          "pass": true
+        },
+        "anchors": {
+          "value": [
+            "approach",
+            "interact",
+            "panel_slot",
+            "slot"
+          ],
+          "pass": true
+        },
+        "approach_anchor": {
+          "value": true,
+          "pass": true
+        }
+      },
+      "pass": true
+    },
+    {
+      "asset": "conservatory-growing-bed",
+      "class": "place",
+      "budget_source": "ruling: repeated desk / bench / planter",
+      "lod0": {
+        "file": "conservatory-growing-bed.lod0.glb",
+        "triangles": 2380,
+        "primitives_draw_calls": 3,
+        "bytes": 296284,
+        "materials": [
+          "Ceramic \u2022 warm ivory",
+          "Timber \u2022 oiled walnut",
+          "Trim \u2022 places palette"
+        ],
+        "texture_decoded_bytes": 7088810
+      },
+      "lod1": {
+        "file": "conservatory-growing-bed.lod1.glb",
+        "triangles": 1140,
+        "primitives_draw_calls": 3,
+        "bytes": 179296,
+        "materials": [
+          "Ceramic \u2022 warm ivory",
+          "Timber \u2022 oiled walnut",
+          "Trim \u2022 places palette"
+        ],
+        "texture_decoded_bytes": 7088810
+      },
+      "textures": [
+        {
+          "name": "walnut_normal",
+          "mime": "image/jpeg",
+          "width": 512,
+          "height": 512,
+          "colorspace": "linear",
+          "bytes": 49139
+        },
+        {
+          "name": "walnut_basecolor",
+          "mime": "image/jpeg",
+          "width": 1024,
+          "height": 1024,
+          "colorspace": "sRGB",
+          "bytes": 43487
+        },
+        {
+          "name": "trim_places_palette_palette_basecolor",
+          "mime": "image/jpeg",
+          "width": 96,
+          "height": 96,
+          "colorspace": "sRGB",
+          "bytes": 1019
+        },
+        {
+          "name": "trim_places_palette_palette_orm",
+          "mime": "image/jpeg",
+          "width": 96,
+          "height": 96,
+          "colorspace": "linear",
+          "bytes": 1013
+        }
+      ],
+      "collision_bytes": 2076,
+      "placements": 1,
+      "checks": {
+        "lod0_triangles": {
+          "value": 2380,
+          "ceiling": 6000,
+          "pass": true
+        },
+        "lod1_triangles": {
+          "value": 1140,
+          "ceiling": 2000,
+          "pass": true
+        },
+        "lod1_reduces": {
+          "value": 0.479,
+          "pass": true
+        },
+        "max_texture_px": {
+          "value": 1024,
+          "ceiling": 1024,
+          "pass": true
+        },
+        "primitives_lod0": {
+          "value": 3,
+          "ceiling": 6,
+          "pass": true
+        },
+        "collision_glb": {
+          "value": "conservatory-growing-bed.collision.glb",
+          "pass": true
+        },
+        "anchors": {
+          "value": [
+            "approach",
+            "interact",
+            "reach",
+            "slot"
+          ],
+          "pass": true
+        },
+        "approach_anchor": {
+          "value": true,
+          "pass": true
+        }
+      },
+      "pass": true
+    },
+    {
+      "asset": "conservatory-equipment-cart",
+      "class": "place",
+      "budget_source": "ruling: repeated desk / bench / planter",
+      "lod0": {
+        "file": "conservatory-equipment-cart.lod0.glb",
+        "triangles": 2728,
+        "primitives_draw_calls": 4,
+        "bytes": 268848,
+        "materials": [
+          "Ceramic \u2022 warm ivory",
+          "Display \u2022 jade phosphor",
+          "Timber \u2022 oiled walnut",
+          "Trim \u2022 places palette"
+        ],
+        "texture_decoded_bytes": 7088810
+      },
+      "lod1": {
+        "file": "conservatory-equipment-cart.lod1.glb",
+        "triangles": 1028,
+        "primitives_draw_calls": 2,
+        "bytes": 172980,
+        "materials": [
+          "Timber \u2022 oiled walnut",
+          "Trim \u2022 places palette"
+        ],
+        "texture_decoded_bytes": 7088810
+      },
+      "textures": [
+        {
+          "name": "walnut_normal",
+          "mime": "image/jpeg",
+          "width": 512,
+          "height": 512,
+          "colorspace": "linear",
+          "bytes": 49139
+        },
+        {
+          "name": "walnut_basecolor",
+          "mime": "image/jpeg",
+          "width": 1024,
+          "height": 1024,
+          "colorspace": "sRGB",
+          "bytes": 43487
+        },
+        {
+          "name": "trim_places_palette_palette_basecolor",
+          "mime": "image/jpeg",
+          "width": 96,
+          "height": 96,
+          "colorspace": "sRGB",
+          "bytes": 1019
+        },
+        {
+          "name": "trim_places_palette_palette_orm",
+          "mime": "image/jpeg",
+          "width": 96,
+          "height": 96,
+          "colorspace": "linear",
+          "bytes": 1013
+        }
+      ],
+      "collision_bytes": 2104,
+      "placements": 1,
+      "checks": {
+        "lod0_triangles": {
+          "value": 2728,
+          "ceiling": 6000,
+          "pass": true
+        },
+        "lod1_triangles": {
+          "value": 1028,
+          "ceiling": 2000,
+          "pass": true
+        },
+        "lod1_reduces": {
+          "value": 0.377,
+          "pass": true
+        },
+        "max_texture_px": {
+          "value": 1024,
+          "ceiling": 1024,
+          "pass": true
+        },
+        "primitives_lod0": {
+          "value": 4,
+          "ceiling": 6,
+          "pass": true
+        },
+        "collision_glb": {
+          "value": "conservatory-equipment-cart.collision.glb",
+          "pass": true
+        },
+        "anchors": {
+          "value": [
+            "approach",
+            "interact",
+            "reach",
+            "slot"
+          ],
+          "pass": true
+        },
+        "approach_anchor": {
+          "value": true,
+          "pass": true
+        }
+      },
+      "pass": true
+    },
+    {
+      "asset": "bridge-abutment-garden",
+      "class": "construction",
+      "budget_source": "lane: architectural kit module (ruling: <= 250k LOD0 across unique modules)",
+      "lod0": {
+        "file": "bridge-abutment-garden.lod0.glb",
+        "triangles": 1396,
+        "primitives_draw_calls": 2,
+        "bytes": 128376,
+        "materials": [
+          "Stone \u2022 warm limestone",
+          "Trim \u2022 places palette"
+        ],
+        "texture_decoded_bytes": 1845930
+      },
+      "lod1": {
+        "file": "bridge-abutment-garden.lod1.glb",
+        "triangles": 516,
+        "primitives_draw_calls": 2,
+        "bytes": 86988,
+        "materials": [
+          "Stone \u2022 warm limestone",
+          "Trim \u2022 places palette"
+        ],
+        "texture_decoded_bytes": 1845930
+      },
+      "textures": [
+        {
+          "name": "limestone_normal",
+          "mime": "image/jpeg",
+          "width": 256,
+          "height": 256,
+          "colorspace": "linear",
+          "bytes": 10081
+        },
+        {
+          "name": "limestone_basecolor",
+          "mime": "image/jpeg",
+          "width": 512,
+          "height": 512,
+          "colorspace": "sRGB",
+          "bytes": 33580
+        },
+        {
+          "name": "trim_places_palette_palette_basecolor",
+          "mime": "image/jpeg",
+          "width": 96,
+          "height": 96,
+          "colorspace": "sRGB",
+          "bytes": 1019
+        },
+        {
+          "name": "trim_places_palette_palette_orm",
+          "mime": "image/jpeg",
+          "width": 96,
+          "height": 96,
+          "colorspace": "linear",
+          "bytes": 1013
+        }
+      ],
+      "collision_bytes": 3772,
+      "placements": 2,
+      "checks": {
+        "lod0_triangles": {
+          "value": 1396,
+          "ceiling": 4000,
+          "pass": true
+        },
+        "lod1_triangles": {
+          "value": 516,
+          "ceiling": 1500,
+          "pass": true
+        },
+        "lod1_reduces": {
+          "value": 0.37,
+          "pass": true
+        },
+        "max_texture_px": {
+          "value": 512,
+          "ceiling": 1024,
+          "pass": true
+        },
+        "primitives_lod0": {
+          "value": 2,
+          "ceiling": 6,
+          "pass": true
+        },
+        "collision_glb": {
+          "value": "bridge-abutment-garden.collision.glb",
+          "pass": true
+        },
+        "anchors": {
+          "value": [
+            "approach",
+            "contact"
+          ],
+          "pass": true
+        }
+      },
+      "pass": true
+    },
+    {
+      "asset": "bridge-abutment-observatory",
+      "class": "construction",
+      "budget_source": "lane: architectural kit module (ruling: <= 250k LOD0 across unique modules)",
+      "lod0": {
+        "file": "bridge-abutment-observatory.lod0.glb",
+        "triangles": 1208,
+        "primitives_draw_calls": 2,
+        "bytes": 116312,
+        "materials": [
+          "Stone \u2022 warm limestone",
+          "Trim \u2022 places palette"
+        ],
+        "texture_decoded_bytes": 1845930
+      },
+      "lod1": {
+        "file": "bridge-abutment-observatory.lod1.glb",
+        "triangles": 608,
+        "primitives_draw_calls": 2,
+        "bytes": 94944,
+        "materials": [
+          "Stone \u2022 warm limestone",
+          "Trim \u2022 places palette"
+        ],
+        "texture_decoded_bytes": 1845930
+      },
+      "textures": [
+        {
+          "name": "limestone_normal",
+          "mime": "image/jpeg",
+          "width": 256,
+          "height": 256,
+          "colorspace": "linear",
+          "bytes": 10081
+        },
+        {
+          "name": "limestone_basecolor",
+          "mime": "image/jpeg",
+          "width": 512,
+          "height": 512,
+          "colorspace": "sRGB",
+          "bytes": 33580
+        },
+        {
+          "name": "trim_places_palette_palette_basecolor",
+          "mime": "image/jpeg",
+          "width": 96,
+          "height": 96,
+          "colorspace": "sRGB",
+          "bytes": 1019
+        },
+        {
+          "name": "trim_places_palette_palette_orm",
+          "mime": "image/jpeg",
+          "width": 96,
+          "height": 96,
+          "colorspace": "linear",
+          "bytes": 1013
+        }
+      ],
+      "collision_bytes": 2928,
+      "placements": 2,
+      "checks": {
+        "lod0_triangles": {
+          "value": 1208,
+          "ceiling": 4000,
+          "pass": true
+        },
+        "lod1_triangles": {
+          "value": 608,
+          "ceiling": 1500,
+          "pass": true
+        },
+        "lod1_reduces": {
+          "value": 0.503,
+          "pass": true
+        },
+        "max_texture_px": {
+          "value": 512,
+          "ceiling": 1024,
+          "pass": true
+        },
+        "primitives_lod0": {
+          "value": 2,
+          "ceiling": 6,
+          "pass": true
+        },
+        "collision_glb": {
+          "value": "bridge-abutment-observatory.collision.glb",
+          "pass": true
+        },
+        "anchors": {
+          "value": [
+            "approach",
+            "contact"
+          ],
+          "pass": true
+        }
+      },
+      "pass": true
+    },
+    {
+      "asset": "water-coping-2m",
+      "class": "construction",
+      "budget_source": "lane: architectural kit module (ruling: <= 250k LOD0 across unique modules)",
+      "lod0": {
+        "file": "water-coping-2m.lod0.glb",
+        "triangles": 424,
+        "primitives_draw_calls": 2,
+        "bytes": 77068,
+        "materials": [
+          "Stone \u2022 warm limestone",
+          "Trim \u2022 places palette"
+        ],
+        "texture_decoded_bytes": 1845930
+      },
+      "lod1": {
+        "file": "water-coping-2m.lod1.glb",
+        "triangles": 136,
+        "primitives_draw_calls": 2,
+        "bytes": 61024,
+        "materials": [
+          "Stone \u2022 warm limestone",
+          "Trim \u2022 places palette"
+        ],
+        "texture_decoded_bytes": 1845930
+      },
+      "textures": [
+        {
+          "name": "limestone_normal",
+          "mime": "image/jpeg",
+          "width": 256,
+          "height": 256,
+          "colorspace": "linear",
+          "bytes": 10081
+        },
+        {
+          "name": "limestone_basecolor",
+          "mime": "image/jpeg",
+          "width": 512,
+          "height": 512,
+          "colorspace": "sRGB",
+          "bytes": 33580
+        },
+        {
+          "name": "trim_places_palette_palette_basecolor",
+          "mime": "image/jpeg",
+          "width": 96,
+          "height": 96,
+          "colorspace": "sRGB",
+          "bytes": 1019
+        },
+        {
+          "name": "trim_places_palette_palette_orm",
+          "mime": "image/jpeg",
+          "width": 96,
+          "height": 96,
+          "colorspace": "linear",
+          "bytes": 1013
+        }
+      ],
+      "collision_bytes": 2016,
+      "placements": 6,
+      "checks": {
+        "lod0_triangles": {
+          "value": 424,
+          "ceiling": 1200,
+          "pass": true
+        },
+        "lod1_triangles": {
+          "value": 136,
+          "ceiling": 400,
+          "pass": true
+        },
+        "lod1_reduces": {
+          "value": 0.321,
+          "pass": true
+        },
+        "max_texture_px": {
+          "value": 512,
+          "ceiling": 1024,
+          "pass": true
+        },
+        "primitives_lod0": {
+          "value": 2,
+          "ceiling": 6,
+          "pass": true
+        },
+        "collision_glb": {
+          "value": "water-coping-2m.collision.glb",
+          "pass": true
+        },
+        "anchors": {
+          "value": [
+            "contact"
+          ],
+          "pass": true
+        }
+      },
+      "pass": true
+    },
+    {
+      "asset": "water-coping-corner",
+      "class": "construction",
+      "budget_source": "lane: architectural kit module (ruling: <= 250k LOD0 across unique modules)",
+      "lod0": {
+        "file": "water-coping-corner.lod0.glb",
+        "triangles": 204,
+        "primitives_draw_calls": 2,
+        "bytes": 62552,
+        "materials": [
+          "Stone \u2022 warm limestone",
+          "Trim \u2022 places palette"
+        ],
+        "texture_decoded_bytes": 1845930
+      },
+      "lod1": {
+        "file": "water-coping-corner.lod1.glb",
+        "triangles": 80,
+        "primitives_draw_calls": 2,
+        "bytes": 56324,
+        "materials": [
+          "Stone \u2022 warm limestone",
+          "Trim \u2022 places palette"
+        ],
+        "texture_decoded_bytes": 1845930
+      },
+      "textures": [
+        {
+          "name": "limestone_normal",
+          "mime": "image/jpeg",
+          "width": 256,
+          "height": 256,
+          "colorspace": "linear",
+          "bytes": 10081
+        },
+        {
+          "name": "limestone_basecolor",
+          "mime": "image/jpeg",
+          "width": 512,
+          "height": 512,
+          "colorspace": "sRGB",
+          "bytes": 33580
+        },
+        {
+          "name": "trim_places_palette_palette_basecolor",
+          "mime": "image/jpeg",
+          "width": 96,
+          "height": 96,
+          "colorspace": "sRGB",
+          "bytes": 1019
+        },
+        {
+          "name": "trim_places_palette_palette_orm",
+          "mime": "image/jpeg",
+          "width": 96,
+          "height": 96,
+          "colorspace": "linear",
+          "bytes": 1013
+        }
+      ],
+      "collision_bytes": 2064,
+      "placements": 2,
+      "checks": {
+        "lod0_triangles": {
+          "value": 204,
+          "ceiling": 700,
+          "pass": true
+        },
+        "lod1_triangles": {
+          "value": 80,
+          "ceiling": 250,
+          "pass": true
+        },
+        "lod1_reduces": {
+          "value": 0.392,
+          "pass": true
+        },
+        "max_texture_px": {
+          "value": 512,
+          "ceiling": 1024,
+          "pass": true
+        },
+        "primitives_lod0": {
+          "value": 2,
+          "ceiling": 6,
+          "pass": true
+        },
+        "collision_glb": {
+          "value": "water-coping-corner.collision.glb",
+          "pass": true
+        },
+        "anchors": {
+          "value": [
+            "contact"
+          ],
+          "pass": true
+        }
+      },
+      "pass": true
+    },
+    {
+      "asset": "rail-stanchion",
+      "class": "construction",
+      "budget_source": "lane: architectural kit module (ruling: <= 250k LOD0 across unique modules)",
+      "lod0": {
+        "file": "rail-stanchion.lod0.glb",
+        "triangles": 452,
+        "primitives_draw_calls": 1,
+        "bytes": 23456,
+        "materials": [
+          "Trim \u2022 places palette"
+        ],
+        "texture_decoded_bytes": 98304
+      },
+      "lod1": {
+        "file": "rail-stanchion.lod1.glb",
+        "triangles": 176,
+        "primitives_draw_calls": 1,
+        "bytes": 13092,
+        "materials": [
+          "Trim \u2022 places palette"
+        ],
+        "texture_decoded_bytes": 98304
+      },
+      "textures": [
+        {
+          "name": "trim_places_palette_palette_basecolor",
+          "mime": "image/jpeg",
+          "width": 96,
+          "height": 96,
+          "colorspace": "sRGB",
+          "bytes": 1019
+        },
+        {
+          "name": "trim_places_palette_palette_orm",
+          "mime": "image/jpeg",
+          "width": 96,
+          "height": 96,
+          "colorspace": "linear",
+          "bytes": 1013
+        }
+      ],
+      "collision_bytes": 2048,
+      "placements": 14,
+      "checks": {
+        "lod0_triangles": {
+          "value": 452,
+          "ceiling": 600,
+          "pass": true
+        },
+        "lod1_triangles": {
+          "value": 176,
+          "ceiling": 200,
+          "pass": true
+        },
+        "lod1_reduces": {
+          "value": 0.389,
+          "pass": true
+        },
+        "max_texture_px": {
+          "value": 96,
+          "ceiling": 1024,
+          "pass": true
+        },
+        "primitives_lod0": {
+          "value": 1,
+          "ceiling": 6,
+          "pass": true
+        },
+        "collision_glb": {
+          "value": "rail-stanchion.collision.glb",
+          "pass": true
+        },
+        "anchors": {
+          "value": [
+            "contact"
+          ],
+          "pass": true
+        }
+      },
+      "pass": true
+    },
+    {
+      "asset": "column-base-stone",
+      "class": "construction",
+      "budget_source": "lane: architectural kit module (ruling: <= 250k LOD0 across unique modules)",
+      "lod0": {
+        "file": "column-base-stone.lod0.glb",
+        "triangles": 780,
+        "primitives_draw_calls": 2,
+        "bytes": 94464,
+        "materials": [
+          "Stone \u2022 warm limestone",
+          "Trim \u2022 places palette"
+        ],
+        "texture_decoded_bytes": 1845930
+      },
+      "lod1": {
+        "file": "column-base-stone.lod1.glb",
+        "triangles": 286,
+        "primitives_draw_calls": 2,
+        "bytes": 67252,
+        "materials": [
+          "Stone \u2022 warm limestone",
+          "Trim \u2022 places palette"
+        ],
+        "texture_decoded_bytes": 1845930
+      },
+      "textures": [
+        {
+          "name": "limestone_normal",
+          "mime": "image/jpeg",
+          "width": 256,
+          "height": 256,
+          "colorspace": "linear",
+          "bytes": 10081
+        },
+        {
+          "name": "limestone_basecolor",
+          "mime": "image/jpeg",
+          "width": 512,
+          "height": 512,
+          "colorspace": "sRGB",
+          "bytes": 33580
+        },
+        {
+          "name": "trim_places_palette_palette_basecolor",
+          "mime": "image/jpeg",
+          "width": 96,
+          "height": 96,
+          "colorspace": "sRGB",
+          "bytes": 1019
+        },
+        {
+          "name": "trim_places_palette_palette_orm",
+          "mime": "image/jpeg",
+          "width": 96,
+          "height": 96,
+          "colorspace": "linear",
+          "bytes": 1013
+        }
+      ],
+      "collision_bytes": 2060,
+      "placements": 2,
+      "checks": {
+        "lod0_triangles": {
+          "value": 780,
+          "ceiling": 1500,
+          "pass": true
+        },
+        "lod1_triangles": {
+          "value": 286,
+          "ceiling": 500,
+          "pass": true
+        },
+        "lod1_reduces": {
+          "value": 0.367,
+          "pass": true
+        },
+        "max_texture_px": {
+          "value": 512,
+          "ceiling": 1024,
+          "pass": true
+        },
+        "primitives_lod0": {
+          "value": 2,
+          "ceiling": 6,
+          "pass": true
+        },
+        "collision_glb": {
+          "value": "column-base-stone.collision.glb",
+          "pass": true
+        },
+        "anchors": {
+          "value": [
+            "contact"
+          ],
+          "pass": true
+        }
+      },
+      "pass": true
+    },
+    {
+      "asset": "post-shoe-bronze",
+      "class": "construction",
+      "budget_source": "lane: architectural kit module (ruling: <= 250k LOD0 across unique modules)",
+      "lod0": {
+        "file": "post-shoe-bronze.lod0.glb",
+        "triangles": 392,
+        "primitives_draw_calls": 1,
+        "bytes": 20792,
+        "materials": [
+          "Trim \u2022 places palette"
+        ],
+        "texture_decoded_bytes": 98304
+      },
+      "lod1": {
+        "file": "post-shoe-bronze.lod1.glb",
+        "triangles": 176,
+        "primitives_draw_calls": 1,
+        "bytes": 11044,
+        "materials": [
+          "Trim \u2022 places palette"
+        ],
+        "texture_decoded_bytes": 98304
+      },
+      "textures": [
+        {
+          "name": "trim_places_palette_palette_basecolor",
+          "mime": "image/jpeg",
+          "width": 96,
+          "height": 96,
+          "colorspace": "sRGB",
+          "bytes": 1019
+        },
+        {
+          "name": "trim_places_palette_palette_orm",
+          "mime": "image/jpeg",
+          "width": 96,
+          "height": 96,
+          "colorspace": "linear",
+          "bytes": 1013
+        }
+      ],
+      "collision_bytes": 2056,
+      "placements": 6,
+      "checks": {
+        "lod0_triangles": {
+          "value": 392,
+          "ceiling": 800,
+          "pass": true
+        },
+        "lod1_triangles": {
+          "value": 176,
+          "ceiling": 300,
+          "pass": true
+        },
+        "lod1_reduces": {
+          "value": 0.449,
+          "pass": true
+        },
+        "max_texture_px": {
+          "value": 96,
+          "ceiling": 1024,
+          "pass": true
+        },
+        "primitives_lod0": {
+          "value": 1,
+          "ceiling": 6,
+          "pass": true
+        },
+        "collision_glb": {
+          "value": "post-shoe-bronze.collision.glb",
+          "pass": true
+        },
+        "anchors": {
+          "value": [
+            "contact"
+          ],
+          "pass": true
+        }
+      },
+      "pass": true
+    },
+    {
+      "asset": "terrace-drain-grate",
+      "class": "construction",
+      "budget_source": "lane: architectural kit module (ruling: <= 250k LOD0 across unique modules)",
+      "lod0": {
+        "file": "terrace-drain-grate.lod0.glb",
+        "triangles": 716,
+        "primitives_draw_calls": 1,
+        "bytes": 33460,
+        "materials": [
+          "Trim \u2022 places palette"
+        ],
+        "texture_decoded_bytes": 98304
+      },
+      "lod1": {
+        "file": "terrace-drain-grate.lod1.glb",
+        "triangles": 108,
+        "primitives_draw_calls": 1,
+        "bytes": 11376,
+        "materials": [
+          "Trim \u2022 places palette"
+        ],
+        "texture_decoded_bytes": 98304
+      },
+      "textures": [
+        {
+          "name": "trim_places_palette_palette_basecolor",
+          "mime": "image/jpeg",
+          "width": 96,
+          "height": 96,
+          "colorspace": "sRGB",
+          "bytes": 1019
+        },
+        {
+          "name": "trim_places_palette_palette_orm",
+          "mime": "image/jpeg",
+          "width": 96,
+          "height": 96,
+          "colorspace": "linear",
+          "bytes": 1013
+        }
+      ],
+      "collision_bytes": 2032,
+      "placements": 4,
+      "checks": {
+        "lod0_triangles": {
+          "value": 716,
+          "ceiling": 800,
+          "pass": true
+        },
+        "lod1_triangles": {
+          "value": 108,
+          "ceiling": 300,
+          "pass": true
+        },
+        "lod1_reduces": {
+          "value": 0.151,
+          "pass": true
+        },
+        "max_texture_px": {
+          "value": 96,
+          "ceiling": 1024,
+          "pass": true
+        },
+        "primitives_lod0": {
+          "value": 1,
+          "ceiling": 6,
+          "pass": true
+        },
+        "collision_glb": {
+          "value": "terrace-drain-grate.collision.glb",
+          "pass": true
+        },
+        "anchors": {
+          "value": [
+            "contact"
+          ],
+          "pass": true
+        }
+      },
+      "pass": true
+    }
+  ],
+  "route_check": {
+    "pass": true,
+    "reachable_cells_before": 17250,
+    "reachable_cells_after": 16897,
+    "area_lost_m2": 22.06,
+    "regressions": [],
+    "error": null
+  },
+  "totals": {
+    "lod0_bytes": 4261844,
+    "lod1_bytes": 2630568,
+    "collision_bytes": 46600,
+    "unique_modules_lod0_triangles": 42960,
+    "unique_modules_ceiling": 250000,
+    "suggested_placements": 55,
+    "placed_lod0_triangles_all_visible": 84160,
+    "placed_lod0_draw_calls_all_visible_unbatched": 102,
+    "all_pass": true
+  }
+}

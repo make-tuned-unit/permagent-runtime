@@ -1,0 +1,142 @@
+{
+  "renderer": "Blender 5.2.1 LTS Eevee, 960x540",
+  "source": "exported GLBs re-imported (round trip)",
+  "shots": [
+    {
+      "file": "review/botany-lineup-front.jpg",
+      "what": "species lineup LOD0, front (-Y): canopy, shrub, grass, fern, coneflower, iris, vine on a beam; red rod = 2.3 m headroom"
+    },
+    {
+      "file": "review/botany-lineup-back.jpg",
+      "what": "species lineup LOD0, back (+Y): reverse silhouettes"
+    },
+    {
+      "file": "review/botany-lineup-lod1.jpg",
+      "what": "species lineup LOD1 (cards / reduced geometry), front"
+    },
+    {
+      "file": "review/botany-groundcover-closeup.jpg",
+      "what": "close-up LOD0: grass, fern, coneflower, iris, shrub (leaf orientation, pinnae taper, petals, contact with ground)"
+    },
+    {
+      "file": "review/botany-canopy-underside.jpg",
+      "what": "canopy LOD0 from beneath at standing eye height: branching, card edges, alpha fringe check"
+    },
+    {
+      "file": "review/places-lineup-large-front.jpg",
+      "what": "places-lineup-large: LOD0 assets seen from the front (approach)"
+    },
+    {
+      "file": "review/places-lineup-large-back.jpg",
+      "what": "places-lineup-large: LOD0 assets seen from the back (reverse / return path)"
+    },
+    {
+      "file": "review/places-lineup-small-front.jpg",
+      "what": "places-lineup-small: LOD0 assets seen from the front (approach)"
+    },
+    {
+      "file": "review/places-lineup-small-back.jpg",
+      "what": "places-lineup-small: LOD0 assets seen from the back (reverse / return path)"
+    },
+    {
+      "file": "review/construction-lineup-front.jpg",
+      "what": "construction-lineup: LOD0 assets seen from the front (approach)"
+    },
+    {
+      "file": "review/construction-lineup-back.jpg",
+      "what": "construction-lineup: LOD0 assets seen from the back (reverse / return path)"
+    },
+    {
+      "file": "review/telescope-lod0-vs-lod1.jpg",
+      "what": "telescope LOD0 (left) vs LOD1 (right): mount, bearings, fork, rings, finder, eyepiece"
+    },
+    {
+      "file": "review/telescope-mount-closeup.jpg",
+      "what": "telescope mount: azimuth bearing race, fork arms, trunnion housings and bolts, eyepiece"
+    },
+    {
+      "file": "review/gallery-hero.jpg",
+      "what": "Garden archive approach: bookcases, record stand, reading seat (runtime placements; grey boxes = existing layout solids)"
+    },
+    {
+      "file": "review/gallery-reverse.jpg",
+      "what": "Garden archive reverse: back of the reading seat and stand toward the terrace (runtime placements; grey boxes = existing layout solids)"
+    },
+    {
+      "file": "review/gallery-folio.jpg",
+      "what": "Archive folio and shelves: reader view onto the open folio (runtime placements; grey boxes = existing layout solids)"
+    },
+    {
+      "file": "review/maker-hero.jpg",
+      "what": "Maker workshop approach: workbench, result shelf, in-progress stand (runtime placements; grey boxes = existing layout solids)"
+    },
+    {
+      "file": "review/maker-reverse.jpg",
+      "what": "Maker workshop reverse: tool rail back, shelf back, stand back (runtime placements; grey boxes = existing layout solids)"
+    },
+    {
+      "file": "review/observatory-hero.jpg",
+      "what": "Observatory approach: forecast panel plinth beside the desk (runtime placements; grey boxes = existing layout solids)"
+    },
+    {
+      "file": "review/observatory-reverse.jpg",
+      "what": "Observatory reverse: plinth back (access plate, drain notch) (runtime placements; grey boxes = existing layout solids)"
+    },
+    {
+      "file": "review/observatory-garden-hero.jpg",
+      "what": "Observatory garden from the north bridge end: telescope on its plinth, steps, benches (runtime placements; grey boxes = existing layout solids)"
+    },
+    {
+      "file": "review/observatory-garden-reverse.jpg",
+      "what": "Observatory garden reverse: bench backs, telescope objective end (runtime placements; grey boxes = existing layout solids)"
+    },
+    {
+      "file": "review/telescope-approach.jpg",
+      "what": "Northern telescope approach: steps, observer position, eyepiece (runtime placements; grey boxes = existing layout solids)"
+    },
+    {
+      "file": "review/conservatory-hero.jpg",
+      "what": "Conservatory approach: measurement panel, growing bed, cart (runtime placements; grey boxes = existing layout solids)"
+    },
+    {
+      "file": "review/conservatory-reverse.jpg",
+      "what": "Conservatory reverse: panel rear cover/conduit, bed side, cart (runtime placements; grey boxes = existing layout solids)"
+    },
+    {
+      "file": "review/bridge-north-terrace-end.jpg",
+      "what": "Northern bridge from the terrace: abutment newels, threshold, drain, guard posts"
+    },
+    {
+      "file": "review/bridge-north-pad-end.jpg",
+      "what": "Northern bridge from the observatory pad (return path): far abutment, pier wall"
+    },
+    {
+      "file": "review/bridge-north-side.jpg",
+      "what": "Northern bridge side elevation: pier wall, corbel, scupper spouts below the deck"
+    },
+    {
+      "file": "review/bridge-garden-west-end.jpg",
+      "what": "Water-garden bridge, west end from land: newels, coping, drain"
+    },
+    {
+      "file": "review/bridge-garden-east-end.jpg",
+      "what": "Water-garden bridge, east end (return path)"
+    },
+    {
+      "file": "review/water-edge-contact.jpg",
+      "what": "Water edge contact: coping lip, batter, wet line, irises standing in the margin"
+    },
+    {
+      "file": "review/night-gallery.jpg",
+      "what": "Night relight: Garden archive with the runtime lamp position + a reading lamp"
+    },
+    {
+      "file": "review/night-observatory-garden.jpg",
+      "what": "Night relight: observatory garden under the runtime court lamp"
+    },
+    {
+      "file": "review/night-observatory.jpg",
+      "what": "Night relight: forecast plinth, armillary and panel slot glass"
+    }
+  ]
+}

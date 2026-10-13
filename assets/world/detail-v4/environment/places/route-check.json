@@ -1,0 +1,1982 @@
+{
+  "reachable_cells_before": 17250,
+  "reachable_cells_after": 16897,
+  "cells_lost": 353,
+  "area_lost_m2": 22.06,
+  "destinations": [
+    {
+      "name": "place commons",
+      "at": [
+        -3,
+        0,
+        3
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 1.88,
+      "regression": false
+    },
+    {
+      "name": "place gallery",
+      "at": [
+        -8,
+        3.4,
+        -18
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.18,
+      "regression": false
+    },
+    {
+      "name": "place maker",
+      "at": [
+        9,
+        3.4,
+        -17
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.18,
+      "regression": false
+    },
+    {
+      "name": "place council_garden",
+      "at": [
+        2,
+        3.4,
+        -23
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.64,
+      "regression": false
+    },
+    {
+      "name": "place observatory_garden",
+      "at": [
+        6.8,
+        3.4,
+        -41.5
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.15,
+      "regression": false
+    },
+    {
+      "name": "place conservatory",
+      "at": [
+        10,
+        0,
+        -7
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.18,
+      "regression": false
+    },
+    {
+      "name": "station henry",
+      "at": [
+        -1.1,
+        0,
+        3.1
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.04,
+      "regression": false
+    },
+    {
+      "name": "station librarian",
+      "at": [
+        -10,
+        3.4,
+        -19
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.18,
+      "regression": false
+    },
+    {
+      "name": "station reader",
+      "at": [
+        -6,
+        3.4,
+        -17
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.18,
+      "regression": false
+    },
+    {
+      "name": "station watcher",
+      "at": [
+        11,
+        3.4,
+        -23
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.18,
+      "regression": false
+    },
+    {
+      "name": "station steward",
+      "at": [
+        10,
+        3.4,
+        -17
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.18,
+      "regression": false
+    },
+    {
+      "name": "station strix",
+      "at": [
+        12,
+        0,
+        -3
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.18,
+      "regression": false
+    },
+    {
+      "name": "station financier",
+      "at": [
+        -11,
+        0,
+        -3
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.18,
+      "regression": false
+    },
+    {
+      "name": "station forecaster",
+      "at": [
+        3,
+        3.4,
+        -24
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.18,
+      "regression": false
+    },
+    {
+      "name": "station council",
+      "at": [
+        -1,
+        3.4,
+        -19
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.18,
+      "regression": false
+    },
+    {
+      "name": "station polybot",
+      "at": [
+        11,
+        0,
+        7
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.18,
+      "regression": false
+    },
+    {
+      "name": "station picker",
+      "at": [
+        -10,
+        0,
+        8
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.18,
+      "regression": false
+    },
+    {
+      "name": "station growth_measurement",
+      "at": [
+        10,
+        0,
+        -8
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.18,
+      "regression": false
+    },
+    {
+      "name": "observatory bridge south end",
+      "at": [
+        4,
+        3.4,
+        -26.7
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.15,
+      "regression": false
+    },
+    {
+      "name": "observatory bridge north end",
+      "at": [
+        4,
+        3.4,
+        -34.3
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.15,
+      "regression": false
+    },
+    {
+      "name": "garden bridge west end",
+      "at": [
+        1.4,
+        0,
+        -2.2
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.08,
+      "regression": false
+    },
+    {
+      "name": "garden bridge east end",
+      "at": [
+        6.6,
+        0,
+        -2.2
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.43,
+      "regression": false
+    },
+    {
+      "name": "archive-bookcase#0 anchor_approach",
+      "at": [
+        -13,
+        3.4,
+        -21
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.18,
+      "regression": false
+    },
+    {
+      "name": "archive-bookcase#0 anchor_interact",
+      "at": [
+        -13,
+        3.4,
+        -21.53
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.2,
+      "regression": false
+    },
+    {
+      "name": "archive-bookcase#1 anchor_approach",
+      "at": [
+        -10,
+        3.4,
+        -21
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.18,
+      "regression": false
+    },
+    {
+      "name": "archive-bookcase#1 anchor_interact",
+      "at": [
+        -10,
+        3.4,
+        -21.53
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.2,
+      "regression": false
+    },
+    {
+      "name": "archive-bookcase#2 anchor_approach",
+      "at": [
+        -7,
+        3.4,
+        -21
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.18,
+      "regression": false
+    },
+    {
+      "name": "archive-bookcase#2 anchor_interact",
+      "at": [
+        -7,
+        3.4,
+        -21.53
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.2,
+      "regression": false
+    },
+    {
+      "name": "archive-folio-stand#3 anchor_approach",
+      "at": [
+        -7.6,
+        3.4,
+        -18
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.13,
+      "regression": false
+    },
+    {
+      "name": "archive-folio-stand#3 anchor_interact",
+      "at": [
+        -7.6,
+        3.4,
+        -18.52
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.15,
+      "regression": false
+    },
+    {
+      "name": "bench-short#4 anchor_stand_0",
+      "at": [
+        -11.62,
+        3.4,
+        -18.62
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.26,
+      "regression": false
+    },
+    {
+      "name": "bench-short#4 anchor_stand_1",
+      "at": [
+        -12.38,
+        3.4,
+        -18.62
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.26,
+      "regression": false
+    },
+    {
+      "name": "bench-short#4 anchor_approach",
+      "at": [
+        -12,
+        3.4,
+        -19.1
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.13,
+      "regression": false
+    },
+    {
+      "name": "maker-workbench#7 anchor_approach",
+      "at": [
+        10,
+        3.4,
+        -16.5
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.18,
+      "regression": false
+    },
+    {
+      "name": "maker-workbench#7 anchor_interact",
+      "at": [
+        10,
+        3.4,
+        -17.02
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.19,
+      "regression": false
+    },
+    {
+      "name": "maker-result-shelf#8 anchor_approach",
+      "at": [
+        12.4,
+        3.4,
+        -18.15
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.04,
+      "regression": false
+    },
+    {
+      "name": "maker-result-shelf#8 anchor_interact",
+      "at": [
+        12.4,
+        3.4,
+        -18.7
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.08,
+      "regression": false
+    },
+    {
+      "name": "maker-progress-stand#9 anchor_approach",
+      "at": [
+        8.547,
+        3.4,
+        -17.415
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.18,
+      "regression": false
+    },
+    {
+      "name": "maker-progress-stand#9 anchor_interact",
+      "at": [
+        8.293,
+        3.4,
+        -17.88
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.27,
+      "regression": false
+    },
+    {
+      "name": "observatory-forecast-plinth#12 anchor_approach",
+      "at": [
+        1.88,
+        3.4,
+        -22.085
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.04,
+      "regression": false
+    },
+    {
+      "name": "observatory-forecast-plinth#12 anchor_interact",
+      "at": [
+        1.674,
+        3.4,
+        -22.649
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.28,
+      "regression": false
+    },
+    {
+      "name": "observatory-telescope#17 anchor_approach",
+      "at": [
+        4,
+        3.72,
+        -41.25
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.88,
+      "regression": false
+    },
+    {
+      "name": "observatory-telescope#17 anchor_observer",
+      "at": [
+        4,
+        3.72,
+        -41.65
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 1.28,
+      "regression": false
+    },
+    {
+      "name": "observatory-plinth-steps#18 anchor_approach",
+      "at": [
+        4,
+        3.4,
+        -39.85
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.13,
+      "regression": false
+    },
+    {
+      "name": "bench-long#19 anchor_stand_0",
+      "at": [
+        -3.1,
+        3.4,
+        -48.18
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.38,
+      "regression": false
+    },
+    {
+      "name": "bench-long#19 anchor_stand_1",
+      "at": [
+        -2,
+        3.4,
+        -48.18
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.33,
+      "regression": false
+    },
+    {
+      "name": "bench-long#19 anchor_stand_2",
+      "at": [
+        -0.9,
+        3.4,
+        -48.18
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.31,
+      "regression": false
+    },
+    {
+      "name": "bench-long#19 anchor_approach",
+      "at": [
+        -2,
+        3.4,
+        -47.7
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.15,
+      "regression": false
+    },
+    {
+      "name": "bench-long#20 anchor_stand_0",
+      "at": [
+        8.9,
+        3.4,
+        -48.18
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.31,
+      "regression": false
+    },
+    {
+      "name": "bench-long#20 anchor_stand_1",
+      "at": [
+        10,
+        3.4,
+        -48.18
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.33,
+      "regression": false
+    },
+    {
+      "name": "bench-long#20 anchor_stand_2",
+      "at": [
+        11.1,
+        3.4,
+        -48.18
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.31,
+      "regression": false
+    },
+    {
+      "name": "bench-long#20 anchor_approach",
+      "at": [
+        10,
+        3.4,
+        -47.7
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.15,
+      "regression": false
+    },
+    {
+      "name": "archive-folio-stand#21 anchor_approach",
+      "at": [
+        6.6,
+        3.4,
+        -44.4
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.04,
+      "regression": false
+    },
+    {
+      "name": "archive-folio-stand#21 anchor_interact",
+      "at": [
+        7.12,
+        3.4,
+        -44.4
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.03,
+      "regression": false
+    },
+    {
+      "name": "conservatory-measurement-panel#22 anchor_approach",
+      "at": [
+        8.714,
+        0,
+        -8.263
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.36,
+      "regression": false
+    },
+    {
+      "name": "conservatory-measurement-panel#22 anchor_interact",
+      "at": [
+        8.519,
+        0,
+        -8.893
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.3,
+      "regression": false
+    },
+    {
+      "name": "conservatory-growing-bed#23 anchor_approach",
+      "at": [
+        11.5,
+        0,
+        -6.6
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.13,
+      "regression": false
+    },
+    {
+      "name": "conservatory-growing-bed#23 anchor_interact",
+      "at": [
+        12.05,
+        0,
+        -6.6
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.18,
+      "regression": false
+    },
+    {
+      "name": "conservatory-equipment-cart#24 anchor_approach",
+      "at": [
+        11.553,
+        0,
+        -8.415
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.08,
+      "regression": false
+    },
+    {
+      "name": "conservatory-equipment-cart#24 anchor_interact",
+      "at": [
+        11.816,
+        0,
+        -8.898
+      ],
+      "reachable_before": true,
+      "reachable_after": true,
+      "nearest_after_m": 0.53,
+      "regression": false
+    }
+  ],
+  "regressions": [],
+  "envelope_clearance": [
+    {
+      "name": "archive-bookcase#0.0",
+      "sides_free_m": [
+        0.38,
+        0,
+        5.88,
+        0.25
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "archive-bookcase#1.0",
+      "sides_free_m": [
+        0.38,
+        0.38,
+        1.75,
+        0.25
+      ],
+      "min_side_free_m": 0.25
+    },
+    {
+      "name": "archive-bookcase#2.0",
+      "sides_free_m": [
+        5.88,
+        0.38,
+        5.88,
+        0.25
+      ],
+      "min_side_free_m": 0.25
+    },
+    {
+      "name": "archive-folio-stand#3.0",
+      "sides_free_m": [
+        5.88,
+        5.88,
+        5.88,
+        2.38
+      ],
+      "min_side_free_m": 2.38
+    },
+    {
+      "name": "bench-short#4.0",
+      "sides_free_m": [
+        4.13,
+        2.38,
+        3.88,
+        3.75
+      ],
+      "min_side_free_m": 2.38
+    },
+    {
+      "name": "column-base-stone#5.0",
+      "sides_free_m": [
+        5.88,
+        0.75,
+        1.5,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "column-base-stone#6.0",
+      "sides_free_m": [
+        2.88,
+        5.88,
+        5.88,
+        1.13
+      ],
+      "min_side_free_m": 1.13
+    },
+    {
+      "name": "maker-workbench#7.0",
+      "sides_free_m": [
+        4.25,
+        5.88,
+        5.88,
+        5.88
+      ],
+      "min_side_free_m": 4.25
+    },
+    {
+      "name": "maker-result-shelf#8.0",
+      "sides_free_m": [
+        2,
+        5.88,
+        5.63,
+        4.38
+      ],
+      "min_side_free_m": 2
+    },
+    {
+      "name": "maker-progress-stand#9.0",
+      "sides_free_m": [
+        2.5,
+        5.88,
+        5.88,
+        5.88
+      ],
+      "min_side_free_m": 2.5
+    },
+    {
+      "name": "post-shoe-bronze#10.0",
+      "sides_free_m": [
+        5.88,
+        5.88,
+        5.88,
+        5.88
+      ],
+      "min_side_free_m": 5.88
+    },
+    {
+      "name": "post-shoe-bronze#11.0",
+      "sides_free_m": [
+        1,
+        5.88,
+        1.75,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "observatory-forecast-plinth#12.0",
+      "sides_free_m": [
+        5.88,
+        5.88,
+        5.88,
+        1.13
+      ],
+      "min_side_free_m": 1.13
+    },
+    {
+      "name": "post-shoe-bronze#13.0",
+      "sides_free_m": [
+        5.88,
+        5.88,
+        1.25,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "post-shoe-bronze#14.0",
+      "sides_free_m": [
+        4.5,
+        5.88,
+        5.88,
+        2.63
+      ],
+      "min_side_free_m": 2.63
+    },
+    {
+      "name": "post-shoe-bronze#15.0",
+      "sides_free_m": [
+        5.88,
+        2.13,
+        0.13,
+        0.75
+      ],
+      "min_side_free_m": 0.13
+    },
+    {
+      "name": "post-shoe-bronze#16.0",
+      "sides_free_m": [
+        2.38,
+        0,
+        0.13,
+        0.75
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "observatory-telescope#17.0",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "observatory-telescope#17.1",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "bench-long#19.0",
+      "sides_free_m": [
+        5.88,
+        5.5,
+        5.88,
+        5
+      ],
+      "min_side_free_m": 5
+    },
+    {
+      "name": "bench-long#20.0",
+      "sides_free_m": [
+        5.5,
+        5.88,
+        5.88,
+        5
+      ],
+      "min_side_free_m": 5
+    },
+    {
+      "name": "archive-folio-stand#21.0",
+      "sides_free_m": [
+        3.5,
+        1.38,
+        5.88,
+        5.75
+      ],
+      "min_side_free_m": 1.38
+    },
+    {
+      "name": "conservatory-measurement-panel#22.0",
+      "sides_free_m": [
+        1.88,
+        1.75,
+        5.88,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "conservatory-growing-bed#23.0",
+      "sides_free_m": [
+        0,
+        5.5,
+        0.5,
+        2.63
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "conservatory-equipment-cart#24.0",
+      "sides_free_m": [
+        1.25,
+        0,
+        4.75,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "bridge-abutment-garden#25.0",
+      "sides_free_m": [
+        0,
+        5.88,
+        2,
+        5.88
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "bridge-abutment-garden#25.1",
+      "sides_free_m": [
+        0,
+        5.88,
+        5.88,
+        2
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "bridge-abutment-garden#26.0",
+      "sides_free_m": [
+        5.88,
+        0,
+        5.88,
+        2
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "bridge-abutment-garden#26.1",
+      "sides_free_m": [
+        5.88,
+        0,
+        2,
+        5.88
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "bridge-abutment-observatory#27.0",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "bridge-abutment-observatory#27.1",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "bridge-abutment-observatory#28.0",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "bridge-abutment-observatory#28.1",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "canopy-olive@0",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "canopy-olive@1",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "canopy-olive@2",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "canopy-olive@3",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "canopy-olive@4",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "canopy-olive@5",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "canopy-olive@6",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "canopy-olive@7",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "canopy-olive@8",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "canopy-olive@9",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "canopy-olive@10",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "canopy-olive@11",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "canopy-olive@12",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@13",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@16",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@19",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@22",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@25",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@28",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@31",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@34",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@37",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@40",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@43",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@46",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@49",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@52",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@55",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@56",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@59",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@62",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@65",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@68",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@71",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@74",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@77",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@80",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@83",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@86",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@89",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@92",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@95",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@98",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@101",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@104",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@107",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@110",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@113",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@116",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@119",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@120",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@123",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@126",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@129",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@132",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@135",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@138",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@141",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@143",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@145",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@147",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@149",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@151",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@153",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@155",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@157",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@159",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@161",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@163",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@165",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@167",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@172",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@175",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@178",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@181",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@184",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@187",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@190",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@193",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@196",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@199",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@202",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@205",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@217",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@218",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@233",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@234",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@249",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@264",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@279",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@294",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    },
+    {
+      "name": "shrub-laurel@309",
+      "sides_free_m": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "min_side_free_m": 0
+    }
+  ],
+  "pass": true
+}

@@ -1,0 +1,2775 @@
+{
+ "note": "axis-aligned world footprints of each collision box after placement yaw (conservative for rotated boxes); blocking=false boxes are placement/contact envelopes only",
+ "envelopes": [
+  {
+   "name": "archive-bookcase#0.0",
+   "asset": "archive-bookcase",
+   "place": "gallery",
+   "blocking": true,
+   "at": [
+    -13.0,
+    4.8,
+    -22.3
+   ],
+   "size": [
+    2.6,
+    2.8,
+    0.54
+   ]
+  },
+  {
+   "name": "archive-bookcase#1.0",
+   "asset": "archive-bookcase",
+   "place": "gallery",
+   "blocking": true,
+   "at": [
+    -10.0,
+    4.8,
+    -22.3
+   ],
+   "size": [
+    2.6,
+    2.8,
+    0.54
+   ]
+  },
+  {
+   "name": "archive-bookcase#2.0",
+   "asset": "archive-bookcase",
+   "place": "gallery",
+   "blocking": true,
+   "at": [
+    -7.0,
+    4.8,
+    -22.3
+   ],
+   "size": [
+    2.6,
+    2.8,
+    0.54
+   ]
+  },
+  {
+   "name": "archive-folio-stand#3.0",
+   "asset": "archive-folio-stand",
+   "place": "gallery",
+   "blocking": true,
+   "at": [
+    -7.6,
+    4.0,
+    -19.3
+   ],
+   "size": [
+    0.7,
+    1.2,
+    0.55
+   ]
+  },
+  {
+   "name": "bench-short#4.0",
+   "asset": "bench-short",
+   "place": "gallery",
+   "blocking": true,
+   "at": [
+    -12.0,
+    3.85,
+    -17.97
+   ],
+   "size": [
+    1.64,
+    0.9,
+    0.62
+   ]
+  },
+  {
+   "name": "column-base-stone#5.0",
+   "asset": "column-base-stone",
+   "place": "gallery",
+   "blocking": true,
+   "at": [
+    -14.0,
+    3.565,
+    -16.0
+   ],
+   "size": [
+    0.72,
+    0.33,
+    0.72
+   ]
+  },
+  {
+   "name": "column-base-stone#6.0",
+   "asset": "column-base-stone",
+   "place": "gallery",
+   "blocking": true,
+   "at": [
+    -6.0,
+    3.565,
+    -16.0
+   ],
+   "size": [
+    0.72,
+    0.33,
+    0.72
+   ]
+  },
+  {
+   "name": "maker-workbench#7.0",
+   "asset": "maker-workbench",
+   "place": "maker",
+   "blocking": true,
+   "at": [
+    10.0,
+    4.01,
+    -17.9
+   ],
+   "size": [
+    1.9,
+    1.22,
+    0.78
+   ]
+  },
+  {
+   "name": "maker-result-shelf#8.0",
+   "asset": "maker-result-shelf",
+   "place": "maker",
+   "blocking": true,
+   "at": [
+    12.4,
+    4.2,
+    -19.4
+   ],
+   "size": [
+    1.4,
+    1.6,
+    0.42
+   ]
+  },
+  {
+   "name": "maker-progress-stand#9.0",
+   "asset": "maker-progress-stand",
+   "place": "maker",
+   "blocking": true,
+   "at": [
+    7.9,
+    4.18,
+    -18.6
+   ],
+   "size": [
+    0.966,
+    1.56,
+    0.934
+   ]
+  },
+  {
+   "name": "post-shoe-bronze#10.0",
+   "asset": "post-shoe-bronze",
+   "place": "maker",
+   "blocking": true,
+   "at": [
+    7.0,
+    3.51,
+    -16.0
+   ],
+   "size": [
+    0.3,
+    0.22,
+    0.3
+   ]
+  },
+  {
+   "name": "post-shoe-bronze#11.0",
+   "asset": "post-shoe-bronze",
+   "place": "maker",
+   "blocking": true,
+   "at": [
+    14.0,
+    3.51,
+    -16.0
+   ],
+   "size": [
+    0.3,
+    0.22,
+    0.3
+   ]
+  },
+  {
+   "name": "observatory-forecast-plinth#12.0",
+   "asset": "observatory-forecast-plinth",
+   "place": "council_garden",
+   "blocking": true,
+   "at": [
+    1.4,
+    4.0,
+    -23.4
+   ],
+   "size": [
+    1.105,
+    1.2,
+    0.908
+   ]
+  },
+  {
+   "name": "post-shoe-bronze#13.0",
+   "asset": "post-shoe-bronze",
+   "place": "council_garden",
+   "blocking": true,
+   "at": [
+    -0.2,
+    3.51,
+    -21.7
+   ],
+   "size": [
+    0.3,
+    0.22,
+    0.3
+   ]
+  },
+  {
+   "name": "post-shoe-bronze#14.0",
+   "asset": "post-shoe-bronze",
+   "place": "council_garden",
+   "blocking": true,
+   "at": [
+    8.8,
+    3.51,
+    -21.7
+   ],
+   "size": [
+    0.3,
+    0.22,
+    0.3
+   ]
+  },
+  {
+   "name": "post-shoe-bronze#15.0",
+   "asset": "post-shoe-bronze",
+   "place": "council_garden",
+   "blocking": true,
+   "at": [
+    -0.2,
+    3.51,
+    -26.3
+   ],
+   "size": [
+    0.3,
+    0.22,
+    0.3
+   ]
+  },
+  {
+   "name": "post-shoe-bronze#16.0",
+   "asset": "post-shoe-bronze",
+   "place": "council_garden",
+   "blocking": true,
+   "at": [
+    8.8,
+    3.51,
+    -26.3
+   ],
+   "size": [
+    0.3,
+    0.22,
+    0.3
+   ]
+  },
+  {
+   "name": "observatory-telescope#17.0",
+   "asset": "observatory-telescope",
+   "place": "observatory_garden",
+   "blocking": true,
+   "at": [
+    4.0,
+    4.67,
+    -43.2
+   ],
+   "size": [
+    1.72,
+    1.9,
+    1.72
+   ]
+  },
+  {
+   "name": "observatory-telescope#17.1",
+   "asset": "observatory-telescope",
+   "place": "observatory_garden",
+   "blocking": true,
+   "at": [
+    4.0,
+    5.47,
+    -43.15
+   ],
+   "size": [
+    0.7,
+    1.5,
+    2.3
+   ]
+  },
+  {
+   "name": "observatory-plinth-steps#18.0",
+   "asset": "observatory-plinth-steps",
+   "place": "observatory_garden",
+   "blocking": false,
+   "at": [
+    4.0,
+    3.57,
+    -40.75
+   ],
+   "size": [
+    1.84,
+    0.34,
+    0.6
+   ]
+  },
+  {
+   "name": "bench-long#19.0",
+   "asset": "bench-long",
+   "place": "observatory_garden",
+   "blocking": true,
+   "at": [
+    -2.0,
+    3.85,
+    -48.83
+   ],
+   "size": [
+    3.24,
+    0.9,
+    0.62
+   ]
+  },
+  {
+   "name": "bench-long#20.0",
+   "asset": "bench-long",
+   "place": "observatory_garden",
+   "blocking": true,
+   "at": [
+    10.0,
+    3.85,
+    -48.83
+   ],
+   "size": [
+    3.24,
+    0.9,
+    0.62
+   ]
+  },
+  {
+   "name": "archive-folio-stand#21.0",
+   "asset": "archive-folio-stand",
+   "place": "observatory_garden",
+   "blocking": true,
+   "at": [
+    7.9,
+    4.0,
+    -44.4
+   ],
+   "size": [
+    0.55,
+    1.2,
+    0.7
+   ]
+  },
+  {
+   "name": "conservatory-measurement-panel#22.0",
+   "asset": "conservatory-measurement-panel",
+   "place": "conservatory",
+   "blocking": true,
+   "at": [
+    8.3,
+    0.88,
+    -9.6
+   ],
+   "size": [
+    1.332,
+    1.76,
+    0.844
+   ]
+  },
+  {
+   "name": "conservatory-growing-bed#23.0",
+   "asset": "conservatory-growing-bed",
+   "place": "conservatory",
+   "blocking": true,
+   "at": [
+    13.0,
+    0.45,
+    -6.62
+   ],
+   "size": [
+    0.92,
+    0.9,
+    2.48
+   ]
+  },
+  {
+   "name": "conservatory-equipment-cart#24.0",
+   "asset": "conservatory-equipment-cart",
+   "place": "conservatory",
+   "blocking": true,
+   "at": [
+    12.165,
+    0.5,
+    -9.619
+   ],
+   "size": [
+    1.288,
+    1.04,
+    1.073
+   ]
+  },
+  {
+   "name": "bridge-abutment-garden#25.0",
+   "asset": "bridge-abutment-garden",
+   "place": "route",
+   "blocking": true,
+   "at": [
+    2.05,
+    0.5,
+    -3.38
+   ],
+   "size": [
+    0.28,
+    1.95,
+    0.28
+   ]
+  },
+  {
+   "name": "bridge-abutment-garden#25.1",
+   "asset": "bridge-abutment-garden",
+   "place": "route",
+   "blocking": true,
+   "at": [
+    2.05,
+    0.5,
+    -1.02
+   ],
+   "size": [
+    0.28,
+    1.95,
+    0.28
+   ]
+  },
+  {
+   "name": "bridge-abutment-garden#25.2",
+   "asset": "bridge-abutment-garden",
+   "place": "route",
+   "blocking": false,
+   "at": [
+    2.35,
+    0.0,
+    -2.2
+   ],
+   "size": [
+    0.6,
+    0.9,
+    2.56
+   ]
+  },
+  {
+   "name": "bridge-abutment-garden#26.0",
+   "asset": "bridge-abutment-garden",
+   "place": "route",
+   "blocking": true,
+   "at": [
+    5.95,
+    0.5,
+    -1.02
+   ],
+   "size": [
+    0.28,
+    1.95,
+    0.28
+   ]
+  },
+  {
+   "name": "bridge-abutment-garden#26.1",
+   "asset": "bridge-abutment-garden",
+   "place": "route",
+   "blocking": true,
+   "at": [
+    5.95,
+    0.5,
+    -3.38
+   ],
+   "size": [
+    0.28,
+    1.95,
+    0.28
+   ]
+  },
+  {
+   "name": "bridge-abutment-garden#26.2",
+   "asset": "bridge-abutment-garden",
+   "place": "route",
+   "blocking": false,
+   "at": [
+    5.65,
+    0.0,
+    -2.2
+   ],
+   "size": [
+    0.6,
+    0.9,
+    2.56
+   ]
+  },
+  {
+   "name": "bridge-abutment-observatory#27.0",
+   "asset": "bridge-abutment-observatory",
+   "place": "route",
+   "blocking": true,
+   "at": [
+    1.08,
+    4.1,
+    -27.6
+   ],
+   "size": [
+    0.42,
+    1.4,
+    0.42
+   ]
+  },
+  {
+   "name": "bridge-abutment-observatory#27.1",
+   "asset": "bridge-abutment-observatory",
+   "place": "route",
+   "blocking": true,
+   "at": [
+    6.92,
+    4.1,
+    -27.6
+   ],
+   "size": [
+    0.42,
+    1.4,
+    0.42
+   ]
+  },
+  {
+   "name": "bridge-abutment-observatory#28.0",
+   "asset": "bridge-abutment-observatory",
+   "place": "route",
+   "blocking": true,
+   "at": [
+    6.92,
+    4.1,
+    -33.0
+   ],
+   "size": [
+    0.42,
+    1.4,
+    0.42
+   ]
+  },
+  {
+   "name": "bridge-abutment-observatory#28.1",
+   "asset": "bridge-abutment-observatory",
+   "place": "route",
+   "blocking": true,
+   "at": [
+    1.08,
+    4.1,
+    -33.0
+   ],
+   "size": [
+    0.42,
+    1.4,
+    0.42
+   ]
+  },
+  {
+   "name": "water-coping-2m#29.0",
+   "asset": "water-coping-2m",
+   "place": "route",
+   "blocking": false,
+   "at": [
+    1.945,
+    0.0,
+    -4.2
+   ],
+   "size": [
+    0.41,
+    0.08,
+    2.0
+   ]
+  },
+  {
+   "name": "water-coping-2m#30.0",
+   "asset": "water-coping-2m",
+   "place": "route",
+   "blocking": false,
+   "at": [
+    6.055,
+    0.0,
+    -4.2
+   ],
+   "size": [
+    0.41,
+    0.08,
+    2.0
+   ]
+  },
+  {
+   "name": "water-coping-2m#31.0",
+   "asset": "water-coping-2m",
+   "place": "route",
+   "blocking": false,
+   "at": [
+    1.945,
+    0.0,
+    -0.0
+   ],
+   "size": [
+    0.41,
+    0.08,
+    2.0
+   ]
+  },
+  {
+   "name": "water-coping-2m#32.0",
+   "asset": "water-coping-2m",
+   "place": "route",
+   "blocking": false,
+   "at": [
+    6.055,
+    0.0,
+    -0.0
+   ],
+   "size": [
+    0.41,
+    0.08,
+    2.0
+   ]
+  },
+  {
+   "name": "water-coping-2m#33.0",
+   "asset": "water-coping-2m",
+   "place": "route",
+   "blocking": false,
+   "at": [
+    3.05,
+    0.0,
+    1.155
+   ],
+   "size": [
+    1.9,
+    0.08,
+    0.41
+   ]
+  },
+  {
+   "name": "water-coping-2m#34.0",
+   "asset": "water-coping-2m",
+   "place": "route",
+   "blocking": false,
+   "at": [
+    4.95,
+    0.0,
+    1.155
+   ],
+   "size": [
+    1.9,
+    0.08,
+    0.41
+   ]
+  },
+  {
+   "name": "water-coping-corner#35.0",
+   "asset": "water-coping-corner",
+   "place": "route",
+   "blocking": false,
+   "at": [
+    2.1,
+    0.0,
+    1.155
+   ],
+   "size": [
+    0.41,
+    0.08,
+    0.41
+   ]
+  },
+  {
+   "name": "water-coping-corner#36.0",
+   "asset": "water-coping-corner",
+   "place": "route",
+   "blocking": false,
+   "at": [
+    6.055,
+    0.0,
+    1.0
+   ],
+   "size": [
+    0.41,
+    0.08,
+    0.41
+   ]
+  },
+  {
+   "name": "rail-stanchion#37.0",
+   "asset": "rail-stanchion",
+   "place": "route",
+   "blocking": false,
+   "at": [
+    2.5,
+    0.93,
+    -3.15
+   ],
+   "size": [
+    0.14,
+    0.96,
+    0.14
+   ]
+  },
+  {
+   "name": "rail-stanchion#38.0",
+   "asset": "rail-stanchion",
+   "place": "route",
+   "blocking": false,
+   "at": [
+    2.5,
+    0.93,
+    -1.25
+   ],
+   "size": [
+    0.14,
+    0.96,
+    0.14
+   ]
+  },
+  {
+   "name": "rail-stanchion#39.0",
+   "asset": "rail-stanchion",
+   "place": "route",
+   "blocking": false,
+   "at": [
+    3.5,
+    0.93,
+    -3.15
+   ],
+   "size": [
+    0.14,
+    0.96,
+    0.14
+   ]
+  },
+  {
+   "name": "rail-stanchion#40.0",
+   "asset": "rail-stanchion",
+   "place": "route",
+   "blocking": false,
+   "at": [
+    3.5,
+    0.93,
+    -1.25
+   ],
+   "size": [
+    0.14,
+    0.96,
+    0.14
+   ]
+  },
+  {
+   "name": "rail-stanchion#41.0",
+   "asset": "rail-stanchion",
+   "place": "route",
+   "blocking": false,
+   "at": [
+    4.5,
+    0.93,
+    -3.15
+   ],
+   "size": [
+    0.14,
+    0.96,
+    0.14
+   ]
+  },
+  {
+   "name": "rail-stanchion#42.0",
+   "asset": "rail-stanchion",
+   "place": "route",
+   "blocking": false,
+   "at": [
+    4.5,
+    0.93,
+    -1.25
+   ],
+   "size": [
+    0.14,
+    0.96,
+    0.14
+   ]
+  },
+  {
+   "name": "rail-stanchion#43.0",
+   "asset": "rail-stanchion",
+   "place": "route",
+   "blocking": false,
+   "at": [
+    5.5,
+    0.93,
+    -3.15
+   ],
+   "size": [
+    0.14,
+    0.96,
+    0.14
+   ]
+  },
+  {
+   "name": "rail-stanchion#44.0",
+   "asset": "rail-stanchion",
+   "place": "route",
+   "blocking": false,
+   "at": [
+    5.5,
+    0.93,
+    -1.25
+   ],
+   "size": [
+    0.14,
+    0.96,
+    0.14
+   ]
+  },
+  {
+   "name": "rail-stanchion#45.0",
+   "asset": "rail-stanchion",
+   "place": "route",
+   "blocking": false,
+   "at": [
+    1.08,
+    3.88,
+    -28.6
+   ],
+   "size": [
+    0.14,
+    0.96,
+    0.14
+   ]
+  },
+  {
+   "name": "rail-stanchion#46.0",
+   "asset": "rail-stanchion",
+   "place": "route",
+   "blocking": false,
+   "at": [
+    1.08,
+    3.88,
+    -30.3
+   ],
+   "size": [
+    0.14,
+    0.96,
+    0.14
+   ]
+  },
+  {
+   "name": "rail-stanchion#47.0",
+   "asset": "rail-stanchion",
+   "place": "route",
+   "blocking": false,
+   "at": [
+    1.08,
+    3.88,
+    -32.0
+   ],
+   "size": [
+    0.14,
+    0.96,
+    0.14
+   ]
+  },
+  {
+   "name": "rail-stanchion#48.0",
+   "asset": "rail-stanchion",
+   "place": "route",
+   "blocking": false,
+   "at": [
+    6.92,
+    3.88,
+    -28.6
+   ],
+   "size": [
+    0.14,
+    0.96,
+    0.14
+   ]
+  },
+  {
+   "name": "rail-stanchion#49.0",
+   "asset": "rail-stanchion",
+   "place": "route",
+   "blocking": false,
+   "at": [
+    6.92,
+    3.88,
+    -30.3
+   ],
+   "size": [
+    0.14,
+    0.96,
+    0.14
+   ]
+  },
+  {
+   "name": "rail-stanchion#50.0",
+   "asset": "rail-stanchion",
+   "place": "route",
+   "blocking": false,
+   "at": [
+    6.92,
+    3.88,
+    -32.0
+   ],
+   "size": [
+    0.14,
+    0.96,
+    0.14
+   ]
+  },
+  {
+   "name": "terrace-drain-grate#51.0",
+   "asset": "terrace-drain-grate",
+   "place": "route",
+   "blocking": false,
+   "at": [
+    4.0,
+    3.36,
+    -26.9
+   ],
+   "size": [
+    1.0,
+    0.08,
+    0.16
+   ]
+  },
+  {
+   "name": "terrace-drain-grate#52.0",
+   "asset": "terrace-drain-grate",
+   "place": "route",
+   "blocking": false,
+   "at": [
+    4.0,
+    3.36,
+    -33.7
+   ],
+   "size": [
+    1.0,
+    0.08,
+    0.16
+   ]
+  },
+  {
+   "name": "terrace-drain-grate#53.0",
+   "asset": "terrace-drain-grate",
+   "place": "route",
+   "blocking": false,
+   "at": [
+    0.7,
+    -0.04,
+    -2.2
+   ],
+   "size": [
+    0.16,
+    0.08,
+    1.0
+   ]
+  },
+  {
+   "name": "terrace-drain-grate#54.0",
+   "asset": "terrace-drain-grate",
+   "place": "route",
+   "blocking": false,
+   "at": [
+    7.3,
+    -0.04,
+    -2.2
+   ],
+   "size": [
+    0.16,
+    0.08,
+    1.0
+   ]
+  },
+  {
+   "name": "canopy-olive@0",
+   "asset": "canopy-olive",
+   "place": "commons",
+   "blocking": true,
+   "at": [
+    -7.8,
+    0.025,
+    5.8
+   ],
+   "size": [
+    0.653,
+    1.0,
+    0.653
+   ]
+  },
+  {
+   "name": "canopy-olive@1",
+   "asset": "canopy-olive",
+   "place": "route-edge",
+   "blocking": true,
+   "at": [
+    7.7,
+    0.025,
+    10
+   ],
+   "size": [
+    0.612,
+    1.0,
+    0.612
+   ]
+  },
+  {
+   "name": "canopy-olive@2",
+   "asset": "canopy-olive",
+   "place": "route-edge",
+   "blocking": true,
+   "at": [
+    -13,
+    0.025,
+    11
+   ],
+   "size": [
+    0.571,
+    1.0,
+    0.571
+   ]
+  },
+  {
+   "name": "canopy-olive@3",
+   "asset": "canopy-olive",
+   "place": "route-edge",
+   "blocking": true,
+   "at": [
+    -14,
+    0.025,
+    2
+   ],
+   "size": [
+    0.612,
+    1.0,
+    0.612
+   ]
+  },
+  {
+   "name": "canopy-olive@4",
+   "asset": "canopy-olive",
+   "place": "route-edge",
+   "blocking": true,
+   "at": [
+    -14,
+    1.158,
+    -10
+   ],
+   "size": [
+    0.653,
+    1.0,
+    0.653
+   ]
+  },
+  {
+   "name": "canopy-olive@5",
+   "asset": "canopy-olive",
+   "place": "gallery",
+   "blocking": true,
+   "at": [
+    -14,
+    3.425,
+    -24
+   ],
+   "size": [
+    0.673,
+    1.0,
+    0.673
+   ]
+  },
+  {
+   "name": "canopy-olive@6",
+   "asset": "canopy-olive",
+   "place": "council_garden",
+   "blocking": true,
+   "at": [
+    -5,
+    3.425,
+    -25
+   ],
+   "size": [
+    0.632,
+    1.0,
+    0.632
+   ]
+  },
+  {
+   "name": "canopy-olive@7",
+   "asset": "canopy-olive",
+   "place": "council_garden",
+   "blocking": true,
+   "at": [
+    8,
+    3.425,
+    -26
+   ],
+   "size": [
+    0.592,
+    1.0,
+    0.592
+   ]
+  },
+  {
+   "name": "canopy-olive@8",
+   "asset": "canopy-olive",
+   "place": "conservatory",
+   "blocking": true,
+   "at": [
+    14,
+    2.292,
+    -12
+   ],
+   "size": [
+    0.571,
+    1.0,
+    0.571
+   ]
+  },
+  {
+   "name": "canopy-olive@9",
+   "asset": "canopy-olive",
+   "place": "conservatory",
+   "blocking": true,
+   "at": [
+    14,
+    0.025,
+    0
+   ],
+   "size": [
+    0.535,
+    1.0,
+    0.535
+   ]
+  },
+  {
+   "name": "canopy-olive@10",
+   "asset": "canopy-olive",
+   "place": "route-edge",
+   "blocking": true,
+   "at": [
+    0,
+    2.292,
+    -12
+   ],
+   "size": [
+    0.535,
+    1.0,
+    0.535
+   ]
+  },
+  {
+   "name": "canopy-olive@11",
+   "asset": "canopy-olive",
+   "place": "observatory_garden",
+   "blocking": true,
+   "at": [
+    -6,
+    3.425,
+    -44.7
+   ],
+   "size": [
+    0.535,
+    1.0,
+    0.535
+   ]
+  },
+  {
+   "name": "canopy-olive@12",
+   "asset": "canopy-olive",
+   "place": "observatory_garden",
+   "blocking": true,
+   "at": [
+    14,
+    3.425,
+    -44.7
+   ],
+   "size": [
+    0.535,
+    1.0,
+    0.535
+   ]
+  },
+  {
+   "name": "shrub-laurel@13",
+   "asset": "shrub-laurel",
+   "place": "route-edge",
+   "blocking": true,
+   "at": [
+    -14.5,
+    0.025,
+    12
+   ],
+   "size": [
+    0.701,
+    1.0,
+    0.701
+   ]
+  },
+  {
+   "name": "shrub-laurel@16",
+   "asset": "shrub-laurel",
+   "place": "route-edge",
+   "blocking": true,
+   "at": [
+    -14.802,
+    0.025,
+    10.3
+   ],
+   "size": [
+    0.823,
+    1.0,
+    0.823
+   ]
+  },
+  {
+   "name": "shrub-laurel@19",
+   "asset": "shrub-laurel",
+   "place": "route-edge",
+   "blocking": true,
+   "at": [
+    -14.195,
+    0.025,
+    8.6
+   ],
+   "size": [
+    0.944,
+    1.0,
+    0.944
+   ]
+  },
+  {
+   "name": "shrub-laurel@22",
+   "asset": "shrub-laurel",
+   "place": "route-edge",
+   "blocking": true,
+   "at": [
+    -14.506,
+    0.025,
+    6.9
+   ],
+   "size": [
+    0.701,
+    1.0,
+    0.701
+   ]
+  },
+  {
+   "name": "shrub-laurel@25",
+   "asset": "shrub-laurel",
+   "place": "route-edge",
+   "blocking": true,
+   "at": [
+    -14.799,
+    0.025,
+    5.2
+   ],
+   "size": [
+    0.823,
+    1.0,
+    0.823
+   ]
+  },
+  {
+   "name": "shrub-laurel@28",
+   "asset": "shrub-laurel",
+   "place": "route-edge",
+   "blocking": true,
+   "at": [
+    -14.192,
+    0.025,
+    3.5
+   ],
+   "size": [
+    0.944,
+    1.0,
+    0.944
+   ]
+  },
+  {
+   "name": "shrub-laurel@31",
+   "asset": "shrub-laurel",
+   "place": "route-edge",
+   "blocking": true,
+   "at": [
+    -14.512,
+    0.025,
+    1.8
+   ],
+   "size": [
+    0.701,
+    1.0,
+    0.701
+   ]
+  },
+  {
+   "name": "shrub-laurel@34",
+   "asset": "shrub-laurel",
+   "place": "route-edge",
+   "blocking": true,
+   "at": [
+    -14.796,
+    0.025,
+    0.1
+   ],
+   "size": [
+    0.823,
+    1.0,
+    0.823
+   ]
+  },
+  {
+   "name": "shrub-laurel@37",
+   "asset": "shrub-laurel",
+   "place": "route-edge",
+   "blocking": true,
+   "at": [
+    -14.189,
+    0.025,
+    -1.6
+   ],
+   "size": [
+    0.944,
+    1.0,
+    0.944
+   ]
+  },
+  {
+   "name": "shrub-laurel@40",
+   "asset": "shrub-laurel",
+   "place": "route-edge",
+   "blocking": true,
+   "at": [
+    -14.518,
+    0.025,
+    -3.3
+   ],
+   "size": [
+    0.701,
+    1.0,
+    0.701
+   ]
+  },
+  {
+   "name": "shrub-laurel@43",
+   "asset": "shrub-laurel",
+   "place": "route-edge",
+   "blocking": true,
+   "at": [
+    -14.793,
+    0.025,
+    -5
+   ],
+   "size": [
+    0.823,
+    1.0,
+    0.823
+   ]
+  },
+  {
+   "name": "shrub-laurel@46",
+   "asset": "shrub-laurel",
+   "place": "route-edge",
+   "blocking": true,
+   "at": [
+    -14.187,
+    0.025,
+    -6.7
+   ],
+   "size": [
+    0.944,
+    1.0,
+    0.944
+   ]
+  },
+  {
+   "name": "shrub-laurel@49",
+   "asset": "shrub-laurel",
+   "place": "route-edge",
+   "blocking": true,
+   "at": [
+    -14.524,
+    0.252,
+    -8.4
+   ],
+   "size": [
+    0.701,
+    1.0,
+    0.701
+   ]
+  },
+  {
+   "name": "shrub-laurel@52",
+   "asset": "shrub-laurel",
+   "place": "route-edge",
+   "blocking": true,
+   "at": [
+    -14.79,
+    1.215,
+    -10.1
+   ],
+   "size": [
+    0.823,
+    1.0,
+    0.823
+   ]
+  },
+  {
+   "name": "shrub-laurel@55",
+   "asset": "shrub-laurel",
+   "place": "gallery",
+   "blocking": true,
+   "at": [
+    -14.184,
+    2.178,
+    -11.8
+   ],
+   "size": [
+    0.944,
+    1.0,
+    0.944
+   ]
+  },
+  {
+   "name": "shrub-laurel@56",
+   "asset": "shrub-laurel",
+   "place": "gallery",
+   "blocking": true,
+   "at": [
+    -14.529,
+    3.142,
+    -13.5
+   ],
+   "size": [
+    0.701,
+    1.0,
+    0.701
+   ]
+  },
+  {
+   "name": "shrub-laurel@59",
+   "asset": "shrub-laurel",
+   "place": "gallery",
+   "blocking": true,
+   "at": [
+    -14.786,
+    3.425,
+    -15.2
+   ],
+   "size": [
+    0.823,
+    1.0,
+    0.823
+   ]
+  },
+  {
+   "name": "shrub-laurel@62",
+   "asset": "shrub-laurel",
+   "place": "gallery",
+   "blocking": true,
+   "at": [
+    -14.182,
+    3.425,
+    -16.9
+   ],
+   "size": [
+    0.944,
+    1.0,
+    0.944
+   ]
+  },
+  {
+   "name": "shrub-laurel@65",
+   "asset": "shrub-laurel",
+   "place": "gallery",
+   "blocking": true,
+   "at": [
+    -14.535,
+    3.425,
+    -18.6
+   ],
+   "size": [
+    0.701,
+    1.0,
+    0.701
+   ]
+  },
+  {
+   "name": "shrub-laurel@68",
+   "asset": "shrub-laurel",
+   "place": "gallery",
+   "blocking": true,
+   "at": [
+    -14.783,
+    3.425,
+    -20.3
+   ],
+   "size": [
+    0.823,
+    1.0,
+    0.823
+   ]
+  },
+  {
+   "name": "shrub-laurel@71",
+   "asset": "shrub-laurel",
+   "place": "gallery",
+   "blocking": true,
+   "at": [
+    -14.179,
+    3.425,
+    -22
+   ],
+   "size": [
+    0.944,
+    1.0,
+    0.944
+   ]
+  },
+  {
+   "name": "shrub-laurel@74",
+   "asset": "shrub-laurel",
+   "place": "gallery",
+   "blocking": true,
+   "at": [
+    -14.541,
+    3.425,
+    -23.7
+   ],
+   "size": [
+    0.701,
+    1.0,
+    0.701
+   ]
+  },
+  {
+   "name": "shrub-laurel@77",
+   "asset": "shrub-laurel",
+   "place": "route-edge",
+   "blocking": true,
+   "at": [
+    14.5,
+    0.025,
+    12
+   ],
+   "size": [
+    0.701,
+    1.0,
+    0.701
+   ]
+  },
+  {
+   "name": "shrub-laurel@80",
+   "asset": "shrub-laurel",
+   "place": "route-edge",
+   "blocking": true,
+   "at": [
+    14.802,
+    0.025,
+    10.3
+   ],
+   "size": [
+    0.823,
+    1.0,
+    0.823
+   ]
+  },
+  {
+   "name": "shrub-laurel@83",
+   "asset": "shrub-laurel",
+   "place": "route-edge",
+   "blocking": true,
+   "at": [
+    14.195,
+    0.025,
+    8.6
+   ],
+   "size": [
+    0.944,
+    1.0,
+    0.944
+   ]
+  },
+  {
+   "name": "shrub-laurel@86",
+   "asset": "shrub-laurel",
+   "place": "route-edge",
+   "blocking": true,
+   "at": [
+    14.506,
+    0.025,
+    6.9
+   ],
+   "size": [
+    0.701,
+    1.0,
+    0.701
+   ]
+  },
+  {
+   "name": "shrub-laurel@89",
+   "asset": "shrub-laurel",
+   "place": "route-edge",
+   "blocking": true,
+   "at": [
+    14.799,
+    0.025,
+    5.2
+   ],
+   "size": [
+    0.823,
+    1.0,
+    0.823
+   ]
+  },
+  {
+   "name": "shrub-laurel@92",
+   "asset": "shrub-laurel",
+   "place": "route-edge",
+   "blocking": true,
+   "at": [
+    14.192,
+    0.025,
+    3.5
+   ],
+   "size": [
+    0.944,
+    1.0,
+    0.944
+   ]
+  },
+  {
+   "name": "shrub-laurel@95",
+   "asset": "shrub-laurel",
+   "place": "route-edge",
+   "blocking": true,
+   "at": [
+    14.512,
+    0.025,
+    1.8
+   ],
+   "size": [
+    0.701,
+    1.0,
+    0.701
+   ]
+  },
+  {
+   "name": "shrub-laurel@98",
+   "asset": "shrub-laurel",
+   "place": "conservatory",
+   "blocking": true,
+   "at": [
+    14.796,
+    0.025,
+    0.1
+   ],
+   "size": [
+    0.823,
+    1.0,
+    0.823
+   ]
+  },
+  {
+   "name": "shrub-laurel@101",
+   "asset": "shrub-laurel",
+   "place": "conservatory",
+   "blocking": true,
+   "at": [
+    14.189,
+    0.025,
+    -1.6
+   ],
+   "size": [
+    0.944,
+    1.0,
+    0.944
+   ]
+  },
+  {
+   "name": "shrub-laurel@104",
+   "asset": "shrub-laurel",
+   "place": "conservatory",
+   "blocking": true,
+   "at": [
+    14.518,
+    0.025,
+    -3.3
+   ],
+   "size": [
+    0.701,
+    1.0,
+    0.701
+   ]
+  },
+  {
+   "name": "shrub-laurel@107",
+   "asset": "shrub-laurel",
+   "place": "conservatory",
+   "blocking": true,
+   "at": [
+    14.793,
+    0.025,
+    -5
+   ],
+   "size": [
+    0.823,
+    1.0,
+    0.823
+   ]
+  },
+  {
+   "name": "shrub-laurel@110",
+   "asset": "shrub-laurel",
+   "place": "conservatory",
+   "blocking": true,
+   "at": [
+    14.187,
+    0.025,
+    -6.7
+   ],
+   "size": [
+    0.944,
+    1.0,
+    0.944
+   ]
+  },
+  {
+   "name": "shrub-laurel@113",
+   "asset": "shrub-laurel",
+   "place": "conservatory",
+   "blocking": true,
+   "at": [
+    14.524,
+    0.252,
+    -8.4
+   ],
+   "size": [
+    0.701,
+    1.0,
+    0.701
+   ]
+  },
+  {
+   "name": "shrub-laurel@116",
+   "asset": "shrub-laurel",
+   "place": "conservatory",
+   "blocking": true,
+   "at": [
+    14.79,
+    1.215,
+    -10.1
+   ],
+   "size": [
+    0.823,
+    1.0,
+    0.823
+   ]
+  },
+  {
+   "name": "shrub-laurel@119",
+   "asset": "shrub-laurel",
+   "place": "conservatory",
+   "blocking": true,
+   "at": [
+    14.184,
+    2.178,
+    -11.8
+   ],
+   "size": [
+    0.944,
+    1.0,
+    0.944
+   ]
+  },
+  {
+   "name": "shrub-laurel@120",
+   "asset": "shrub-laurel",
+   "place": "maker",
+   "blocking": true,
+   "at": [
+    14.529,
+    3.142,
+    -13.5
+   ],
+   "size": [
+    0.701,
+    1.0,
+    0.701
+   ]
+  },
+  {
+   "name": "shrub-laurel@123",
+   "asset": "shrub-laurel",
+   "place": "maker",
+   "blocking": true,
+   "at": [
+    14.786,
+    3.425,
+    -15.2
+   ],
+   "size": [
+    0.823,
+    1.0,
+    0.823
+   ]
+  },
+  {
+   "name": "shrub-laurel@126",
+   "asset": "shrub-laurel",
+   "place": "maker",
+   "blocking": true,
+   "at": [
+    14.182,
+    3.425,
+    -16.9
+   ],
+   "size": [
+    0.944,
+    1.0,
+    0.944
+   ]
+  },
+  {
+   "name": "shrub-laurel@129",
+   "asset": "shrub-laurel",
+   "place": "maker",
+   "blocking": true,
+   "at": [
+    14.535,
+    3.425,
+    -18.6
+   ],
+   "size": [
+    0.701,
+    1.0,
+    0.701
+   ]
+  },
+  {
+   "name": "shrub-laurel@132",
+   "asset": "shrub-laurel",
+   "place": "maker",
+   "blocking": true,
+   "at": [
+    14.783,
+    3.425,
+    -20.3
+   ],
+   "size": [
+    0.823,
+    1.0,
+    0.823
+   ]
+  },
+  {
+   "name": "shrub-laurel@135",
+   "asset": "shrub-laurel",
+   "place": "maker",
+   "blocking": true,
+   "at": [
+    14.179,
+    3.425,
+    -22
+   ],
+   "size": [
+    0.944,
+    1.0,
+    0.944
+   ]
+  },
+  {
+   "name": "shrub-laurel@138",
+   "asset": "shrub-laurel",
+   "place": "maker",
+   "blocking": true,
+   "at": [
+    14.541,
+    3.425,
+    -23.7
+   ],
+   "size": [
+    0.701,
+    1.0,
+    0.701
+   ]
+  },
+  {
+   "name": "shrub-laurel@141",
+   "asset": "shrub-laurel",
+   "place": "gallery",
+   "blocking": true,
+   "at": [
+    -12,
+    3.425,
+    -25.7
+   ],
+   "size": [
+    0.673,
+    1.0,
+    0.673
+   ]
+  },
+  {
+   "name": "shrub-laurel@143",
+   "asset": "shrub-laurel",
+   "place": "gallery",
+   "blocking": true,
+   "at": [
+    -10.5,
+    3.425,
+    -25.279
+   ],
+   "size": [
+    0.804,
+    1.0,
+    0.804
+   ]
+  },
+  {
+   "name": "shrub-laurel@145",
+   "asset": "shrub-laurel",
+   "place": "gallery",
+   "blocking": true,
+   "at": [
+    -9,
+    3.425,
+    -25.245
+   ],
+   "size": [
+    0.935,
+    1.0,
+    0.935
+   ]
+  },
+  {
+   "name": "shrub-laurel@147",
+   "asset": "shrub-laurel",
+   "place": "gallery",
+   "blocking": true,
+   "at": [
+    -7.5,
+    3.425,
+    -25.629
+   ],
+   "size": [
+    0.673,
+    1.0,
+    0.673
+   ]
+  },
+  {
+   "name": "shrub-laurel@149",
+   "asset": "shrub-laurel",
+   "place": "gallery",
+   "blocking": true,
+   "at": [
+    -6,
+    3.425,
+    -26.078
+   ],
+   "size": [
+    0.804,
+    1.0,
+    0.804
+   ]
+  },
+  {
+   "name": "shrub-laurel@151",
+   "asset": "shrub-laurel",
+   "place": "council_garden",
+   "blocking": true,
+   "at": [
+    -4.5,
+    3.425,
+    -26.179
+   ],
+   "size": [
+    0.935,
+    1.0,
+    0.935
+   ]
+  },
+  {
+   "name": "shrub-laurel@153",
+   "asset": "shrub-laurel",
+   "place": "council_garden",
+   "blocking": true,
+   "at": [
+    -3,
+    3.425,
+    -25.84
+   ],
+   "size": [
+    0.673,
+    1.0,
+    0.673
+   ]
+  },
+  {
+   "name": "shrub-laurel@155",
+   "asset": "shrub-laurel",
+   "place": "council_garden",
+   "blocking": true,
+   "at": [
+    -1.5,
+    3.425,
+    -25.372
+   ],
+   "size": [
+    0.804,
+    1.0,
+    0.804
+   ]
+  },
+  {
+   "name": "shrub-laurel@157",
+   "asset": "shrub-laurel",
+   "place": "council_garden",
+   "blocking": true,
+   "at": [
+    0,
+    3.425,
+    -25.205
+   ],
+   "size": [
+    0.935,
+    1.0,
+    0.935
+   ]
+  },
+  {
+   "name": "shrub-laurel@159",
+   "asset": "shrub-laurel",
+   "place": "council_garden",
+   "blocking": true,
+   "at": [
+    9,
+    3.425,
+    -25.205
+   ],
+   "size": [
+    0.935,
+    1.0,
+    0.935
+   ]
+  },
+  {
+   "name": "shrub-laurel@161",
+   "asset": "shrub-laurel",
+   "place": "maker",
+   "blocking": true,
+   "at": [
+    10.5,
+    3.425,
+    -25.375
+   ],
+   "size": [
+    0.673,
+    1.0,
+    0.673
+   ]
+  },
+  {
+   "name": "shrub-laurel@163",
+   "asset": "shrub-laurel",
+   "place": "route-edge",
+   "blocking": true,
+   "at": [
+    12,
+    3.425,
+    -25.844
+   ],
+   "size": [
+    0.804,
+    1.0,
+    0.804
+   ]
+  },
+  {
+   "name": "shrub-laurel@165",
+   "asset": "shrub-laurel",
+   "place": "observatory_garden",
+   "blocking": true,
+   "at": [
+    -4,
+    3.425,
+    -48
+   ],
+   "size": [
+    0.729,
+    1.0,
+    0.729
+   ]
+  },
+  {
+   "name": "shrub-laurel@167",
+   "asset": "shrub-laurel",
+   "place": "observatory_garden",
+   "blocking": true,
+   "at": [
+    13,
+    3.425,
+    -48
+   ],
+   "size": [
+    0.692,
+    1.0,
+    0.692
+   ]
+  },
+  {
+   "name": "shrub-laurel@172",
+   "asset": "shrub-laurel",
+   "place": "commons",
+   "blocking": true,
+   "at": [
+    -7.5,
+    0.025,
+    0.5
+   ],
+   "size": [
+    0.607,
+    1.0,
+    0.607
+   ]
+  },
+  {
+   "name": "shrub-laurel@175",
+   "asset": "shrub-laurel",
+   "place": "commons",
+   "blocking": true,
+   "at": [
+    -7.5,
+    0.025,
+    -1.5
+   ],
+   "size": [
+    0.607,
+    1.0,
+    0.607
+   ]
+  },
+  {
+   "name": "shrub-laurel@178",
+   "asset": "shrub-laurel",
+   "place": "route-edge",
+   "blocking": true,
+   "at": [
+    6.5,
+    0.025,
+    2.5
+   ],
+   "size": [
+    0.607,
+    1.0,
+    0.607
+   ]
+  },
+  {
+   "name": "shrub-laurel@181",
+   "asset": "shrub-laurel",
+   "place": "conservatory",
+   "blocking": true,
+   "at": [
+    6.5,
+    0.025,
+    -1.5
+   ],
+   "size": [
+    0.607,
+    1.0,
+    0.607
+   ]
+  },
+  {
+   "name": "shrub-laurel@184",
+   "asset": "shrub-laurel",
+   "place": "conservatory",
+   "blocking": true,
+   "at": [
+    6.5,
+    0.025,
+    -4.5
+   ],
+   "size": [
+    0.607,
+    1.0,
+    0.607
+   ]
+  },
+  {
+   "name": "shrub-laurel@187",
+   "asset": "shrub-laurel",
+   "place": "conservatory",
+   "blocking": true,
+   "at": [
+    6.5,
+    0.025,
+    -6.5
+   ],
+   "size": [
+    0.607,
+    1.0,
+    0.607
+   ]
+  },
+  {
+   "name": "shrub-laurel@190",
+   "asset": "shrub-laurel",
+   "place": "commons",
+   "blocking": true,
+   "at": [
+    -5.5,
+    0.025,
+    9.5
+   ],
+   "size": [
+    0.607,
+    1.0,
+    0.607
+   ]
+  },
+  {
+   "name": "shrub-laurel@193",
+   "asset": "shrub-laurel",
+   "place": "commons",
+   "blocking": true,
+   "at": [
+    -3.5,
+    0.025,
+    10.5
+   ],
+   "size": [
+    0.607,
+    1.0,
+    0.607
+   ]
+  },
+  {
+   "name": "shrub-laurel@196",
+   "asset": "shrub-laurel",
+   "place": "commons",
+   "blocking": true,
+   "at": [
+    -1.5,
+    0.025,
+    10.5
+   ],
+   "size": [
+    0.607,
+    1.0,
+    0.607
+   ]
+  },
+  {
+   "name": "shrub-laurel@199",
+   "asset": "shrub-laurel",
+   "place": "commons",
+   "blocking": true,
+   "at": [
+    0.5,
+    0.025,
+    10.5
+   ],
+   "size": [
+    0.607,
+    1.0,
+    0.607
+   ]
+  },
+  {
+   "name": "shrub-laurel@202",
+   "asset": "shrub-laurel",
+   "place": "route-edge",
+   "blocking": true,
+   "at": [
+    -11.5,
+    0.025,
+    12.5
+   ],
+   "size": [
+    0.607,
+    1.0,
+    0.607
+   ]
+  },
+  {
+   "name": "shrub-laurel@205",
+   "asset": "shrub-laurel",
+   "place": "route-edge",
+   "blocking": true,
+   "at": [
+    9.5,
+    0.025,
+    11.5
+   ],
+   "size": [
+    0.607,
+    1.0,
+    0.607
+   ]
+  },
+  {
+   "name": "shrub-laurel@217",
+   "asset": "shrub-laurel",
+   "place": "commons",
+   "blocking": true,
+   "at": [
+    -9.63,
+    0.45,
+    1.748
+   ],
+   "size": [
+    0.99,
+    1.0,
+    0.99
+   ]
+  },
+  {
+   "name": "shrub-laurel@218",
+   "asset": "shrub-laurel",
+   "place": "commons",
+   "blocking": true,
+   "at": [
+    -8.37,
+    0.45,
+    1.748
+   ],
+   "size": [
+    1.1,
+    1.0,
+    1.1
+   ]
+  },
+  {
+   "name": "shrub-laurel@233",
+   "asset": "shrub-laurel",
+   "place": "route-edge",
+   "blocking": true,
+   "at": [
+    -5.735,
+    0.45,
+    -6.288
+   ],
+   "size": [
+    0.99,
+    1.0,
+    0.99
+   ]
+  },
+  {
+   "name": "shrub-laurel@234",
+   "asset": "shrub-laurel",
+   "place": "route-edge",
+   "blocking": true,
+   "at": [
+    -4.265,
+    0.45,
+    -6.288
+   ],
+   "size": [
+    1.1,
+    1.0,
+    1.1
+   ]
+  },
+  {
+   "name": "shrub-laurel@249",
+   "asset": "shrub-laurel",
+   "place": "conservatory",
+   "blocking": true,
+   "at": [
+    10.0,
+    0.45,
+    1.784
+   ],
+   "size": [
+    0.99,
+    1.0,
+    0.99
+   ]
+  },
+  {
+   "name": "shrub-laurel@264",
+   "asset": "shrub-laurel",
+   "place": "gallery",
+   "blocking": true,
+   "at": [
+    -1.0,
+    3.85,
+    -16.18
+   ],
+   "size": [
+    0.99,
+    1.0,
+    0.99
+   ]
+  },
+  {
+   "name": "shrub-laurel@279",
+   "asset": "shrub-laurel",
+   "place": "gallery",
+   "blocking": true,
+   "at": [
+    -12.0,
+    2.717,
+    -12.204
+   ],
+   "size": [
+    0.99,
+    1.0,
+    0.99
+   ]
+  },
+  {
+   "name": "shrub-laurel@294",
+   "asset": "shrub-laurel",
+   "place": "conservatory",
+   "blocking": true,
+   "at": [
+    12.0,
+    2.717,
+    -12.18
+   ],
+   "size": [
+    0.99,
+    1.0,
+    0.99
+   ]
+  },
+  {
+   "name": "shrub-laurel@309",
+   "asset": "shrub-laurel",
+   "place": "route-edge",
+   "blocking": true,
+   "at": [
+    5.5,
+    0.45,
+    7.784
+   ],
+   "size": [
+    0.99,
+    1.0,
+    0.99
+   ]
+  }
+ ],
+ "destinations": [
+  {
+   "name": "archive-bookcase#0 anchor_approach",
+   "at": [
+    -13.0,
+    3.4,
+    -21.0
+   ]
+  },
+  {
+   "name": "archive-bookcase#0 anchor_interact",
+   "at": [
+    -13.0,
+    3.4,
+    -21.53
+   ]
+  },
+  {
+   "name": "archive-bookcase#1 anchor_approach",
+   "at": [
+    -10.0,
+    3.4,
+    -21.0
+   ]
+  },
+  {
+   "name": "archive-bookcase#1 anchor_interact",
+   "at": [
+    -10.0,
+    3.4,
+    -21.53
+   ]
+  },
+  {
+   "name": "archive-bookcase#2 anchor_approach",
+   "at": [
+    -7.0,
+    3.4,
+    -21.0
+   ]
+  },
+  {
+   "name": "archive-bookcase#2 anchor_interact",
+   "at": [
+    -7.0,
+    3.4,
+    -21.53
+   ]
+  },
+  {
+   "name": "archive-folio-stand#3 anchor_approach",
+   "at": [
+    -7.6,
+    3.4,
+    -18.0
+   ]
+  },
+  {
+   "name": "archive-folio-stand#3 anchor_interact",
+   "at": [
+    -7.6,
+    3.4,
+    -18.52
+   ]
+  },
+  {
+   "name": "bench-short#4 anchor_stand_0",
+   "at": [
+    -11.62,
+    3.4,
+    -18.62
+   ]
+  },
+  {
+   "name": "bench-short#4 anchor_stand_1",
+   "at": [
+    -12.38,
+    3.4,
+    -18.62
+   ]
+  },
+  {
+   "name": "bench-short#4 anchor_approach",
+   "at": [
+    -12.0,
+    3.4,
+    -19.1
+   ]
+  },
+  {
+   "name": "maker-workbench#7 anchor_approach",
+   "at": [
+    10.0,
+    3.4,
+    -16.5
+   ]
+  },
+  {
+   "name": "maker-workbench#7 anchor_interact",
+   "at": [
+    10.0,
+    3.4,
+    -17.02
+   ]
+  },
+  {
+   "name": "maker-result-shelf#8 anchor_approach",
+   "at": [
+    12.4,
+    3.4,
+    -18.15
+   ]
+  },
+  {
+   "name": "maker-result-shelf#8 anchor_interact",
+   "at": [
+    12.4,
+    3.4,
+    -18.7
+   ]
+  },
+  {
+   "name": "maker-progress-stand#9 anchor_approach",
+   "at": [
+    8.547,
+    3.4,
+    -17.415
+   ]
+  },
+  {
+   "name": "maker-progress-stand#9 anchor_interact",
+   "at": [
+    8.293,
+    3.4,
+    -17.88
+   ]
+  },
+  {
+   "name": "observatory-forecast-plinth#12 anchor_approach",
+   "at": [
+    1.88,
+    3.4,
+    -22.085
+   ]
+  },
+  {
+   "name": "observatory-forecast-plinth#12 anchor_interact",
+   "at": [
+    1.674,
+    3.4,
+    -22.649
+   ]
+  },
+  {
+   "name": "observatory-telescope#17 anchor_approach",
+   "at": [
+    4.0,
+    3.72,
+    -41.25
+   ]
+  },
+  {
+   "name": "observatory-telescope#17 anchor_observer",
+   "at": [
+    4.0,
+    3.72,
+    -41.65
+   ]
+  },
+  {
+   "name": "observatory-plinth-steps#18 anchor_approach",
+   "at": [
+    4.0,
+    3.4,
+    -39.85
+   ]
+  },
+  {
+   "name": "bench-long#19 anchor_stand_0",
+   "at": [
+    -3.1,
+    3.4,
+    -48.18
+   ]
+  },
+  {
+   "name": "bench-long#19 anchor_stand_1",
+   "at": [
+    -2.0,
+    3.4,
+    -48.18
+   ]
+  },
+  {
+   "name": "bench-long#19 anchor_stand_2",
+   "at": [
+    -0.9,
+    3.4,
+    -48.18
+   ]
+  },
+  {
+   "name": "bench-long#19 anchor_approach",
+   "at": [
+    -2.0,
+    3.4,
+    -47.7
+   ]
+  },
+  {
+   "name": "bench-long#20 anchor_stand_0",
+   "at": [
+    8.9,
+    3.4,
+    -48.18
+   ]
+  },
+  {
+   "name": "bench-long#20 anchor_stand_1",
+   "at": [
+    10.0,
+    3.4,
+    -48.18
+   ]
+  },
+  {
+   "name": "bench-long#20 anchor_stand_2",
+   "at": [
+    11.1,
+    3.4,
+    -48.18
+   ]
+  },
+  {
+   "name": "bench-long#20 anchor_approach",
+   "at": [
+    10.0,
+    3.4,
+    -47.7
+   ]
+  },
+  {
+   "name": "archive-folio-stand#21 anchor_approach",
+   "at": [
+    6.6,
+    3.4,
+    -44.4
+   ]
+  },
+  {
+   "name": "archive-folio-stand#21 anchor_interact",
+   "at": [
+    7.12,
+    3.4,
+    -44.4
+   ]
+  },
+  {
+   "name": "conservatory-measurement-panel#22 anchor_approach",
+   "at": [
+    8.714,
+    0.0,
+    -8.263
+   ]
+  },
+  {
+   "name": "conservatory-measurement-panel#22 anchor_interact",
+   "at": [
+    8.519,
+    0.0,
+    -8.893
+   ]
+  },
+  {
+   "name": "conservatory-growing-bed#23 anchor_approach",
+   "at": [
+    11.5,
+    0.0,
+    -6.6
+   ]
+  },
+  {
+   "name": "conservatory-growing-bed#23 anchor_interact",
+   "at": [
+    12.05,
+    0.0,
+    -6.6
+   ]
+  },
+  {
+   "name": "conservatory-equipment-cart#24 anchor_approach",
+   "at": [
+    11.553,
+    0.0,
+    -8.415
+   ]
+  },
+  {
+   "name": "conservatory-equipment-cart#24 anchor_interact",
+   "at": [
+    11.816,
+    0.0,
+    -8.898
+   ]
+  }
+ ]
+}

@@ -1,0 +1,1520 @@
+{
+  "schema": "permagent.world.detail-v4.environment.v1",
+  "lane": "W4 (Astra ruling 2026-10-12)",
+  "generated": "2026-10-13T01:57:18Z",
+  "status": "candidate \u2014 not published; W6 integrates placements/colliders and publishes",
+  "metersPerUnit": 1,
+  "runtimeUp": "Y",
+  "forward": "glTF +Z (Blender -Y)",
+  "place_ids": [
+    "commons",
+    "gallery",
+    "maker",
+    "council_garden",
+    "observatory_garden",
+    "conservatory"
+  ],
+  "parts": {
+    "botany": "botany/manifest.json",
+    "places": "places/manifest.json"
+  },
+  "botany": {
+    "assets": [
+      {
+        "name": "canopy-olive",
+        "class": "botany",
+        "lod0": "botany/canopy-olive.lod0.glb",
+        "lod1": "botany/canopy-olive.lod1.glb",
+        "collision": "botany/canopy-olive.collision.glb",
+        "bounds": {
+          "min": [
+            -3.0022,
+            -0.1243,
+            -3.0064
+          ],
+          "max": [
+            3.1177,
+            5.2984,
+            2.7922
+          ],
+          "size": [
+            6.1199,
+            5.4227,
+            5.7986
+          ]
+        },
+        "anchors": [
+          "wind_root",
+          "wind_sway",
+          "wind_tip",
+          "anchor_soil_contact",
+          "anchor_crown_base"
+        ]
+      },
+      {
+        "name": "shrub-laurel",
+        "class": "botany",
+        "lod0": "botany/shrub-laurel.lod0.glb",
+        "lod1": "botany/shrub-laurel.lod1.glb",
+        "collision": "botany/shrub-laurel.collision.glb",
+        "bounds": {
+          "min": [
+            -0.6761,
+            -0.05,
+            -0.8131
+          ],
+          "max": [
+            0.8401,
+            0.8859,
+            0.7901
+          ],
+          "size": [
+            1.5162,
+            0.9359,
+            1.6032
+          ]
+        },
+        "anchors": [
+          "wind_root",
+          "wind_sway",
+          "wind_tip",
+          "anchor_soil_contact"
+        ]
+      },
+      {
+        "name": "fern-sword",
+        "class": "botany",
+        "lod0": "botany/fern-sword.lod0.glb",
+        "lod1": "botany/fern-sword.lod1.glb",
+        "collision": "botany/fern-sword.collision.glb",
+        "bounds": {
+          "min": [
+            -0.9482,
+            -0.0039,
+            -0.9484
+          ],
+          "max": [
+            0.7674,
+            0.5194,
+            0.8401
+          ],
+          "size": [
+            1.7156,
+            0.5233,
+            1.7885
+          ]
+        },
+        "anchors": [
+          "wind_root",
+          "wind_sway",
+          "wind_tip",
+          "anchor_soil_contact"
+        ]
+      },
+      {
+        "name": "flower-coneflower",
+        "class": "botany",
+        "lod0": "botany/flower-coneflower.lod0.glb",
+        "lod1": "botany/flower-coneflower.lod1.glb",
+        "collision": "botany/flower-coneflower.collision.glb",
+        "bounds": {
+          "min": [
+            -0.2298,
+            -0.0012,
+            -0.2569
+          ],
+          "max": [
+            0.248,
+            0.8082,
+            0.2689
+          ],
+          "size": [
+            0.4778,
+            0.8094,
+            0.5258
+          ]
+        },
+        "anchors": [
+          "wind_root",
+          "wind_sway",
+          "wind_tip",
+          "anchor_soil_contact"
+        ]
+      },
+      {
+        "name": "grass-fountain",
+        "class": "botany",
+        "lod0": "botany/grass-fountain.lod0.glb",
+        "lod1": "botany/grass-fountain.lod1.glb",
+        "collision": "botany/grass-fountain.collision.glb",
+        "bounds": {
+          "min": [
+            -0.8525,
+            -0.0079,
+            -0.727
+          ],
+          "max": [
+            0.7662,
+            0.8964,
+            0.7143
+          ],
+          "size": [
+            1.6187,
+            0.9043,
+            1.4413
+          ]
+        },
+        "anchors": [
+          "wind_root",
+          "wind_sway",
+          "wind_tip",
+          "anchor_soil_contact"
+        ]
+      },
+      {
+        "name": "iris-water",
+        "class": "botany",
+        "lod0": "botany/iris-water.lod0.glb",
+        "lod1": "botany/iris-water.lod1.glb",
+        "collision": "botany/iris-water.collision.glb",
+        "bounds": {
+          "min": [
+            -0.1757,
+            -0.0006,
+            -0.1719
+          ],
+          "max": [
+            0.2286,
+            1.0309,
+            0.237
+          ],
+          "size": [
+            0.4043,
+            1.0315,
+            0.4089
+          ]
+        },
+        "anchors": [
+          "wind_root",
+          "wind_sway",
+          "wind_tip",
+          "anchor_soil_contact"
+        ]
+      },
+      {
+        "name": "vine-pendant",
+        "class": "botany",
+        "lod0": "botany/vine-pendant.lod0.glb",
+        "lod1": "botany/vine-pendant.lod1.glb",
+        "collision": null,
+        "bounds": {
+          "min": [
+            -0.125,
+            -1.4029,
+            -0.0777
+          ],
+          "max": [
+            0.0883,
+            0.0005,
+            0.1131
+          ],
+          "size": [
+            0.2133,
+            1.4034,
+            0.1908
+          ]
+        },
+        "anchors": [
+          "wind_root",
+          "wind_sway",
+          "wind_tip",
+          "anchor_soil_contact"
+        ]
+      }
+    ]
+  },
+  "scatter_spec": "botany/scatter.json",
+  "places": {
+    "assets": [
+      {
+        "name": "archive-bookcase",
+        "class": "place",
+        "lod0": "places/archive-bookcase.lod0.glb",
+        "lod1": "places/archive-bookcase.lod1.glb",
+        "collision": "places/archive-bookcase.collision.glb",
+        "bounds": {
+          "min": [
+            -1.36,
+            0.0,
+            -0.31
+          ],
+          "max": [
+            1.36,
+            2.8,
+            0.33
+          ],
+          "size": [
+            2.72,
+            2.8,
+            0.64
+          ]
+        },
+        "anchors": [
+          "anchor_approach",
+          "anchor_interact",
+          "anchor_browse_0_0",
+          "anchor_browse_1_0",
+          "anchor_browse_0_1",
+          "anchor_browse_1_1",
+          "anchor_browse_0_2",
+          "anchor_browse_1_2",
+          "anchor_browse_0_3",
+          "anchor_browse_1_3",
+          "anchor_browse_0_4",
+          "anchor_browse_1_4",
+          "anchor_record_slot",
+          "anchor_gaze_shelves"
+        ]
+      },
+      {
+        "name": "archive-folio-stand",
+        "class": "place",
+        "lod0": "places/archive-folio-stand.lod0.glb",
+        "lod1": "places/archive-folio-stand.lod1.glb",
+        "collision": "places/archive-folio-stand.collision.glb",
+        "bounds": {
+          "min": [
+            -0.33,
+            0.0,
+            -0.2503
+          ],
+          "max": [
+            0.33,
+            1.1909,
+            0.2503
+          ],
+          "size": [
+            0.66,
+            1.1909,
+            0.5006
+          ]
+        },
+        "anchors": [
+          "anchor_approach",
+          "anchor_interact",
+          "anchor_folio_page",
+          "anchor_panel_slot",
+          "anchor_hand_L",
+          "anchor_hand_R"
+        ]
+      },
+      {
+        "name": "bench-long",
+        "class": "place",
+        "lod0": "places/bench-long.lod0.glb",
+        "lod1": "places/bench-long.lod1.glb",
+        "collision": "places/bench-long.collision.glb",
+        "bounds": {
+          "min": [
+            -1.6,
+            0.0,
+            -0.3583
+          ],
+          "max": [
+            1.6,
+            0.9056,
+            0.29
+          ],
+          "size": [
+            3.2,
+            0.9056,
+            0.6483
+          ]
+        },
+        "anchors": [
+          "anchor_seat_0",
+          "anchor_stand_0",
+          "anchor_seat_1",
+          "anchor_stand_1",
+          "anchor_seat_2",
+          "anchor_stand_2",
+          "anchor_approach"
+        ]
+      },
+      {
+        "name": "bench-short",
+        "class": "place",
+        "lod0": "places/bench-short.lod0.glb",
+        "lod1": "places/bench-short.lod1.glb",
+        "collision": "places/bench-short.collision.glb",
+        "bounds": {
+          "min": [
+            -0.8,
+            0.0,
+            -0.3583
+          ],
+          "max": [
+            0.8,
+            0.9056,
+            0.29
+          ],
+          "size": [
+            1.6,
+            0.9056,
+            0.6483
+          ]
+        },
+        "anchors": [
+          "anchor_seat_0",
+          "anchor_stand_0",
+          "anchor_seat_1",
+          "anchor_stand_1",
+          "anchor_approach"
+        ]
+      },
+      {
+        "name": "maker-workbench",
+        "class": "place",
+        "lod0": "places/maker-workbench.lod0.glb",
+        "lod1": "places/maker-workbench.lod1.glb",
+        "collision": "places/maker-workbench.collision.glb",
+        "bounds": {
+          "min": [
+            -0.95,
+            0.0,
+            -0.38
+          ],
+          "max": [
+            0.95,
+            1.24,
+            0.478
+          ],
+          "size": [
+            1.9,
+            1.24,
+            0.858
+          ]
+        },
+        "anchors": [
+          "anchor_approach",
+          "anchor_interact",
+          "anchor_work_surface",
+          "anchor_tool_rail",
+          "anchor_vise",
+          "anchor_hand_L",
+          "anchor_hand_R"
+        ]
+      },
+      {
+        "name": "maker-result-shelf",
+        "class": "place",
+        "lod0": "places/maker-result-shelf.lod0.glb",
+        "lod1": "places/maker-result-shelf.lod1.glb",
+        "collision": "places/maker-result-shelf.collision.glb",
+        "bounds": {
+          "min": [
+            -0.7,
+            0.0,
+            -0.21
+          ],
+          "max": [
+            0.7,
+            1.6,
+            0.21
+          ],
+          "size": [
+            1.4,
+            1.6,
+            0.42
+          ]
+        },
+        "anchors": [
+          "anchor_approach",
+          "anchor_interact",
+          "anchor_result_slot_1",
+          "anchor_result_slot_2",
+          "anchor_result_slot_3",
+          "anchor_result_slot_4",
+          "anchor_result_slot_5",
+          "anchor_result_slot_6"
+        ]
+      },
+      {
+        "name": "maker-progress-stand",
+        "class": "place",
+        "lod0": "places/maker-progress-stand.lod0.glb",
+        "lod1": "places/maker-progress-stand.lod1.glb",
+        "collision": "places/maker-progress-stand.collision.glb",
+        "bounds": {
+          "min": [
+            -0.3418,
+            -0.005,
+            -0.39
+          ],
+          "max": [
+            0.39,
+            1.5605,
+            0.21
+          ],
+          "size": [
+            0.7318,
+            1.5655,
+            0.6
+          ]
+        },
+        "anchors": [
+          "anchor_approach",
+          "anchor_interact",
+          "anchor_work_piece",
+          "anchor_panel_slot",
+          "anchor_parts_tray"
+        ]
+      },
+      {
+        "name": "observatory-forecast-plinth",
+        "class": "place",
+        "lod0": "places/observatory-forecast-plinth.lod0.glb",
+        "lod1": "places/observatory-forecast-plinth.lod1.glb",
+        "collision": "places/observatory-forecast-plinth.collision.glb",
+        "bounds": {
+          "min": [
+            -0.475,
+            0.0,
+            -0.32
+          ],
+          "max": [
+            0.475,
+            1.465,
+            0.31
+          ],
+          "size": [
+            0.95,
+            1.465,
+            0.63
+          ]
+        },
+        "anchors": [
+          "anchor_approach",
+          "anchor_interact",
+          "anchor_panel_slot",
+          "anchor_armillary"
+        ]
+      },
+      {
+        "name": "observatory-telescope",
+        "class": "place",
+        "lod0": "places/observatory-telescope.lod0.glb",
+        "lod1": "places/observatory-telescope.lod1.glb",
+        "collision": "places/observatory-telescope.collision.glb",
+        "bounds": {
+          "min": [
+            -0.86,
+            0.0,
+            -1.308
+          ],
+          "max": [
+            0.86,
+            2.7055,
+            1.2347
+          ],
+          "size": [
+            1.72,
+            2.7055,
+            2.5427
+          ]
+        },
+        "anchors": [
+          "anchor_approach",
+          "anchor_observer",
+          "anchor_eyepiece",
+          "anchor_objective",
+          "anchor_handle"
+        ]
+      },
+      {
+        "name": "observatory-plinth-steps",
+        "class": "place",
+        "lod0": "places/observatory-plinth-steps.lod0.glb",
+        "lod1": "places/observatory-plinth-steps.lod1.glb",
+        "collision": "places/observatory-plinth-steps.collision.glb",
+        "bounds": {
+          "min": [
+            -0.92,
+            0.0,
+            -0.6
+          ],
+          "max": [
+            0.92,
+            0.34,
+            0.015
+          ],
+          "size": [
+            1.84,
+            0.34,
+            0.615
+          ]
+        },
+        "anchors": [
+          "anchor_approach",
+          "anchor_top"
+        ]
+      },
+      {
+        "name": "conservatory-measurement-panel",
+        "class": "place",
+        "lod0": "places/conservatory-measurement-panel.lod0.glb",
+        "lod1": "places/conservatory-measurement-panel.lod1.glb",
+        "collision": "places/conservatory-measurement-panel.collision.glb",
+        "bounds": {
+          "min": [
+            -0.67,
+            0.0,
+            -0.15
+          ],
+          "max": [
+            0.67,
+            1.74,
+            0.2
+          ],
+          "size": [
+            1.34,
+            1.74,
+            0.35
+          ]
+        },
+        "anchors": [
+          "anchor_approach",
+          "anchor_interact",
+          "anchor_panel_slot",
+          "anchor_sample_1",
+          "anchor_sample_2",
+          "anchor_sample_3"
+        ]
+      },
+      {
+        "name": "conservatory-growing-bed",
+        "class": "place",
+        "lod0": "places/conservatory-growing-bed.lod0.glb",
+        "lod1": "places/conservatory-growing-bed.lod1.glb",
+        "collision": "places/conservatory-growing-bed.collision.glb",
+        "bounds": {
+          "min": [
+            -1.256,
+            0.0,
+            -0.46
+          ],
+          "max": [
+            1.2664,
+            0.96,
+            0.46
+          ],
+          "size": [
+            2.5224,
+            0.96,
+            0.92
+          ]
+        },
+        "anchors": [
+          "anchor_approach",
+          "anchor_interact",
+          "anchor_valve",
+          "anchor_row_1",
+          "anchor_row_2",
+          "anchor_row_3"
+        ]
+      },
+      {
+        "name": "conservatory-equipment-cart",
+        "class": "place",
+        "lod0": "places/conservatory-equipment-cart.lod0.glb",
+        "lod1": "places/conservatory-equipment-cart.lod1.glb",
+        "collision": "places/conservatory-equipment-cart.collision.glb",
+        "bounds": {
+          "min": [
+            -0.596,
+            0.0013,
+            -0.295
+          ],
+          "max": [
+            0.516,
+            1.165,
+            0.295
+          ],
+          "size": [
+            1.112,
+            1.1637,
+            0.59
+          ]
+        },
+        "anchors": [
+          "anchor_approach",
+          "anchor_interact",
+          "anchor_can_grip",
+          "anchor_scale_pan",
+          "anchor_push_handle"
+        ]
+      },
+      {
+        "name": "bridge-abutment-garden",
+        "class": "construction",
+        "lod0": "places/bridge-abutment-garden.lod0.glb",
+        "lod1": "places/bridge-abutment-garden.lod1.glb",
+        "collision": "places/bridge-abutment-garden.collision.glb",
+        "bounds": {
+          "min": [
+            -1.32,
+            -0.45,
+            -0.61
+          ],
+          "max": [
+            1.32,
+            1.57,
+            0.14
+          ],
+          "size": [
+            2.64,
+            2.02,
+            0.75
+          ]
+        },
+        "anchors": [
+          "anchor_deck_end",
+          "anchor_approach",
+          "anchor_water_line"
+        ]
+      },
+      {
+        "name": "bridge-abutment-observatory",
+        "class": "construction",
+        "lod0": "places/bridge-abutment-observatory.lod0.glb",
+        "lod1": "places/bridge-abutment-observatory.lod1.glb",
+        "collision": "places/bridge-abutment-observatory.collision.glb",
+        "bounds": {
+          "min": [
+            -3.35,
+            -2.4,
+            -0.5269
+          ],
+          "max": [
+            3.35,
+            1.38,
+            0.5269
+          ],
+          "size": [
+            6.7,
+            3.78,
+            1.0538
+          ]
+        },
+        "anchors": [
+          "anchor_deck_end",
+          "anchor_approach"
+        ]
+      },
+      {
+        "name": "water-coping-2m",
+        "class": "construction",
+        "lod0": "places/water-coping-2m.lod0.glb",
+        "lod1": "places/water-coping-2m.lod1.glb",
+        "collision": "places/water-coping-2m.collision.glb",
+        "bounds": {
+          "min": [
+            -0.998,
+            -0.4,
+            -0.05
+          ],
+          "max": [
+            0.998,
+            0.004,
+            0.36
+          ],
+          "size": [
+            1.996,
+            0.404,
+            0.41
+          ]
+        },
+        "anchors": [
+          "anchor_water_line",
+          "anchor_join_L",
+          "anchor_join_R"
+        ]
+      },
+      {
+        "name": "water-coping-corner",
+        "class": "construction",
+        "lod0": "places/water-coping-corner.lod0.glb",
+        "lod1": "places/water-coping-corner.lod1.glb",
+        "collision": "places/water-coping-corner.collision.glb",
+        "bounds": {
+          "min": [
+            -0.205,
+            -0.4,
+            -0.05
+          ],
+          "max": [
+            0.222,
+            0.0,
+            0.36
+          ],
+          "size": [
+            0.427,
+            0.4,
+            0.41
+          ]
+        },
+        "anchors": [
+          "anchor_water_line"
+        ]
+      },
+      {
+        "name": "rail-stanchion",
+        "class": "construction",
+        "lod0": "places/rail-stanchion.lod0.glb",
+        "lod1": "places/rail-stanchion.lod1.glb",
+        "collision": "places/rail-stanchion.collision.glb",
+        "bounds": {
+          "min": [
+            -0.07,
+            0.0,
+            -0.07
+          ],
+          "max": [
+            0.07,
+            0.982,
+            0.07
+          ],
+          "size": [
+            0.14,
+            0.982,
+            0.14
+          ]
+        },
+        "anchors": [
+          "anchor_rail_top"
+        ]
+      },
+      {
+        "name": "column-base-stone",
+        "class": "construction",
+        "lod0": "places/column-base-stone.lod0.glb",
+        "lod1": "places/column-base-stone.lod1.glb",
+        "collision": "places/column-base-stone.collision.glb",
+        "bounds": {
+          "min": [
+            -0.36,
+            0.0,
+            -0.36
+          ],
+          "max": [
+            0.36,
+            0.33,
+            0.36
+          ],
+          "size": [
+            0.72,
+            0.33,
+            0.72
+          ]
+        },
+        "anchors": [
+          "anchor_shaft"
+        ]
+      },
+      {
+        "name": "post-shoe-bronze",
+        "class": "construction",
+        "lod0": "places/post-shoe-bronze.lod0.glb",
+        "lod1": "places/post-shoe-bronze.lod1.glb",
+        "collision": "places/post-shoe-bronze.collision.glb",
+        "bounds": {
+          "min": [
+            -0.15,
+            0.0,
+            -0.15
+          ],
+          "max": [
+            0.15,
+            0.22,
+            0.15
+          ],
+          "size": [
+            0.3,
+            0.22,
+            0.3
+          ]
+        },
+        "anchors": [
+          "anchor_post"
+        ]
+      },
+      {
+        "name": "terrace-drain-grate",
+        "class": "construction",
+        "lod0": "places/terrace-drain-grate.lod0.glb",
+        "lod1": "places/terrace-drain-grate.lod1.glb",
+        "collision": "places/terrace-drain-grate.collision.glb",
+        "bounds": {
+          "min": [
+            -0.5,
+            -0.095,
+            -0.081
+          ],
+          "max": [
+            0.5,
+            0.001,
+            0.081
+          ],
+          "size": [
+            1.0,
+            0.096,
+            0.162
+          ]
+        },
+        "anchors": [
+          "anchor_flush_top"
+        ]
+      }
+    ]
+  },
+  "suggested_placements": [
+    {
+      "asset": "archive-bookcase",
+      "place": "gallery",
+      "position": [
+        -13,
+        3.4,
+        -22.3
+      ],
+      "heading": 0,
+      "note": "replaces garden-crafted bookcase-v1 (ARCHIVE_DECOR), same solid 2.6x2.8x0.54"
+    },
+    {
+      "asset": "archive-bookcase",
+      "place": "gallery",
+      "position": [
+        -10,
+        3.4,
+        -22.3
+      ],
+      "heading": 0,
+      "note": "replaces garden-crafted bookcase-v1 (ARCHIVE_DECOR), same solid 2.6x2.8x0.54"
+    },
+    {
+      "asset": "archive-bookcase",
+      "place": "gallery",
+      "position": [
+        -7,
+        3.4,
+        -22.3
+      ],
+      "heading": 0,
+      "note": "replaces garden-crafted bookcase-v1 (ARCHIVE_DECOR), same solid 2.6x2.8x0.54"
+    },
+    {
+      "asset": "archive-folio-stand",
+      "place": "gallery",
+      "position": [
+        -7.6,
+        3.4,
+        -19.3
+      ],
+      "heading": 0,
+      "note": "record stand: reader faces north toward the shelves"
+    },
+    {
+      "asset": "bench-short",
+      "place": "gallery",
+      "position": [
+        -12,
+        3.4,
+        -18
+      ],
+      "heading": 3.1416,
+      "note": "reading seat; replaces HABITAT_DECOR bench at the same point"
+    },
+    {
+      "asset": "column-base-stone",
+      "place": "gallery",
+      "position": [
+        -14,
+        3.4,
+        -16
+      ],
+      "heading": 0,
+      "note": "base for the archive pillar (0.54 m)"
+    },
+    {
+      "asset": "column-base-stone",
+      "place": "gallery",
+      "position": [
+        -6,
+        3.4,
+        -16
+      ],
+      "heading": 0,
+      "note": "base for the archive pillar (0.54 m)"
+    },
+    {
+      "asset": "maker-workbench",
+      "place": "maker",
+      "position": [
+        10,
+        3.4,
+        -17.9
+      ],
+      "heading": 0,
+      "note": "replaces the steward station desk (same position; worker at z -17.2)"
+    },
+    {
+      "asset": "maker-result-shelf",
+      "place": "maker",
+      "position": [
+        12.4,
+        3.4,
+        -19.4
+      ],
+      "heading": 0,
+      "note": "result shelf beside the bench"
+    },
+    {
+      "asset": "maker-progress-stand",
+      "place": "maker",
+      "position": [
+        7.9,
+        3.4,
+        -18.6
+      ],
+      "heading": 0.5,
+      "note": "in-progress stand, turned toward the bench"
+    },
+    {
+      "asset": "post-shoe-bronze",
+      "place": "maker",
+      "position": [
+        7,
+        3.4,
+        -16
+      ],
+      "heading": 0,
+      "note": "workshop pillar shoe (0.2 m post)"
+    },
+    {
+      "asset": "post-shoe-bronze",
+      "place": "maker",
+      "position": [
+        14,
+        3.4,
+        -16
+      ],
+      "heading": 0,
+      "note": "workshop pillar shoe (0.2 m post)"
+    },
+    {
+      "asset": "observatory-forecast-plinth",
+      "place": "council_garden",
+      "position": [
+        1.4,
+        3.4,
+        -23.4
+      ],
+      "heading": 0.35,
+      "note": "forecast panel plinth west of the forecaster desk, facing the terrace"
+    },
+    {
+      "asset": "post-shoe-bronze",
+      "place": "council_garden",
+      "position": [
+        -0.2,
+        3.4,
+        -21.7
+      ],
+      "heading": 0,
+      "note": "observatory pillar shoe (0.16 m post)"
+    },
+    {
+      "asset": "post-shoe-bronze",
+      "place": "council_garden",
+      "position": [
+        8.8,
+        3.4,
+        -21.7
+      ],
+      "heading": 0,
+      "note": "observatory pillar shoe (0.16 m post)"
+    },
+    {
+      "asset": "post-shoe-bronze",
+      "place": "council_garden",
+      "position": [
+        -0.2,
+        3.4,
+        -26.3
+      ],
+      "heading": 0,
+      "note": "observatory pillar shoe (0.16 m post)"
+    },
+    {
+      "asset": "post-shoe-bronze",
+      "place": "council_garden",
+      "position": [
+        8.8,
+        3.4,
+        -26.3
+      ],
+      "heading": 0,
+      "note": "observatory pillar shoe (0.16 m post)"
+    },
+    {
+      "asset": "observatory-telescope",
+      "place": "observatory_garden",
+      "position": [
+        4,
+        3.72,
+        -43.2
+      ],
+      "heading": 0,
+      "note": "on OBSERVATORY_PLINTH top (+0.32); barrel points north, eyepiece south"
+    },
+    {
+      "asset": "observatory-plinth-steps",
+      "place": "observatory_garden",
+      "position": [
+        4,
+        3.4,
+        -40.45
+      ],
+      "heading": 0,
+      "note": "south steps onto the plinth (needs the plinth top walkable, W6)"
+    },
+    {
+      "asset": "bench-long",
+      "place": "observatory_garden",
+      "position": [
+        -2,
+        3.4,
+        -48.8
+      ],
+      "heading": 0,
+      "note": "sky-court bench facing the telescope; replaces OBSERVATORY_BENCHES solid 3.4x0.9x0.75"
+    },
+    {
+      "asset": "bench-long",
+      "place": "observatory_garden",
+      "position": [
+        10,
+        3.4,
+        -48.8
+      ],
+      "heading": 0,
+      "note": "sky-court bench facing the telescope; replaces OBSERVATORY_BENCHES solid 3.4x0.9x0.75"
+    },
+    {
+      "asset": "archive-folio-stand",
+      "place": "observatory_garden",
+      "position": [
+        7.9,
+        3.4,
+        -44.4
+      ],
+      "heading": -1.5708,
+      "note": "field-notebook stand facing the instrument plinth"
+    },
+    {
+      "asset": "conservatory-measurement-panel",
+      "place": "conservatory",
+      "position": [
+        8.3,
+        0,
+        -9.6
+      ],
+      "heading": 0.3,
+      "note": "measurement panel west of the growth station desk"
+    },
+    {
+      "asset": "conservatory-growing-bed",
+      "place": "conservatory",
+      "position": [
+        13.0,
+        0,
+        -6.6
+      ],
+      "heading": -1.5708,
+      "note": "growing bed along the east side, tended from the west"
+    },
+    {
+      "asset": "conservatory-equipment-cart",
+      "place": "conservatory",
+      "position": [
+        12.2,
+        0,
+        -9.6
+      ],
+      "heading": -0.5,
+      "note": "equipment cart"
+    },
+    {
+      "asset": "bridge-abutment-garden",
+      "place": "route",
+      "position": [
+        2.05,
+        0,
+        -2.2
+      ],
+      "heading": -1.5708,
+      "note": "water-garden bridge, west water edge (deck 0.45 here)"
+    },
+    {
+      "asset": "bridge-abutment-garden",
+      "place": "route",
+      "position": [
+        5.95,
+        0,
+        -2.2
+      ],
+      "heading": 1.5708,
+      "note": "water-garden bridge, east water edge"
+    },
+    {
+      "asset": "bridge-abutment-observatory",
+      "place": "route",
+      "position": [
+        4,
+        3.4,
+        -27.6
+      ],
+      "heading": 0,
+      "note": "north bridge, terrace end"
+    },
+    {
+      "asset": "bridge-abutment-observatory",
+      "place": "route",
+      "position": [
+        4,
+        3.4,
+        -33.0
+      ],
+      "heading": 3.1416,
+      "note": "north bridge, observatory-pad end"
+    },
+    {
+      "asset": "water-coping-2m",
+      "place": "route",
+      "position": [
+        2.1,
+        0.04,
+        -4.2
+      ],
+      "heading": -1.5708,
+      "note": "water garden west edge"
+    },
+    {
+      "asset": "water-coping-2m",
+      "place": "route",
+      "position": [
+        5.9,
+        0.04,
+        -4.2
+      ],
+      "heading": 1.5708,
+      "note": "water garden east edge"
+    },
+    {
+      "asset": "water-coping-2m",
+      "place": "route",
+      "position": [
+        2.1,
+        0.04,
+        0.0
+      ],
+      "heading": -1.5708,
+      "note": "water garden west edge"
+    },
+    {
+      "asset": "water-coping-2m",
+      "place": "route",
+      "position": [
+        5.9,
+        0.04,
+        0.0
+      ],
+      "heading": 1.5708,
+      "note": "water garden east edge"
+    },
+    {
+      "asset": "water-coping-2m",
+      "place": "route",
+      "position": [
+        3.05,
+        0.04,
+        1.0
+      ],
+      "heading": 0,
+      "note": "water garden south edge (scale 0.95 along local X)",
+      "scale": [
+        0.95,
+        1,
+        1
+      ]
+    },
+    {
+      "asset": "water-coping-2m",
+      "place": "route",
+      "position": [
+        4.95,
+        0.04,
+        1.0
+      ],
+      "heading": 0,
+      "note": "water garden south edge (scale 0.95 along local X)",
+      "scale": [
+        0.95,
+        1,
+        1
+      ]
+    },
+    {
+      "asset": "water-coping-corner",
+      "place": "route",
+      "position": [
+        2.1,
+        0.04,
+        1.0
+      ],
+      "heading": 0,
+      "note": "south-west water corner"
+    },
+    {
+      "asset": "water-coping-corner",
+      "place": "route",
+      "position": [
+        5.9,
+        0.04,
+        1.0
+      ],
+      "heading": 1.5708,
+      "note": "south-east water corner"
+    },
+    {
+      "asset": "rail-stanchion",
+      "place": "route",
+      "position": [
+        2.5,
+        0.45,
+        -3.15
+      ],
+      "heading": 1.5708,
+      "note": "garden bridge rail post, base plate inside the 2.0 m deck (runtime rail solids at z -3.23/-1.17 keep their footprint)"
+    },
+    {
+      "asset": "rail-stanchion",
+      "place": "route",
+      "position": [
+        2.5,
+        0.45,
+        -1.25
+      ],
+      "heading": 1.5708,
+      "note": "garden bridge rail post, base plate inside the 2.0 m deck (runtime rail solids at z -3.23/-1.17 keep their footprint)"
+    },
+    {
+      "asset": "rail-stanchion",
+      "place": "route",
+      "position": [
+        3.5,
+        0.45,
+        -3.15
+      ],
+      "heading": 1.5708,
+      "note": "garden bridge rail post, base plate inside the 2.0 m deck (runtime rail solids at z -3.23/-1.17 keep their footprint)"
+    },
+    {
+      "asset": "rail-stanchion",
+      "place": "route",
+      "position": [
+        3.5,
+        0.45,
+        -1.25
+      ],
+      "heading": 1.5708,
+      "note": "garden bridge rail post, base plate inside the 2.0 m deck (runtime rail solids at z -3.23/-1.17 keep their footprint)"
+    },
+    {
+      "asset": "rail-stanchion",
+      "place": "route",
+      "position": [
+        4.5,
+        0.45,
+        -3.15
+      ],
+      "heading": 1.5708,
+      "note": "garden bridge rail post, base plate inside the 2.0 m deck (runtime rail solids at z -3.23/-1.17 keep their footprint)"
+    },
+    {
+      "asset": "rail-stanchion",
+      "place": "route",
+      "position": [
+        4.5,
+        0.45,
+        -1.25
+      ],
+      "heading": 1.5708,
+      "note": "garden bridge rail post, base plate inside the 2.0 m deck (runtime rail solids at z -3.23/-1.17 keep their footprint)"
+    },
+    {
+      "asset": "rail-stanchion",
+      "place": "route",
+      "position": [
+        5.5,
+        0.45,
+        -3.15
+      ],
+      "heading": 1.5708,
+      "note": "garden bridge rail post, base plate inside the 2.0 m deck (runtime rail solids at z -3.23/-1.17 keep their footprint)"
+    },
+    {
+      "asset": "rail-stanchion",
+      "place": "route",
+      "position": [
+        5.5,
+        0.45,
+        -1.25
+      ],
+      "heading": 1.5708,
+      "note": "garden bridge rail post, base plate inside the 2.0 m deck (runtime rail solids at z -3.23/-1.17 keep their footprint)"
+    },
+    {
+      "asset": "rail-stanchion",
+      "place": "route",
+      "position": [
+        1.08,
+        3.4,
+        -28.6
+      ],
+      "heading": 0,
+      "note": "north bridge guard post"
+    },
+    {
+      "asset": "rail-stanchion",
+      "place": "route",
+      "position": [
+        1.08,
+        3.4,
+        -30.3
+      ],
+      "heading": 0,
+      "note": "north bridge guard post"
+    },
+    {
+      "asset": "rail-stanchion",
+      "place": "route",
+      "position": [
+        1.08,
+        3.4,
+        -32.0
+      ],
+      "heading": 0,
+      "note": "north bridge guard post"
+    },
+    {
+      "asset": "rail-stanchion",
+      "place": "route",
+      "position": [
+        6.92,
+        3.4,
+        -28.6
+      ],
+      "heading": 0,
+      "note": "north bridge guard post"
+    },
+    {
+      "asset": "rail-stanchion",
+      "place": "route",
+      "position": [
+        6.92,
+        3.4,
+        -30.3
+      ],
+      "heading": 0,
+      "note": "north bridge guard post"
+    },
+    {
+      "asset": "rail-stanchion",
+      "place": "route",
+      "position": [
+        6.92,
+        3.4,
+        -32.0
+      ],
+      "heading": 0,
+      "note": "north bridge guard post"
+    },
+    {
+      "asset": "terrace-drain-grate",
+      "place": "route",
+      "position": [
+        4,
+        3.4,
+        -26.9
+      ],
+      "heading": 0,
+      "note": "channel drain across the north bridge terrace landing"
+    },
+    {
+      "asset": "terrace-drain-grate",
+      "place": "route",
+      "position": [
+        4,
+        3.4,
+        -33.7
+      ],
+      "heading": 0,
+      "note": "channel drain across the north bridge pad landing"
+    },
+    {
+      "asset": "terrace-drain-grate",
+      "place": "route",
+      "position": [
+        0.7,
+        0,
+        -2.2
+      ],
+      "heading": 1.5708,
+      "note": "channel drain at the garden bridge west landing"
+    },
+    {
+      "asset": "terrace-drain-grate",
+      "place": "route",
+      "position": [
+        7.3,
+        0,
+        -2.2
+      ],
+      "heading": 1.5708,
+      "note": "channel drain at the garden bridge east landing"
+    }
+  ],
+  "route_clearance": {
+    "body_margin_m": 0.47,
+    "designed_minimums": {
+      "primary_route_clear_width_m": 1.6,
+      "secondary_route_clear_width_m": 1.2,
+      "interaction_standoff_m": "0.55-0.75 (anchor_interact) in front of every place asset",
+      "approach_standoff_m": "1.1-1.35 (anchor_approach)",
+      "headroom_over_routes_m": 2.3,
+      "tree_crown_base_min_m": 2.3,
+      "bridge_garden_clear_between_newels_m": 2.14,
+      "bridge_north_clear_between_newels_m": 5.42,
+      "step_rise_m": 0.16,
+      "coping_curb_above_paving_m": 0.04
+    },
+    "check": {
+      "pass": true,
+      "reachable_cells_before": 17250,
+      "reachable_cells_after": 16897,
+      "area_lost_m2": 22.06,
+      "regressions": [],
+      "error": null
+    }
+  }
+}

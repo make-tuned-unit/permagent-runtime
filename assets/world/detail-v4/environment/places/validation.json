@@ -1,0 +1,510 @@
+{
+  "validator": "gltf-validator 2.0.0-dev.3.10",
+  "files": [
+    {
+      "file": "archive-bookcase.collision.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 1,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "archive-bookcase.lod0.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 3,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "archive-bookcase.lod1.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 3,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "archive-folio-stand.collision.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 1,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "archive-folio-stand.lod0.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 3,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "archive-folio-stand.lod1.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 3,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "bench-long.collision.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 1,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "bench-long.lod0.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 3,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "bench-long.lod1.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 3,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "bench-short.collision.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 1,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "bench-short.lod0.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 3,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "bench-short.lod1.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 3,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "bridge-abutment-garden.collision.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 1,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "bridge-abutment-garden.lod0.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 3,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "bridge-abutment-garden.lod1.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 3,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "bridge-abutment-observatory.collision.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 1,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "bridge-abutment-observatory.lod0.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 3,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "bridge-abutment-observatory.lod1.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 3,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "column-base-stone.collision.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 1,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "column-base-stone.lod0.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 3,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "column-base-stone.lod1.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 3,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "conservatory-equipment-cart.collision.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 1,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "conservatory-equipment-cart.lod0.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 7,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "conservatory-equipment-cart.lod1.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 3,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "conservatory-growing-bed.collision.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 1,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "conservatory-growing-bed.lod0.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 5,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "conservatory-growing-bed.lod1.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 5,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "conservatory-measurement-panel.collision.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 1,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "conservatory-measurement-panel.lod0.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 9,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "conservatory-measurement-panel.lod1.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 9,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "maker-progress-stand.collision.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 1,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "maker-progress-stand.lod0.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 5,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "maker-progress-stand.lod1.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 5,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "maker-result-shelf.collision.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 1,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "maker-result-shelf.lod0.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 5,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "maker-result-shelf.lod1.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 5,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "maker-workbench.collision.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 1,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "maker-workbench.lod0.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 3,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "maker-workbench.lod1.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 3,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "observatory-forecast-plinth.collision.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 1,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "observatory-forecast-plinth.lod0.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 5,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "observatory-forecast-plinth.lod1.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 5,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "observatory-plinth-steps.collision.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 1,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "observatory-plinth-steps.lod0.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 3,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "observatory-plinth-steps.lod1.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 3,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "observatory-telescope.collision.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 1,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "observatory-telescope.lod0.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 7,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "observatory-telescope.lod1.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 6,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "post-shoe-bronze.collision.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 1,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "post-shoe-bronze.lod0.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 2,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "post-shoe-bronze.lod1.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 2,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "rail-stanchion.collision.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 1,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "rail-stanchion.lod0.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 2,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "rail-stanchion.lod1.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 2,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "terrace-drain-grate.collision.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 1,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "terrace-drain-grate.lod0.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 2,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "terrace-drain-grate.lod1.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 2,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "water-coping-2m.collision.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 1,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "water-coping-2m.lod0.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 3,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "water-coping-2m.lod1.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 3,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "water-coping-corner.collision.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 1,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "water-coping-corner.lod0.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 3,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "water-coping-corner.lod1.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 3,
+      "hints": 0,
+      "messages": []
+    }
+  ],
+  "allValid": true
+}

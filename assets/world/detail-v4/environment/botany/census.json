@@ -1,0 +1,671 @@
+{
+  "schema": "permagent.world.detail-v4.botany.census.v1",
+  "generated": "2026-10-13T01:57:11Z",
+  "assets": [
+    {
+      "asset": "canopy-olive",
+      "budget_source": "ruling: canopy tree",
+      "lod0": {
+        "file": "canopy-olive.lod0.glb",
+        "triangles": 4444,
+        "primitives_draw_calls": 2,
+        "bytes": 388852,
+        "materials": [
+          "Bark \u2022 grey olive",
+          "Foliage \u2022 alpha-tested atlas"
+        ],
+        "texture_decoded_bytes": 7340031
+      },
+      "lod1": {
+        "file": "canopy-olive.lod1.glb",
+        "triangles": 880,
+        "primitives_draw_calls": 2,
+        "bytes": 122684,
+        "materials": [
+          "Bark \u2022 grey olive",
+          "Foliage \u2022 alpha-tested atlas"
+        ],
+        "texture_decoded_bytes": 7340031
+      },
+      "alpha_materials": [
+        {
+          "name": "Foliage \u2022 alpha-tested atlas",
+          "alphaMode": "MASK",
+          "alphaCutoff": null,
+          "doubleSided": true
+        },
+        {
+          "name": "Foliage \u2022 alpha-tested atlas",
+          "alphaMode": "MASK",
+          "alphaCutoff": null,
+          "doubleSided": true
+        }
+      ],
+      "cast_shadow": {
+        "lod0": true,
+        "lod1": true,
+        "note": "alpha-tested depth (customDepthMaterial with alphaTest)"
+      },
+      "textures": [
+        {
+          "name": "bark_normal",
+          "mime": "image/webp",
+          "width": 256,
+          "height": 256,
+          "colorspace": "linear",
+          "bytes": 2696
+        },
+        {
+          "name": "bark_basecolor",
+          "mime": "image/webp",
+          "width": 512,
+          "height": 512,
+          "colorspace": "sRGB",
+          "bytes": 6436
+        },
+        {
+          "name": "foliage_atlas_basecolor_alpha",
+          "mime": "image/webp",
+          "width": 1024,
+          "height": 1024,
+          "colorspace": "sRGB",
+          "bytes": 38730
+        }
+      ],
+      "collision_bytes": 3096,
+      "checks": {
+        "lod0_triangles": {
+          "value": 4444,
+          "ceiling": 6000,
+          "pass": true
+        },
+        "lod1_triangles": {
+          "value": 880,
+          "ceiling": 2000,
+          "pass": true
+        },
+        "lod1_reduces": {
+          "value": 0.198,
+          "pass": true
+        },
+        "max_texture_px": {
+          "value": 1024,
+          "ceiling": 1024,
+          "pass": true
+        },
+        "primitives_lod0": {
+          "value": 2,
+          "ceiling": 2,
+          "pass": true
+        },
+        "one_mesh": {
+          "value": 1,
+          "pass": true
+        },
+        "wind_anchors": {
+          "value": [
+            "wind_root",
+            "wind_sway",
+            "wind_tip"
+          ],
+          "pass": true
+        },
+        "crown_base_headroom": {
+          "value": 2.579,
+          "ceiling_note": ">= 2.3 m at scale 1",
+          "pass": true
+        }
+      },
+      "pass": true
+    },
+    {
+      "asset": "shrub-laurel",
+      "budget_source": "ruling: shrub / groundcover patch",
+      "lod0": {
+        "file": "shrub-laurel.lod0.glb",
+        "triangles": 1358,
+        "primitives_draw_calls": 1,
+        "bytes": 78884,
+        "materials": [
+          "Botany \u2022 leaf and stem palette"
+        ],
+        "texture_decoded_bytes": 87381
+      },
+      "lod1": {
+        "file": "shrub-laurel.lod1.glb",
+        "triangles": 225,
+        "primitives_draw_calls": 2,
+        "bytes": 54068,
+        "materials": [
+          "Botany \u2022 leaf and stem palette",
+          "Foliage \u2022 alpha-tested atlas"
+        ],
+        "texture_decoded_bytes": 5679786
+      },
+      "alpha_materials": [
+        {
+          "name": "Foliage \u2022 alpha-tested atlas",
+          "alphaMode": "MASK",
+          "alphaCutoff": null,
+          "doubleSided": true
+        }
+      ],
+      "cast_shadow": {
+        "lod0": true,
+        "lod1": false,
+        "note": "LOD1 shadow off"
+      },
+      "textures": [
+        {
+          "name": "botany_palette_basecolor",
+          "mime": "image/webp",
+          "width": 128,
+          "height": 128,
+          "colorspace": "sRGB",
+          "bytes": 438
+        },
+        {
+          "name": "foliage_atlas_basecolor_alpha",
+          "mime": "image/webp",
+          "width": 1024,
+          "height": 1024,
+          "colorspace": "sRGB",
+          "bytes": 38730
+        }
+      ],
+      "collision_bytes": 3072,
+      "checks": {
+        "lod0_triangles": {
+          "value": 1358,
+          "ceiling": 1500,
+          "pass": true
+        },
+        "lod1_triangles": {
+          "value": 225,
+          "ceiling": 500,
+          "pass": true
+        },
+        "lod1_reduces": {
+          "value": 0.166,
+          "pass": true
+        },
+        "max_texture_px": {
+          "value": 1024,
+          "ceiling": 1024,
+          "pass": true
+        },
+        "primitives_lod0": {
+          "value": 1,
+          "ceiling": 2,
+          "pass": true
+        },
+        "one_mesh": {
+          "value": 1,
+          "pass": true
+        },
+        "wind_anchors": {
+          "value": [
+            "wind_root",
+            "wind_sway",
+            "wind_tip"
+          ],
+          "pass": true
+        }
+      },
+      "pass": true
+    },
+    {
+      "asset": "fern-sword",
+      "budget_source": "ruling: shrub/groundcover patch, fern uses smaller",
+      "lod0": {
+        "file": "fern-sword.lod0.glb",
+        "triangles": 1134,
+        "primitives_draw_calls": 1,
+        "bytes": 67584,
+        "materials": [
+          "Botany \u2022 leaf and stem palette"
+        ],
+        "texture_decoded_bytes": 87381
+      },
+      "lod1": {
+        "file": "fern-sword.lod1.glb",
+        "triangles": 413,
+        "primitives_draw_calls": 1,
+        "bytes": 27896,
+        "materials": [
+          "Botany \u2022 leaf and stem palette"
+        ],
+        "texture_decoded_bytes": 87381
+      },
+      "alpha_materials": [],
+      "cast_shadow": {
+        "lod0": false,
+        "lod1": false,
+        "note": "receives only"
+      },
+      "textures": [
+        {
+          "name": "botany_palette_basecolor",
+          "mime": "image/webp",
+          "width": 128,
+          "height": 128,
+          "colorspace": "sRGB",
+          "bytes": 438
+        }
+      ],
+      "collision_bytes": 3088,
+      "checks": {
+        "lod0_triangles": {
+          "value": 1134,
+          "ceiling": 1200,
+          "pass": true
+        },
+        "lod1_triangles": {
+          "value": 413,
+          "ceiling": 450,
+          "pass": true
+        },
+        "lod1_reduces": {
+          "value": 0.364,
+          "pass": true
+        },
+        "max_texture_px": {
+          "value": 128,
+          "ceiling": 1024,
+          "pass": true
+        },
+        "primitives_lod0": {
+          "value": 1,
+          "ceiling": 2,
+          "pass": true
+        },
+        "one_mesh": {
+          "value": 1,
+          "pass": true
+        },
+        "wind_anchors": {
+          "value": [
+            "wind_root",
+            "wind_sway",
+            "wind_tip"
+          ],
+          "pass": true
+        }
+      },
+      "pass": true
+    },
+    {
+      "asset": "flower-coneflower",
+      "budget_source": "ruling: flower clusters use smaller budgets",
+      "lod0": {
+        "file": "flower-coneflower.lod0.glb",
+        "triangles": 1000,
+        "primitives_draw_calls": 1,
+        "bytes": 58408,
+        "materials": [
+          "Botany \u2022 leaf and stem palette"
+        ],
+        "texture_decoded_bytes": 87381
+      },
+      "lod1": {
+        "file": "flower-coneflower.lod1.glb",
+        "triangles": 312,
+        "primitives_draw_calls": 1,
+        "bytes": 23044,
+        "materials": [
+          "Botany \u2022 leaf and stem palette"
+        ],
+        "texture_decoded_bytes": 87381
+      },
+      "alpha_materials": [],
+      "cast_shadow": {
+        "lod0": false,
+        "lod1": false,
+        "note": "small flowers never cast"
+      },
+      "textures": [
+        {
+          "name": "botany_palette_basecolor",
+          "mime": "image/webp",
+          "width": 128,
+          "height": 128,
+          "colorspace": "sRGB",
+          "bytes": 438
+        }
+      ],
+      "collision_bytes": 3108,
+      "checks": {
+        "lod0_triangles": {
+          "value": 1000,
+          "ceiling": 1000,
+          "pass": true
+        },
+        "lod1_triangles": {
+          "value": 312,
+          "ceiling": 400,
+          "pass": true
+        },
+        "lod1_reduces": {
+          "value": 0.312,
+          "pass": true
+        },
+        "max_texture_px": {
+          "value": 128,
+          "ceiling": 1024,
+          "pass": true
+        },
+        "primitives_lod0": {
+          "value": 1,
+          "ceiling": 2,
+          "pass": true
+        },
+        "one_mesh": {
+          "value": 1,
+          "pass": true
+        },
+        "wind_anchors": {
+          "value": [
+            "wind_root",
+            "wind_sway",
+            "wind_tip"
+          ],
+          "pass": true
+        }
+      },
+      "pass": true
+    },
+    {
+      "asset": "grass-fountain",
+      "budget_source": "ruling: groundcover patch",
+      "lod0": {
+        "file": "grass-fountain.lod0.glb",
+        "triangles": 913,
+        "primitives_draw_calls": 1,
+        "bytes": 46816,
+        "materials": [
+          "Botany \u2022 leaf and stem palette"
+        ],
+        "texture_decoded_bytes": 87381
+      },
+      "lod1": {
+        "file": "grass-fountain.lod1.glb",
+        "triangles": 120,
+        "primitives_draw_calls": 1,
+        "bytes": 10332,
+        "materials": [
+          "Botany \u2022 leaf and stem palette"
+        ],
+        "texture_decoded_bytes": 87381
+      },
+      "alpha_materials": [],
+      "cast_shadow": {
+        "lod0": false,
+        "lod1": false,
+        "note": "receives only"
+      },
+      "textures": [
+        {
+          "name": "botany_palette_basecolor",
+          "mime": "image/webp",
+          "width": 128,
+          "height": 128,
+          "colorspace": "sRGB",
+          "bytes": 438
+        }
+      ],
+      "collision_bytes": 3084,
+      "checks": {
+        "lod0_triangles": {
+          "value": 913,
+          "ceiling": 1000,
+          "pass": true
+        },
+        "lod1_triangles": {
+          "value": 120,
+          "ceiling": 300,
+          "pass": true
+        },
+        "lod1_reduces": {
+          "value": 0.131,
+          "pass": true
+        },
+        "max_texture_px": {
+          "value": 128,
+          "ceiling": 1024,
+          "pass": true
+        },
+        "primitives_lod0": {
+          "value": 1,
+          "ceiling": 2,
+          "pass": true
+        },
+        "one_mesh": {
+          "value": 1,
+          "pass": true
+        },
+        "wind_anchors": {
+          "value": [
+            "wind_root",
+            "wind_sway",
+            "wind_tip"
+          ],
+          "pass": true
+        }
+      },
+      "pass": true
+    },
+    {
+      "asset": "iris-water",
+      "budget_source": "ruling: groundcover patch",
+      "lod0": {
+        "file": "iris-water.lod0.glb",
+        "triangles": 422,
+        "primitives_draw_calls": 1,
+        "bytes": 23452,
+        "materials": [
+          "Botany \u2022 leaf and stem palette"
+        ],
+        "texture_decoded_bytes": 87381
+      },
+      "lod1": {
+        "file": "iris-water.lod1.glb",
+        "triangles": 117,
+        "primitives_draw_calls": 1,
+        "bytes": 9108,
+        "materials": [
+          "Botany \u2022 leaf and stem palette"
+        ],
+        "texture_decoded_bytes": 87381
+      },
+      "alpha_materials": [],
+      "cast_shadow": {
+        "lod0": false,
+        "lod1": false,
+        "note": "receives only"
+      },
+      "textures": [
+        {
+          "name": "botany_palette_basecolor",
+          "mime": "image/webp",
+          "width": 128,
+          "height": 128,
+          "colorspace": "sRGB",
+          "bytes": 438
+        }
+      ],
+      "collision_bytes": 3028,
+      "checks": {
+        "lod0_triangles": {
+          "value": 422,
+          "ceiling": 800,
+          "pass": true
+        },
+        "lod1_triangles": {
+          "value": 117,
+          "ceiling": 300,
+          "pass": true
+        },
+        "lod1_reduces": {
+          "value": 0.277,
+          "pass": true
+        },
+        "max_texture_px": {
+          "value": 128,
+          "ceiling": 1024,
+          "pass": true
+        },
+        "primitives_lod0": {
+          "value": 1,
+          "ceiling": 2,
+          "pass": true
+        },
+        "one_mesh": {
+          "value": 1,
+          "pass": true
+        },
+        "wind_anchors": {
+          "value": [
+            "wind_root",
+            "wind_sway",
+            "wind_tip"
+          ],
+          "pass": true
+        }
+      },
+      "pass": true
+    },
+    {
+      "asset": "vine-pendant",
+      "budget_source": "lane: hanging strand",
+      "lod0": {
+        "file": "vine-pendant.lod0.glb",
+        "triangles": 268,
+        "primitives_draw_calls": 1,
+        "bytes": 18272,
+        "materials": [
+          "Botany \u2022 leaf and stem palette"
+        ],
+        "texture_decoded_bytes": 87381
+      },
+      "lod1": {
+        "file": "vine-pendant.lod1.glb",
+        "triangles": 75,
+        "primitives_draw_calls": 2,
+        "bytes": 46416,
+        "materials": [
+          "Botany \u2022 leaf and stem palette",
+          "Foliage \u2022 alpha-tested atlas"
+        ],
+        "texture_decoded_bytes": 5679786
+      },
+      "alpha_materials": [
+        {
+          "name": "Foliage \u2022 alpha-tested atlas",
+          "alphaMode": "MASK",
+          "alphaCutoff": null,
+          "doubleSided": true
+        }
+      ],
+      "cast_shadow": {
+        "lod0": false,
+        "lod1": false,
+        "note": "receives only"
+      },
+      "textures": [
+        {
+          "name": "botany_palette_basecolor",
+          "mime": "image/webp",
+          "width": 128,
+          "height": 128,
+          "colorspace": "sRGB",
+          "bytes": 438
+        },
+        {
+          "name": "foliage_atlas_basecolor_alpha",
+          "mime": "image/webp",
+          "width": 1024,
+          "height": 1024,
+          "colorspace": "sRGB",
+          "bytes": 38730
+        }
+      ],
+      "collision_bytes": 0,
+      "checks": {
+        "lod0_triangles": {
+          "value": 268,
+          "ceiling": 600,
+          "pass": true
+        },
+        "lod1_triangles": {
+          "value": 75,
+          "ceiling": 200,
+          "pass": true
+        },
+        "lod1_reduces": {
+          "value": 0.28,
+          "pass": true
+        },
+        "max_texture_px": {
+          "value": 1024,
+          "ceiling": 1024,
+          "pass": true
+        },
+        "primitives_lod0": {
+          "value": 1,
+          "ceiling": 2,
+          "pass": true
+        },
+        "one_mesh": {
+          "value": 1,
+          "pass": true
+        },
+        "wind_anchors": {
+          "value": [
+            "wind_root",
+            "wind_sway",
+            "wind_tip"
+          ],
+          "pass": true
+        }
+      },
+      "pass": true
+    }
+  ],
+  "scatter": {
+    "instances": 408,
+    "per_species": {
+      "canopy-olive": 13,
+      "shrub-laurel": 79,
+      "fern-sword": 132,
+      "flower-coneflower": 122,
+      "grass-fountain": 34,
+      "iris-water": 14,
+      "vine-pendant": 14
+    },
+    "rejected": 0,
+    "shrunk_to_fit": 44,
+    "tree_min_scale_for_2.3m_headroom": 0.892,
+    "triangles_all_lod0_worst_case": 477444,
+    "triangles_from_arrival_camera_lod_by_distance": 201172,
+    "instanced_groups_cell_x_species": 92,
+    "draw_calls_upper_bound_all_cells_visible": 105,
+    "draw_calls_arrival_frustum_instanced": 78,
+    "draw_calls_if_batchedmesh_per_cell_material": 50,
+    "draw_calls_arrival_frustum_batchedmesh": 36,
+    "nudged_off_route": 22,
+    "shadow_casting_instances_lod0": 92,
+    "lane_targets": {
+      "arrival_triangles": 400000,
+      "arrival_frustum_draw_calls_instanced": 80,
+      "note": "W4 botany share of the 1M main-view / 250 draw-call frame budgets; the all-cells upper bound is reported, not gated (cells behind the camera are culled)"
+    },
+    "pass": true
+  },
+  "totals": {
+    "lod0_bytes": 682268,
+    "lod1_bytes": 293548,
+    "collision_bytes": 18476,
+    "lod0_triangles_one_of_each": 9539,
+    "all_pass": true
+  }
+}

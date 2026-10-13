@@ -1,0 +1,166 @@
+{
+  "validator": "gltf-validator 2.0.0-dev.3.10",
+  "files": [
+    {
+      "file": "canopy-olive.collision.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 1,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "canopy-olive.lod0.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 1,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "canopy-olive.lod1.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 1,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "fern-sword.collision.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 1,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "fern-sword.lod0.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 0,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "fern-sword.lod1.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 0,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "flower-coneflower.collision.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 1,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "flower-coneflower.lod0.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 0,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "flower-coneflower.lod1.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 0,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "grass-fountain.collision.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 1,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "grass-fountain.lod0.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 0,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "grass-fountain.lod1.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 0,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "iris-water.collision.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 1,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "iris-water.lod0.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 0,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "iris-water.lod1.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 0,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "shrub-laurel.collision.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 1,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "shrub-laurel.lod0.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 0,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "shrub-laurel.lod1.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 0,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "vine-pendant.lod0.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 0,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "vine-pendant.lod1.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 0,
+      "hints": 0,
+      "messages": []
+    }
+  ],
+  "allValid": true
+}

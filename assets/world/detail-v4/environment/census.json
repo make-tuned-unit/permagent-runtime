@@ -1,0 +1,31 @@
+{
+  "schema": "permagent.world.detail-v4.environment.v1.census",
+  "generated": "2026-10-13T01:57:18Z",
+  "budgets_reference": "wq-reports/astra/ruling-world-production-20261012.md section 2 Budgets",
+  "parts": {
+    "botany": {
+      "lod0_bytes": 682268,
+      "lod1_bytes": 293548,
+      "collision_bytes": 18476,
+      "lod0_triangles_one_of_each": 9539,
+      "all_pass": true
+    },
+    "places": {
+      "lod0_bytes": 4261844,
+      "lod1_bytes": 2630568,
+      "collision_bytes": 46600,
+      "unique_modules_lod0_triangles": 42960,
+      "unique_modules_ceiling": 250000,
+      "suggested_placements": 55,
+      "placed_lod0_triangles_all_visible": 84160,
+      "placed_lod0_draw_calls_all_visible_unbatched": 102,
+      "all_pass": true
+    }
+  },
+  "totals": {
+    "all_glb_bytes": 7933304,
+    "detail_kit_ceiling_bytes": 18874368,
+    "note": "W4 share of the 18 MiB replacement detail kit (W3 hero kit ~2.6 MB of GLBs is separate)",
+    "all_pass": true
+  }
+}

@@ -1,0 +1,5895 @@
+{
+ "schema": "permagent.world.detail-v4.scatter.v1",
+ "coordinates": "runtime world space (three.js): metres, +Y up, position = soil-contact origin; heading = rotation about +Y (rad); uniform scale",
+ "layout_source": [
+  "ui/command-center/src/components/world/forum/habitatLayout.ts",
+  "habitatObservatoryWing.ts"
+ ],
+ "cell_size_m": 10.0,
+ "rules": "* Plants go only where the runtime already forbids walking: inside raised\n    beds and water, or on existing runtime planting positions (terrace edges,\n    station planters, water-front beds). Species are clustered in drifts.\n  * Foliage core (0.75 x spread radius x scale) may not cover any cell that\n    is reachable from HABITAT_START on the 0.25 m grid (body margin 0.47 m);\n    a plant that would spill is shrunk (down to 0.55x) or dropped.\n  * Canopy trees keep crown base >= 2.3 m (scale >= 2.3 / crown_base_m) and\n    their trunk envelope (r 0.30 x scale) must not touch a reachable cell.\n  * Instances are grouped into 10 m spatial cells for InstancedMesh batching.",
+ "species": {
+  "canopy-olive": {
+   "lod0": "canopy-olive.lod0.glb",
+   "lod1": "canopy-olive.lod1.glb",
+   "collision": "canopy-olive.collision.glb",
+   "blocking": true,
+   "cast_shadow": {
+    "lod0": true,
+    "lod1": true,
+    "note": "alpha-tested depth (customDepthMaterial with alphaTest)"
+   },
+   "lod0_to_lod1_distance_m": 30
+  },
+  "shrub-laurel": {
+   "lod0": "shrub-laurel.lod0.glb",
+   "lod1": "shrub-laurel.lod1.glb",
+   "collision": "shrub-laurel.collision.glb",
+   "blocking": true,
+   "cast_shadow": {
+    "lod0": true,
+    "lod1": false,
+    "note": "LOD1 shadow off"
+   },
+   "lod0_to_lod1_distance_m": 16
+  },
+  "fern-sword": {
+   "lod0": "fern-sword.lod0.glb",
+   "lod1": "fern-sword.lod1.glb",
+   "collision": "fern-sword.collision.glb",
+   "blocking": false,
+   "cast_shadow": {
+    "lod0": false,
+    "lod1": false,
+    "note": "receives only"
+   },
+   "lod0_to_lod1_distance_m": 11
+  },
+  "flower-coneflower": {
+   "lod0": "flower-coneflower.lod0.glb",
+   "lod1": "flower-coneflower.lod1.glb",
+   "collision": "flower-coneflower.collision.glb",
+   "blocking": false,
+   "cast_shadow": {
+    "lod0": false,
+    "lod1": false,
+    "note": "small flowers never cast"
+   },
+   "lod0_to_lod1_distance_m": 11
+  },
+  "grass-fountain": {
+   "lod0": "grass-fountain.lod0.glb",
+   "lod1": "grass-fountain.lod1.glb",
+   "collision": "grass-fountain.collision.glb",
+   "blocking": false,
+   "cast_shadow": {
+    "lod0": false,
+    "lod1": false,
+    "note": "receives only"
+   },
+   "lod0_to_lod1_distance_m": 11
+  },
+  "iris-water": {
+   "lod0": "iris-water.lod0.glb",
+   "lod1": "iris-water.lod1.glb",
+   "collision": "iris-water.collision.glb",
+   "blocking": false,
+   "cast_shadow": {
+    "lod0": false,
+    "lod1": false,
+    "note": "receives only"
+   },
+   "lod0_to_lod1_distance_m": 12
+  },
+  "vine-pendant": {
+   "lod0": "vine-pendant.lod0.glb",
+   "lod1": "vine-pendant.lod1.glb",
+   "collision": null,
+   "blocking": false,
+   "cast_shadow": {
+    "lod0": false,
+    "lod1": false,
+    "note": "receives only"
+   },
+   "lod0_to_lod1_distance_m": 14
+  }
+ },
+ "instances": [
+  {
+   "species": "canopy-olive",
+   "position": [
+    -7.8,
+    0.025,
+    5.8
+   ],
+   "heading": 1.239,
+   "scale": 1.088,
+   "cell": "-1,0",
+   "place": "commons",
+   "source": "replaces HABITAT_DECOR canopy @ -7.8,5.8"
+  },
+  {
+   "species": "canopy-olive",
+   "position": [
+    7.7,
+    0.025,
+    10
+   ],
+   "heading": 4.18,
+   "scale": 1.02,
+   "cell": "0,1",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR canopy @ 7.7,10"
+  },
+  {
+   "species": "canopy-olive",
+   "position": [
+    -13,
+    0.025,
+    11
+   ],
+   "heading": 2.217,
+   "scale": 0.952,
+   "cell": "-2,1",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR canopy @ -13,11"
+  },
+  {
+   "species": "canopy-olive",
+   "position": [
+    -14,
+    0.025,
+    2
+   ],
+   "heading": 5.744,
+   "scale": 1.02,
+   "cell": "-2,0",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR canopy @ -14,2"
+  },
+  {
+   "species": "canopy-olive",
+   "position": [
+    -14,
+    1.158,
+    -10
+   ],
+   "heading": 1.918,
+   "scale": 1.088,
+   "cell": "-2,-1",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR canopy @ -14,-10"
+  },
+  {
+   "species": "canopy-olive",
+   "position": [
+    -14,
+    3.425,
+    -24
+   ],
+   "heading": 3.89,
+   "scale": 1.122,
+   "cell": "-2,-3",
+   "place": "gallery",
+   "source": "replaces HABITAT_DECOR canopy @ -14,-24"
+  },
+  {
+   "species": "canopy-olive",
+   "position": [
+    -5,
+    3.425,
+    -25
+   ],
+   "heading": 1.221,
+   "scale": 1.054,
+   "cell": "-1,-3",
+   "place": "council_garden",
+   "source": "replaces HABITAT_DECOR canopy @ -5,-25"
+  },
+  {
+   "species": "canopy-olive",
+   "position": [
+    8,
+    3.425,
+    -26
+   ],
+   "heading": 5.018,
+   "scale": 0.986,
+   "cell": "0,-3",
+   "place": "council_garden",
+   "source": "replaces HABITAT_DECOR canopy @ 8,-26"
+  },
+  {
+   "species": "canopy-olive",
+   "position": [
+    14,
+    2.292,
+    -12
+   ],
+   "heading": 4.398,
+   "scale": 0.952,
+   "cell": "1,-2",
+   "place": "conservatory",
+   "source": "replaces HABITAT_DECOR canopy @ 14,-12"
+  },
+  {
+   "species": "canopy-olive",
+   "position": [
+    14,
+    0.025,
+    0
+   ],
+   "heading": 0.065,
+   "scale": 0.892,
+   "cell": "1,0",
+   "place": "conservatory",
+   "source": "replaces HABITAT_DECOR canopy @ 14,0"
+  },
+  {
+   "species": "canopy-olive",
+   "position": [
+    0,
+    2.292,
+    -12
+   ],
+   "heading": 2.435,
+   "scale": 0.892,
+   "cell": "0,-2",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR canopy @ 0,-12"
+  },
+  {
+   "species": "canopy-olive",
+   "position": [
+    -6,
+    3.425,
+    -44.7
+   ],
+   "heading": 4.043,
+   "scale": 0.892,
+   "cell": "-1,-5",
+   "place": "observatory_garden",
+   "source": "replaces HABITAT_DECOR canopy @ -6,-44.7"
+  },
+  {
+   "species": "canopy-olive",
+   "position": [
+    14,
+    3.425,
+    -44.7
+   ],
+   "heading": 1.672,
+   "scale": 0.892,
+   "cell": "1,-5",
+   "place": "observatory_garden",
+   "source": "replaces HABITAT_DECOR canopy @ 14,-44.7"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    -14.5,
+    0.025,
+    12
+   ],
+   "heading": 2.217,
+   "scale": 0.637,
+   "cell": "-2,1",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR shrub @ -14.5,12"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -13.712,
+    0.025,
+    12.562
+   ],
+   "heading": 2.24,
+   "scale": 0.434,
+   "cell": "-2,1",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR fern @ -13.5,12.35"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -13.8,
+    0.025,
+    11.55
+   ],
+   "heading": 6.063,
+   "scale": 0.65,
+   "cell": "-2,1",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR flowers @ -13.8,11.55"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    -14.802,
+    0.025,
+    10.3
+   ],
+   "heading": 4.708,
+   "scale": 0.748,
+   "cell": "-2,1",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR shrub @ -14.8,10.3"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -13.802,
+    0.025,
+    10.65
+   ],
+   "heading": 3.341,
+   "scale": 0.578,
+   "cell": "-2,1",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR fern @ -13.8,10.65"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -14.102,
+    0.025,
+    9.85
+   ],
+   "heading": 4.184,
+   "scale": 0.65,
+   "cell": "-2,0",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR flowers @ -14.1,9.85"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    -14.195,
+    0.025,
+    8.6
+   ],
+   "heading": 0.843,
+   "scale": 0.858,
+   "cell": "-2,0",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR shrub @ -14.19,8.6"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -13.195,
+    0.025,
+    8.95
+   ],
+   "heading": 3.027,
+   "scale": 0.421,
+   "cell": "-2,0",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR fern @ -13.19,8.95"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -13.495,
+    0.025,
+    8.15
+   ],
+   "heading": 2.08,
+   "scale": 0.65,
+   "cell": "-2,0",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR flowers @ -13.49,8.15"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    -14.506,
+    0.025,
+    6.9
+   ],
+   "heading": 0.575,
+   "scale": 0.637,
+   "cell": "-2,0",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR shrub @ -14.51,6.9"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -13.718,
+    0.025,
+    7.462
+   ],
+   "heading": 0.966,
+   "scale": 0.434,
+   "cell": "-2,0",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR fern @ -13.51,7.25"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -13.806,
+    0.025,
+    6.45
+   ],
+   "heading": 2.896,
+   "scale": 0.65,
+   "cell": "-2,0",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR flowers @ -13.81,6.45"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    -14.799,
+    0.025,
+    5.2
+   ],
+   "heading": 0.274,
+   "scale": 0.748,
+   "cell": "-2,0",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR shrub @ -14.8,5.2"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -14.011,
+    0.025,
+    5.762
+   ],
+   "heading": 1.708,
+   "scale": 0.434,
+   "cell": "-2,0",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR fern @ -13.8,5.55"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -14.099,
+    0.025,
+    4.75
+   ],
+   "heading": 2.915,
+   "scale": 0.65,
+   "cell": "-2,0",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR flowers @ -14.1,4.75"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    -14.192,
+    0.025,
+    3.5
+   ],
+   "heading": 1.854,
+   "scale": 0.858,
+   "cell": "-2,0",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR shrub @ -14.19,3.5"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -13.192,
+    0.025,
+    3.85
+   ],
+   "heading": 5.448,
+   "scale": 0.421,
+   "cell": "-2,0",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR fern @ -13.19,3.85"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -13.492,
+    0.025,
+    3.05
+   ],
+   "heading": 0.494,
+   "scale": 0.65,
+   "cell": "-2,0",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR flowers @ -13.49,3.05"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    -14.512,
+    0.025,
+    1.8
+   ],
+   "heading": 3.806,
+   "scale": 0.637,
+   "cell": "-2,0",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR shrub @ -14.51,1.8"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -13.512,
+    0.025,
+    2.15
+   ],
+   "heading": 4.928,
+   "scale": 0.578,
+   "cell": "-2,0",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR fern @ -13.51,2.15"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -13.812,
+    0.025,
+    1.35
+   ],
+   "heading": 0.251,
+   "scale": 0.65,
+   "cell": "-2,0",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR flowers @ -13.81,1.35"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    -14.796,
+    0.025,
+    0.1
+   ],
+   "heading": 0.615,
+   "scale": 0.748,
+   "cell": "-2,0",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR shrub @ -14.8,0.1"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -14.008,
+    0.025,
+    0.662
+   ],
+   "heading": 5.132,
+   "scale": 0.434,
+   "cell": "-2,0",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR fern @ -13.8,0.45"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -14.096,
+    0.025,
+    -0.35
+   ],
+   "heading": 0.938,
+   "scale": 0.65,
+   "cell": "-2,-1",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR flowers @ -14.1,-0.35"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    -14.189,
+    0.025,
+    -1.6
+   ],
+   "heading": 5.778,
+   "scale": 0.858,
+   "cell": "-2,-1",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR shrub @ -14.19,-1.6"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -13.189,
+    0.025,
+    -1.25
+   ],
+   "heading": 5.414,
+   "scale": 0.468,
+   "cell": "-2,-1",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR fern @ -13.19,-1.25"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -13.489,
+    0.025,
+    -2.05
+   ],
+   "heading": 5.603,
+   "scale": 0.65,
+   "cell": "-2,-1",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR flowers @ -13.49,-2.05"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    -14.518,
+    0.025,
+    -3.3
+   ],
+   "heading": 1.108,
+   "scale": 0.637,
+   "cell": "-2,-1",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR shrub @ -14.52,-3.3"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -13.73,
+    0.025,
+    -2.738
+   ],
+   "heading": 2.859,
+   "scale": 0.434,
+   "cell": "-2,-1",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR fern @ -13.52,-2.95"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -13.818,
+    0.025,
+    -3.75
+   ],
+   "heading": 4.537,
+   "scale": 0.65,
+   "cell": "-2,-1",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR flowers @ -13.82,-3.75"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    -14.793,
+    0.025,
+    -5
+   ],
+   "heading": 5.548,
+   "scale": 0.748,
+   "cell": "-2,-1",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR shrub @ -14.79,-5"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -14.005,
+    0.025,
+    -4.438
+   ],
+   "heading": 4.98,
+   "scale": 0.434,
+   "cell": "-2,-1",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR fern @ -13.79,-4.65"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -14.093,
+    0.025,
+    -5.45
+   ],
+   "heading": 4.773,
+   "scale": 0.65,
+   "cell": "-2,-1",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR flowers @ -14.09,-5.45"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    -14.187,
+    0.025,
+    -6.7
+   ],
+   "heading": 3.185,
+   "scale": 0.858,
+   "cell": "-2,-1",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR shrub @ -14.19,-6.7"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -13.187,
+    0.025,
+    -6.35
+   ],
+   "heading": 2.947,
+   "scale": 0.421,
+   "cell": "-2,-1",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR fern @ -13.19,-6.35"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -13.487,
+    0.025,
+    -7.15
+   ],
+   "heading": 5.263,
+   "scale": 0.65,
+   "cell": "-2,-1",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR flowers @ -13.49,-7.15"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    -14.524,
+    0.252,
+    -8.4
+   ],
+   "heading": 4.616,
+   "scale": 0.637,
+   "cell": "-2,-1",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR shrub @ -14.52,-8.4"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -13.524,
+    0.053,
+    -7.75
+   ],
+   "heading": 2.186,
+   "scale": 0.434,
+   "cell": "-2,-1",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR fern @ -13.52,-8.05"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -13.824,
+    0.507,
+    -8.85
+   ],
+   "heading": 0.455,
+   "scale": 0.65,
+   "cell": "-2,-1",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR flowers @ -13.82,-8.85"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    -14.79,
+    1.215,
+    -10.1
+   ],
+   "heading": 0.292,
+   "scale": 0.748,
+   "cell": "-2,-2",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR shrub @ -14.79,-10.1"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -13.79,
+    1.017,
+    -9.75
+   ],
+   "heading": 5.958,
+   "scale": 0.578,
+   "cell": "-2,-1",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR fern @ -13.79,-9.75"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -14.09,
+    1.47,
+    -10.55
+   ],
+   "heading": 2.033,
+   "scale": 0.65,
+   "cell": "-2,-2",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR flowers @ -14.09,-10.55"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    -14.184,
+    2.178,
+    -11.8
+   ],
+   "heading": 0.317,
+   "scale": 0.858,
+   "cell": "-2,-2",
+   "place": "gallery",
+   "source": "replaces HABITAT_DECOR shrub @ -14.18,-11.8"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    -14.529,
+    3.142,
+    -13.5
+   ],
+   "heading": 3.212,
+   "scale": 0.637,
+   "cell": "-2,-2",
+   "place": "gallery",
+   "source": "replaces HABITAT_DECOR shrub @ -14.53,-13.5"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -13.529,
+    2.943,
+    -13.15
+   ],
+   "heading": 1.393,
+   "scale": 0.578,
+   "cell": "-2,-2",
+   "place": "gallery",
+   "source": "replaces HABITAT_DECOR fern @ -13.53,-13.15"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -13.829,
+    3.397,
+    -13.95
+   ],
+   "heading": 5.059,
+   "scale": 0.65,
+   "cell": "-2,-2",
+   "place": "gallery",
+   "source": "replaces HABITAT_DECOR flowers @ -13.83,-13.95"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    -14.786,
+    3.425,
+    -15.2
+   ],
+   "heading": 3.395,
+   "scale": 0.748,
+   "cell": "-2,-2",
+   "place": "gallery",
+   "source": "replaces HABITAT_DECOR shrub @ -14.79,-15.2"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -13.998,
+    3.425,
+    -14.638
+   ],
+   "heading": 0.846,
+   "scale": 0.434,
+   "cell": "-2,-2",
+   "place": "gallery",
+   "source": "replaces HABITAT_DECOR fern @ -13.79,-14.85"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -14.086,
+    3.425,
+    -15.65
+   ],
+   "heading": 3.945,
+   "scale": 0.65,
+   "cell": "-2,-2",
+   "place": "gallery",
+   "source": "replaces HABITAT_DECOR flowers @ -14.09,-15.65"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    -14.182,
+    3.425,
+    -16.9
+   ],
+   "heading": 4.069,
+   "scale": 0.858,
+   "cell": "-2,-2",
+   "place": "gallery",
+   "source": "replaces HABITAT_DECOR shrub @ -14.18,-16.9"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -13.182,
+    3.425,
+    -16.55
+   ],
+   "heading": 4.939,
+   "scale": 0.421,
+   "cell": "-2,-2",
+   "place": "gallery",
+   "source": "replaces HABITAT_DECOR fern @ -13.18,-16.55"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -13.482,
+    3.425,
+    -17.35
+   ],
+   "heading": 5.303,
+   "scale": 0.65,
+   "cell": "-2,-2",
+   "place": "gallery",
+   "source": "replaces HABITAT_DECOR flowers @ -13.48,-17.35"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    -14.535,
+    3.425,
+    -18.6
+   ],
+   "heading": 5.359,
+   "scale": 0.637,
+   "cell": "-2,-2",
+   "place": "gallery",
+   "source": "replaces HABITAT_DECOR shrub @ -14.54,-18.6"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -13.747,
+    3.425,
+    -18.038
+   ],
+   "heading": 3.869,
+   "scale": 0.434,
+   "cell": "-2,-2",
+   "place": "gallery",
+   "source": "replaces HABITAT_DECOR fern @ -13.54,-18.25"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -13.835,
+    3.425,
+    -19.05
+   ],
+   "heading": 0.152,
+   "scale": 0.65,
+   "cell": "-2,-2",
+   "place": "gallery",
+   "source": "replaces HABITAT_DECOR flowers @ -13.84,-19.05"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    -14.783,
+    3.425,
+    -20.3
+   ],
+   "heading": 3.625,
+   "scale": 0.748,
+   "cell": "-2,-3",
+   "place": "gallery",
+   "source": "replaces HABITAT_DECOR shrub @ -14.78,-20.3"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -13.995,
+    3.425,
+    -19.738
+   ],
+   "heading": 0.791,
+   "scale": 0.434,
+   "cell": "-2,-2",
+   "place": "gallery",
+   "source": "replaces HABITAT_DECOR fern @ -13.78,-19.95"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -14.083,
+    3.425,
+    -20.75
+   ],
+   "heading": 4.316,
+   "scale": 0.65,
+   "cell": "-2,-3",
+   "place": "gallery",
+   "source": "replaces HABITAT_DECOR flowers @ -14.08,-20.75"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    -14.179,
+    3.425,
+    -22
+   ],
+   "heading": 1.619,
+   "scale": 0.858,
+   "cell": "-2,-3",
+   "place": "gallery",
+   "source": "replaces HABITAT_DECOR shrub @ -14.18,-22"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -13.179,
+    3.425,
+    -21.65
+   ],
+   "heading": 1.952,
+   "scale": 0.52,
+   "cell": "-2,-3",
+   "place": "gallery",
+   "source": "replaces HABITAT_DECOR fern @ -13.18,-21.65"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -13.479,
+    3.425,
+    -22.45
+   ],
+   "heading": 1.062,
+   "scale": 0.65,
+   "cell": "-2,-3",
+   "place": "gallery",
+   "source": "replaces HABITAT_DECOR flowers @ -13.48,-22.45"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    -14.541,
+    3.425,
+    -23.7
+   ],
+   "heading": 0.752,
+   "scale": 0.637,
+   "cell": "-2,-3",
+   "place": "gallery",
+   "source": "replaces HABITAT_DECOR shrub @ -14.54,-23.7"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -13.541,
+    3.425,
+    -23.35
+   ],
+   "heading": 3.111,
+   "scale": 0.578,
+   "cell": "-2,-3",
+   "place": "gallery",
+   "source": "replaces HABITAT_DECOR fern @ -13.54,-23.35"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -13.841,
+    3.425,
+    -24.15
+   ],
+   "heading": 4.043,
+   "scale": 0.65,
+   "cell": "-2,-3",
+   "place": "gallery",
+   "source": "replaces HABITAT_DECOR flowers @ -13.84,-24.15"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    14.5,
+    0.025,
+    12
+   ],
+   "heading": 5.471,
+   "scale": 0.637,
+   "cell": "1,1",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR shrub @ 14.5,12"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    13.8,
+    0.025,
+    12.35
+   ],
+   "heading": 2.701,
+   "scale": 0.434,
+   "cell": "1,1",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR fern @ 13.5,12.35"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    13.8,
+    0.025,
+    11.55
+   ],
+   "heading": 1.79,
+   "scale": 0.65,
+   "cell": "1,1",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR flowers @ 13.8,11.55"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    14.802,
+    0.025,
+    10.3
+   ],
+   "heading": 4.398,
+   "scale": 0.748,
+   "cell": "1,1",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR shrub @ 14.8,10.3"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    14.102,
+    0.025,
+    10.65
+   ],
+   "heading": 4.0,
+   "scale": 0.434,
+   "cell": "1,1",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR fern @ 13.8,10.65"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    14.102,
+    0.025,
+    9.85
+   ],
+   "heading": 4.178,
+   "scale": 0.65,
+   "cell": "1,0",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR flowers @ 14.1,9.85"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    14.195,
+    0.025,
+    8.6
+   ],
+   "heading": 3.896,
+   "scale": 0.858,
+   "cell": "1,0",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR shrub @ 14.19,8.6"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    13.195,
+    0.025,
+    8.95
+   ],
+   "heading": 2.338,
+   "scale": 0.421,
+   "cell": "1,0",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR fern @ 13.19,8.95"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    13.495,
+    0.025,
+    8.15
+   ],
+   "heading": 3.895,
+   "scale": 0.65,
+   "cell": "1,0",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR flowers @ 13.49,8.15"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    14.506,
+    0.025,
+    6.9
+   ],
+   "heading": 3.87,
+   "scale": 0.637,
+   "cell": "1,0",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR shrub @ 14.51,6.9"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    13.806,
+    0.025,
+    7.25
+   ],
+   "heading": 3.423,
+   "scale": 0.434,
+   "cell": "1,0",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR fern @ 13.51,7.25"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    13.806,
+    0.025,
+    6.45
+   ],
+   "heading": 1.026,
+   "scale": 0.65,
+   "cell": "1,0",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR flowers @ 13.81,6.45"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    14.799,
+    0.025,
+    5.2
+   ],
+   "heading": 1.782,
+   "scale": 0.748,
+   "cell": "1,0",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR shrub @ 14.8,5.2"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    14.099,
+    0.025,
+    5.55
+   ],
+   "heading": 5.399,
+   "scale": 0.434,
+   "cell": "1,0",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR fern @ 13.8,5.55"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    14.099,
+    0.025,
+    4.75
+   ],
+   "heading": 0.238,
+   "scale": 0.65,
+   "cell": "1,0",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR flowers @ 14.1,4.75"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    14.192,
+    0.025,
+    3.5
+   ],
+   "heading": 0.941,
+   "scale": 0.858,
+   "cell": "1,0",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR shrub @ 14.19,3.5"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    13.192,
+    0.025,
+    3.85
+   ],
+   "heading": 0.009,
+   "scale": 0.421,
+   "cell": "1,0",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR fern @ 13.19,3.85"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    13.492,
+    0.025,
+    3.05
+   ],
+   "heading": 4.828,
+   "scale": 0.65,
+   "cell": "1,0",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR flowers @ 13.49,3.05"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    14.512,
+    0.025,
+    1.8
+   ],
+   "heading": 0.021,
+   "scale": 0.637,
+   "cell": "1,0",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR shrub @ 14.51,1.8"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    13.812,
+    0.025,
+    2.15
+   ],
+   "heading": 5.193,
+   "scale": 0.434,
+   "cell": "1,0",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR fern @ 13.51,2.15"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    13.812,
+    0.025,
+    1.35
+   ],
+   "heading": 4.056,
+   "scale": 0.65,
+   "cell": "1,0",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR flowers @ 13.81,1.35"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    14.796,
+    0.025,
+    0.1
+   ],
+   "heading": 5.56,
+   "scale": 0.748,
+   "cell": "1,0",
+   "place": "conservatory",
+   "source": "replaces HABITAT_DECOR shrub @ 14.8,0.1"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    13.796,
+    0.025,
+    0.45
+   ],
+   "heading": 2.804,
+   "scale": 0.578,
+   "cell": "1,0",
+   "place": "conservatory",
+   "source": "replaces HABITAT_DECOR fern @ 13.8,0.45"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    14.096,
+    0.025,
+    -0.35
+   ],
+   "heading": 5.361,
+   "scale": 0.65,
+   "cell": "1,-1",
+   "place": "conservatory",
+   "source": "replaces HABITAT_DECOR flowers @ 14.1,-0.35"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    14.189,
+    0.025,
+    -1.6
+   ],
+   "heading": 2.309,
+   "scale": 0.858,
+   "cell": "1,-1",
+   "place": "conservatory",
+   "source": "replaces HABITAT_DECOR shrub @ 14.19,-1.6"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    13.189,
+    0.025,
+    -1.25
+   ],
+   "heading": 1.83,
+   "scale": 0.468,
+   "cell": "1,-1",
+   "place": "conservatory",
+   "source": "replaces HABITAT_DECOR fern @ 13.19,-1.25"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    13.489,
+    0.025,
+    -2.05
+   ],
+   "heading": 1.002,
+   "scale": 0.65,
+   "cell": "1,-1",
+   "place": "conservatory",
+   "source": "replaces HABITAT_DECOR flowers @ 13.49,-2.05"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    14.518,
+    0.025,
+    -3.3
+   ],
+   "heading": 6.053,
+   "scale": 0.637,
+   "cell": "1,-1",
+   "place": "conservatory",
+   "source": "replaces HABITAT_DECOR shrub @ 14.52,-3.3"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    13.818,
+    0.025,
+    -2.95
+   ],
+   "heading": 0.162,
+   "scale": 0.434,
+   "cell": "1,-1",
+   "place": "conservatory",
+   "source": "replaces HABITAT_DECOR fern @ 13.52,-2.95"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    13.818,
+    0.025,
+    -3.75
+   ],
+   "heading": 5.498,
+   "scale": 0.65,
+   "cell": "1,-1",
+   "place": "conservatory",
+   "source": "replaces HABITAT_DECOR flowers @ 13.82,-3.75"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    14.793,
+    0.025,
+    -5
+   ],
+   "heading": 3.16,
+   "scale": 0.748,
+   "cell": "1,-1",
+   "place": "conservatory",
+   "source": "replaces HABITAT_DECOR shrub @ 14.79,-5"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    13.793,
+    0.025,
+    -4.65
+   ],
+   "heading": 3.492,
+   "scale": 0.578,
+   "cell": "1,-1",
+   "place": "conservatory",
+   "source": "replaces HABITAT_DECOR fern @ 13.79,-4.65"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    14.093,
+    0.025,
+    -5.45
+   ],
+   "heading": 6.033,
+   "scale": 0.65,
+   "cell": "1,-1",
+   "place": "conservatory",
+   "source": "replaces HABITAT_DECOR flowers @ 14.09,-5.45"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    14.187,
+    0.025,
+    -6.7
+   ],
+   "heading": 3.931,
+   "scale": 0.858,
+   "cell": "1,-1",
+   "place": "conservatory",
+   "source": "replaces HABITAT_DECOR shrub @ 14.19,-6.7"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    13.187,
+    0.025,
+    -6.35
+   ],
+   "heading": 0.637,
+   "scale": 0.421,
+   "cell": "1,-1",
+   "place": "conservatory",
+   "source": "replaces HABITAT_DECOR fern @ 13.19,-6.35"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    13.487,
+    0.025,
+    -7.15
+   ],
+   "heading": 4.598,
+   "scale": 0.65,
+   "cell": "1,-1",
+   "place": "conservatory",
+   "source": "replaces HABITAT_DECOR flowers @ 13.49,-7.15"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    14.524,
+    0.252,
+    -8.4
+   ],
+   "heading": 0.431,
+   "scale": 0.637,
+   "cell": "1,-1",
+   "place": "conservatory",
+   "source": "replaces HABITAT_DECOR shrub @ 14.52,-8.4"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    13.824,
+    0.053,
+    -8.05
+   ],
+   "heading": 2.222,
+   "scale": 0.434,
+   "cell": "1,-1",
+   "place": "conservatory",
+   "source": "replaces HABITAT_DECOR fern @ 13.52,-8.05"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    13.824,
+    0.507,
+    -8.85
+   ],
+   "heading": 3.384,
+   "scale": 0.65,
+   "cell": "1,-1",
+   "place": "conservatory",
+   "source": "replaces HABITAT_DECOR flowers @ 13.82,-8.85"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    14.79,
+    1.215,
+    -10.1
+   ],
+   "heading": 4.989,
+   "scale": 0.748,
+   "cell": "1,-2",
+   "place": "conservatory",
+   "source": "replaces HABITAT_DECOR shrub @ 14.79,-10.1"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    14.09,
+    1.017,
+    -9.75
+   ],
+   "heading": 2.448,
+   "scale": 0.434,
+   "cell": "1,-1",
+   "place": "conservatory",
+   "source": "replaces HABITAT_DECOR fern @ 13.79,-9.75"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    14.09,
+    1.47,
+    -10.55
+   ],
+   "heading": 2.969,
+   "scale": 0.65,
+   "cell": "1,-2",
+   "place": "conservatory",
+   "source": "replaces HABITAT_DECOR flowers @ 14.09,-10.55"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    14.184,
+    2.178,
+    -11.8
+   ],
+   "heading": 2.368,
+   "scale": 0.858,
+   "cell": "1,-2",
+   "place": "conservatory",
+   "source": "replaces HABITAT_DECOR shrub @ 14.18,-11.8"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    14.529,
+    3.142,
+    -13.5
+   ],
+   "heading": 2.973,
+   "scale": 0.637,
+   "cell": "1,-2",
+   "place": "maker",
+   "source": "replaces HABITAT_DECOR shrub @ 14.53,-13.5"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    13.529,
+    2.943,
+    -13.15
+   ],
+   "heading": 4.035,
+   "scale": 0.578,
+   "cell": "1,-2",
+   "place": "maker",
+   "source": "replaces HABITAT_DECOR fern @ 13.53,-13.15"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    13.829,
+    3.397,
+    -13.95
+   ],
+   "heading": 4.632,
+   "scale": 0.65,
+   "cell": "1,-2",
+   "place": "maker",
+   "source": "replaces HABITAT_DECOR flowers @ 13.83,-13.95"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    14.786,
+    3.425,
+    -15.2
+   ],
+   "heading": 0.511,
+   "scale": 0.748,
+   "cell": "1,-2",
+   "place": "maker",
+   "source": "replaces HABITAT_DECOR shrub @ 14.79,-15.2"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    14.086,
+    3.425,
+    -14.85
+   ],
+   "heading": 2.499,
+   "scale": 0.434,
+   "cell": "1,-2",
+   "place": "maker",
+   "source": "replaces HABITAT_DECOR fern @ 13.79,-14.85"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    14.086,
+    3.425,
+    -15.65
+   ],
+   "heading": 2.676,
+   "scale": 0.65,
+   "cell": "1,-2",
+   "place": "maker",
+   "source": "replaces HABITAT_DECOR flowers @ 14.09,-15.65"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    14.182,
+    3.425,
+    -16.9
+   ],
+   "heading": 0.467,
+   "scale": 0.858,
+   "cell": "1,-2",
+   "place": "maker",
+   "source": "replaces HABITAT_DECOR shrub @ 14.18,-16.9"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    13.182,
+    3.425,
+    -16.55
+   ],
+   "heading": 4.232,
+   "scale": 0.421,
+   "cell": "1,-2",
+   "place": "maker",
+   "source": "replaces HABITAT_DECOR fern @ 13.18,-16.55"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    13.482,
+    3.425,
+    -17.35
+   ],
+   "heading": 3.6,
+   "scale": 0.65,
+   "cell": "1,-2",
+   "place": "maker",
+   "source": "replaces HABITAT_DECOR flowers @ 13.48,-17.35"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    14.535,
+    3.425,
+    -18.6
+   ],
+   "heading": 0.236,
+   "scale": 0.637,
+   "cell": "1,-2",
+   "place": "maker",
+   "source": "replaces HABITAT_DECOR shrub @ 14.54,-18.6"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    13.835,
+    3.425,
+    -18.25
+   ],
+   "heading": 5.653,
+   "scale": 0.434,
+   "cell": "1,-2",
+   "place": "maker",
+   "source": "replaces HABITAT_DECOR fern @ 13.54,-18.25"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    13.835,
+    3.425,
+    -19.05
+   ],
+   "heading": 1.23,
+   "scale": 0.65,
+   "cell": "1,-2",
+   "place": "maker",
+   "source": "replaces HABITAT_DECOR flowers @ 13.84,-19.05"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    14.783,
+    3.425,
+    -20.3
+   ],
+   "heading": 5.55,
+   "scale": 0.748,
+   "cell": "1,-3",
+   "place": "maker",
+   "source": "replaces HABITAT_DECOR shrub @ 14.78,-20.3"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    14.083,
+    3.425,
+    -19.95
+   ],
+   "heading": 0.642,
+   "scale": 0.434,
+   "cell": "1,-2",
+   "place": "maker",
+   "source": "replaces HABITAT_DECOR fern @ 13.78,-19.95"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    14.083,
+    3.425,
+    -20.75
+   ],
+   "heading": 3.527,
+   "scale": 0.65,
+   "cell": "1,-3",
+   "place": "maker",
+   "source": "replaces HABITAT_DECOR flowers @ 14.08,-20.75"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    14.179,
+    3.425,
+    -22
+   ],
+   "heading": 1.971,
+   "scale": 0.858,
+   "cell": "1,-3",
+   "place": "maker",
+   "source": "replaces HABITAT_DECOR shrub @ 14.18,-22"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    13.179,
+    3.425,
+    -21.65
+   ],
+   "heading": 5.564,
+   "scale": 0.421,
+   "cell": "1,-3",
+   "place": "maker",
+   "source": "replaces HABITAT_DECOR fern @ 13.18,-21.65"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    13.479,
+    3.425,
+    -22.45
+   ],
+   "heading": 3.0,
+   "scale": 0.65,
+   "cell": "1,-3",
+   "place": "maker",
+   "source": "replaces HABITAT_DECOR flowers @ 13.48,-22.45"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    14.541,
+    3.425,
+    -23.7
+   ],
+   "heading": 5.019,
+   "scale": 0.637,
+   "cell": "1,-3",
+   "place": "maker",
+   "source": "replaces HABITAT_DECOR shrub @ 14.54,-23.7"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    13.841,
+    3.425,
+    -23.35
+   ],
+   "heading": 3.976,
+   "scale": 0.434,
+   "cell": "1,-3",
+   "place": "maker",
+   "source": "replaces HABITAT_DECOR fern @ 13.54,-23.35"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    13.841,
+    3.425,
+    -24.15
+   ],
+   "heading": 2.563,
+   "scale": 0.65,
+   "cell": "1,-3",
+   "place": "maker",
+   "source": "replaces HABITAT_DECOR flowers @ 13.84,-24.15"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    -12,
+    3.425,
+    -25.7
+   ],
+   "heading": 0.817,
+   "scale": 0.612,
+   "cell": "-2,-3",
+   "place": "gallery",
+   "source": "replaces HABITAT_DECOR shrub @ -12,-25.7"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -12,
+    3.425,
+    -24.7
+   ],
+   "heading": 2.262,
+   "scale": 0.8,
+   "cell": "-2,-3",
+   "place": "gallery",
+   "source": "replaces HABITAT_DECOR flowers @ -12,-24.7"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    -10.5,
+    3.425,
+    -25.279
+   ],
+   "heading": 3.525,
+   "scale": 0.731,
+   "cell": "-2,-3",
+   "place": "gallery",
+   "source": "replaces HABITAT_DECOR shrub @ -10.5,-25.28"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -10.5,
+    3.425,
+    -24.279
+   ],
+   "heading": 4.521,
+   "scale": 0.8,
+   "cell": "-2,-3",
+   "place": "gallery",
+   "source": "replaces HABITAT_DECOR flowers @ -10.5,-24.28"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    -9,
+    3.425,
+    -25.245
+   ],
+   "heading": 5.9,
+   "scale": 0.85,
+   "cell": "-1,-3",
+   "place": "gallery",
+   "source": "replaces HABITAT_DECOR shrub @ -9,-25.25"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -9,
+    3.425,
+    -24.245
+   ],
+   "heading": 1.042,
+   "scale": 0.8,
+   "cell": "-1,-3",
+   "place": "gallery",
+   "source": "replaces HABITAT_DECOR flowers @ -9,-24.25"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    -7.5,
+    3.425,
+    -25.629
+   ],
+   "heading": 4.977,
+   "scale": 0.612,
+   "cell": "-1,-3",
+   "place": "gallery",
+   "source": "replaces HABITAT_DECOR shrub @ -7.5,-25.63"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -7.5,
+    3.425,
+    -24.629
+   ],
+   "heading": 1.807,
+   "scale": 0.8,
+   "cell": "-1,-3",
+   "place": "gallery",
+   "source": "replaces HABITAT_DECOR flowers @ -7.5,-24.63"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    -6,
+    3.425,
+    -26.078
+   ],
+   "heading": 3.954,
+   "scale": 0.731,
+   "cell": "-1,-3",
+   "place": "gallery",
+   "source": "replaces HABITAT_DECOR shrub @ -6,-26.08"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -6,
+    3.425,
+    -25.078
+   ],
+   "heading": 4.167,
+   "scale": 0.8,
+   "cell": "-1,-3",
+   "place": "gallery",
+   "source": "replaces HABITAT_DECOR flowers @ -6,-25.08"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    -4.5,
+    3.425,
+    -26.179
+   ],
+   "heading": 4.646,
+   "scale": 0.85,
+   "cell": "-1,-3",
+   "place": "council_garden",
+   "source": "replaces HABITAT_DECOR shrub @ -4.5,-26.18"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -4.5,
+    3.425,
+    -25.179
+   ],
+   "heading": 2.431,
+   "scale": 0.8,
+   "cell": "-1,-3",
+   "place": "council_garden",
+   "source": "replaces HABITAT_DECOR flowers @ -4.5,-25.18"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    -3,
+    3.425,
+    -25.84
+   ],
+   "heading": 1.81,
+   "scale": 0.612,
+   "cell": "-1,-3",
+   "place": "council_garden",
+   "source": "replaces HABITAT_DECOR shrub @ -3,-25.84"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -3,
+    3.425,
+    -24.84
+   ],
+   "heading": 1.617,
+   "scale": 0.8,
+   "cell": "-1,-3",
+   "place": "council_garden",
+   "source": "replaces HABITAT_DECOR flowers @ -3,-24.84"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    -1.5,
+    3.425,
+    -25.372
+   ],
+   "heading": 3.132,
+   "scale": 0.731,
+   "cell": "-1,-3",
+   "place": "council_garden",
+   "source": "replaces HABITAT_DECOR shrub @ -1.5,-25.37"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -1.5,
+    3.425,
+    -24.372
+   ],
+   "heading": 0.485,
+   "scale": 0.8,
+   "cell": "-1,-3",
+   "place": "council_garden",
+   "source": "replaces HABITAT_DECOR flowers @ -1.5,-24.37"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    0,
+    3.425,
+    -25.205
+   ],
+   "heading": 1.053,
+   "scale": 0.85,
+   "cell": "0,-3",
+   "place": "council_garden",
+   "source": "replaces HABITAT_DECOR shrub @ 0,-25.21"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    0,
+    3.425,
+    -24.205
+   ],
+   "heading": 6.055,
+   "scale": 0.8,
+   "cell": "0,-3",
+   "place": "council_garden",
+   "source": "replaces HABITAT_DECOR flowers @ 0,-24.21"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    9,
+    3.425,
+    -25.205
+   ],
+   "heading": 1.037,
+   "scale": 0.85,
+   "cell": "0,-3",
+   "place": "council_garden",
+   "source": "replaces HABITAT_DECOR shrub @ 9,-25.2"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    9,
+    3.425,
+    -24.205
+   ],
+   "heading": 1.978,
+   "scale": 0.8,
+   "cell": "0,-3",
+   "place": "council_garden",
+   "source": "replaces HABITAT_DECOR flowers @ 9,-24.2"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    10.5,
+    3.425,
+    -25.375
+   ],
+   "heading": 4.567,
+   "scale": 0.612,
+   "cell": "1,-3",
+   "place": "maker",
+   "source": "replaces HABITAT_DECOR shrub @ 10.5,-25.37"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    10.5,
+    3.425,
+    -24.375
+   ],
+   "heading": 4.21,
+   "scale": 0.8,
+   "cell": "1,-3",
+   "place": "maker",
+   "source": "replaces HABITAT_DECOR flowers @ 10.5,-24.37"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    12,
+    3.425,
+    -25.844
+   ],
+   "heading": 3.701,
+   "scale": 0.731,
+   "cell": "1,-3",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR shrub @ 12,-25.84"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    12,
+    3.425,
+    -24.844
+   ],
+   "heading": 1.34,
+   "scale": 0.8,
+   "cell": "1,-3",
+   "place": "maker",
+   "source": "replaces HABITAT_DECOR flowers @ 12,-24.84"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    -4,
+    3.425,
+    -48
+   ],
+   "heading": 0.726,
+   "scale": 0.663,
+   "cell": "-1,-5",
+   "place": "observatory_garden",
+   "source": "replaces HABITAT_DECOR shrub @ -4,-48"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -3.45,
+    3.425,
+    -47.55
+   ],
+   "heading": 4.084,
+   "scale": 0.578,
+   "cell": "-1,-5",
+   "place": "observatory_garden",
+   "source": "replaces HABITAT_DECOR fern @ -3.45,-47.55"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    13,
+    3.425,
+    -48
+   ],
+   "heading": 5.591,
+   "scale": 0.629,
+   "cell": "1,-5",
+   "place": "observatory_garden",
+   "source": "replaces HABITAT_DECOR shrub @ 13,-48"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -7,
+    0.025,
+    3
+   ],
+   "heading": 4.517,
+   "scale": 0.765,
+   "cell": "-1,0",
+   "place": "commons",
+   "source": "replaces HABITAT_DECOR fern @ -7,3"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -6.55,
+    0.025,
+    3.5
+   ],
+   "heading": 3.479,
+   "scale": 0.648,
+   "cell": "-1,0",
+   "place": "commons",
+   "source": "replaces HABITAT_DECOR flowers @ -6.55,3.5"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -7,
+    0.025,
+    1
+   ],
+   "heading": 1.367,
+   "scale": 0.765,
+   "cell": "-1,0",
+   "place": "commons",
+   "source": "replaces HABITAT_DECOR fern @ -7,1"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -6.55,
+    0.025,
+    1.5
+   ],
+   "heading": 1.971,
+   "scale": 0.72,
+   "cell": "-1,0",
+   "place": "commons",
+   "source": "replaces HABITAT_DECOR flowers @ -6.55,1.5"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    -7.5,
+    0.025,
+    0.5
+   ],
+   "heading": 1.372,
+   "scale": 0.552,
+   "cell": "-1,0",
+   "place": "commons",
+   "source": "replaces HABITAT_DECOR shrub @ -7.5,0.5"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -7,
+    0.025,
+    -1
+   ],
+   "heading": 1.953,
+   "scale": 0.765,
+   "cell": "-1,-1",
+   "place": "commons",
+   "source": "replaces HABITAT_DECOR fern @ -7,-1"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -6.55,
+    0.025,
+    -0.5
+   ],
+   "heading": 4.174,
+   "scale": 0.72,
+   "cell": "-1,-1",
+   "place": "commons",
+   "source": "replaces HABITAT_DECOR flowers @ -6.55,-0.5"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    -7.5,
+    0.025,
+    -1.5
+   ],
+   "heading": 1.626,
+   "scale": 0.552,
+   "cell": "-1,-1",
+   "place": "commons",
+   "source": "replaces HABITAT_DECOR shrub @ -7.5,-1.5"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    7,
+    0.025,
+    3
+   ],
+   "heading": 5.277,
+   "scale": 0.765,
+   "cell": "0,0",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR fern @ 7,3"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    7.45,
+    0.025,
+    3.5
+   ],
+   "heading": 1.477,
+   "scale": 0.648,
+   "cell": "0,0",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR flowers @ 7.45,3.5"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    6.5,
+    0.025,
+    2.5
+   ],
+   "heading": 5.463,
+   "scale": 0.552,
+   "cell": "0,0",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR shrub @ 6.5,2.5"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    7,
+    0.025,
+    -1
+   ],
+   "heading": 3.446,
+   "scale": 0.765,
+   "cell": "0,-1",
+   "place": "conservatory",
+   "source": "replaces HABITAT_DECOR fern @ 7,-1"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    7.45,
+    0.025,
+    -0.5
+   ],
+   "heading": 2.949,
+   "scale": 0.648,
+   "cell": "0,-1",
+   "place": "conservatory",
+   "source": "replaces HABITAT_DECOR flowers @ 7.45,-0.5"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    6.5,
+    0.025,
+    -1.5
+   ],
+   "heading": 0.242,
+   "scale": 0.552,
+   "cell": "0,-1",
+   "place": "conservatory",
+   "source": "replaces HABITAT_DECOR shrub @ 6.5,-1.5"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    7,
+    0.025,
+    -4
+   ],
+   "heading": 1.402,
+   "scale": 0.765,
+   "cell": "0,-1",
+   "place": "conservatory",
+   "source": "replaces HABITAT_DECOR fern @ 7,-4"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    7.45,
+    0.025,
+    -3.5
+   ],
+   "heading": 1.751,
+   "scale": 0.648,
+   "cell": "0,-1",
+   "place": "conservatory",
+   "source": "replaces HABITAT_DECOR flowers @ 7.45,-3.5"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    6.5,
+    0.025,
+    -4.5
+   ],
+   "heading": 4.661,
+   "scale": 0.552,
+   "cell": "0,-1",
+   "place": "conservatory",
+   "source": "replaces HABITAT_DECOR shrub @ 6.5,-4.5"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    7,
+    0.025,
+    -6
+   ],
+   "heading": 4.966,
+   "scale": 0.765,
+   "cell": "0,-1",
+   "place": "conservatory",
+   "source": "replaces HABITAT_DECOR fern @ 7,-6"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    7.45,
+    0.025,
+    -5.5
+   ],
+   "heading": 4.736,
+   "scale": 0.72,
+   "cell": "0,-1",
+   "place": "conservatory",
+   "source": "replaces HABITAT_DECOR flowers @ 7.45,-5.5"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    6.5,
+    0.025,
+    -6.5
+   ],
+   "heading": 5.153,
+   "scale": 0.552,
+   "cell": "0,-1",
+   "place": "conservatory",
+   "source": "replaces HABITAT_DECOR shrub @ 6.5,-6.5"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -5,
+    0.025,
+    10
+   ],
+   "heading": 3.312,
+   "scale": 0.765,
+   "cell": "-1,1",
+   "place": "commons",
+   "source": "replaces HABITAT_DECOR fern @ -5,10"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -4.55,
+    0.025,
+    10.5
+   ],
+   "heading": 2.016,
+   "scale": 0.648,
+   "cell": "-1,1",
+   "place": "commons",
+   "source": "replaces HABITAT_DECOR flowers @ -4.55,10.5"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    -5.5,
+    0.025,
+    9.5
+   ],
+   "heading": 3.775,
+   "scale": 0.552,
+   "cell": "-1,0",
+   "place": "commons",
+   "source": "replaces HABITAT_DECOR shrub @ -5.5,9.5"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -3,
+    0.025,
+    11
+   ],
+   "heading": 5.027,
+   "scale": 0.765,
+   "cell": "-1,1",
+   "place": "commons",
+   "source": "replaces HABITAT_DECOR fern @ -3,11"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -2.55,
+    0.025,
+    11.5
+   ],
+   "heading": 4.237,
+   "scale": 0.648,
+   "cell": "-1,1",
+   "place": "commons",
+   "source": "replaces HABITAT_DECOR flowers @ -2.55,11.5"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    -3.5,
+    0.025,
+    10.5
+   ],
+   "heading": 3.076,
+   "scale": 0.552,
+   "cell": "-1,1",
+   "place": "commons",
+   "source": "replaces HABITAT_DECOR shrub @ -3.5,10.5"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -1,
+    0.025,
+    11
+   ],
+   "heading": 1.392,
+   "scale": 0.765,
+   "cell": "-1,1",
+   "place": "commons",
+   "source": "replaces HABITAT_DECOR fern @ -1,11"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -0.55,
+    0.025,
+    11.5
+   ],
+   "heading": 0.911,
+   "scale": 0.648,
+   "cell": "-1,1",
+   "place": "commons",
+   "source": "replaces HABITAT_DECOR flowers @ -0.55,11.5"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    -1.5,
+    0.025,
+    10.5
+   ],
+   "heading": 0.187,
+   "scale": 0.552,
+   "cell": "-1,1",
+   "place": "commons",
+   "source": "replaces HABITAT_DECOR shrub @ -1.5,10.5"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    1,
+    0.025,
+    11
+   ],
+   "heading": 3.276,
+   "scale": 0.765,
+   "cell": "0,1",
+   "place": "commons",
+   "source": "replaces HABITAT_DECOR fern @ 1,11"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    1.45,
+    0.025,
+    11.5
+   ],
+   "heading": 6.127,
+   "scale": 0.648,
+   "cell": "0,1",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR flowers @ 1.45,11.5"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    0.5,
+    0.025,
+    10.5
+   ],
+   "heading": 3.209,
+   "scale": 0.552,
+   "cell": "0,1",
+   "place": "commons",
+   "source": "replaces HABITAT_DECOR shrub @ 0.5,10.5"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -11,
+    0.025,
+    13
+   ],
+   "heading": 6.258,
+   "scale": 0.765,
+   "cell": "-2,1",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR fern @ -11,13"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -10.55,
+    0.025,
+    13.5
+   ],
+   "heading": 5.42,
+   "scale": 0.648,
+   "cell": "-2,1",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR flowers @ -10.55,13.5"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    -11.5,
+    0.025,
+    12.5
+   ],
+   "heading": 6.113,
+   "scale": 0.552,
+   "cell": "-2,1",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR shrub @ -11.5,12.5"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    10,
+    0.025,
+    12
+   ],
+   "heading": 4.262,
+   "scale": 0.765,
+   "cell": "1,1",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR fern @ 10,12"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    10.45,
+    0.025,
+    12.5
+   ],
+   "heading": 0.92,
+   "scale": 0.648,
+   "cell": "1,1",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR flowers @ 10.45,12.5"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    9.5,
+    0.025,
+    11.5
+   ],
+   "heading": 1.639,
+   "scale": 0.552,
+   "cell": "0,1",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR shrub @ 9.5,11.5"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -8.7,
+    3.802,
+    -20.4
+   ],
+   "heading": 2.107,
+   "scale": 0.595,
+   "cell": "-1,-3",
+   "place": "gallery",
+   "source": "replaces HABITAT_DECOR fern @ -8.7,-20.4"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -4.7,
+    3.802,
+    -18.4
+   ],
+   "heading": 4.671,
+   "scale": 0.595,
+   "cell": "-1,-2",
+   "place": "gallery",
+   "source": "replaces HABITAT_DECOR fern @ -4.7,-18.4"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    12.3,
+    3.802,
+    -24.4
+   ],
+   "heading": 4.149,
+   "scale": 0.595,
+   "cell": "1,-3",
+   "place": "maker",
+   "source": "replaces HABITAT_DECOR fern @ 12.3,-24.4"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    11.3,
+    3.802,
+    -18.4
+   ],
+   "heading": 0.136,
+   "scale": 0.595,
+   "cell": "1,-2",
+   "place": "maker",
+   "source": "replaces HABITAT_DECOR fern @ 11.3,-18.4"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    13.3,
+    0.403,
+    -4.4
+   ],
+   "heading": 1.556,
+   "scale": 0.595,
+   "cell": "1,-1",
+   "place": "conservatory",
+   "source": "replaces HABITAT_DECOR fern @ 13.3,-4.4"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -9.7,
+    0.403,
+    -4.4
+   ],
+   "heading": 1.12,
+   "scale": 0.595,
+   "cell": "-1,-1",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR fern @ -9.7,-4.4"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    1.65,
+    3.802,
+    -25.4
+   ],
+   "heading": 3.745,
+   "scale": 0.595,
+   "cell": "0,-3",
+   "place": "council_garden",
+   "source": "replaces HABITAT_DECOR fern @ 1.65,-25.4"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    0.3,
+    3.802,
+    -20.4
+   ],
+   "heading": 4.055,
+   "scale": 0.595,
+   "cell": "0,-3",
+   "place": "council_garden",
+   "source": "replaces HABITAT_DECOR fern @ 0.3,-20.4"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    12.3,
+    0.403,
+    5.6
+   ],
+   "heading": 2.847,
+   "scale": 0.595,
+   "cell": "1,0",
+   "place": "route-edge",
+   "source": "replaces HABITAT_DECOR fern @ 12.3,5.6"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -8.7,
+    0.403,
+    6.6
+   ],
+   "heading": 0.591,
+   "scale": 0.595,
+   "cell": "-1,0",
+   "place": "commons",
+   "source": "replaces HABITAT_DECOR fern @ -8.7,6.6"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    11.3,
+    1.196,
+    -9.4
+   ],
+   "heading": 1.667,
+   "scale": 0.595,
+   "cell": "1,-1",
+   "place": "conservatory",
+   "source": "replaces HABITAT_DECOR fern @ 11.3,-9.4"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    -9.63,
+    0.45,
+    1.748
+   ],
+   "heading": 1.861,
+   "scale": 0.9,
+   "cell": "-1,0",
+   "place": "commons",
+   "source": "HABITAT_BEDS[0]"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    -8.37,
+    0.45,
+    1.748
+   ],
+   "heading": 0.48,
+   "scale": 1.0,
+   "cell": "-1,0",
+   "place": "commons",
+   "source": "HABITAT_BEDS[0]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -9.212,
+    0.45,
+    3.278
+   ],
+   "heading": 1.427,
+   "scale": 0.62,
+   "cell": "-1,0",
+   "place": "commons",
+   "source": "HABITAT_BEDS[0]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -9.989,
+    0.45,
+    2.604
+   ],
+   "heading": 5.077,
+   "scale": 0.62,
+   "cell": "-1,0",
+   "place": "commons",
+   "source": "HABITAT_BEDS[0]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -10.021,
+    0.45,
+    1.474
+   ],
+   "heading": 5.752,
+   "scale": 0.62,
+   "cell": "-2,0",
+   "place": "commons",
+   "source": "HABITAT_BEDS[0]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -9.284,
+    0.45,
+    0.741
+   ],
+   "heading": 5.362,
+   "scale": 0.62,
+   "cell": "-1,0",
+   "place": "commons",
+   "source": "HABITAT_BEDS[0]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -8.334,
+    0.45,
+    0.956
+   ],
+   "heading": 4.173,
+   "scale": 0.62,
+   "cell": "-1,0",
+   "place": "commons",
+   "source": "HABITAT_BEDS[0]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -7.885,
+    0.45,
+    1.957
+   ],
+   "heading": 1.13,
+   "scale": 0.62,
+   "cell": "-1,0",
+   "place": "commons",
+   "source": "HABITAT_BEDS[0]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -8.276,
+    0.45,
+    2.99
+   ],
+   "heading": 3.739,
+   "scale": 0.62,
+   "cell": "-1,0",
+   "place": "commons",
+   "source": "HABITAT_BEDS[0]"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -9.227,
+    0.45,
+    1.314
+   ],
+   "heading": 3.682,
+   "scale": 0.9,
+   "cell": "-1,0",
+   "place": "commons",
+   "source": "HABITAT_BEDS[0]"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -9.075,
+    0.45,
+    1.017
+   ],
+   "heading": 1.005,
+   "scale": 0.9,
+   "cell": "-1,0",
+   "place": "commons",
+   "source": "HABITAT_BEDS[0]"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -8.88,
+    0.45,
+    1.278
+   ],
+   "heading": 4.788,
+   "scale": 0.9,
+   "cell": "-1,0",
+   "place": "commons",
+   "source": "HABITAT_BEDS[0]"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -8.616,
+    0.45,
+    1.121
+   ],
+   "heading": 1.385,
+   "scale": 0.9,
+   "cell": "-1,0",
+   "place": "commons",
+   "source": "HABITAT_BEDS[0]"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -8.57,
+    0.45,
+    1.463
+   ],
+   "heading": 1.584,
+   "scale": 0.9,
+   "cell": "-1,0",
+   "place": "commons",
+   "source": "HABITAT_BEDS[0]"
+  },
+  {
+   "species": "grass-fountain",
+   "position": [
+    -9.672,
+    0.45,
+    1.848
+   ],
+   "heading": 0.876,
+   "scale": 0.8,
+   "cell": "-1,0",
+   "place": "commons",
+   "source": "HABITAT_BEDS[0]"
+  },
+  {
+   "species": "grass-fountain",
+   "position": [
+    -8.328,
+    0.45,
+    2.152
+   ],
+   "heading": 3.709,
+   "scale": 0.8,
+   "cell": "-1,0",
+   "place": "commons",
+   "source": "HABITAT_BEDS[0]"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    -5.735,
+    0.45,
+    -6.288
+   ],
+   "heading": 2.656,
+   "scale": 0.9,
+   "cell": "-1,-1",
+   "place": "route-edge",
+   "source": "HABITAT_BEDS[1]"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    -4.265,
+    0.45,
+    -6.288
+   ],
+   "heading": 3.533,
+   "scale": 1.0,
+   "cell": "-1,-1",
+   "place": "route-edge",
+   "source": "HABITAT_BEDS[1]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -6.3,
+    0.45,
+    -5.925
+   ],
+   "heading": 3.56,
+   "scale": 0.62,
+   "cell": "-1,-1",
+   "place": "route-edge",
+   "source": "HABITAT_BEDS[1]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -5.862,
+    0.45,
+    -7.115
+   ],
+   "heading": 5.882,
+   "scale": 0.62,
+   "cell": "-1,-1",
+   "place": "route-edge",
+   "source": "HABITAT_BEDS[1]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -4.774,
+    0.45,
+    -7.465
+   ],
+   "heading": 3.245,
+   "scale": 0.62,
+   "cell": "-1,-1",
+   "place": "route-edge",
+   "source": "HABITAT_BEDS[1]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -3.857,
+    0.45,
+    -6.712
+   ],
+   "heading": 0.875,
+   "scale": 0.62,
+   "cell": "-1,-1",
+   "place": "route-edge",
+   "source": "HABITAT_BEDS[1]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -3.8,
+    0.45,
+    -5.422
+   ],
+   "heading": 2.778,
+   "scale": 0.62,
+   "cell": "-1,-1",
+   "place": "commons",
+   "source": "HABITAT_BEDS[1]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -4.647,
+    0.45,
+    -4.568
+   ],
+   "heading": 0.625,
+   "scale": 0.62,
+   "cell": "-1,-1",
+   "place": "commons",
+   "source": "HABITAT_BEDS[1]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -5.76,
+    0.45,
+    -4.792
+   ],
+   "heading": 1.606,
+   "scale": 0.62,
+   "cell": "-1,-1",
+   "place": "commons",
+   "source": "HABITAT_BEDS[1]"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -4.398,
+    0.45,
+    -6.481
+   ],
+   "heading": 3.553,
+   "scale": 0.9,
+   "cell": "-1,-1",
+   "place": "route-edge",
+   "source": "HABITAT_BEDS[1]"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -4.066,
+    0.45,
+    -6.366
+   ],
+   "heading": 5.064,
+   "scale": 0.9,
+   "cell": "-1,-1",
+   "place": "route-edge",
+   "source": "HABITAT_BEDS[1]"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -4.266,
+    0.45,
+    -6.042
+   ],
+   "heading": 5.78,
+   "scale": 0.9,
+   "cell": "-1,-1",
+   "place": "route-edge",
+   "source": "HABITAT_BEDS[1]"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -4.039,
+    0.45,
+    -5.743
+   ],
+   "heading": 4.634,
+   "scale": 0.9,
+   "cell": "-1,-1",
+   "place": "commons",
+   "source": "HABITAT_BEDS[1]"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -4.358,
+    0.45,
+    -5.59
+   ],
+   "heading": 3.619,
+   "scale": 0.9,
+   "cell": "-1,-1",
+   "place": "commons",
+   "source": "HABITAT_BEDS[1]"
+  },
+  {
+   "species": "grass-fountain",
+   "position": [
+    -5.04,
+    0.45,
+    -6.911
+   ],
+   "heading": 3.334,
+   "scale": 0.8,
+   "cell": "-1,-1",
+   "place": "route-edge",
+   "source": "HABITAT_BEDS[1]"
+  },
+  {
+   "species": "grass-fountain",
+   "position": [
+    -4.96,
+    0.45,
+    -5.089
+   ],
+   "heading": 3.709,
+   "scale": 0.8,
+   "cell": "-1,-1",
+   "place": "commons",
+   "source": "HABITAT_BEDS[1]"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    10.0,
+    0.45,
+    1.784
+   ],
+   "heading": 5.129,
+   "scale": 0.9,
+   "cell": "1,0",
+   "place": "conservatory",
+   "source": "HABITAT_BEDS[2]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    10.273,
+    0.45,
+    0.933
+   ],
+   "heading": 2.387,
+   "scale": 0.62,
+   "cell": "1,0",
+   "place": "conservatory",
+   "source": "HABITAT_BEDS[2]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    10.865,
+    0.45,
+    1.591
+   ],
+   "heading": 3.788,
+   "scale": 0.62,
+   "cell": "1,0",
+   "place": "conservatory",
+   "source": "HABITAT_BEDS[2]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    10.806,
+    0.45,
+    2.556
+   ],
+   "heading": 3.477,
+   "scale": 0.62,
+   "cell": "1,0",
+   "place": "route-edge",
+   "source": "HABITAT_BEDS[2]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    10.14,
+    0.45,
+    3.103
+   ],
+   "heading": 4.323,
+   "scale": 0.62,
+   "cell": "1,0",
+   "place": "route-edge",
+   "source": "HABITAT_BEDS[2]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    9.369,
+    0.45,
+    2.819
+   ],
+   "heading": 4.585,
+   "scale": 0.62,
+   "cell": "0,0",
+   "place": "route-edge",
+   "source": "HABITAT_BEDS[2]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    9.072,
+    0.45,
+    1.918
+   ],
+   "heading": 5.326,
+   "scale": 0.62,
+   "cell": "0,0",
+   "place": "conservatory",
+   "source": "HABITAT_BEDS[2]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    9.475,
+    0.45,
+    1.079
+   ],
+   "heading": 5.262,
+   "scale": 0.62,
+   "cell": "0,0",
+   "place": "conservatory",
+   "source": "HABITAT_BEDS[2]"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    10.136,
+    0.45,
+    2.608
+   ],
+   "heading": 0.452,
+   "scale": 0.9,
+   "cell": "1,0",
+   "place": "route-edge",
+   "source": "HABITAT_BEDS[2]"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    9.988,
+    0.45,
+    2.846
+   ],
+   "heading": 3.817,
+   "scale": 0.9,
+   "cell": "0,0",
+   "place": "route-edge",
+   "source": "HABITAT_BEDS[2]"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    9.846,
+    0.45,
+    2.602
+   ],
+   "heading": 2.107,
+   "scale": 0.9,
+   "cell": "0,0",
+   "place": "route-edge",
+   "source": "HABITAT_BEDS[2]"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    9.615,
+    0.45,
+    2.709
+   ],
+   "heading": 4.04,
+   "scale": 0.9,
+   "cell": "0,0",
+   "place": "route-edge",
+   "source": "HABITAT_BEDS[2]"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    9.603,
+    0.45,
+    2.412
+   ],
+   "heading": 2.91,
+   "scale": 0.9,
+   "cell": "0,0",
+   "place": "route-edge",
+   "source": "HABITAT_BEDS[2]"
+  },
+  {
+   "species": "grass-fountain",
+   "position": [
+    10.545,
+    0.45,
+    2.201
+   ],
+   "heading": 3.149,
+   "scale": 0.8,
+   "cell": "1,0",
+   "place": "route-edge",
+   "source": "HABITAT_BEDS[2]"
+  },
+  {
+   "species": "grass-fountain",
+   "position": [
+    9.455,
+    0.45,
+    1.799
+   ],
+   "heading": 2.763,
+   "scale": 0.8,
+   "cell": "0,0",
+   "place": "conservatory",
+   "source": "HABITAT_BEDS[2]"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    -1.0,
+    3.85,
+    -16.18
+   ],
+   "heading": 3.167,
+   "scale": 0.9,
+   "cell": "-1,-2",
+   "place": "gallery",
+   "source": "HABITAT_BEDS[3]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -1.352,
+    3.85,
+    -16.877
+   ],
+   "heading": 4.04,
+   "scale": 0.62,
+   "cell": "-1,-2",
+   "place": "gallery",
+   "source": "HABITAT_BEDS[3]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -0.443,
+    3.85,
+    -16.789
+   ],
+   "heading": 4.992,
+   "scale": 0.62,
+   "cell": "-1,-2",
+   "place": "council_garden",
+   "source": "HABITAT_BEDS[3]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    0.047,
+    3.85,
+    -16.108
+   ],
+   "heading": 0.204,
+   "scale": 0.62,
+   "cell": "0,-2",
+   "place": "council_garden",
+   "source": "HABITAT_BEDS[3]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -0.252,
+    3.85,
+    -15.345
+   ],
+   "heading": 3.928,
+   "scale": 0.62,
+   "cell": "-1,-2",
+   "place": "council_garden",
+   "source": "HABITAT_BEDS[3]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -1.114,
+    3.85,
+    -15.075
+   ],
+   "heading": 4.51,
+   "scale": 0.62,
+   "cell": "-1,-2",
+   "place": "gallery",
+   "source": "HABITAT_BEDS[3]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -1.89,
+    3.85,
+    -15.502
+   ],
+   "heading": 1.505,
+   "scale": 0.62,
+   "cell": "-1,-2",
+   "place": "gallery",
+   "source": "HABITAT_BEDS[3]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -1.996,
+    3.85,
+    -16.304
+   ],
+   "heading": 3.501,
+   "scale": 0.62,
+   "cell": "-1,-2",
+   "place": "gallery",
+   "source": "HABITAT_BEDS[3]"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -0.534,
+    3.85,
+    -15.674
+   ],
+   "heading": 5.754,
+   "scale": 0.9,
+   "cell": "-1,-2",
+   "place": "council_garden",
+   "source": "HABITAT_BEDS[3]"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -0.535,
+    3.85,
+    -15.426
+   ],
+   "heading": 1.285,
+   "scale": 0.9,
+   "cell": "-1,-2",
+   "place": "gallery",
+   "source": "HABITAT_BEDS[3]"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -0.801,
+    3.85,
+    -15.505
+   ],
+   "heading": 2.861,
+   "scale": 0.9,
+   "cell": "-1,-2",
+   "place": "gallery",
+   "source": "HABITAT_BEDS[3]"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -0.952,
+    3.85,
+    -15.296
+   ],
+   "heading": 1.35,
+   "scale": 0.9,
+   "cell": "-1,-2",
+   "place": "gallery",
+   "source": "HABITAT_BEDS[3]"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -1.129,
+    3.85,
+    -15.488
+   ],
+   "heading": 1.147,
+   "scale": 0.9,
+   "cell": "-1,-2",
+   "place": "gallery",
+   "source": "HABITAT_BEDS[3]"
+  },
+  {
+   "species": "grass-fountain",
+   "position": [
+    -0.391,
+    3.85,
+    -16.19
+   ],
+   "heading": 5.009,
+   "scale": 0.8,
+   "cell": "-1,-2",
+   "place": "council_garden",
+   "source": "HABITAT_BEDS[3]"
+  },
+  {
+   "species": "grass-fountain",
+   "position": [
+    -1.609,
+    3.85,
+    -15.81
+   ],
+   "heading": 1.109,
+   "scale": 0.8,
+   "cell": "-1,-2",
+   "place": "gallery",
+   "source": "HABITAT_BEDS[3]"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    -12.0,
+    2.717,
+    -12.204
+   ],
+   "heading": 0.429,
+   "scale": 0.9,
+   "cell": "-2,-2",
+   "place": "gallery",
+   "source": "HABITAT_BEDS[4]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -10.946,
+    2.717,
+    -12.008
+   ],
+   "heading": 3.865,
+   "scale": 0.62,
+   "cell": "-2,-2",
+   "place": "gallery",
+   "source": "HABITAT_BEDS[4]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -11.336,
+    2.717,
+    -11.181
+   ],
+   "heading": 0.782,
+   "scale": 0.62,
+   "cell": "-2,-2",
+   "place": "gallery",
+   "source": "HABITAT_BEDS[4]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -12.226,
+    2.717,
+    -10.971
+   ],
+   "heading": 0.51,
+   "scale": 0.62,
+   "cell": "-2,-2",
+   "place": "gallery",
+   "source": "HABITAT_BEDS[4]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -12.946,
+    2.717,
+    -11.535
+   ],
+   "heading": 3.391,
+   "scale": 0.62,
+   "cell": "-2,-2",
+   "place": "gallery",
+   "source": "HABITAT_BEDS[4]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -12.953,
+    2.717,
+    -12.45
+   ],
+   "heading": 0.941,
+   "scale": 0.62,
+   "cell": "-2,-2",
+   "place": "gallery",
+   "source": "HABITAT_BEDS[4]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -12.243,
+    2.717,
+    -13.026
+   ],
+   "heading": 0.323,
+   "scale": 0.62,
+   "cell": "-2,-2",
+   "place": "gallery",
+   "source": "HABITAT_BEDS[4]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -11.349,
+    2.717,
+    -12.829
+   ],
+   "heading": 0.176,
+   "scale": 0.62,
+   "cell": "-2,-2",
+   "place": "gallery",
+   "source": "HABITAT_BEDS[4]"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -12.502,
+    2.717,
+    -11.68
+   ],
+   "heading": 5.492,
+   "scale": 0.9,
+   "cell": "-2,-2",
+   "place": "gallery",
+   "source": "HABITAT_BEDS[4]"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -12.766,
+    2.717,
+    -11.773
+   ],
+   "heading": 0.979,
+   "scale": 0.9,
+   "cell": "-2,-2",
+   "place": "gallery",
+   "source": "HABITAT_BEDS[4]"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -12.595,
+    2.717,
+    -11.995
+   ],
+   "heading": 3.36,
+   "scale": 0.9,
+   "cell": "-2,-2",
+   "place": "gallery",
+   "source": "HABITAT_BEDS[4]"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -12.77,
+    2.717,
+    -12.215
+   ],
+   "heading": 4.18,
+   "scale": 0.9,
+   "cell": "-2,-2",
+   "place": "gallery",
+   "source": "HABITAT_BEDS[4]"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -12.507,
+    2.717,
+    -12.312
+   ],
+   "heading": 1.075,
+   "scale": 0.9,
+   "cell": "-2,-2",
+   "place": "gallery",
+   "source": "HABITAT_BEDS[4]"
+  },
+  {
+   "species": "grass-fountain",
+   "position": [
+    -11.995,
+    2.717,
+    -11.354
+   ],
+   "heading": 5.891,
+   "scale": 0.8,
+   "cell": "-2,-2",
+   "place": "gallery",
+   "source": "HABITAT_BEDS[4]"
+  },
+  {
+   "species": "grass-fountain",
+   "position": [
+    -12.005,
+    2.717,
+    -12.646
+   ],
+   "heading": 2.596,
+   "scale": 0.8,
+   "cell": "-2,-2",
+   "place": "gallery",
+   "source": "HABITAT_BEDS[4]"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    12.0,
+    2.717,
+    -12.18
+   ],
+   "heading": 4.685,
+   "scale": 0.9,
+   "cell": "1,-2",
+   "place": "conservatory",
+   "source": "HABITAT_BEDS[5]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    11.474,
+    2.717,
+    -11.211
+   ],
+   "heading": 4.602,
+   "scale": 0.62,
+   "cell": "1,-2",
+   "place": "conservatory",
+   "source": "HABITAT_BEDS[5]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    11.015,
+    2.717,
+    -11.894
+   ],
+   "heading": 0.029,
+   "scale": 0.62,
+   "cell": "1,-2",
+   "place": "conservatory",
+   "source": "HABITAT_BEDS[5]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    11.297,
+    2.717,
+    -12.656
+   ],
+   "heading": 4.395,
+   "scale": 0.62,
+   "cell": "1,-2",
+   "place": "maker",
+   "source": "HABITAT_BEDS[5]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    12.109,
+    2.717,
+    -12.924
+   ],
+   "heading": 5.388,
+   "scale": 0.62,
+   "cell": "1,-2",
+   "place": "maker",
+   "source": "HABITAT_BEDS[5]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    12.839,
+    2.717,
+    -12.497
+   ],
+   "heading": 0.93,
+   "scale": 0.62,
+   "cell": "1,-2",
+   "place": "maker",
+   "source": "HABITAT_BEDS[5]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    12.937,
+    2.717,
+    -11.695
+   ],
+   "heading": 3.129,
+   "scale": 0.62,
+   "cell": "1,-2",
+   "place": "conservatory",
+   "source": "HABITAT_BEDS[5]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    12.33,
+    2.717,
+    -11.123
+   ],
+   "heading": 0.397,
+   "scale": 0.62,
+   "cell": "1,-2",
+   "place": "conservatory",
+   "source": "HABITAT_BEDS[5]"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    11.999,
+    2.717,
+    -12.525
+   ],
+   "heading": 5.189,
+   "scale": 0.9,
+   "cell": "1,-2",
+   "place": "maker",
+   "source": "HABITAT_BEDS[5]"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    12.207,
+    2.717,
+    -12.678
+   ],
+   "heading": 5.361,
+   "scale": 0.9,
+   "cell": "1,-2",
+   "place": "maker",
+   "source": "HABITAT_BEDS[5]"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    12.297,
+    2.717,
+    -12.445
+   ],
+   "heading": 0.99,
+   "scale": 0.9,
+   "cell": "1,-2",
+   "place": "maker",
+   "source": "HABITAT_BEDS[5]"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    12.559,
+    2.717,
+    -12.471
+   ],
+   "heading": 6.186,
+   "scale": 0.9,
+   "cell": "1,-2",
+   "place": "maker",
+   "source": "HABITAT_BEDS[5]"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    12.504,
+    2.717,
+    -12.229
+   ],
+   "heading": 3.044,
+   "scale": 0.9,
+   "cell": "1,-2",
+   "place": "conservatory",
+   "source": "HABITAT_BEDS[5]"
+  },
+  {
+   "species": "grass-fountain",
+   "position": [
+    11.484,
+    2.717,
+    -12.302
+   ],
+   "heading": 6.141,
+   "scale": 0.8,
+   "cell": "1,-2",
+   "place": "maker",
+   "source": "HABITAT_BEDS[5]"
+  },
+  {
+   "species": "grass-fountain",
+   "position": [
+    12.516,
+    2.717,
+    -11.698
+   ],
+   "heading": 1.457,
+   "scale": 0.8,
+   "cell": "1,-2",
+   "place": "conservatory",
+   "source": "HABITAT_BEDS[5]"
+  },
+  {
+   "species": "shrub-laurel",
+   "position": [
+    5.5,
+    0.45,
+    7.784
+   ],
+   "heading": 2.385,
+   "scale": 0.9,
+   "cell": "0,0",
+   "place": "route-edge",
+   "source": "HABITAT_BEDS[6]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    5.406,
+    0.45,
+    6.891
+   ],
+   "heading": 5.784,
+   "scale": 0.62,
+   "cell": "0,0",
+   "place": "route-edge",
+   "source": "HABITAT_BEDS[6]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    6.116,
+    0.45,
+    7.214
+   ],
+   "heading": 4.44,
+   "scale": 0.62,
+   "cell": "0,0",
+   "place": "route-edge",
+   "source": "HABITAT_BEDS[6]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    6.362,
+    0.45,
+    8.129
+   ],
+   "heading": 3.59,
+   "scale": 0.62,
+   "cell": "0,0",
+   "place": "route-edge",
+   "source": "HABITAT_BEDS[6]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    5.959,
+    0.45,
+    8.947
+   ],
+   "heading": 2.538,
+   "scale": 0.62,
+   "cell": "0,0",
+   "place": "route-edge",
+   "source": "HABITAT_BEDS[6]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    5.21,
+    0.45,
+    9.052
+   ],
+   "heading": 3.319,
+   "scale": 0.62,
+   "cell": "0,0",
+   "place": "route-edge",
+   "source": "HABITAT_BEDS[6]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    4.68,
+    0.45,
+    8.365
+   ],
+   "heading": 1.851,
+   "scale": 0.62,
+   "cell": "0,0",
+   "place": "route-edge",
+   "source": "HABITAT_BEDS[6]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    4.767,
+    0.45,
+    7.403
+   ],
+   "heading": 3.073,
+   "scale": 0.62,
+   "cell": "0,0",
+   "place": "commons",
+   "source": "HABITAT_BEDS[6]"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    5.804,
+    0.45,
+    8.494
+   ],
+   "heading": 1.982,
+   "scale": 0.9,
+   "cell": "0,0",
+   "place": "route-edge",
+   "source": "HABITAT_BEDS[6]"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    5.749,
+    0.45,
+    8.783
+   ],
+   "heading": 5.239,
+   "scale": 0.9,
+   "cell": "0,0",
+   "place": "route-edge",
+   "source": "HABITAT_BEDS[6]"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    5.553,
+    0.45,
+    8.626
+   ],
+   "heading": 1.881,
+   "scale": 0.9,
+   "cell": "0,0",
+   "place": "route-edge",
+   "source": "HABITAT_BEDS[6]"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    5.388,
+    0.45,
+    8.834
+   ],
+   "heading": 4.739,
+   "scale": 0.9,
+   "cell": "0,0",
+   "place": "route-edge",
+   "source": "HABITAT_BEDS[6]"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    5.286,
+    0.45,
+    8.567
+   ],
+   "heading": 2.252,
+   "scale": 0.9,
+   "cell": "0,0",
+   "place": "route-edge",
+   "source": "HABITAT_BEDS[6]"
+  },
+  {
+   "species": "grass-fountain",
+   "position": [
+    6.029,
+    0.45,
+    7.926
+   ],
+   "heading": 5.153,
+   "scale": 0.8,
+   "cell": "0,0",
+   "place": "route-edge",
+   "source": "HABITAT_BEDS[6]"
+  },
+  {
+   "species": "grass-fountain",
+   "position": [
+    4.971,
+    0.45,
+    8.074
+   ],
+   "heading": 1.553,
+   "scale": 0.8,
+   "cell": "0,0",
+   "place": "route-edge",
+   "source": "HABITAT_BEDS[6]"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -12.158,
+    1.98,
+    -10.873
+   ],
+   "heading": 1.458,
+   "scale": 0.75,
+   "cell": "-2,-2",
+   "place": "gallery",
+   "source": "HABITAT_BEDS[7]"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -11.708,
+    1.98,
+    -10.558
+   ],
+   "heading": 0.899,
+   "scale": 0.75,
+   "cell": "-2,-2",
+   "place": "gallery",
+   "source": "HABITAT_BEDS[7]"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -10.725,
+    1.98,
+    -10.873
+   ],
+   "heading": 5.694,
+   "scale": 0.75,
+   "cell": "-2,-2",
+   "place": "gallery",
+   "source": "HABITAT_BEDS[7]"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -10.275,
+    1.98,
+    -10.558
+   ],
+   "heading": 2.675,
+   "scale": 0.75,
+   "cell": "-2,-2",
+   "place": "gallery",
+   "source": "HABITAT_BEDS[7]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -9.292,
+    1.98,
+    -10.873
+   ],
+   "heading": 5.518,
+   "scale": 0.62,
+   "cell": "-1,-2",
+   "place": "gallery",
+   "source": "HABITAT_BEDS[7]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -8.842,
+    1.98,
+    -10.558
+   ],
+   "heading": 6.072,
+   "scale": 0.62,
+   "cell": "-1,-2",
+   "place": "gallery",
+   "source": "HABITAT_BEDS[7]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -3.66,
+    1.98,
+    -10.873
+   ],
+   "heading": 0.694,
+   "scale": 0.62,
+   "cell": "-1,-2",
+   "place": "gallery",
+   "source": "HABITAT_BEDS[8]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -3.21,
+    1.98,
+    -10.558
+   ],
+   "heading": 4.527,
+   "scale": 0.62,
+   "cell": "-1,-2",
+   "place": "gallery",
+   "source": "HABITAT_BEDS[8]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -2.37,
+    1.98,
+    -10.873
+   ],
+   "heading": 6.013,
+   "scale": 0.62,
+   "cell": "-1,-2",
+   "place": "route-edge",
+   "source": "HABITAT_BEDS[8]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -1.92,
+    1.98,
+    -10.558
+   ],
+   "heading": 0.723,
+   "scale": 0.62,
+   "cell": "-1,-2",
+   "place": "route-edge",
+   "source": "HABITAT_BEDS[8]"
+  },
+  {
+   "species": "grass-fountain",
+   "position": [
+    -1.08,
+    1.98,
+    -10.873
+   ],
+   "heading": 0.582,
+   "scale": 0.75,
+   "cell": "-1,-2",
+   "place": "route-edge",
+   "source": "HABITAT_BEDS[8]"
+  },
+  {
+   "species": "grass-fountain",
+   "position": [
+    -0.63,
+    1.98,
+    -10.558
+   ],
+   "heading": 2.449,
+   "scale": 0.75,
+   "cell": "-1,-2",
+   "place": "route-edge",
+   "source": "HABITAT_BEDS[8]"
+  },
+  {
+   "species": "grass-fountain",
+   "position": [
+    0.21,
+    1.98,
+    -10.873
+   ],
+   "heading": 6.022,
+   "scale": 0.75,
+   "cell": "0,-2",
+   "place": "route-edge",
+   "source": "HABITAT_BEDS[8]"
+  },
+  {
+   "species": "grass-fountain",
+   "position": [
+    0.66,
+    1.98,
+    -10.558
+   ],
+   "heading": 4.851,
+   "scale": 0.75,
+   "cell": "0,-2",
+   "place": "route-edge",
+   "source": "HABITAT_BEDS[8]"
+  },
+  {
+   "species": "grass-fountain",
+   "position": [
+    9.056,
+    1.98,
+    -10.873
+   ],
+   "heading": 3.333,
+   "scale": 0.75,
+   "cell": "0,-2",
+   "place": "conservatory",
+   "source": "HABITAT_BEDS[9]"
+  },
+  {
+   "species": "grass-fountain",
+   "position": [
+    9.506,
+    1.98,
+    -10.558
+   ],
+   "heading": 4.199,
+   "scale": 0.75,
+   "cell": "0,-2",
+   "place": "conservatory",
+   "source": "HABITAT_BEDS[9]"
+  },
+  {
+   "species": "grass-fountain",
+   "position": [
+    10.375,
+    1.98,
+    -10.873
+   ],
+   "heading": 5.005,
+   "scale": 0.75,
+   "cell": "1,-2",
+   "place": "conservatory",
+   "source": "HABITAT_BEDS[9]"
+  },
+  {
+   "species": "grass-fountain",
+   "position": [
+    10.825,
+    1.98,
+    -10.558
+   ],
+   "heading": 0.261,
+   "scale": 0.75,
+   "cell": "1,-2",
+   "place": "conservatory",
+   "source": "HABITAT_BEDS[9]"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    11.694,
+    1.98,
+    -10.873
+   ],
+   "heading": 3.337,
+   "scale": 0.75,
+   "cell": "1,-2",
+   "place": "conservatory",
+   "source": "HABITAT_BEDS[9]"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    12.144,
+    1.98,
+    -10.558
+   ],
+   "heading": 2.148,
+   "scale": 0.75,
+   "cell": "1,-2",
+   "place": "conservatory",
+   "source": "HABITAT_BEDS[9]"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -3.83,
+    3.453,
+    -13.461
+   ],
+   "heading": 0.698,
+   "scale": 0.75,
+   "cell": "-1,-2",
+   "place": "gallery",
+   "source": "HABITAT_BEDS[10]"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -3.38,
+    3.453,
+    -13.168
+   ],
+   "heading": 5.38,
+   "scale": 0.75,
+   "cell": "-1,-2",
+   "place": "gallery",
+   "source": "HABITAT_BEDS[10]"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -2.225,
+    3.453,
+    -13.461
+   ],
+   "heading": 0.202,
+   "scale": 0.75,
+   "cell": "-1,-2",
+   "place": "gallery",
+   "source": "HABITAT_BEDS[10]"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -1.775,
+    3.453,
+    -13.168
+   ],
+   "heading": 4.278,
+   "scale": 0.75,
+   "cell": "-1,-2",
+   "place": "gallery",
+   "source": "HABITAT_BEDS[10]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -0.62,
+    3.453,
+    -13.461
+   ],
+   "heading": 4.748,
+   "scale": 0.62,
+   "cell": "-1,-2",
+   "place": "gallery",
+   "source": "HABITAT_BEDS[10]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -0.17,
+    3.453,
+    -13.168
+   ],
+   "heading": 4.939,
+   "scale": 0.62,
+   "cell": "-1,-2",
+   "place": "route-edge",
+   "source": "HABITAT_BEDS[10]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -6.569,
+    3.85,
+    -46.66
+   ],
+   "heading": 2.486,
+   "scale": 0.62,
+   "cell": "-1,-5",
+   "place": "observatory_garden",
+   "source": "HABITAT_BEDS[11]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -5.534,
+    3.85,
+    -46.21
+   ],
+   "heading": 2.357,
+   "scale": 0.62,
+   "cell": "-1,-5",
+   "place": "observatory_garden",
+   "source": "HABITAT_BEDS[11]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -6.569,
+    3.85,
+    -45.37
+   ],
+   "heading": 5.014,
+   "scale": 0.62,
+   "cell": "-1,-5",
+   "place": "observatory_garden",
+   "source": "HABITAT_BEDS[11]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    -5.534,
+    3.85,
+    -44.92
+   ],
+   "heading": 0.065,
+   "scale": 0.62,
+   "cell": "-1,-5",
+   "place": "observatory_garden",
+   "source": "HABITAT_BEDS[11]"
+  },
+  {
+   "species": "grass-fountain",
+   "position": [
+    -6.569,
+    3.85,
+    -44.08
+   ],
+   "heading": 4.066,
+   "scale": 0.75,
+   "cell": "-1,-5",
+   "place": "observatory_garden",
+   "source": "HABITAT_BEDS[11]"
+  },
+  {
+   "species": "grass-fountain",
+   "position": [
+    -5.534,
+    3.85,
+    -43.63
+   ],
+   "heading": 2.274,
+   "scale": 0.75,
+   "cell": "-1,-5",
+   "place": "observatory_garden",
+   "source": "HABITAT_BEDS[11]"
+  },
+  {
+   "species": "grass-fountain",
+   "position": [
+    -6.569,
+    3.85,
+    -42.79
+   ],
+   "heading": 3.839,
+   "scale": 0.75,
+   "cell": "-1,-5",
+   "place": "observatory_garden",
+   "source": "HABITAT_BEDS[11]"
+  },
+  {
+   "species": "grass-fountain",
+   "position": [
+    -5.534,
+    3.85,
+    -42.34
+   ],
+   "heading": 6.1,
+   "scale": 0.75,
+   "cell": "-1,-5",
+   "place": "observatory_garden",
+   "source": "HABITAT_BEDS[11]"
+  },
+  {
+   "species": "grass-fountain",
+   "position": [
+    13.431,
+    3.85,
+    -47.16
+   ],
+   "heading": 0.397,
+   "scale": 0.75,
+   "cell": "1,-5",
+   "place": "observatory_garden",
+   "source": "HABITAT_BEDS[12]"
+  },
+  {
+   "species": "grass-fountain",
+   "position": [
+    14.466,
+    3.85,
+    -46.71
+   ],
+   "heading": 4.293,
+   "scale": 0.75,
+   "cell": "1,-5",
+   "place": "observatory_garden",
+   "source": "HABITAT_BEDS[12]"
+  },
+  {
+   "species": "grass-fountain",
+   "position": [
+    13.431,
+    3.85,
+    -45.87
+   ],
+   "heading": 5.548,
+   "scale": 0.75,
+   "cell": "1,-5",
+   "place": "observatory_garden",
+   "source": "HABITAT_BEDS[12]"
+  },
+  {
+   "species": "grass-fountain",
+   "position": [
+    14.466,
+    3.85,
+    -45.42
+   ],
+   "heading": 2.968,
+   "scale": 0.75,
+   "cell": "1,-5",
+   "place": "observatory_garden",
+   "source": "HABITAT_BEDS[12]"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    13.431,
+    3.85,
+    -44.58
+   ],
+   "heading": 0.381,
+   "scale": 0.75,
+   "cell": "1,-5",
+   "place": "observatory_garden",
+   "source": "HABITAT_BEDS[12]"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    14.466,
+    3.85,
+    -44.13
+   ],
+   "heading": 4.831,
+   "scale": 0.75,
+   "cell": "1,-5",
+   "place": "observatory_garden",
+   "source": "HABITAT_BEDS[12]"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    13.431,
+    3.85,
+    -43.29
+   ],
+   "heading": 3.925,
+   "scale": 0.75,
+   "cell": "1,-5",
+   "place": "observatory_garden",
+   "source": "HABITAT_BEDS[12]"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    14.466,
+    3.85,
+    -42.84
+   ],
+   "heading": 1.529,
+   "scale": 0.75,
+   "cell": "1,-5",
+   "place": "observatory_garden",
+   "source": "HABITAT_BEDS[12]"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    -0.279,
+    3.85,
+    -52.346
+   ],
+   "heading": 3.716,
+   "scale": 0.75,
+   "cell": "-1,-6",
+   "place": "observatory_garden",
+   "source": "HABITAT_BEDS[13]"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    0.171,
+    3.85,
+    -51.717
+   ],
+   "heading": 4.907,
+   "scale": 0.75,
+   "cell": "0,-6",
+   "place": "observatory_garden",
+   "source": "HABITAT_BEDS[13]"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    1.072,
+    3.85,
+    -52.346
+   ],
+   "heading": 3.151,
+   "scale": 0.75,
+   "cell": "0,-6",
+   "place": "observatory_garden",
+   "source": "HABITAT_BEDS[13]"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    1.522,
+    3.85,
+    -51.717
+   ],
+   "heading": 1.42,
+   "scale": 0.75,
+   "cell": "0,-6",
+   "place": "observatory_garden",
+   "source": "HABITAT_BEDS[13]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    2.424,
+    3.85,
+    -52.346
+   ],
+   "heading": 3.107,
+   "scale": 0.62,
+   "cell": "0,-6",
+   "place": "observatory_garden",
+   "source": "HABITAT_BEDS[13]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    2.874,
+    3.85,
+    -51.717
+   ],
+   "heading": 5.743,
+   "scale": 0.62,
+   "cell": "0,-6",
+   "place": "observatory_garden",
+   "source": "HABITAT_BEDS[13]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    3.775,
+    3.85,
+    -52.346
+   ],
+   "heading": 0.435,
+   "scale": 0.62,
+   "cell": "0,-6",
+   "place": "observatory_garden",
+   "source": "HABITAT_BEDS[13]"
+  },
+  {
+   "species": "fern-sword",
+   "position": [
+    4.225,
+    3.85,
+    -51.717
+   ],
+   "heading": 0.677,
+   "scale": 0.62,
+   "cell": "0,-6",
+   "place": "observatory_garden",
+   "source": "HABITAT_BEDS[13]"
+  },
+  {
+   "species": "grass-fountain",
+   "position": [
+    5.126,
+    3.85,
+    -52.346
+   ],
+   "heading": 3.204,
+   "scale": 0.75,
+   "cell": "0,-6",
+   "place": "observatory_garden",
+   "source": "HABITAT_BEDS[13]"
+  },
+  {
+   "species": "grass-fountain",
+   "position": [
+    5.576,
+    3.85,
+    -51.717
+   ],
+   "heading": 4.952,
+   "scale": 0.75,
+   "cell": "0,-6",
+   "place": "observatory_garden",
+   "source": "HABITAT_BEDS[13]"
+  },
+  {
+   "species": "grass-fountain",
+   "position": [
+    6.478,
+    3.85,
+    -52.346
+   ],
+   "heading": 4.659,
+   "scale": 0.75,
+   "cell": "0,-6",
+   "place": "observatory_garden",
+   "source": "HABITAT_BEDS[13]"
+  },
+  {
+   "species": "grass-fountain",
+   "position": [
+    6.928,
+    3.85,
+    -51.717
+   ],
+   "heading": 5.419,
+   "scale": 0.75,
+   "cell": "0,-6",
+   "place": "observatory_garden",
+   "source": "HABITAT_BEDS[13]"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    7.829,
+    3.85,
+    -52.346
+   ],
+   "heading": 5.692,
+   "scale": 0.75,
+   "cell": "0,-6",
+   "place": "observatory_garden",
+   "source": "HABITAT_BEDS[13]"
+  },
+  {
+   "species": "flower-coneflower",
+   "position": [
+    8.279,
+    3.85,
+    -51.717
+   ],
+   "heading": 2.068,
+   "scale": 0.75,
+   "cell": "0,-6",
+   "place": "observatory_garden",
+   "source": "HABITAT_BEDS[13]"
+  },
+  {
+   "species": "iris-water",
+   "position": [
+    2.32,
+    0.0,
+    -4.64
+   ],
+   "heading": 5.806,
+   "scale": 0.963,
+   "cell": "0,-1",
+   "place": "conservatory",
+   "source": "water garden margin"
+  },
+  {
+   "species": "iris-water",
+   "position": [
+    2.32,
+    0.0,
+    -3.946
+   ],
+   "heading": 0.019,
+   "scale": 0.928,
+   "cell": "0,-1",
+   "place": "conservatory",
+   "source": "water garden margin"
+  },
+  {
+   "species": "iris-water",
+   "position": [
+    2.32,
+    0.0,
+    -0.676
+   ],
+   "heading": 1.471,
+   "scale": 1.039,
+   "cell": "0,-1",
+   "place": "commons",
+   "source": "water garden margin"
+  },
+  {
+   "species": "iris-water",
+   "position": [
+    2.32,
+    0.0,
+    0.036
+   ],
+   "heading": 1.054,
+   "scale": 1.086,
+   "cell": "0,0",
+   "place": "commons",
+   "source": "water garden margin"
+  },
+  {
+   "species": "iris-water",
+   "position": [
+    2.32,
+    0.0,
+    0.722
+   ],
+   "heading": 3.345,
+   "scale": 0.957,
+   "cell": "0,0",
+   "place": "commons",
+   "source": "water garden margin"
+  },
+  {
+   "species": "iris-water",
+   "position": [
+    5.68,
+    0.0,
+    -4.647
+   ],
+   "heading": 1.959,
+   "scale": 1.031,
+   "cell": "0,-1",
+   "place": "conservatory",
+   "source": "water garden margin"
+  },
+  {
+   "species": "iris-water",
+   "position": [
+    5.68,
+    0.0,
+    -4.011
+   ],
+   "heading": 2.711,
+   "scale": 0.945,
+   "cell": "0,-1",
+   "place": "conservatory",
+   "source": "water garden margin"
+  },
+  {
+   "species": "iris-water",
+   "position": [
+    5.68,
+    0.0,
+    -0.612
+   ],
+   "heading": 5.731,
+   "scale": 0.997,
+   "cell": "0,-1",
+   "place": "conservatory",
+   "source": "water garden margin"
+  },
+  {
+   "species": "iris-water",
+   "position": [
+    5.68,
+    0.0,
+    0.01
+   ],
+   "heading": 4.702,
+   "scale": 0.951,
+   "cell": "0,0",
+   "place": "conservatory",
+   "source": "water garden margin"
+  },
+  {
+   "species": "iris-water",
+   "position": [
+    5.68,
+    0.0,
+    0.66
+   ],
+   "heading": 4.895,
+   "scale": 0.991,
+   "cell": "0,0",
+   "place": "conservatory",
+   "source": "water garden margin"
+  },
+  {
+   "species": "iris-water",
+   "position": [
+    2.7,
+    0.0,
+    0.78
+   ],
+   "heading": 2.969,
+   "scale": 0.9,
+   "cell": "0,0",
+   "place": "commons",
+   "source": "water garden south margin"
+  },
+  {
+   "species": "iris-water",
+   "position": [
+    3.567,
+    0.0,
+    0.78
+   ],
+   "heading": 2.354,
+   "scale": 0.9,
+   "cell": "0,0",
+   "place": "commons",
+   "source": "water garden south margin"
+  },
+  {
+   "species": "iris-water",
+   "position": [
+    4.433,
+    0.0,
+    0.78
+   ],
+   "heading": 5.404,
+   "scale": 0.9,
+   "cell": "0,0",
+   "place": "commons",
+   "source": "water garden south margin"
+  },
+  {
+   "species": "iris-water",
+   "position": [
+    5.3,
+    0.0,
+    0.78
+   ],
+   "heading": 3.625,
+   "scale": 0.9,
+   "cell": "0,0",
+   "place": "commons",
+   "source": "water garden south margin"
+  },
+  {
+   "species": "vine-pendant",
+   "position": [
+    -6.843,
+    3.72,
+    1.3
+   ],
+   "heading": 4.862,
+   "scale": 1.0,
+   "cell": "-1,0",
+   "place": "commons",
+   "source": "commons arbor edge beam"
+  },
+  {
+   "species": "vine-pendant",
+   "position": [
+    -6.908,
+    3.72,
+    2.1
+   ],
+   "heading": 0.648,
+   "scale": 1.0,
+   "cell": "-1,0",
+   "place": "commons",
+   "source": "commons arbor edge beam"
+  },
+  {
+   "species": "vine-pendant",
+   "position": [
+    -7.045,
+    3.72,
+    2.9
+   ],
+   "heading": 4.346,
+   "scale": 1.0,
+   "cell": "-1,0",
+   "place": "commons",
+   "source": "commons arbor edge beam"
+  },
+  {
+   "species": "vine-pendant",
+   "position": [
+    -7.011,
+    3.72,
+    3.7
+   ],
+   "heading": 5.339,
+   "scale": 1.0,
+   "cell": "-1,0",
+   "place": "commons",
+   "source": "commons arbor edge beam"
+  },
+  {
+   "species": "vine-pendant",
+   "position": [
+    -7.034,
+    3.72,
+    4.5
+   ],
+   "heading": 0.223,
+   "scale": 1.0,
+   "cell": "-1,0",
+   "place": "commons",
+   "source": "commons arbor edge beam"
+  },
+  {
+   "species": "vine-pendant",
+   "position": [
+    -6.952,
+    3.72,
+    5.3
+   ],
+   "heading": 4.468,
+   "scale": 1.0,
+   "cell": "-1,0",
+   "place": "commons",
+   "source": "commons arbor edge beam"
+  },
+  {
+   "species": "vine-pendant",
+   "position": [
+    -7.016,
+    3.72,
+    6.1
+   ],
+   "heading": 5.443,
+   "scale": 1.0,
+   "cell": "-1,0",
+   "place": "commons",
+   "source": "commons arbor edge beam"
+  },
+  {
+   "species": "vine-pendant",
+   "position": [
+    -1.061,
+    3.72,
+    1.3
+   ],
+   "heading": 0.386,
+   "scale": 1.0,
+   "cell": "-1,0",
+   "place": "commons",
+   "source": "commons arbor edge beam"
+  },
+  {
+   "species": "vine-pendant",
+   "position": [
+    -1.02,
+    3.72,
+    2.1
+   ],
+   "heading": 5.56,
+   "scale": 1.0,
+   "cell": "-1,0",
+   "place": "commons",
+   "source": "commons arbor edge beam"
+  },
+  {
+   "species": "vine-pendant",
+   "position": [
+    -0.855,
+    3.72,
+    2.9
+   ],
+   "heading": 5.087,
+   "scale": 1.0,
+   "cell": "-1,0",
+   "place": "commons",
+   "source": "commons arbor edge beam"
+  },
+  {
+   "species": "vine-pendant",
+   "position": [
+    -1.024,
+    3.72,
+    3.7
+   ],
+   "heading": 0.766,
+   "scale": 1.0,
+   "cell": "-1,0",
+   "place": "commons",
+   "source": "commons arbor edge beam"
+  },
+  {
+   "species": "vine-pendant",
+   "position": [
+    -1.024,
+    3.72,
+    4.5
+   ],
+   "heading": 5.949,
+   "scale": 1.0,
+   "cell": "-1,0",
+   "place": "commons",
+   "source": "commons arbor edge beam"
+  },
+  {
+   "species": "vine-pendant",
+   "position": [
+    -1.091,
+    3.72,
+    5.3
+   ],
+   "heading": 6.114,
+   "scale": 1.0,
+   "cell": "-1,0",
+   "place": "commons",
+   "source": "commons arbor edge beam"
+  },
+  {
+   "species": "vine-pendant",
+   "position": [
+    -0.9,
+    3.72,
+    6.1
+   ],
+   "heading": 2.22,
+   "scale": 1.0,
+   "cell": "-1,0",
+   "place": "commons",
+   "source": "commons arbor edge beam"
+  }
+ ],
+ "groups": [
+  {
+   "cell": "-1,-1",
+   "species": "fern-sword",
+   "count": 9
+  },
+  {
+   "cell": "-1,-1",
+   "species": "flower-coneflower",
+   "count": 6
+  },
+  {
+   "cell": "-1,-1",
+   "species": "grass-fountain",
+   "count": 2
+  },
+  {
+   "cell": "-1,-1",
+   "species": "shrub-laurel",
+   "count": 3
+  },
+  {
+   "cell": "-1,-2",
+   "species": "fern-sword",
+   "count": 15
+  },
+  {
+   "cell": "-1,-2",
+   "species": "flower-coneflower",
+   "count": 9
+  },
+  {
+   "cell": "-1,-2",
+   "species": "grass-fountain",
+   "count": 4
+  },
+  {
+   "cell": "-1,-2",
+   "species": "shrub-laurel",
+   "count": 1
+  },
+  {
+   "cell": "-1,-3",
+   "species": "canopy-olive",
+   "count": 1
+  },
+  {
+   "cell": "-1,-3",
+   "species": "fern-sword",
+   "count": 1
+  },
+  {
+   "cell": "-1,-3",
+   "species": "flower-coneflower",
+   "count": 6
+  },
+  {
+   "cell": "-1,-3",
+   "species": "shrub-laurel",
+   "count": 6
+  },
+  {
+   "cell": "-1,-5",
+   "species": "canopy-olive",
+   "count": 1
+  },
+  {
+   "cell": "-1,-5",
+   "species": "fern-sword",
+   "count": 5
+  },
+  {
+   "cell": "-1,-5",
+   "species": "grass-fountain",
+   "count": 4
+  },
+  {
+   "cell": "-1,-5",
+   "species": "shrub-laurel",
+   "count": 1
+  },
+  {
+   "cell": "-1,-6",
+   "species": "flower-coneflower",
+   "count": 1
+  },
+  {
+   "cell": "-1,0",
+   "species": "canopy-olive",
+   "count": 1
+  },
+  {
+   "cell": "-1,0",
+   "species": "fern-sword",
+   "count": 9
+  },
+  {
+   "cell": "-1,0",
+   "species": "flower-coneflower",
+   "count": 7
+  },
+  {
+   "cell": "-1,0",
+   "species": "grass-fountain",
+   "count": 2
+  },
+  {
+   "cell": "-1,0",
+   "species": "shrub-laurel",
+   "count": 4
+  },
+  {
+   "cell": "-1,0",
+   "species": "vine-pendant",
+   "count": 14
+  },
+  {
+   "cell": "-1,1",
+   "species": "fern-sword",
+   "count": 3
+  },
+  {
+   "cell": "-1,1",
+   "species": "flower-coneflower",
+   "count": 3
+  },
+  {
+   "cell": "-1,1",
+   "species": "shrub-laurel",
+   "count": 2
+  },
+  {
+   "cell": "-2,-1",
+   "species": "canopy-olive",
+   "count": 1
+  },
+  {
+   "cell": "-2,-1",
+   "species": "fern-sword",
+   "count": 6
+  },
+  {
+   "cell": "-2,-1",
+   "species": "flower-coneflower",
+   "count": 6
+  },
+  {
+   "cell": "-2,-1",
+   "species": "shrub-laurel",
+   "count": 5
+  },
+  {
+   "cell": "-2,-2",
+   "species": "fern-sword",
+   "count": 12
+  },
+  {
+   "cell": "-2,-2",
+   "species": "flower-coneflower",
+   "count": 14
+  },
+  {
+   "cell": "-2,-2",
+   "species": "grass-fountain",
+   "count": 2
+  },
+  {
+   "cell": "-2,-2",
+   "species": "shrub-laurel",
+   "count": 7
+  },
+  {
+   "cell": "-2,-3",
+   "species": "canopy-olive",
+   "count": 1
+  },
+  {
+   "cell": "-2,-3",
+   "species": "fern-sword",
+   "count": 2
+  },
+  {
+   "cell": "-2,-3",
+   "species": "flower-coneflower",
+   "count": 5
+  },
+  {
+   "cell": "-2,-3",
+   "species": "shrub-laurel",
+   "count": 5
+  },
+  {
+   "cell": "-2,0",
+   "species": "canopy-olive",
+   "count": 1
+  },
+  {
+   "cell": "-2,0",
+   "species": "fern-sword",
+   "count": 7
+  },
+  {
+   "cell": "-2,0",
+   "species": "flower-coneflower",
+   "count": 6
+  },
+  {
+   "cell": "-2,0",
+   "species": "shrub-laurel",
+   "count": 6
+  },
+  {
+   "cell": "-2,1",
+   "species": "canopy-olive",
+   "count": 1
+  },
+  {
+   "cell": "-2,1",
+   "species": "fern-sword",
+   "count": 3
+  },
+  {
+   "cell": "-2,1",
+   "species": "flower-coneflower",
+   "count": 2
+  },
+  {
+   "cell": "-2,1",
+   "species": "shrub-laurel",
+   "count": 3
+  },
+  {
+   "cell": "0,-1",
+   "species": "fern-sword",
+   "count": 3
+  },
+  {
+   "cell": "0,-1",
+   "species": "flower-coneflower",
+   "count": 3
+  },
+  {
+   "cell": "0,-1",
+   "species": "iris-water",
+   "count": 6
+  },
+  {
+   "cell": "0,-1",
+   "species": "shrub-laurel",
+   "count": 3
+  },
+  {
+   "cell": "0,-2",
+   "species": "canopy-olive",
+   "count": 1
+  },
+  {
+   "cell": "0,-2",
+   "species": "fern-sword",
+   "count": 1
+  },
+  {
+   "cell": "0,-2",
+   "species": "grass-fountain",
+   "count": 4
+  },
+  {
+   "cell": "0,-3",
+   "species": "canopy-olive",
+   "count": 1
+  },
+  {
+   "cell": "0,-3",
+   "species": "fern-sword",
+   "count": 2
+  },
+  {
+   "cell": "0,-3",
+   "species": "flower-coneflower",
+   "count": 2
+  },
+  {
+   "cell": "0,-3",
+   "species": "shrub-laurel",
+   "count": 2
+  },
+  {
+   "cell": "0,-6",
+   "species": "fern-sword",
+   "count": 4
+  },
+  {
+   "cell": "0,-6",
+   "species": "flower-coneflower",
+   "count": 5
+  },
+  {
+   "cell": "0,-6",
+   "species": "grass-fountain",
+   "count": 4
+  },
+  {
+   "cell": "0,0",
+   "species": "fern-sword",
+   "count": 11
+  },
+  {
+   "cell": "0,0",
+   "species": "flower-coneflower",
+   "count": 10
+  },
+  {
+   "cell": "0,0",
+   "species": "grass-fountain",
+   "count": 3
+  },
+  {
+   "cell": "0,0",
+   "species": "iris-water",
+   "count": 8
+  },
+  {
+   "cell": "0,0",
+   "species": "shrub-laurel",
+   "count": 2
+  },
+  {
+   "cell": "0,1",
+   "species": "canopy-olive",
+   "count": 1
+  },
+  {
+   "cell": "0,1",
+   "species": "fern-sword",
+   "count": 1
+  },
+  {
+   "cell": "0,1",
+   "species": "flower-coneflower",
+   "count": 1
+  },
+  {
+   "cell": "0,1",
+   "species": "shrub-laurel",
+   "count": 2
+  },
+  {
+   "cell": "1,-1",
+   "species": "fern-sword",
+   "count": 8
+  },
+  {
+   "cell": "1,-1",
+   "species": "flower-coneflower",
+   "count": 6
+  },
+  {
+   "cell": "1,-1",
+   "species": "shrub-laurel",
+   "count": 5
+  },
+  {
+   "cell": "1,-2",
+   "species": "canopy-olive",
+   "count": 1
+  },
+  {
+   "cell": "1,-2",
+   "species": "fern-sword",
+   "count": 13
+  },
+  {
+   "cell": "1,-2",
+   "species": "flower-coneflower",
+   "count": 12
+  },
+  {
+   "cell": "1,-2",
+   "species": "grass-fountain",
+   "count": 4
+  },
+  {
+   "cell": "1,-2",
+   "species": "shrub-laurel",
+   "count": 7
+  },
+  {
+   "cell": "1,-3",
+   "species": "fern-sword",
+   "count": 3
+  },
+  {
+   "cell": "1,-3",
+   "species": "flower-coneflower",
+   "count": 5
+  },
+  {
+   "cell": "1,-3",
+   "species": "shrub-laurel",
+   "count": 5
+  },
+  {
+   "cell": "1,-5",
+   "species": "canopy-olive",
+   "count": 1
+  },
+  {
+   "cell": "1,-5",
+   "species": "flower-coneflower",
+   "count": 4
+  },
+  {
+   "cell": "1,-5",
+   "species": "grass-fountain",
+   "count": 4
+  },
+  {
+   "cell": "1,-5",
+   "species": "shrub-laurel",
+   "count": 1
+  },
+  {
+   "cell": "1,0",
+   "species": "canopy-olive",
+   "count": 1
+  },
+  {
+   "cell": "1,0",
+   "species": "fern-sword",
+   "count": 11
+  },
+  {
+   "cell": "1,0",
+   "species": "flower-coneflower",
+   "count": 7
+  },
+  {
+   "cell": "1,0",
+   "species": "grass-fountain",
+   "count": 1
+  },
+  {
+   "cell": "1,0",
+   "species": "shrub-laurel",
+   "count": 7
+  },
+  {
+   "cell": "1,1",
+   "species": "fern-sword",
+   "count": 3
+  },
+  {
+   "cell": "1,1",
+   "species": "flower-coneflower",
+   "count": 2
+  },
+  {
+   "cell": "1,1",
+   "species": "shrub-laurel",
+   "count": 2
+  }
+ ],
+ "rejected": [],
+ "census": {
+  "instances": 408,
+  "per_species": {
+   "canopy-olive": 13,
+   "shrub-laurel": 79,
+   "fern-sword": 132,
+   "flower-coneflower": 122,
+   "grass-fountain": 34,
+   "iris-water": 14,
+   "vine-pendant": 14
+  },
+  "rejected": 0,
+  "shrunk_to_fit": 44,
+  "tree_min_scale_for_2.3m_headroom": 0.892,
+  "triangles_all_lod0_worst_case": 477444,
+  "triangles_from_arrival_camera_lod_by_distance": 201172,
+  "instanced_groups_cell_x_species": 92,
+  "draw_calls_upper_bound_all_cells_visible": 105,
+  "draw_calls_arrival_frustum_instanced": 78,
+  "draw_calls_if_batchedmesh_per_cell_material": 50,
+  "draw_calls_arrival_frustum_batchedmesh": 36,
+  "nudged_off_route": 22,
+  "shadow_casting_instances_lod0": 92,
+  "lane_targets": {
+   "arrival_triangles": 400000,
+   "arrival_frustum_draw_calls_instanced": 80,
+   "note": "W4 botany share of the 1M main-view / 250 draw-call frame budgets; the all-cells upper bound is reported, not gated (cells behind the camera are culled)"
+  },
+  "pass": true
+ }
+}
