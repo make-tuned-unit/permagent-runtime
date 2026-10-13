@@ -150,7 +150,9 @@ prov() {
   local tmp="$LOGDIR/provenance-check-lane.sh"
   [ "${RELEASE_DRY_RUN:-0}" = 1 ] && tmp=$(mktemp /tmp/prov-lane.XXXXXX)
   sed "s#^MAIN=.*#MAIN=$LANE#" "$PROV" > "$tmp"
-  /bin/zsh "$tmp" "$@"
+  # The check is a printed report; its last pipeline is a grep that exits 1 when the tree is
+  # clean, which under set -e would abort the step precisely when everything is fine.
+  /bin/zsh "$tmp" "$@" || true
 }
 
 identity_name() {
