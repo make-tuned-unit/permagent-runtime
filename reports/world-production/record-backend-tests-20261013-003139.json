@@ -1,0 +1,27 @@
+{
+  "command": [
+    "/Users/j/Documents/dev/permagent-runtime/bin/cargo",
+    "build",
+    "-p",
+    "permagent-daemon",
+    "--bin",
+    "permagentd",
+    "--locked"
+  ],
+  "log": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/reports/world-production/record-backend-tests-20261013-003139.log",
+  "exit_code": 0,
+  "reason": null,
+  "cleanup_error": null,
+  "owned_group_stopped": false,
+  "elapsed_s": 747.15,
+  "minimum_free_gib": 26.86,
+  "minimum_free_by_volume_gib": {
+    "/System/Volumes/Data": 26.86,
+    "/Volumes/PermagentBuilds": 144.872
+  },
+  "startup_minimum_gib": 12,
+  "continuous_floor_gib": 8,
+  "timeout_s": 1800,
+  "staged": false,
+  "launched": false
+}
