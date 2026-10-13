@@ -152,6 +152,13 @@ PY
   ;;
 # ---------------------------------------------------------------------------------------------
 1) # STAGE sidecars, CLI, mcp-runtime, whisper, audiocap  (all outputs are gitignored except audiocap)
+  # The uplifted target/release/permagentd is NOT trustworthy: a Tauri build copies
+  # ui/desktop/src-tauri/binaries/permagentd-aarch64-apple-darwin over it (2026-10-13: the Sep 29
+  # daemon got packaged that way). Cargo's real artefact is release/deps/permagentd-<hash>.
+  DEP=$(ls -t "$TARGET"/release/deps/permagentd-* 2>/dev/null | grep -v '\.d$' | head -1)
+  [ -n "$DEP" ] || die "no cargo daemon artefact under release/deps"
+  [ "$(sha "$DEP")" = "$DAEMON_SHA" ] || die "cargo daemon artefact $(sha "$DEP") != reviewed $DAEMON_SHA"
+  cp "$DEP" "$TARGET/release/permagentd"; note "release/permagentd restored from cargo artefact $(basename "$DEP") ($DAEMON_SHA)"
   cd "$LANE"
   "$SCRIPTS/copy-sidecar.sh"
   "$SCRIPTS/copy-cli.sh"
@@ -340,6 +347,10 @@ EOF
   ;;
 # ---------------------------------------------------------------------------------------------
 6) # POST-INSTALL CHECKS (coordinator has restarted the app/daemon)
+  EXPECTED_GIT_SHA=f233d3145   # build.rs bakes `git rev-parse --short=9 HEAD` (daemon source tip at build time)
+  tok=$(python3 -c "import json;d=json.load(open('$HOME/.permagent/secrets/daemon_token.json'));print(d.get('token') or list(d.values())[0])")
+  v=$(curl -s -m 5 -H "Authorization: Bearer $tok" http://127.0.0.1:3001/api/version)
+  echo "$v" | grep -q "\"git_sha\":\"$EXPECTED_GIT_SHA\"" && note "installed daemon /api/version git_sha $EXPECTED_GIT_SHA OK" || die "installed daemon /api/version mismatch: $v"
   [ -f "$BASELINE" ] || die "baseline missing ($BASELINE): step 0 was never run for real"
   code=000
   for i in $(seq 1 24); do
