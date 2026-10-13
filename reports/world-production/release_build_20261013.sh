@@ -244,8 +244,23 @@ PY
   DEP=$(dep_daemon)
   DAEMON_SHA=$(sha "$DEP")
   cd "$LANE"
-  # build.rs bakes `git rev-parse --short=9 HEAD` of this worktree; capture the same value for step 6.
-  GIT_SHA9=$(git rev-parse --short=9 HEAD)
+  # build.rs bakes `git rev-parse --short=9 HEAD` of this worktree at DAEMON COMPILE time; step 6
+  # compares the installed daemon's /api/version against it. If commits landed after the daemon was
+  # built, the operator passes DAEMON_GIT_SHA=<sha the artefact reports> and this step proves that
+  # nothing the daemon compiles (crates/, Cargo.lock, Cargo.toml) changed between that tip and HEAD;
+  # otherwise the artefact is stale and must be rebuilt.
+  HEAD_SHA9=$(git rev-parse --short=9 HEAD)
+  if [ -n "${DAEMON_GIT_SHA:-}" ]; then
+    git cat-file -e "${DAEMON_GIT_SHA}^{commit}" || die "DAEMON_GIT_SHA $DAEMON_GIT_SHA is not a commit in this worktree"
+    git merge-base --is-ancestor "$DAEMON_GIT_SHA" HEAD || die "DAEMON_GIT_SHA $DAEMON_GIT_SHA is not an ancestor of HEAD"
+    rust_changed=$(git diff --name-only "$DAEMON_GIT_SHA" HEAD -- crates Cargo.lock Cargo.toml || true)
+    [ -z "$rust_changed" ] || die "daemon-compiled paths changed since $DAEMON_GIT_SHA; rebuild the daemon: $rust_changed"
+    GIT_SHA9=$(git rev-parse --short=9 "$DAEMON_GIT_SHA")
+    note "daemon tip $GIT_SHA9 (operator-supplied; no crates/Cargo change up to HEAD $HEAD_SHA9)"
+  else
+    GIT_SHA9=$HEAD_SHA9
+  fi
+  mset head_sha9 "$HEAD_SHA9"
   cp "$DEP" "$TARGET/release/permagentd"; note "release/permagentd restored from cargo artefact $(basename "$DEP") ($DAEMON_SHA)"
   [ "$(sha "$TARGET/release/permagentd")" = "$DAEMON_SHA" ] || die "restored release/permagentd != artefact"
   # Same rule for the CLI: Tauri's externalBin copy overwrites target/release/permagent, and
