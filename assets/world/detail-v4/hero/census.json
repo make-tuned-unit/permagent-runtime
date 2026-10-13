@@ -1,6 +1,6 @@
 {
   "schema": "permagent.world.detail-v4.hero.census.v1",
-  "generated": "2026-10-13T02:09:42Z",
+  "generated": "2026-10-13T02:10:14Z",
   "budgets_reference": "/Users/j/Documents/dev/permagent-worktrees/wq-reports/astra/ruling-world-production-20261012.md section 2 Budgets",
   "assets": [
     {
@@ -9,9 +9,9 @@
       "budget_note": "ceiling includes runtime wardrobe (agentWardrobe.ts, <= ~2.5k tris)",
       "lod0": {
         "file": "hero-robot.lod0.glb",
-        "triangles": 20536,
+        "triangles": 21104,
         "primitives_draw_calls": 41,
-        "bytes": 605840,
+        "bytes": 617696,
         "materials": [
           "Ceramic \u2022 warm ivory",
           "Trim \u2022 graphite and brass",
@@ -22,9 +22,9 @@
       },
       "lod1": {
         "file": "hero-robot.lod1.glb",
-        "triangles": 6340,
+        "triangles": 6396,
         "primitives_draw_calls": 31,
-        "bytes": 249320,
+        "bytes": 249784,
         "materials": [
           "Ceramic \u2022 warm ivory",
           "Trim \u2022 graphite and brass",
@@ -53,13 +53,13 @@
       ],
       "checks": {
         "lod0_triangles": {
-          "value": 20536,
-          "with_wardrobe_allowance": 23036,
+          "value": 21104,
+          "with_wardrobe_allowance": 23604,
           "ceiling": 24000,
           "pass": true
         },
         "lod1_triangles": {
-          "value": 6340,
+          "value": 6396,
           "ceiling": 10000,
           "pass": true
         },
@@ -69,7 +69,7 @@
           "pass": true
         },
         "lod0_bytes": {
-          "value": 605840,
+          "value": 617696,
           "ceiling": 1500000,
           "pass": true
         },
@@ -616,9 +616,9 @@
     }
   ],
   "totals": {
-    "lod0_bytes": 1728284,
-    "lod1_bytes": 860788,
-    "lod0_triangles_one_of_each": 37242,
+    "lod0_bytes": 1740140,
+    "lod1_bytes": 861252,
+    "lod0_triangles_one_of_each": 37810,
     "lod0_texture_decoded_bytes": 19879246,
     "all_pass": true
   }

@@ -225,8 +225,17 @@ def build_robot(detail=1.0):
                                          seg(32, d, 16), 0.03, exp=0.97, lip=0.5))
     eye_c = (0.0, -0.300, 1.49)
     for s in (-1, 1):
-        k.add('Head', eyes, ellipsoid((s * 0.10, -0.300, 1.49), (0.036, 0.016, 0.066), seg(14, d, 8), seg(8, d, 6)),
-              obj='Head_Eyes • jade phosphor', origin=eye_c)
+        # front dome only (the back half sits inside the lens): the ring count goes
+        # into the outline, so the silhouette stays round at face distance, and
+        # the bucket is fully smooth-shaded (round 1 faceted at 14 segments + 38 deg)
+        rings = seg(6, d, 3)
+        prof = [(0.0, 1.0)] + [(math.sin(a), math.cos(a)) for a in
+                               [math.radians(105) * i / rings for i in range(1, rings + 1)]]
+        dome = lathe(prof + [(0.0, prof[-1][1])], seg(40, d, 16))
+        for vert in dome.verts:
+            x, y, z = vert.co
+            vert.co = Vector((s * 0.10 + x * 0.036, -0.300 - z * 0.016, 1.49 + y * 0.066))
+        k.add('Head', eyes, dome, obj='Head_Eyes • jade phosphor', origin=eye_c, smooth=180)
     for s in (-1, 1):
         # ear hub: brass turned disc with a dark recessed centre and a bronze cap
         ear = lathe([(0, -0.03), (0.105, -0.03), (0.122, -0.012), (0.122, 0.012), (0.105, 0.03), (0, 0.03)],
