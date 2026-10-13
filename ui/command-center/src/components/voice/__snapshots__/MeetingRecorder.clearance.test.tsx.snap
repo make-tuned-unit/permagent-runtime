@@ -1,0 +1,677 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`DOM recorder 1024x640 dark dock-closed 1`] = `
+<div
+  data-pa-launcher-footer=""
+  style="position: fixed; right: 16px; bottom: 16px; z-index: 999; background: rgba(30, 36, 51, 0.82); box-shadow: inset 0 1px 0 rgba(255,255,255,0.14), inset 0 -1px 0 rgba(0,0,0,0.22), inset 0 0 0 1px rgba(255,255,255,0.07), 0 8px 32px rgba(0,0,0,0.28); border: 1px solid rgb(255, 180, 162); border-radius: 12px; padding: 10px 16px; font-family: "Inter", -apple-system, BlinkMacSystemFont, sans-serif; display: flex; flex-direction: column; gap: 8px; width: 360px; max-width: calc(100vw - 32px); transition: none;"
+>
+  <style>
+    @keyframes pa-rec-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }@media (prefers-reduced-motion: reduce) { .pa-rec-dot { animation: none !important; } }
+  </style>
+  <div
+    style="display: flex; align-items: center; gap: 8px;"
+  >
+    <span
+      class="pa-rec-dot"
+      style="width: 9px; height: 9px; border-radius: 50%; background: rgb(255, 180, 162); animation: pa-rec-pulse 1.4s ease-in-out infinite; flex-shrink: 0;"
+    />
+    <span
+      style="font-size: 12px; font-weight: 600; color: rgb(255, 255, 255);"
+    >
+      Recording 0:12
+    </span>
+    <span
+      style="font-size: 11px; color: rgb(90, 100, 120); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
+    >
+      → 
+      Synthetic review
+    </span>
+    <button
+      aria-label="Expand the notepad"
+      class="pa-btn pa-btn--bare"
+      style="--pa-btn-radius: 4px; --pa-btn-success: #34D399; --pa-btn-bg: transparent; --pa-btn-fg: #8A94A6; --pa-btn-border: transparent; --pa-btn-bg-hover: #262D3F; --pa-btn-border-hover: transparent; --pa-btn-bg-active: #1E2433; --pa-btn-pad: 2px; --pa-btn-fg-hover: #FFFFFF; margin-left: auto;"
+    >
+      <span
+        class="pa-btn__label"
+      >
+        <svg
+          fill="none"
+          height="14"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          style="transform: none; transition: none;"
+          viewBox="0 0 24 24"
+          width="14"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <polyline
+            points="6 9 12 15 18 9"
+          />
+        </svg>
+      </span>
+    </button>
+  </div>
+  <div
+    style="font-size: 10px; color: rgb(90, 100, 120);"
+  >
+    Your microphone — hearing you ✓
+     · transcribed locally on this device
+  </div>
+  <textarea
+    aria-label="Meeting notepad"
+    placeholder="Jot what matters — I'll build the notes around it"
+    style="width: 100%; resize: vertical; height: 96px; background: rgb(30, 36, 51); color: rgb(255, 255, 255); border: 1px solid rgba(255, 255, 255, 0.07); border-radius: 8px; padding: 8px 10px; font-family: "Inter", -apple-system, BlinkMacSystemFont, sans-serif; font-size: 12px; line-height: 1.6; outline: none; transition: none;"
+  >
+    Synthetic notes
+  </textarea>
+  <div
+    style="font-size: 10px; color: rgb(90, 100, 120);"
+  >
+    Your notes stay verbatim and steer the write-up · saved as you type
+  </div>
+  <div
+    style="display: flex; gap: 8px;"
+  >
+    <button
+      class="pa-btn pa-btn--ghost"
+      style="--pa-btn-radius: 6px; --pa-btn-success: #34D399; --pa-btn-bg: rgba(0,213,255,0.14); --pa-btn-fg: #00D5FF; --pa-btn-border: rgba(0,213,255,0.18); --pa-btn-bg-hover: rgba(0,213,255,0.14); --pa-btn-border-hover: #00D5FF; --pa-btn-bg-active: rgba(0,213,255,0.14); --pa-btn-pad: 6px 12px; --pa-btn-fg-hover: #00D5FF; --pa-btn-weight: 600; font-family: "Inter", -apple-system, BlinkMacSystemFont, sans-serif; font-size: 11px;"
+    >
+      <span
+        class="pa-btn__label"
+      >
+        Stop & save
+      </span>
+    </button>
+    <button
+      class="pa-btn pa-btn--ghost"
+      style="--pa-btn-radius: 6px; --pa-btn-success: #34D399; --pa-btn-bg: transparent; --pa-btn-fg: #8A94A6; --pa-btn-border: rgba(255,255,255,0.07); --pa-btn-bg-hover: #262D3F; --pa-btn-border-hover: rgba(0,213,255,0.18); --pa-btn-bg-active: transparent; --pa-btn-pad: 6px 12px; --pa-btn-fg-hover: #FFFFFF; --pa-btn-weight: 400; font-family: "Inter", -apple-system, BlinkMacSystemFont, sans-serif; font-size: 11px;"
+    >
+      <span
+        class="pa-btn__label"
+      >
+        Discard
+      </span>
+    </button>
+  </div>
+</div>
+`;
+
+exports[`DOM recorder 1024x640 dark dock-open 1`] = `
+<div
+  style="background: rgb(30, 36, 51); border: 1px solid rgb(255, 180, 162); border-radius: 8px; padding: 10px 16px; font-family: "Inter", -apple-system, BlinkMacSystemFont, sans-serif; display: flex; flex-direction: column; gap: 8px; width: 100%; max-width: 100%; transition: none; position: relative; right: auto; bottom: auto; z-index: 1; box-shadow: none;"
+>
+  <style>
+    @keyframes pa-rec-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }@media (prefers-reduced-motion: reduce) { .pa-rec-dot { animation: none !important; } }
+  </style>
+  <div
+    style="display: flex; align-items: center; gap: 8px;"
+  >
+    <span
+      class="pa-rec-dot"
+      style="width: 9px; height: 9px; border-radius: 50%; background: rgb(255, 180, 162); animation: pa-rec-pulse 1.4s ease-in-out infinite; flex-shrink: 0;"
+    />
+    <span
+      style="font-size: 12px; font-weight: 600; color: rgb(255, 255, 255);"
+    >
+      Recording 0:12
+    </span>
+    <span
+      style="font-size: 11px; color: rgb(90, 100, 120); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
+    >
+      → 
+      Synthetic review
+    </span>
+  </div>
+  <div
+    style="font-size: 10px; color: rgb(90, 100, 120);"
+  >
+    Your microphone — hearing you ✓
+     · transcribed locally on this device
+  </div>
+  <textarea
+    aria-label="Meeting notepad"
+    placeholder="Jot what matters — I'll build the notes around it"
+    style="width: 100%; resize: vertical; height: 96px; background: rgb(30, 36, 51); color: rgb(255, 255, 255); border: 1px solid rgba(255, 255, 255, 0.07); border-radius: 8px; padding: 8px 10px; font-family: "Inter", -apple-system, BlinkMacSystemFont, sans-serif; font-size: 12px; line-height: 1.6; outline: none; transition: none;"
+  >
+    Synthetic notes
+  </textarea>
+  <div
+    style="font-size: 10px; color: rgb(90, 100, 120);"
+  >
+    Your notes stay verbatim and steer the write-up · saved as you type
+  </div>
+  <div
+    style="display: flex; gap: 8px;"
+  >
+    <button
+      class="pa-btn pa-btn--ghost"
+      style="--pa-btn-radius: 6px; --pa-btn-success: #34D399; --pa-btn-bg: rgba(0,213,255,0.14); --pa-btn-fg: #00D5FF; --pa-btn-border: rgba(0,213,255,0.18); --pa-btn-bg-hover: rgba(0,213,255,0.14); --pa-btn-border-hover: #00D5FF; --pa-btn-bg-active: rgba(0,213,255,0.14); --pa-btn-pad: 6px 12px; --pa-btn-fg-hover: #00D5FF; --pa-btn-weight: 600; font-family: "Inter", -apple-system, BlinkMacSystemFont, sans-serif; font-size: 11px;"
+    >
+      <span
+        class="pa-btn__label"
+      >
+        Stop & save
+      </span>
+    </button>
+    <button
+      class="pa-btn pa-btn--ghost"
+      style="--pa-btn-radius: 6px; --pa-btn-success: #34D399; --pa-btn-bg: transparent; --pa-btn-fg: #8A94A6; --pa-btn-border: rgba(255,255,255,0.07); --pa-btn-bg-hover: #262D3F; --pa-btn-border-hover: rgba(0,213,255,0.18); --pa-btn-bg-active: transparent; --pa-btn-pad: 6px 12px; --pa-btn-fg-hover: #FFFFFF; --pa-btn-weight: 400; font-family: "Inter", -apple-system, BlinkMacSystemFont, sans-serif; font-size: 11px;"
+    >
+      <span
+        class="pa-btn__label"
+      >
+        Discard
+      </span>
+    </button>
+  </div>
+</div>
+`;
+
+exports[`DOM recorder 1024x640 silver dock-closed 1`] = `
+<div
+  data-pa-launcher-footer=""
+  style="position: fixed; right: 16px; bottom: 16px; z-index: 999; background: rgba(255, 255, 255, 0.82); box-shadow: inset 0 1px 0 rgba(255,255,255,0.90), inset 0 -1px 0 rgba(30,37,48,0.06), inset 0 0 0 1px rgba(167,176,190,0.35), 0 8px 32px rgba(30,37,48,0.12); border: 1px solid rgb(220, 38, 38); border-radius: 12px; padding: 10px 16px; font-family: "Inter", -apple-system, BlinkMacSystemFont, sans-serif; display: flex; flex-direction: column; gap: 8px; width: 360px; max-width: calc(100vw - 32px); transition: none;"
+>
+  <style>
+    @keyframes pa-rec-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }@media (prefers-reduced-motion: reduce) { .pa-rec-dot { animation: none !important; } }
+  </style>
+  <div
+    style="display: flex; align-items: center; gap: 8px;"
+  >
+    <span
+      class="pa-rec-dot"
+      style="width: 9px; height: 9px; border-radius: 50%; background: rgb(220, 38, 38); animation: pa-rec-pulse 1.4s ease-in-out infinite; flex-shrink: 0;"
+    />
+    <span
+      style="font-size: 12px; font-weight: 600; color: rgb(30, 37, 48);"
+    >
+      Recording 0:12
+    </span>
+    <span
+      style="font-size: 11px; color: rgb(107, 117, 133); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
+    >
+      → 
+      Synthetic review
+    </span>
+    <button
+      aria-label="Expand the notepad"
+      class="pa-btn pa-btn--bare"
+      style="--pa-btn-radius: 4px; --pa-btn-success: #059669; --pa-btn-bg: transparent; --pa-btn-fg: #4B5563; --pa-btn-border: transparent; --pa-btn-bg-hover: #F8FAFC; --pa-btn-border-hover: transparent; --pa-btn-bg-active: #FFFFFF; --pa-btn-pad: 2px; --pa-btn-fg-hover: #1E2530; margin-left: auto;"
+    >
+      <span
+        class="pa-btn__label"
+      >
+        <svg
+          fill="none"
+          height="14"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          style="transform: none; transition: none;"
+          viewBox="0 0 24 24"
+          width="14"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <polyline
+            points="6 9 12 15 18 9"
+          />
+        </svg>
+      </span>
+    </button>
+  </div>
+  <div
+    style="font-size: 10px; color: rgb(107, 117, 133);"
+  >
+    Your microphone — hearing you ✓
+     · transcribed locally on this device
+  </div>
+  <textarea
+    aria-label="Meeting notepad"
+    placeholder="Jot what matters — I'll build the notes around it"
+    style="width: 100%; resize: vertical; height: 96px; background: rgb(238, 242, 247); color: rgb(30, 37, 48); border: 1px solid rgba(167, 176, 190, 0.35); border-radius: 8px; padding: 8px 10px; font-family: "Inter", -apple-system, BlinkMacSystemFont, sans-serif; font-size: 12px; line-height: 1.6; outline: none; transition: none;"
+  >
+    Synthetic notes
+  </textarea>
+  <div
+    style="font-size: 10px; color: rgb(107, 117, 133);"
+  >
+    Your notes stay verbatim and steer the write-up · saved as you type
+  </div>
+  <div
+    style="display: flex; gap: 8px;"
+  >
+    <button
+      class="pa-btn pa-btn--ghost"
+      style="--pa-btn-radius: 6px; --pa-btn-success: #059669; --pa-btn-bg: rgba(0,191,239,0.10); --pa-btn-fg: #00BFEF; --pa-btn-border: rgba(0,191,239,0.40); --pa-btn-bg-hover: rgba(0,191,239,0.10); --pa-btn-border-hover: #00BFEF; --pa-btn-bg-active: rgba(0,191,239,0.10); --pa-btn-pad: 6px 12px; --pa-btn-fg-hover: #00BFEF; --pa-btn-weight: 600; font-family: "Inter", -apple-system, BlinkMacSystemFont, sans-serif; font-size: 11px;"
+    >
+      <span
+        class="pa-btn__label"
+      >
+        Stop & save
+      </span>
+    </button>
+    <button
+      class="pa-btn pa-btn--ghost"
+      style="--pa-btn-radius: 6px; --pa-btn-success: #059669; --pa-btn-bg: transparent; --pa-btn-fg: #4B5563; --pa-btn-border: rgba(167,176,190,0.35); --pa-btn-bg-hover: #F8FAFC; --pa-btn-border-hover: rgba(0,191,239,0.40); --pa-btn-bg-active: transparent; --pa-btn-pad: 6px 12px; --pa-btn-fg-hover: #1E2530; --pa-btn-weight: 400; font-family: "Inter", -apple-system, BlinkMacSystemFont, sans-serif; font-size: 11px;"
+    >
+      <span
+        class="pa-btn__label"
+      >
+        Discard
+      </span>
+    </button>
+  </div>
+</div>
+`;
+
+exports[`DOM recorder 1024x640 silver dock-open 1`] = `
+<div
+  style="background: rgb(255, 255, 255); border: 1px solid rgb(220, 38, 38); border-radius: 8px; padding: 10px 16px; font-family: "Inter", -apple-system, BlinkMacSystemFont, sans-serif; display: flex; flex-direction: column; gap: 8px; width: 100%; max-width: 100%; transition: none; position: relative; right: auto; bottom: auto; z-index: 1; box-shadow: none;"
+>
+  <style>
+    @keyframes pa-rec-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }@media (prefers-reduced-motion: reduce) { .pa-rec-dot { animation: none !important; } }
+  </style>
+  <div
+    style="display: flex; align-items: center; gap: 8px;"
+  >
+    <span
+      class="pa-rec-dot"
+      style="width: 9px; height: 9px; border-radius: 50%; background: rgb(220, 38, 38); animation: pa-rec-pulse 1.4s ease-in-out infinite; flex-shrink: 0;"
+    />
+    <span
+      style="font-size: 12px; font-weight: 600; color: rgb(30, 37, 48);"
+    >
+      Recording 0:12
+    </span>
+    <span
+      style="font-size: 11px; color: rgb(107, 117, 133); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
+    >
+      → 
+      Synthetic review
+    </span>
+  </div>
+  <div
+    style="font-size: 10px; color: rgb(107, 117, 133);"
+  >
+    Your microphone — hearing you ✓
+     · transcribed locally on this device
+  </div>
+  <textarea
+    aria-label="Meeting notepad"
+    placeholder="Jot what matters — I'll build the notes around it"
+    style="width: 100%; resize: vertical; height: 96px; background: rgb(238, 242, 247); color: rgb(30, 37, 48); border: 1px solid rgba(167, 176, 190, 0.35); border-radius: 8px; padding: 8px 10px; font-family: "Inter", -apple-system, BlinkMacSystemFont, sans-serif; font-size: 12px; line-height: 1.6; outline: none; transition: none;"
+  >
+    Synthetic notes
+  </textarea>
+  <div
+    style="font-size: 10px; color: rgb(107, 117, 133);"
+  >
+    Your notes stay verbatim and steer the write-up · saved as you type
+  </div>
+  <div
+    style="display: flex; gap: 8px;"
+  >
+    <button
+      class="pa-btn pa-btn--ghost"
+      style="--pa-btn-radius: 6px; --pa-btn-success: #059669; --pa-btn-bg: rgba(0,191,239,0.10); --pa-btn-fg: #00BFEF; --pa-btn-border: rgba(0,191,239,0.40); --pa-btn-bg-hover: rgba(0,191,239,0.10); --pa-btn-border-hover: #00BFEF; --pa-btn-bg-active: rgba(0,191,239,0.10); --pa-btn-pad: 6px 12px; --pa-btn-fg-hover: #00BFEF; --pa-btn-weight: 600; font-family: "Inter", -apple-system, BlinkMacSystemFont, sans-serif; font-size: 11px;"
+    >
+      <span
+        class="pa-btn__label"
+      >
+        Stop & save
+      </span>
+    </button>
+    <button
+      class="pa-btn pa-btn--ghost"
+      style="--pa-btn-radius: 6px; --pa-btn-success: #059669; --pa-btn-bg: transparent; --pa-btn-fg: #4B5563; --pa-btn-border: rgba(167,176,190,0.35); --pa-btn-bg-hover: #F8FAFC; --pa-btn-border-hover: rgba(0,191,239,0.40); --pa-btn-bg-active: transparent; --pa-btn-pad: 6px 12px; --pa-btn-fg-hover: #1E2530; --pa-btn-weight: 400; font-family: "Inter", -apple-system, BlinkMacSystemFont, sans-serif; font-size: 11px;"
+    >
+      <span
+        class="pa-btn__label"
+      >
+        Discard
+      </span>
+    </button>
+  </div>
+</div>
+`;
+
+exports[`DOM recorder 1280x800 dark dock-closed 1`] = `
+<div
+  data-pa-launcher-footer=""
+  style="position: fixed; right: 16px; bottom: 16px; z-index: 999; background: rgba(30, 36, 51, 0.82); box-shadow: inset 0 1px 0 rgba(255,255,255,0.14), inset 0 -1px 0 rgba(0,0,0,0.22), inset 0 0 0 1px rgba(255,255,255,0.07), 0 8px 32px rgba(0,0,0,0.28); border: 1px solid rgb(255, 180, 162); border-radius: 12px; padding: 10px 16px; font-family: "Inter", -apple-system, BlinkMacSystemFont, sans-serif; display: flex; flex-direction: column; gap: 8px; width: 360px; max-width: calc(100vw - 32px); transition: none;"
+>
+  <style>
+    @keyframes pa-rec-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }@media (prefers-reduced-motion: reduce) { .pa-rec-dot { animation: none !important; } }
+  </style>
+  <div
+    style="display: flex; align-items: center; gap: 8px;"
+  >
+    <span
+      class="pa-rec-dot"
+      style="width: 9px; height: 9px; border-radius: 50%; background: rgb(255, 180, 162); animation: pa-rec-pulse 1.4s ease-in-out infinite; flex-shrink: 0;"
+    />
+    <span
+      style="font-size: 12px; font-weight: 600; color: rgb(255, 255, 255);"
+    >
+      Recording 0:12
+    </span>
+    <span
+      style="font-size: 11px; color: rgb(90, 100, 120); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
+    >
+      → 
+      Synthetic review
+    </span>
+    <button
+      aria-label="Expand the notepad"
+      class="pa-btn pa-btn--bare"
+      style="--pa-btn-radius: 4px; --pa-btn-success: #34D399; --pa-btn-bg: transparent; --pa-btn-fg: #8A94A6; --pa-btn-border: transparent; --pa-btn-bg-hover: #262D3F; --pa-btn-border-hover: transparent; --pa-btn-bg-active: #1E2433; --pa-btn-pad: 2px; --pa-btn-fg-hover: #FFFFFF; margin-left: auto;"
+    >
+      <span
+        class="pa-btn__label"
+      >
+        <svg
+          fill="none"
+          height="14"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          style="transform: none; transition: none;"
+          viewBox="0 0 24 24"
+          width="14"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <polyline
+            points="6 9 12 15 18 9"
+          />
+        </svg>
+      </span>
+    </button>
+  </div>
+  <div
+    style="font-size: 10px; color: rgb(90, 100, 120);"
+  >
+    Your microphone — hearing you ✓
+     · transcribed locally on this device
+  </div>
+  <textarea
+    aria-label="Meeting notepad"
+    placeholder="Jot what matters — I'll build the notes around it"
+    style="width: 100%; resize: vertical; height: 96px; background: rgb(30, 36, 51); color: rgb(255, 255, 255); border: 1px solid rgba(255, 255, 255, 0.07); border-radius: 8px; padding: 8px 10px; font-family: "Inter", -apple-system, BlinkMacSystemFont, sans-serif; font-size: 12px; line-height: 1.6; outline: none; transition: none;"
+  >
+    Synthetic notes
+  </textarea>
+  <div
+    style="font-size: 10px; color: rgb(90, 100, 120);"
+  >
+    Your notes stay verbatim and steer the write-up · saved as you type
+  </div>
+  <div
+    style="display: flex; gap: 8px;"
+  >
+    <button
+      class="pa-btn pa-btn--ghost"
+      style="--pa-btn-radius: 6px; --pa-btn-success: #34D399; --pa-btn-bg: rgba(0,213,255,0.14); --pa-btn-fg: #00D5FF; --pa-btn-border: rgba(0,213,255,0.18); --pa-btn-bg-hover: rgba(0,213,255,0.14); --pa-btn-border-hover: #00D5FF; --pa-btn-bg-active: rgba(0,213,255,0.14); --pa-btn-pad: 6px 12px; --pa-btn-fg-hover: #00D5FF; --pa-btn-weight: 600; font-family: "Inter", -apple-system, BlinkMacSystemFont, sans-serif; font-size: 11px;"
+    >
+      <span
+        class="pa-btn__label"
+      >
+        Stop & save
+      </span>
+    </button>
+    <button
+      class="pa-btn pa-btn--ghost"
+      style="--pa-btn-radius: 6px; --pa-btn-success: #34D399; --pa-btn-bg: transparent; --pa-btn-fg: #8A94A6; --pa-btn-border: rgba(255,255,255,0.07); --pa-btn-bg-hover: #262D3F; --pa-btn-border-hover: rgba(0,213,255,0.18); --pa-btn-bg-active: transparent; --pa-btn-pad: 6px 12px; --pa-btn-fg-hover: #FFFFFF; --pa-btn-weight: 400; font-family: "Inter", -apple-system, BlinkMacSystemFont, sans-serif; font-size: 11px;"
+    >
+      <span
+        class="pa-btn__label"
+      >
+        Discard
+      </span>
+    </button>
+  </div>
+</div>
+`;
+
+exports[`DOM recorder 1280x800 dark dock-open 1`] = `
+<div
+  style="background: rgb(30, 36, 51); border: 1px solid rgb(255, 180, 162); border-radius: 8px; padding: 10px 16px; font-family: "Inter", -apple-system, BlinkMacSystemFont, sans-serif; display: flex; flex-direction: column; gap: 8px; width: 100%; max-width: 100%; transition: none; position: relative; right: auto; bottom: auto; z-index: 1; box-shadow: none;"
+>
+  <style>
+    @keyframes pa-rec-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }@media (prefers-reduced-motion: reduce) { .pa-rec-dot { animation: none !important; } }
+  </style>
+  <div
+    style="display: flex; align-items: center; gap: 8px;"
+  >
+    <span
+      class="pa-rec-dot"
+      style="width: 9px; height: 9px; border-radius: 50%; background: rgb(255, 180, 162); animation: pa-rec-pulse 1.4s ease-in-out infinite; flex-shrink: 0;"
+    />
+    <span
+      style="font-size: 12px; font-weight: 600; color: rgb(255, 255, 255);"
+    >
+      Recording 0:12
+    </span>
+    <span
+      style="font-size: 11px; color: rgb(90, 100, 120); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
+    >
+      → 
+      Synthetic review
+    </span>
+  </div>
+  <div
+    style="font-size: 10px; color: rgb(90, 100, 120);"
+  >
+    Your microphone — hearing you ✓
+     · transcribed locally on this device
+  </div>
+  <textarea
+    aria-label="Meeting notepad"
+    placeholder="Jot what matters — I'll build the notes around it"
+    style="width: 100%; resize: vertical; height: 96px; background: rgb(30, 36, 51); color: rgb(255, 255, 255); border: 1px solid rgba(255, 255, 255, 0.07); border-radius: 8px; padding: 8px 10px; font-family: "Inter", -apple-system, BlinkMacSystemFont, sans-serif; font-size: 12px; line-height: 1.6; outline: none; transition: none;"
+  >
+    Synthetic notes
+  </textarea>
+  <div
+    style="font-size: 10px; color: rgb(90, 100, 120);"
+  >
+    Your notes stay verbatim and steer the write-up · saved as you type
+  </div>
+  <div
+    style="display: flex; gap: 8px;"
+  >
+    <button
+      class="pa-btn pa-btn--ghost"
+      style="--pa-btn-radius: 6px; --pa-btn-success: #34D399; --pa-btn-bg: rgba(0,213,255,0.14); --pa-btn-fg: #00D5FF; --pa-btn-border: rgba(0,213,255,0.18); --pa-btn-bg-hover: rgba(0,213,255,0.14); --pa-btn-border-hover: #00D5FF; --pa-btn-bg-active: rgba(0,213,255,0.14); --pa-btn-pad: 6px 12px; --pa-btn-fg-hover: #00D5FF; --pa-btn-weight: 600; font-family: "Inter", -apple-system, BlinkMacSystemFont, sans-serif; font-size: 11px;"
+    >
+      <span
+        class="pa-btn__label"
+      >
+        Stop & save
+      </span>
+    </button>
+    <button
+      class="pa-btn pa-btn--ghost"
+      style="--pa-btn-radius: 6px; --pa-btn-success: #34D399; --pa-btn-bg: transparent; --pa-btn-fg: #8A94A6; --pa-btn-border: rgba(255,255,255,0.07); --pa-btn-bg-hover: #262D3F; --pa-btn-border-hover: rgba(0,213,255,0.18); --pa-btn-bg-active: transparent; --pa-btn-pad: 6px 12px; --pa-btn-fg-hover: #FFFFFF; --pa-btn-weight: 400; font-family: "Inter", -apple-system, BlinkMacSystemFont, sans-serif; font-size: 11px;"
+    >
+      <span
+        class="pa-btn__label"
+      >
+        Discard
+      </span>
+    </button>
+  </div>
+</div>
+`;
+
+exports[`DOM recorder 1280x800 silver dock-closed 1`] = `
+<div
+  data-pa-launcher-footer=""
+  style="position: fixed; right: 16px; bottom: 16px; z-index: 999; background: rgba(255, 255, 255, 0.82); box-shadow: inset 0 1px 0 rgba(255,255,255,0.90), inset 0 -1px 0 rgba(30,37,48,0.06), inset 0 0 0 1px rgba(167,176,190,0.35), 0 8px 32px rgba(30,37,48,0.12); border: 1px solid rgb(220, 38, 38); border-radius: 12px; padding: 10px 16px; font-family: "Inter", -apple-system, BlinkMacSystemFont, sans-serif; display: flex; flex-direction: column; gap: 8px; width: 360px; max-width: calc(100vw - 32px); transition: none;"
+>
+  <style>
+    @keyframes pa-rec-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }@media (prefers-reduced-motion: reduce) { .pa-rec-dot { animation: none !important; } }
+  </style>
+  <div
+    style="display: flex; align-items: center; gap: 8px;"
+  >
+    <span
+      class="pa-rec-dot"
+      style="width: 9px; height: 9px; border-radius: 50%; background: rgb(220, 38, 38); animation: pa-rec-pulse 1.4s ease-in-out infinite; flex-shrink: 0;"
+    />
+    <span
+      style="font-size: 12px; font-weight: 600; color: rgb(30, 37, 48);"
+    >
+      Recording 0:12
+    </span>
+    <span
+      style="font-size: 11px; color: rgb(107, 117, 133); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
+    >
+      → 
+      Synthetic review
+    </span>
+    <button
+      aria-label="Expand the notepad"
+      class="pa-btn pa-btn--bare"
+      style="--pa-btn-radius: 4px; --pa-btn-success: #059669; --pa-btn-bg: transparent; --pa-btn-fg: #4B5563; --pa-btn-border: transparent; --pa-btn-bg-hover: #F8FAFC; --pa-btn-border-hover: transparent; --pa-btn-bg-active: #FFFFFF; --pa-btn-pad: 2px; --pa-btn-fg-hover: #1E2530; margin-left: auto;"
+    >
+      <span
+        class="pa-btn__label"
+      >
+        <svg
+          fill="none"
+          height="14"
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          style="transform: none; transition: none;"
+          viewBox="0 0 24 24"
+          width="14"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          <polyline
+            points="6 9 12 15 18 9"
+          />
+        </svg>
+      </span>
+    </button>
+  </div>
+  <div
+    style="font-size: 10px; color: rgb(107, 117, 133);"
+  >
+    Your microphone — hearing you ✓
+     · transcribed locally on this device
+  </div>
+  <textarea
+    aria-label="Meeting notepad"
+    placeholder="Jot what matters — I'll build the notes around it"
+    style="width: 100%; resize: vertical; height: 96px; background: rgb(238, 242, 247); color: rgb(30, 37, 48); border: 1px solid rgba(167, 176, 190, 0.35); border-radius: 8px; padding: 8px 10px; font-family: "Inter", -apple-system, BlinkMacSystemFont, sans-serif; font-size: 12px; line-height: 1.6; outline: none; transition: none;"
+  >
+    Synthetic notes
+  </textarea>
+  <div
+    style="font-size: 10px; color: rgb(107, 117, 133);"
+  >
+    Your notes stay verbatim and steer the write-up · saved as you type
+  </div>
+  <div
+    style="display: flex; gap: 8px;"
+  >
+    <button
+      class="pa-btn pa-btn--ghost"
+      style="--pa-btn-radius: 6px; --pa-btn-success: #059669; --pa-btn-bg: rgba(0,191,239,0.10); --pa-btn-fg: #00BFEF; --pa-btn-border: rgba(0,191,239,0.40); --pa-btn-bg-hover: rgba(0,191,239,0.10); --pa-btn-border-hover: #00BFEF; --pa-btn-bg-active: rgba(0,191,239,0.10); --pa-btn-pad: 6px 12px; --pa-btn-fg-hover: #00BFEF; --pa-btn-weight: 600; font-family: "Inter", -apple-system, BlinkMacSystemFont, sans-serif; font-size: 11px;"
+    >
+      <span
+        class="pa-btn__label"
+      >
+        Stop & save
+      </span>
+    </button>
+    <button
+      class="pa-btn pa-btn--ghost"
+      style="--pa-btn-radius: 6px; --pa-btn-success: #059669; --pa-btn-bg: transparent; --pa-btn-fg: #4B5563; --pa-btn-border: rgba(167,176,190,0.35); --pa-btn-bg-hover: #F8FAFC; --pa-btn-border-hover: rgba(0,191,239,0.40); --pa-btn-bg-active: transparent; --pa-btn-pad: 6px 12px; --pa-btn-fg-hover: #1E2530; --pa-btn-weight: 400; font-family: "Inter", -apple-system, BlinkMacSystemFont, sans-serif; font-size: 11px;"
+    >
+      <span
+        class="pa-btn__label"
+      >
+        Discard
+      </span>
+    </button>
+  </div>
+</div>
+`;
+
+exports[`DOM recorder 1280x800 silver dock-open 1`] = `
+<div
+  style="background: rgb(255, 255, 255); border: 1px solid rgb(220, 38, 38); border-radius: 8px; padding: 10px 16px; font-family: "Inter", -apple-system, BlinkMacSystemFont, sans-serif; display: flex; flex-direction: column; gap: 8px; width: 100%; max-width: 100%; transition: none; position: relative; right: auto; bottom: auto; z-index: 1; box-shadow: none;"
+>
+  <style>
+    @keyframes pa-rec-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }@media (prefers-reduced-motion: reduce) { .pa-rec-dot { animation: none !important; } }
+  </style>
+  <div
+    style="display: flex; align-items: center; gap: 8px;"
+  >
+    <span
+      class="pa-rec-dot"
+      style="width: 9px; height: 9px; border-radius: 50%; background: rgb(220, 38, 38); animation: pa-rec-pulse 1.4s ease-in-out infinite; flex-shrink: 0;"
+    />
+    <span
+      style="font-size: 12px; font-weight: 600; color: rgb(30, 37, 48);"
+    >
+      Recording 0:12
+    </span>
+    <span
+      style="font-size: 11px; color: rgb(107, 117, 133); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;"
+    >
+      → 
+      Synthetic review
+    </span>
+  </div>
+  <div
+    style="font-size: 10px; color: rgb(107, 117, 133);"
+  >
+    Your microphone — hearing you ✓
+     · transcribed locally on this device
+  </div>
+  <textarea
+    aria-label="Meeting notepad"
+    placeholder="Jot what matters — I'll build the notes around it"
+    style="width: 100%; resize: vertical; height: 96px; background: rgb(238, 242, 247); color: rgb(30, 37, 48); border: 1px solid rgba(167, 176, 190, 0.35); border-radius: 8px; padding: 8px 10px; font-family: "Inter", -apple-system, BlinkMacSystemFont, sans-serif; font-size: 12px; line-height: 1.6; outline: none; transition: none;"
+  >
+    Synthetic notes
+  </textarea>
+  <div
+    style="font-size: 10px; color: rgb(107, 117, 133);"
+  >
+    Your notes stay verbatim and steer the write-up · saved as you type
+  </div>
+  <div
+    style="display: flex; gap: 8px;"
+  >
+    <button
+      class="pa-btn pa-btn--ghost"
+      style="--pa-btn-radius: 6px; --pa-btn-success: #059669; --pa-btn-bg: rgba(0,191,239,0.10); --pa-btn-fg: #00BFEF; --pa-btn-border: rgba(0,191,239,0.40); --pa-btn-bg-hover: rgba(0,191,239,0.10); --pa-btn-border-hover: #00BFEF; --pa-btn-bg-active: rgba(0,191,239,0.10); --pa-btn-pad: 6px 12px; --pa-btn-fg-hover: #00BFEF; --pa-btn-weight: 600; font-family: "Inter", -apple-system, BlinkMacSystemFont, sans-serif; font-size: 11px;"
+    >
+      <span
+        class="pa-btn__label"
+      >
+        Stop & save
+      </span>
+    </button>
+    <button
+      class="pa-btn pa-btn--ghost"
+      style="--pa-btn-radius: 6px; --pa-btn-success: #059669; --pa-btn-bg: transparent; --pa-btn-fg: #4B5563; --pa-btn-border: rgba(167,176,190,0.35); --pa-btn-bg-hover: #F8FAFC; --pa-btn-border-hover: rgba(0,191,239,0.40); --pa-btn-bg-active: transparent; --pa-btn-pad: 6px 12px; --pa-btn-fg-hover: #1E2530; --pa-btn-weight: 400; font-family: "Inter", -apple-system, BlinkMacSystemFont, sans-serif; font-size: 11px;"
+    >
+      <span
+        class="pa-btn__label"
+      >
+        Discard
+      </span>
+    </button>
+  </div>
+</div>
+`;

@@ -98,7 +98,7 @@ export function ChatView() {
     <DropZone zoneId="chat-dock-drop" priority={20} onDrop={(files) => chatInputRef.current?.addFiles(files)}>
       <div className="relative flex h-full flex-col" style={{ backgroundColor: colors.bg }}>
       <div
-        className="flex items-center justify-between px-4 py-2.5"
+        className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5"
         style={{ borderBottom: `1px solid ${colors.border}` }}
       >
         {/* Keep this row unclipped: SessionPicker's panel opens below it. */}

@@ -802,7 +802,7 @@ export function MeetingRecorder({ open }: { open: boolean }) {
           stack of interrupted meetings is worked through rather than buried.
           Renders only while idle so it never competes with a live recording. */}
       {newestDraft && state === 'idle' && createPortal(
-        <div style={{ ...cardStyle(colors.borderHi, true), maxWidth: 340 }}>
+        <div data-pa-launcher-footer="" style={{ ...cardStyle(colors.borderHi, true), maxWidth: 340 }}>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: space.md }}>
             <div style={{ fontSize: textSize.caption, fontWeight: 600, color: colors.text }}>
               Recording draft recovered
@@ -861,7 +861,7 @@ export function MeetingRecorder({ open }: { open: boolean }) {
           const canRetry = r?.status === 'failed' || r?.status === 'skipped';
           const firstCard = r?.status === 'completed' ? r.cardIds[0] : undefined;
           return (
-            <div role="status" style={{ ...cardStyle(colors.borderHi, true), maxWidth: 340 }}>
+            <div data-pa-launcher-footer="" role="status" style={{ ...cardStyle(colors.borderHi, true), maxWidth: 340 }}>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: space.md }}>
                 <div style={{ fontSize: textSize.caption, fontWeight: 600, color: colors.text }}>
                   Meeting note saved
@@ -922,7 +922,7 @@ export function MeetingRecorder({ open }: { open: boolean }) {
       {/* Always-visible recording / saving / error panel. Docks into the chat
           sidebar's slot when the dock is open; floats bottom-right otherwise. */}
       {(busy || state === 'error') && createPortal(
-        <div style={{
+        <div data-pa-launcher-footer={docked ? undefined : ''} style={{
           ...cardStyle(state === 'recording' ? colors.danger : colors.borderHi, !docked),
           width: state === 'recording' ? panelWidth : 340,
           maxWidth: `calc(100vw - ${space.huge + space.md}px)`,

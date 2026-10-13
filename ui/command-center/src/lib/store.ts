@@ -644,8 +644,8 @@ interface CommandCenterStore {
   // Measured size of the collapsed ChatLauncher pill (null when absent, i.e.
   // the chat window is open). The Browser subtracts this corner from the
   // native webview bounds — CSS z-index cannot cover a native child surface.
-  chatLauncherSize: { width: number; height: number } | null;
-  setChatLauncherSize: (size: { width: number; height: number } | null) => void;
+  chatLauncherSize: { width: number; height: number; bottomInset?: number } | null;
+  setChatLauncherSize: (size: { width: number; height: number; bottomInset?: number } | null) => void;
 
   // --- Browser pane rect, published for the sidebar tooltip (2026-09-01) ---
   //
@@ -2431,7 +2431,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   setChatLauncherSize: (size) => set(s => {
     const prev = s.chatLauncherSize;
     if (prev === size) return s;
-    if (prev && size && prev.width === size.width && prev.height === size.height) return s;
+    if (prev && size && prev.width === size.width && prev.height === size.height && prev.bottomInset === size.bottomInset) return s;
     return { chatLauncherSize: size };
   }),
 

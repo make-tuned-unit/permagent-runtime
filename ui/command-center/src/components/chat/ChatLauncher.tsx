@@ -6,12 +6,14 @@ import { useTheme } from '../../styles/useTheme';
 import { useCommandCenter } from '../../lib/store';
 import { useGlass } from '../common/Glass';
 import { Tooltip } from '../common/Tooltip';
+import { Button } from '../common/Button';
+import { useForumReducedMotion } from '../world/forum/useForumReducedMotion';
 
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
 // Distance from the viewport's bottom/right edges. The Browser derives the
 // launcher's reserved corner from this anchor + the published size (#553).
-export const CHAT_LAUNCHER_MARGIN = 20;
+export const CHAT_LAUNCHER_MARGIN = space.xxxl;
 
 /** Below this window width the pill is icon-only. The labelled capsule is ~190px
  *  wide and, at 1244px, sat over Settings buttons, Finance rows and project
@@ -36,7 +38,7 @@ export function footerClearance(): number {
   for (const el of document.querySelectorAll(`[${LAUNCHER_FOOTER_ATTR}]`)) {
     const r = el.getBoundingClientRect();
     if (r.height <= 0 || r.width <= 0) continue; // hidden (display: none, unmounted tab)
-    max = Math.max(max, r.height);
+    max = Math.max(max, window.innerHeight - r.top);
   }
   return max;
 }
@@ -129,7 +131,8 @@ export function scrollersUnderPill(pill: Element): Set<Element> {
 }
 
 export function ChatLauncher() {
-  const { colors, reduceMotion } = useTheme();
+  const { colors } = useTheme();
+  const reduceMotion = useForumReducedMotion();
   const glass = useGlass('glass');
   const [agentName, setAgentName] = useState('Agent');
   // Store-tracked (not local): createChatWindow sets it on EVERY open path
@@ -144,6 +147,7 @@ export function ChatLauncher() {
   const setChatLauncherSize = useCommandCenter(s => s.setChatLauncherSize);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const [pillHeight, setPillHeight] = useState<number | null>(null);
+  const [footerInset, setFooterInset] = useState(0);
   const visible = !(chatWindowOpen || chatDockOpen);
   const [compact, setCompact] = useState(
     () => typeof window !== 'undefined' && window.innerWidth < CHAT_LAUNCHER_COMPACT_BELOW,
@@ -165,7 +169,7 @@ export function ChatLauncher() {
     }
     const publish = () => {
       const r = el.getBoundingClientRect();
-      setChatLauncherSize({ width: r.width, height: r.height });
+      setChatLauncherSize({ width: r.width, height: r.height, ...(footerInset > 0 ? { bottomInset: footerInset } : {}) });
       setPillHeight(r.height);
     };
     publish();
@@ -175,7 +179,7 @@ export function ChatLauncher() {
       observer.disconnect();
       setChatLauncherSize(null);
     };
-  }, [chatWindowOpen, chatDockOpen, setChatLauncherSize]);
+  }, [chatWindowOpen, chatDockOpen, setChatLauncherSize, footerInset]);
 
   // B2: track the tallest visible marked footer so the pill can sit clear of
   // it. Recomputed on the same triggers as the scroll-clearance pass below
@@ -183,7 +187,6 @@ export function ChatLauncher() {
   // CostStatusline's own width changes with the pill's width (their inset
   // math is circular by one frame, which settles immediately since neither
   // side's height depends on the other's).
-  const [footerInset, setFooterInset] = useState(0);
   useEffect(() => {
     if (!visible) { setFooterInset(0); return; }
     const recompute = () => setFooterInset(prev => {
@@ -444,7 +447,10 @@ export function ChatLauncher() {
     <>
     <style data-testid="chat-launcher-clearance">{clearanceRule}</style>
     <Tooltip content={`Chat with ${agentName}`} disabled={!compact} placement="left">
-    <button
+    <Button
+      colors={colors}
+      flashSuccess={false}
+      data-chat-launcher=""
       ref={buttonRef}
       aria-label={`Chat with ${agentName}`}
       onClick={openChatWindow}
@@ -488,11 +494,11 @@ export function ChatLauncher() {
       // animated is what a Mac control actually does.
       transition: reduceMotion
         ? 'none'
-        : `transform ${duration.snappy}ms ${ease.snappy}, border-color ${duration.fast}ms ${ease.smooth}`,
+        : `transform ${duration.fast}ms ${ease.out}, border-color ${duration.fast}ms ${ease.out}`,
     }}>
       <FiMessageSquare size={16} />
       {!compact && <>Chat with {agentName}</>}
-    </button>
+    </Button>
     </Tooltip>
     </>
   );

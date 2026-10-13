@@ -109,11 +109,6 @@ const STANDING_EXCEPTIONS: Record<string, { count: number; why: string }> = {
     count: 2,
     why: 'a Vite-only manual audio check page (never in the production build) with two bare fixture buttons',
   },
-  'components/chat/ChatLauncher.tsx': {
-    count: 1,
-    why: 'the launcher pill lifts 2px on hover and settles on press — a transform '
-      + 'the primitive has no property for, and an inline one would beat its own',
-  },
   'components/dashboard/AddCardPicker.tsx': {
     count: 1,
     why: 'the whole add-a-card row is the control: an icon tile beside a two-line '

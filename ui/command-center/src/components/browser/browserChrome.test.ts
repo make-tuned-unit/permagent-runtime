@@ -3,7 +3,7 @@
  *
  * Gate 1: no hardcoded colours / radii / shadows in chrome files.
  * Gate 2/7: glass only via useGlass; content stays opaque; no backdropFilter.
- * Gate 6: syncBounds body is byte-identical to the pre-chrome baseline hash,
+ * Gate 6: syncBounds body is byte-identical to the L3 clearance baseline hash,
  *          and CHROME_GEOM holds the padding values that set the leftover.
  */
 import { createHash } from 'node:crypto';
@@ -64,17 +64,19 @@ describe('CHROME_GEOM freezes the paddings that set the webview leftover', () =>
 });
 
 describe('syncBounds behaviour is frozen (gate 6)', () => {
-  it('keeps the syncBounds body byte-identical to the pre-R14 hash', () => {
-    // Captured 2026-09-02 before any chrome restyle. A layout-affecting edit
-    // that also rewrote syncBounds would fail here; a chrome-only edit that
-    // leaves this region alone passes.
+  it('keeps the syncBounds body byte-identical to the L3 clearance hash', () => {
+    // L3 intentionally subtracts launcher.bottomInset from reservedTop so a
+    // Browser footer or floating recorder cannot raise the launcher over the
+    // native webview. All other syncBounds logic is unchanged from R14.
+    // ChatChrome.layout tests the measured inset published by the launcher;
+    // this freeze still catches unrelated changes during chrome restyling.
     const src = read('Browser.tsx');
     const body = src.slice(
       src.indexOf('const syncBounds = useCallback'),
       src.indexOf('syncBoundsRef.current = syncBounds'),
     );
     const hash = createHash('sha256').update(body).digest('hex');
-    expect(hash).toBe('ba53557a82ccb075a8e9cf90ee575d8dc96db19bad5b9e207ea7baf2140e151e');
+    expect(hash).toBe('2395d0b4368114ad4cbed47ad31d35e09d5c02c1684087a74108ad2d9d885419');
   });
 
   it('still measures containerRef (flex-1 content), not a chrome wrapper', () => {

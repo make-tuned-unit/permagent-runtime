@@ -34,7 +34,7 @@ import {
   replayEvents,
   type PendingEvent,
 } from './tabIdentity';
-import { CHAT_LAUNCHER_MARGIN } from '../chat/ChatLauncher';
+import { CHAT_LAUNCHER_MARGIN, LAUNCHER_FOOTER_ATTR } from '../chat/ChatLauncher';
 import { nextPaneTabId, usePaneTabCycling } from '../build/paneTabCycling';
 import { createBoundsPump } from './boundsPump';
 import { api as browserApi, type BrowserHistoryEntry } from '../../lib/api';
@@ -429,7 +429,7 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
     // still overlays, and it covers the pane entirely, so reserve nothing here.
     const launcher = chatLauncherSizeRef.current;
     if (launcher) {
-      const reservedTop = window.innerHeight - launcher.height - 2 * CHAT_LAUNCHER_MARGIN;
+      const reservedTop = window.innerHeight - launcher.height - 2 * CHAT_LAUNCHER_MARGIN - (launcher.bottomInset ?? 0);
       const reservedLeft = window.innerWidth - launcher.width - 2 * CHAT_LAUNCHER_MARGIN;
       const intersectsCorner =
         rect.y + rect.height > reservedTop && rect.x + rect.width > reservedLeft;
@@ -1481,6 +1481,7 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
 
       {/* Status bar — separate glass plane below the opaque content (D1). */}
       <div
+        {...{ [LAUNCHER_FOOTER_ATTR]: '' }}
         className="flex items-center"
         style={{
           ...chromeGlass,

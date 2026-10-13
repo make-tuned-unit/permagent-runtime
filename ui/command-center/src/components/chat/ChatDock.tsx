@@ -21,7 +21,9 @@ import { setSpeakReplies, useSpeakReplies } from '../../lib/speakReplies';
 import { duration, ease, font, radius, space } from '../../styles/tokens';
 
 import { Tooltip } from '../common/Tooltip';
+import { useForumReducedMotion } from '../world/forum/useForumReducedMotion';
 export const CHAT_DOCK_WIDTH = 384;
+export const CHAT_DOCK_COMPACT_BELOW = 1200;
 
 /**
  * The dock is draggable between these, and the range is the point.
@@ -88,7 +90,11 @@ function writeDockWidth(px: number) {
 const isTauri = () => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
 export function ChatDock() {
-  const { colors, reduceMotion } = useTheme();
+  const { colors } = useTheme();
+  const reduceMotion = useForumReducedMotion();
+  const [keyboardInput, setKeyboardInput] = useState(false);
+  const immediate = reduceMotion || keyboardInput;
+  const [compact, setCompact] = useState(() => viewportWidth() < CHAT_DOCK_COMPACT_BELOW);
   const open = useCommandCenter((s) => s.chatDockOpen);
   const closeChatDock = useCommandCenter((s) => s.closeChatDock);
   const finalDraftRevisions = useRef(new Map<string, number>());
@@ -101,10 +107,21 @@ export function ChatDock() {
   useEffect(() => {
     const onResize = () => {
       setNarrow(window.innerWidth < 640);
+      setCompact(window.innerWidth < CHAT_DOCK_COMPACT_BELOW);
       setMaxWidth(dockMaxWidth());
     };
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  // Input modality is tracked even while closed, so a keyboard-open has no
+  // delayed width reveal. Keyboard resize is immediate for the same reason.
+  useEffect(() => {
+    const key = () => setKeyboardInput(true);
+    const pointer = () => setKeyboardInput(false);
+    document.addEventListener('keydown', key, true);
+    document.addEventListener('pointerdown', pointer, true);
+    return () => { document.removeEventListener('keydown', key, true); document.removeEventListener('pointerdown', pointer, true); };
   }, []);
 
   useEffect(() => {
@@ -177,7 +194,7 @@ export function ChatDock() {
   const [dragging, setDragging] = useState(false);
   // Shrinking the window clamps what is DRAWN, not what is remembered: the
   // stored preference is left alone, so growing the window back restores it.
-  const width = Math.min(preferredWidth, maxWidth);
+  const width = compact ? CHAT_DOCK_MIN_WIDTH : Math.min(preferredWidth, maxWidth);
 
   // ── Open/close motion (D9: spring, under 500ms, reduce-motion honored) ──
   //
@@ -190,23 +207,23 @@ export function ChatDock() {
   // dock slot) reacts immediately and only the pixels lag.
   const [entered, setEntered] = useState(false);
   const [closing, setClosing] = useState(false);
-  const wasOpen = useRef(open);
+  const wasOpen = useRef(false);
   useEffect(() => {
     const was = wasOpen.current;
     wasOpen.current = open;
     if (open) {
       setClosing(false);
-      if (reduceMotion) { setEntered(true); return; }
+      if (was || immediate) { setEntered(true); return; }
       setEntered(false);
       const id = requestAnimationFrame(() => setEntered(true));
       return () => cancelAnimationFrame(id);
     }
     setEntered(false);
-    if (!was || reduceMotion) return;
+    if (!was || immediate) { setClosing(false); return; }
     setClosing(true);
     const t = setTimeout(() => setClosing(false), duration.smooth);
     return () => clearTimeout(t);
-  }, [open, reduceMotion]);
+  }, [open, immediate]);
 
   const commitWidth = useCallback((px: number) => {
     const w = clampDockWidth(px, maxWidth);
@@ -226,10 +243,17 @@ export function ChatDock() {
     const { voiceConversation, chatWindowOpen, worldConversationActive } = useCommandCenter.getState();
     if (!chatWindowOpen && !worldConversationActive) voiceConversation?.exit();
     closeChatDock();
+    requestAnimationFrame(() => document.querySelector<HTMLButtonElement>('[data-chat-launcher]')?.focus());
   };
 
   return (
     <div
+      data-testid="chat-dock"
+      data-compact={compact}
+      onKeyDown={e => {
+        if (e.key !== 'Escape' || e.defaultPrevented || document.querySelector('[aria-modal="true"], [role="menu"], [role="listbox"]')) return;
+        e.preventDefault(); e.stopPropagation(); closeChat();
+      }}
       style={{
         // Wide: a real flex sibling of <main>, so the content beside it shrinks
         // instead of being covered. Narrow (<640): a full-width overlay sheet,
@@ -241,7 +265,7 @@ export function ChatDock() {
         // A width transition IS a layout animation, so it is deliberately the
         // only one, it is off while the pointer owns the width, and it is off
         // entirely under Reduce Motion.
-        transition: dragging || reduceMotion
+        transition: dragging || immediate
           ? 'none'
           : narrow
             ? `transform ${duration.smooth}ms ${ease.smooth}`
@@ -276,7 +300,7 @@ export function ChatDock() {
           ...(narrow ? { boxShadow: colors.elevationFloating } : null),
         }}
       >
-        {!narrow && (
+        {!narrow && !compact && (
           <ResizeEdge
             width={width}
             maxWidth={maxWidth}
@@ -300,6 +324,7 @@ export function ChatDock() {
         <div
           style={{
             display: 'flex',
+            flexWrap: 'wrap',
             alignItems: 'center',
             gap: space.md,
             // Same reserved height and vertical padding as <ViewHeader>, so the
@@ -326,9 +351,10 @@ export function ChatDock() {
               colors={colors}
               onClick={closeChat}
               aria-label="Close chat"
-              style={iconBtn(colors)}
+              variant="ghost"
+              flashSuccess={false}
             >
-              <FiX size={14} />
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: space.xs }}><FiX size={14} /> Close</span>
             </Button>
           </Tooltip>
         </div>
