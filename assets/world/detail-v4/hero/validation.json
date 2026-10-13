@@ -1,0 +1,174 @@
+{
+  "validator": "gltf-validator 2.0.0-dev.3.10",
+  "files": [
+    {
+      "file": "arrival-chair.collision.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 1,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "arrival-chair.lod0.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 1,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "arrival-chair.lod1.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 1,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "arrival-cup.collision.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 1,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "arrival-cup.lod0.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 1,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "arrival-cup.lod1.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 1,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "arrival-folio.collision.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 1,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "arrival-folio.lod0.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 2,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "arrival-folio.lod1.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 2,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "arrival-instrument.collision.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 1,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "arrival-instrument.lod0.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 1,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "arrival-instrument.lod1.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 1,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "arrival-lantern.collision.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 1,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "arrival-lantern.lod0.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 2,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "arrival-lantern.lod1.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 2,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "arrival-table.collision.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 1,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "arrival-table.lod0.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 1,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "arrival-table.lod1.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 1,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "hero-robot.collision.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 1,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "hero-robot.lod0.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 17,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "hero-robot.lod1.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 17,
+      "hints": 0,
+      "messages": []
+    }
+  ],
+  "allValid": true
+}

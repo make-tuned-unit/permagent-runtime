@@ -1,0 +1,625 @@
+{
+  "schema": "permagent.world.detail-v4.hero.census.v1",
+  "generated": "2026-10-13T01:19:13Z",
+  "budgets_reference": "/Users/j/Documents/dev/permagent-worktrees/wq-reports/astra/ruling-world-production-20261012.md section 2 Budgets",
+  "assets": [
+    {
+      "asset": "hero-robot",
+      "budget_source": "ruling: characters",
+      "budget_note": "ceiling includes runtime wardrobe (agentWardrobe.ts, <= ~2.5k tris)",
+      "lod0": {
+        "file": "hero-robot.lod0.glb",
+        "triangles": 20524,
+        "primitives_draw_calls": 31,
+        "bytes": 641160,
+        "materials": [
+          "Ceramic \u2022 warm ivory",
+          "Trim \u2022 graphite and brass",
+          "Eyes \u2022 jade phosphor",
+          "Faceplate \u2022 deep teal glass"
+        ],
+        "texture_decoded_bytes": 43690
+      },
+      "lod1": {
+        "file": "hero-robot.lod1.glb",
+        "triangles": 6060,
+        "primitives_draw_calls": 31,
+        "bytes": 251016,
+        "materials": [
+          "Ceramic \u2022 warm ivory",
+          "Trim \u2022 graphite and brass",
+          "Eyes \u2022 jade phosphor",
+          "Faceplate \u2022 deep teal glass"
+        ],
+        "texture_decoded_bytes": 43690
+      },
+      "textures_lod0": [
+        {
+          "name": "trim_graphite_and_brass_palette_basecolor",
+          "mime": "image/png",
+          "width": 64,
+          "height": 64,
+          "colorspace": "sRGB",
+          "bytes": 420
+        },
+        {
+          "name": "trim_graphite_and_brass_palette_orm",
+          "mime": "image/png",
+          "width": 64,
+          "height": 64,
+          "colorspace": "linear",
+          "bytes": 405
+        }
+      ],
+      "checks": {
+        "lod0_triangles": {
+          "value": 20524,
+          "with_wardrobe_allowance": 23024,
+          "ceiling": 24000,
+          "pass": true
+        },
+        "lod1_triangles": {
+          "value": 6060,
+          "ceiling": 10000,
+          "pass": true
+        },
+        "max_texture_px": {
+          "value": 64,
+          "ceiling": 1024,
+          "pass": true
+        },
+        "lod0_bytes": {
+          "value": 641160,
+          "ceiling": 1500000,
+          "pass": true
+        },
+        "collision_present": {
+          "value": "hero-robot.collision.glb",
+          "pass": true
+        },
+        "anchors_present": {
+          "value": 13,
+          "pass": true
+        }
+      },
+      "pass": true
+    },
+    {
+      "asset": "arrival-table",
+      "budget_source": "ruling: hero table / bookcase",
+      "budget_note": "",
+      "lod0": {
+        "file": "arrival-table.lod0.glb",
+        "triangles": 5780,
+        "primitives_draw_calls": 2,
+        "bytes": 417324,
+        "materials": [
+          "Timber \u2022 oiled walnut",
+          "Trim \u2022 brass and bronze"
+        ],
+        "texture_decoded_bytes": 7034196
+      },
+      "lod1": {
+        "file": "arrival-table.lod1.glb",
+        "triangles": 1562,
+        "primitives_draw_calls": 2,
+        "bytes": 203012,
+        "materials": [
+          "Timber \u2022 oiled walnut",
+          "Trim \u2022 brass and bronze"
+        ],
+        "texture_decoded_bytes": 7034196
+      },
+      "textures_lod0": [
+        {
+          "name": "walnut_normal",
+          "mime": "image/jpeg",
+          "width": 512,
+          "height": 512,
+          "colorspace": "linear",
+          "bytes": 49139
+        },
+        {
+          "name": "walnut_basecolor",
+          "mime": "image/jpeg",
+          "width": 1024,
+          "height": 1024,
+          "colorspace": "sRGB",
+          "bytes": 43487
+        },
+        {
+          "name": "trim_brass_and_bronze_palette_basecolor",
+          "mime": "image/jpeg",
+          "width": 64,
+          "height": 64,
+          "colorspace": "sRGB",
+          "bytes": 893
+        },
+        {
+          "name": "trim_brass_and_bronze_palette_orm",
+          "mime": "image/jpeg",
+          "width": 64,
+          "height": 64,
+          "colorspace": "linear",
+          "bytes": 902
+        }
+      ],
+      "checks": {
+        "lod0_triangles": {
+          "value": 5780,
+          "with_wardrobe_allowance": 5780,
+          "ceiling": 12000,
+          "pass": true
+        },
+        "lod1_triangles": {
+          "value": 1562,
+          "ceiling": 4000,
+          "pass": true
+        },
+        "max_texture_px": {
+          "value": 1024,
+          "ceiling": 1024,
+          "pass": true
+        },
+        "lod0_bytes": {
+          "value": 417324,
+          "ceiling": 1500000,
+          "pass": true
+        },
+        "collision_present": {
+          "value": "arrival-table.collision.glb",
+          "pass": true
+        },
+        "anchors_present": {
+          "value": 18,
+          "pass": true
+        }
+      },
+      "pass": true
+    },
+    {
+      "asset": "arrival-chair",
+      "budget_source": "ruling: repeated desk / bench / planter",
+      "budget_note": "",
+      "lod0": {
+        "file": "arrival-chair.lod0.glb",
+        "triangles": 4716,
+        "primitives_draw_calls": 3,
+        "bytes": 400608,
+        "materials": [
+          "Fabric \u2022 moss weave",
+          "Timber \u2022 oiled walnut",
+          "Trim \u2022 brass and bronze"
+        ],
+        "texture_decoded_bytes": 9830398
+      },
+      "lod1": {
+        "file": "arrival-chair.lod1.glb",
+        "triangles": 1260,
+        "primitives_draw_calls": 3,
+        "bytes": 259080,
+        "materials": [
+          "Fabric \u2022 moss weave",
+          "Timber \u2022 oiled walnut",
+          "Trim \u2022 brass and bronze"
+        ],
+        "texture_decoded_bytes": 9830398
+      },
+      "textures_lod0": [
+        {
+          "name": "weave_normal",
+          "mime": "image/jpeg",
+          "width": 512,
+          "height": 512,
+          "colorspace": "linear",
+          "bytes": 61026
+        },
+        {
+          "name": "weave_basecolor",
+          "mime": "image/jpeg",
+          "width": 512,
+          "height": 512,
+          "colorspace": "sRGB",
+          "bytes": 23358
+        },
+        {
+          "name": "walnut_normal",
+          "mime": "image/jpeg",
+          "width": 512,
+          "height": 512,
+          "colorspace": "linear",
+          "bytes": 49139
+        },
+        {
+          "name": "walnut_basecolor",
+          "mime": "image/jpeg",
+          "width": 1024,
+          "height": 1024,
+          "colorspace": "sRGB",
+          "bytes": 43487
+        },
+        {
+          "name": "trim_brass_and_bronze_palette_basecolor",
+          "mime": "image/jpeg",
+          "width": 64,
+          "height": 64,
+          "colorspace": "sRGB",
+          "bytes": 893
+        },
+        {
+          "name": "trim_brass_and_bronze_palette_orm",
+          "mime": "image/jpeg",
+          "width": 64,
+          "height": 64,
+          "colorspace": "linear",
+          "bytes": 902
+        }
+      ],
+      "checks": {
+        "lod0_triangles": {
+          "value": 4716,
+          "with_wardrobe_allowance": 4716,
+          "ceiling": 6000,
+          "pass": true
+        },
+        "lod1_triangles": {
+          "value": 1260,
+          "ceiling": 2000,
+          "pass": true
+        },
+        "max_texture_px": {
+          "value": 1024,
+          "ceiling": 1024,
+          "pass": true
+        },
+        "lod0_bytes": {
+          "value": 400608,
+          "ceiling": 1500000,
+          "pass": true
+        },
+        "collision_present": {
+          "value": "arrival-chair.collision.glb",
+          "pass": true
+        },
+        "anchors_present": {
+          "value": 5,
+          "pass": true
+        }
+      },
+      "pass": true
+    },
+    {
+      "asset": "arrival-folio",
+      "budget_source": "lane: small hand prop",
+      "budget_note": "",
+      "lod0": {
+        "file": "arrival-folio.lod0.glb",
+        "triangles": 756,
+        "primitives_draw_calls": 4,
+        "bytes": 86612,
+        "materials": [
+          "Leather \u2022 tobacco",
+          "Trim \u2022 brass and bronze"
+        ],
+        "texture_decoded_bytes": 2839892
+      },
+      "lod1": {
+        "file": "arrival-folio.lod1.glb",
+        "triangles": 376,
+        "primitives_draw_calls": 4,
+        "bytes": 68764,
+        "materials": [
+          "Leather \u2022 tobacco",
+          "Trim \u2022 brass and bronze"
+        ],
+        "texture_decoded_bytes": 2839892
+      },
+      "textures_lod0": [
+        {
+          "name": "leather_normal",
+          "mime": "image/jpeg",
+          "width": 512,
+          "height": 512,
+          "colorspace": "linear",
+          "bytes": 26931
+        },
+        {
+          "name": "leather_basecolor",
+          "mime": "image/jpeg",
+          "width": 512,
+          "height": 512,
+          "colorspace": "sRGB",
+          "bytes": 10213
+        },
+        {
+          "name": "trim_brass_and_bronze_palette_basecolor",
+          "mime": "image/jpeg",
+          "width": 64,
+          "height": 64,
+          "colorspace": "sRGB",
+          "bytes": 893
+        },
+        {
+          "name": "trim_brass_and_bronze_palette_orm",
+          "mime": "image/jpeg",
+          "width": 64,
+          "height": 64,
+          "colorspace": "linear",
+          "bytes": 902
+        }
+      ],
+      "checks": {
+        "lod0_triangles": {
+          "value": 756,
+          "with_wardrobe_allowance": 756,
+          "ceiling": 2000,
+          "pass": true
+        },
+        "lod1_triangles": {
+          "value": 376,
+          "ceiling": 600,
+          "pass": true
+        },
+        "max_texture_px": {
+          "value": 512,
+          "ceiling": 1024,
+          "pass": true
+        },
+        "lod0_bytes": {
+          "value": 86612,
+          "ceiling": 1500000,
+          "pass": true
+        },
+        "collision_present": {
+          "value": "arrival-folio.collision.glb",
+          "pass": true
+        },
+        "anchors_present": {
+          "value": 3,
+          "pass": true
+        }
+      },
+      "pass": true
+    },
+    {
+      "asset": "arrival-cup",
+      "budget_source": "lane: small hand prop",
+      "budget_note": "",
+      "lod0": {
+        "file": "arrival-cup.lod0.glb",
+        "triangles": 1450,
+        "primitives_draw_calls": 2,
+        "bytes": 49280,
+        "materials": [
+          "Stoneware \u2022 oat glaze",
+          "Trim \u2022 brass and bronze"
+        ],
+        "texture_decoded_bytes": 43690
+      },
+      "lod1": {
+        "file": "arrival-cup.lod1.glb",
+        "triangles": 492,
+        "primitives_draw_calls": 2,
+        "bytes": 20676,
+        "materials": [
+          "Stoneware \u2022 oat glaze",
+          "Trim \u2022 brass and bronze"
+        ],
+        "texture_decoded_bytes": 43690
+      },
+      "textures_lod0": [
+        {
+          "name": "trim_brass_and_bronze_palette_basecolor",
+          "mime": "image/jpeg",
+          "width": 64,
+          "height": 64,
+          "colorspace": "sRGB",
+          "bytes": 893
+        },
+        {
+          "name": "trim_brass_and_bronze_palette_orm",
+          "mime": "image/jpeg",
+          "width": 64,
+          "height": 64,
+          "colorspace": "linear",
+          "bytes": 902
+        }
+      ],
+      "checks": {
+        "lod0_triangles": {
+          "value": 1450,
+          "with_wardrobe_allowance": 1450,
+          "ceiling": 1500,
+          "pass": true
+        },
+        "lod1_triangles": {
+          "value": 492,
+          "ceiling": 500,
+          "pass": true
+        },
+        "max_texture_px": {
+          "value": 64,
+          "ceiling": 1024,
+          "pass": true
+        },
+        "lod0_bytes": {
+          "value": 49280,
+          "ceiling": 1500000,
+          "pass": true
+        },
+        "collision_present": {
+          "value": "arrival-cup.collision.glb",
+          "pass": true
+        },
+        "anchors_present": {
+          "value": 3,
+          "pass": true
+        }
+      },
+      "pass": true
+    },
+    {
+      "asset": "arrival-lantern",
+      "budget_source": "lane: table light prop",
+      "budget_note": "",
+      "lod0": {
+        "file": "arrival-lantern.lod0.glb",
+        "triangles": 1712,
+        "primitives_draw_calls": 3,
+        "bytes": 72788,
+        "materials": [
+          "Glass \u2022 lantern",
+          "Lantern \u2022 warm emission",
+          "Trim \u2022 brass and bronze"
+        ],
+        "texture_decoded_bytes": 43690
+      },
+      "lod1": {
+        "file": "arrival-lantern.lod1.glb",
+        "triangles": 652,
+        "primitives_draw_calls": 3,
+        "bytes": 31140,
+        "materials": [
+          "Glass \u2022 lantern",
+          "Lantern \u2022 warm emission",
+          "Trim \u2022 brass and bronze"
+        ],
+        "texture_decoded_bytes": 43690
+      },
+      "textures_lod0": [
+        {
+          "name": "trim_brass_and_bronze_palette_basecolor",
+          "mime": "image/jpeg",
+          "width": 64,
+          "height": 64,
+          "colorspace": "sRGB",
+          "bytes": 893
+        },
+        {
+          "name": "trim_brass_and_bronze_palette_orm",
+          "mime": "image/jpeg",
+          "width": 64,
+          "height": 64,
+          "colorspace": "linear",
+          "bytes": 902
+        }
+      ],
+      "checks": {
+        "lod0_triangles": {
+          "value": 1712,
+          "with_wardrobe_allowance": 1712,
+          "ceiling": 3000,
+          "pass": true
+        },
+        "lod1_triangles": {
+          "value": 652,
+          "ceiling": 1000,
+          "pass": true
+        },
+        "max_texture_px": {
+          "value": 64,
+          "ceiling": 1024,
+          "pass": true
+        },
+        "lod0_bytes": {
+          "value": 72788,
+          "ceiling": 1500000,
+          "pass": true
+        },
+        "collision_present": {
+          "value": "arrival-lantern.collision.glb",
+          "pass": true
+        },
+        "anchors_present": {
+          "value": 3,
+          "pass": true
+        }
+      },
+      "pass": true
+    },
+    {
+      "asset": "arrival-instrument",
+      "budget_source": "ruling: hero instrument 12k/4k/1k; lane target",
+      "budget_note": "",
+      "lod0": {
+        "file": "arrival-instrument.lod0.glb",
+        "triangles": 2292,
+        "primitives_draw_calls": 2,
+        "bytes": 95832,
+        "materials": [
+          "Display \u2022 jade phosphor",
+          "Trim \u2022 brass and bronze"
+        ],
+        "texture_decoded_bytes": 43690
+      },
+      "lod1": {
+        "file": "arrival-instrument.lod1.glb",
+        "triangles": 592,
+        "primitives_draw_calls": 2,
+        "bytes": 28796,
+        "materials": [
+          "Display \u2022 jade phosphor",
+          "Trim \u2022 brass and bronze"
+        ],
+        "texture_decoded_bytes": 43690
+      },
+      "textures_lod0": [
+        {
+          "name": "trim_brass_and_bronze_palette_basecolor",
+          "mime": "image/jpeg",
+          "width": 64,
+          "height": 64,
+          "colorspace": "sRGB",
+          "bytes": 893
+        },
+        {
+          "name": "trim_brass_and_bronze_palette_orm",
+          "mime": "image/jpeg",
+          "width": 64,
+          "height": 64,
+          "colorspace": "linear",
+          "bytes": 902
+        }
+      ],
+      "checks": {
+        "lod0_triangles": {
+          "value": 2292,
+          "with_wardrobe_allowance": 2292,
+          "ceiling": 4000,
+          "pass": true
+        },
+        "lod1_triangles": {
+          "value": 592,
+          "ceiling": 1500,
+          "pass": true
+        },
+        "max_texture_px": {
+          "value": 64,
+          "ceiling": 1024,
+          "pass": true
+        },
+        "lod0_bytes": {
+          "value": 95832,
+          "ceiling": 1500000,
+          "pass": true
+        },
+        "collision_present": {
+          "value": "arrival-instrument.collision.glb",
+          "pass": true
+        },
+        "anchors_present": {
+          "value": 3,
+          "pass": true
+        }
+      },
+      "pass": true
+    }
+  ],
+  "totals": {
+    "lod0_bytes": 1763604,
+    "lod1_bytes": 862484,
+    "lod0_triangles_one_of_each": 37230,
+    "lod0_texture_decoded_bytes": 19879246,
+    "all_pass": true
+  }
+}

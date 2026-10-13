@@ -1,0 +1,2964 @@
+{
+  "schema": "permagent.world.detail-v4.hero.v1",
+  "lane": "W3 (Astra ruling 2026-10-12)",
+  "status": "candidate \u2014 not published; W6 integrates and publishes",
+  "generated": "2026-10-13T01:19:13Z",
+  "blender": "5.2.1 LTS",
+  "metersPerUnit": 1,
+  "runtimeUp": "Y",
+  "sourceUp": "Z",
+  "forward": "glTF +Z (Blender -Y)",
+  "source_scripts": {
+    "scripts/blender/world_detail/arrival_furniture.py": "2d8ed27943c00991f93389e9a50991e2943cc6479921938f8375c2421a8922b1",
+    "scripts/blender/world_detail/build_hero.py": "9c37685869ac932702650f1ad7cc4c9a33f62bcbe0c8213a8852caf21ec1481a",
+    "scripts/blender/world_detail/detail_lib.py": "cfe3a2e52bfce5931940080aa41607b8b2903a9f35c96f2e63ec559e4e95b780",
+    "scripts/blender/world_detail/hero_robot.py": "11de98eedc3046d0e23f50fb39805f527bb2c896c48f2532722b9b3e016bc021",
+    "scripts/blender/world_detail/render_review.py": "79efc4b33c8f612953253d611a524707e42178a3615f6f66f8ab15ea5b0f14e5"
+  },
+  "provenance": {
+    "geometry": "authored procedurally in Blender by these scripts; no third-party or generated meshes",
+    "textures": "authored procedurally (numpy noise/weave/grain) by detail_lib.py; no AI imagery, no downloads",
+    "license": "project-authored",
+    "art_direction": "docs/design/solar-forum/north-star.png; legacy hero-kit v2/v3b robot"
+  },
+  "rig_contract": {
+    "skinning": "none; rigid nested pivots, no animation clips",
+    "legacy_nodes_preserved": [
+      "robot",
+      "Head",
+      "Arm.L",
+      "Arm.R",
+      "Leg.L",
+      "Leg.R"
+    ],
+    "additive_pivots": [
+      "Forearm.L",
+      "Forearm.R",
+      "Hand.L",
+      "Hand.R",
+      "Shin.L",
+      "Shin.R",
+      "Foot.L",
+      "Foot.R"
+    ],
+    "material_prefixes": {
+      "Ceramic": "per-agent tint + shadow caster",
+      "Faceplate": "forced dark glass",
+      "Eyes": "emissive agent colour; blink by mesh scale.y (origin on eye centre line)"
+    },
+    "mouth": "Head-local glTF (0,-0.085,0.307) is free for the runtime voice mouth; no Head_Brass mesh, so replaceFixedHeroMouth() is a no-op",
+    "rotation_sign": "joint angles are rotation about the node local X (three.js rotation.x); negative swings forward"
+  },
+  "poses": {
+    "seated_at_arrival_table": {
+      "description": "robot placed at a chair anchor_seat with the root lowered; soles on the floor, palms flat on the table 0.38 m in front of the root",
+      "root_offset_y": -0.3,
+      "rotation_x": {
+        "Leg.L": -1.4393,
+        "Leg.R": -1.4393,
+        "Shin.L": 1.4393,
+        "Shin.R": 1.4393,
+        "Foot.L": 0.0,
+        "Foot.R": 0.0,
+        "Arm.L": -0.5163,
+        "Arm.R": -0.5163,
+        "Forearm.L": -1.0216,
+        "Forearm.R": -1.0216,
+        "Hand.L": -0.0329,
+        "Hand.R": -0.0329
+      },
+      "check": {
+        "elbow_interior_deg": 106.3,
+        "reach_m": 0.367,
+        "max_reach_m": 0.458,
+        "elbow_yz": [
+          -0.141,
+          0.562
+        ]
+      }
+    }
+  },
+  "ensemble": {
+    "table_radius": 1.0,
+    "table_top": 0.6,
+    "seat_radius": 1.25,
+    "seat_top": 0.3,
+    "seats_deg_from_host": {
+      "host": 0.0,
+      "guest": -110.0,
+      "companion": 110.0
+    },
+    "legacy_runtime_note": "habitatLayout.ts currently places the old table scaled 1.2 (r 1.34, top 0.99) with ORCHESTRATOR_TABLE_SEAT 1.9 m from its centre and a standing-height seated body. This ensemble is lower and tighter so the robot really sits: W6 must move the seat to 1.25 m and use r 1.0 / h 0.60 colliders when adopting it."
+  },
+  "assets": [
+    {
+      "name": "hero-robot",
+      "root_node": "robot",
+      "lods": {
+        "lod0": {
+          "bytes": 641160,
+          "sha256": "1dce5e90af966803c4001b034a98eadd2300f353775749acf31bb870f8969672",
+          "triangles": 20524,
+          "primitives_draw_calls": 31,
+          "meshes": 31,
+          "nodes": 58,
+          "materials": [
+            "Ceramic \u2022 warm ivory",
+            "Trim \u2022 graphite and brass",
+            "Eyes \u2022 jade phosphor",
+            "Faceplate \u2022 deep teal glass"
+          ],
+          "extensions_used": [
+            "KHR_materials_clearcoat"
+          ],
+          "images": [
+            {
+              "name": "trim_graphite_and_brass_palette_basecolor",
+              "mime": "image/png",
+              "width": 64,
+              "height": 64,
+              "bytes": 420,
+              "colorspace": "sRGB",
+              "decoded_bytes_with_mips": 21845
+            },
+            {
+              "name": "trim_graphite_and_brass_palette_orm",
+              "mime": "image/png",
+              "width": 64,
+              "height": 64,
+              "bytes": 405,
+              "colorspace": "linear",
+              "decoded_bytes_with_mips": 21845
+            }
+          ],
+          "texture_decoded_bytes": 43690,
+          "node_names": [
+            "anchor_chest_reader",
+            "anchor_seat_contact",
+            "Arm.L_Ceramic \u2022 warm ivory",
+            "Arm.L_Trim \u2022 graphite and brass",
+            "Forearm.L_Ceramic \u2022 warm ivory",
+            "Forearm.L_Trim \u2022 graphite and brass",
+            "anchor_fingertips_L",
+            "anchor_grip_L",
+            "anchor_palm_L",
+            "Hand.L_Ceramic \u2022 warm ivory",
+            "Hand.L_Trim \u2022 graphite and brass",
+            "Hand.L",
+            "Forearm.L",
+            "Arm.L",
+            "Arm.R_Ceramic \u2022 warm ivory",
+            "Arm.R_Trim \u2022 graphite and brass",
+            "Forearm.R_Ceramic \u2022 warm ivory",
+            "Forearm.R_Trim \u2022 graphite and brass",
+            "anchor_fingertips_R",
+            "anchor_grip_R",
+            "anchor_palm_R",
+            "Hand.R_Ceramic \u2022 warm ivory",
+            "Hand.R_Trim \u2022 graphite and brass",
+            "Hand.R",
+            "Forearm.R",
+            "Arm.R",
+            "anchor_gaze",
+            "anchor_headwear",
+            "anchor_mouth",
+            "Head_Ceramic \u2022 warm ivory",
+            "Head_Eyes \u2022 jade phosphor",
+            "Head_Faceplate \u2022 deep teal glass",
+            "Head_Trim \u2022 graphite and brass",
+            "Head",
+            "Leg.L_Ceramic \u2022 warm ivory",
+            "Leg.L_Trim \u2022 graphite and brass",
+            "anchor_sole_L",
+            "Foot.L_Ceramic \u2022 warm ivory",
+            "Foot.L_Trim \u2022 graphite and brass",
+            "Foot.L",
+            "Shin.L_Ceramic \u2022 warm ivory",
+            "Shin.L_Trim \u2022 graphite and brass",
+            "Shin.L",
+            "Leg.L",
+            "Leg.R_Ceramic \u2022 warm ivory",
+            "Leg.R_Trim \u2022 graphite and brass",
+            "anchor_sole_R",
+            "Foot.R_Ceramic \u2022 warm ivory",
+            "Foot.R_Trim \u2022 graphite and brass",
+            "Foot.R",
+            "Shin.R_Ceramic \u2022 warm ivory",
+            "Shin.R_Trim \u2022 graphite and brass",
+            "Shin.R",
+            "Leg.R",
+            "robot_Ceramic \u2022 warm ivory",
+            "robot_Eyes \u2022 jade phosphor",
+            "robot_Trim \u2022 graphite and brass",
+            "robot"
+          ],
+          "file": "hero-robot.lod0.glb",
+          "detail": 1.0,
+          "blender_triangles": 20524
+        },
+        "lod1": {
+          "bytes": 251016,
+          "sha256": "6454154aecbb25d4149c81a386585ca547791056251c7dbb28081b70e6cf78c9",
+          "triangles": 6060,
+          "primitives_draw_calls": 31,
+          "meshes": 31,
+          "nodes": 58,
+          "materials": [
+            "Ceramic \u2022 warm ivory",
+            "Trim \u2022 graphite and brass",
+            "Eyes \u2022 jade phosphor",
+            "Faceplate \u2022 deep teal glass"
+          ],
+          "extensions_used": [
+            "KHR_materials_clearcoat"
+          ],
+          "images": [
+            {
+              "name": "trim_graphite_and_brass_palette_basecolor",
+              "mime": "image/png",
+              "width": 64,
+              "height": 64,
+              "bytes": 420,
+              "colorspace": "sRGB",
+              "decoded_bytes_with_mips": 21845
+            },
+            {
+              "name": "trim_graphite_and_brass_palette_orm",
+              "mime": "image/png",
+              "width": 64,
+              "height": 64,
+              "bytes": 405,
+              "colorspace": "linear",
+              "decoded_bytes_with_mips": 21845
+            }
+          ],
+          "texture_decoded_bytes": 43690,
+          "node_names": [
+            "anchor_chest_reader",
+            "anchor_seat_contact",
+            "Arm.L_Ceramic \u2022 warm ivory",
+            "Arm.L_Trim \u2022 graphite and brass",
+            "Forearm.L_Ceramic \u2022 warm ivory",
+            "Forearm.L_Trim \u2022 graphite and brass",
+            "anchor_fingertips_L",
+            "anchor_grip_L",
+            "anchor_palm_L",
+            "Hand.L_Ceramic \u2022 warm ivory",
+            "Hand.L_Trim \u2022 graphite and brass",
+            "Hand.L",
+            "Forearm.L",
+            "Arm.L",
+            "Arm.R_Ceramic \u2022 warm ivory",
+            "Arm.R_Trim \u2022 graphite and brass",
+            "Forearm.R_Ceramic \u2022 warm ivory",
+            "Forearm.R_Trim \u2022 graphite and brass",
+            "anchor_fingertips_R",
+            "anchor_grip_R",
+            "anchor_palm_R",
+            "Hand.R_Ceramic \u2022 warm ivory",
+            "Hand.R_Trim \u2022 graphite and brass",
+            "Hand.R",
+            "Forearm.R",
+            "Arm.R",
+            "anchor_gaze",
+            "anchor_headwear",
+            "anchor_mouth",
+            "Head_Ceramic \u2022 warm ivory",
+            "Head_Eyes \u2022 jade phosphor",
+            "Head_Faceplate \u2022 deep teal glass",
+            "Head_Trim \u2022 graphite and brass",
+            "Head",
+            "Leg.L_Ceramic \u2022 warm ivory",
+            "Leg.L_Trim \u2022 graphite and brass",
+            "anchor_sole_L",
+            "Foot.L_Ceramic \u2022 warm ivory",
+            "Foot.L_Trim \u2022 graphite and brass",
+            "Foot.L",
+            "Shin.L_Ceramic \u2022 warm ivory",
+            "Shin.L_Trim \u2022 graphite and brass",
+            "Shin.L",
+            "Leg.L",
+            "Leg.R_Ceramic \u2022 warm ivory",
+            "Leg.R_Trim \u2022 graphite and brass",
+            "anchor_sole_R",
+            "Foot.R_Ceramic \u2022 warm ivory",
+            "Foot.R_Trim \u2022 graphite and brass",
+            "Foot.R",
+            "Shin.R_Ceramic \u2022 warm ivory",
+            "Shin.R_Trim \u2022 graphite and brass",
+            "Shin.R",
+            "Leg.R",
+            "robot_Ceramic \u2022 warm ivory",
+            "robot_Eyes \u2022 jade phosphor",
+            "robot_Trim \u2022 graphite and brass",
+            "robot"
+          ],
+          "file": "hero-robot.lod1.glb",
+          "detail": 0.45,
+          "blender_triangles": 6060
+        }
+      },
+      "budget": {
+        "source": "ruling: characters",
+        "lod0": 24000,
+        "lod1": 10000,
+        "lod2": 3000,
+        "note": "ceiling includes runtime wardrobe (agentWardrobe.ts, <= ~2.5k tris)"
+      },
+      "bounds": {
+        "min": [
+          -0.4313,
+          0.0,
+          -0.2695
+        ],
+        "max": [
+          0.4313,
+          1.774,
+          0.3247
+        ],
+        "size": [
+          0.8626,
+          1.774,
+          0.5942
+        ]
+      },
+      "pivot": {
+        "origin": "floor contact point under the asset centre",
+        "gltf": [
+          0,
+          0,
+          0
+        ]
+      },
+      "nodes": [
+        {
+          "name": "robot",
+          "kind": "root",
+          "parent": null,
+          "gltf_position_in_root": [
+            0.0,
+            0.0,
+            -0.0
+          ]
+        },
+        {
+          "name": "Head",
+          "kind": "pivot",
+          "parent": "robot",
+          "gltf_position_in_root": [
+            0.0,
+            1.45,
+            -0.0
+          ]
+        },
+        {
+          "name": "anchor_gaze",
+          "kind": "anchor",
+          "parent": "Head",
+          "gltf_position_in_root": [
+            0.0,
+            1.49,
+            0.32
+          ]
+        },
+        {
+          "name": "anchor_mouth",
+          "kind": "anchor",
+          "parent": "Head",
+          "gltf_position_in_root": [
+            0.0,
+            1.365,
+            0.307
+          ]
+        },
+        {
+          "name": "anchor_headwear",
+          "kind": "anchor",
+          "parent": "Head",
+          "gltf_position_in_root": [
+            0.0,
+            1.765,
+            -0.0
+          ]
+        },
+        {
+          "name": "Arm.L",
+          "kind": "pivot",
+          "parent": "robot",
+          "gltf_position_in_root": [
+            -0.27,
+            1.07,
+            -0.0
+          ]
+        },
+        {
+          "name": "Forearm.L",
+          "kind": "pivot",
+          "parent": "Arm.L",
+          "gltf_position_in_root": [
+            -0.35,
+            0.82,
+            0.02
+          ]
+        },
+        {
+          "name": "Hand.L",
+          "kind": "pivot",
+          "parent": "Forearm.L",
+          "gltf_position_in_root": [
+            -0.36,
+            0.625,
+            0.09
+          ]
+        },
+        {
+          "name": "anchor_palm_L",
+          "kind": "anchor",
+          "parent": "Hand.L",
+          "gltf_position_in_root": [
+            -0.36,
+            0.583,
+            0.068
+          ]
+        },
+        {
+          "name": "anchor_fingertips_L",
+          "kind": "anchor",
+          "parent": "Hand.L",
+          "gltf_position_in_root": [
+            -0.36,
+            0.462,
+            0.118
+          ]
+        },
+        {
+          "name": "anchor_grip_L",
+          "kind": "anchor",
+          "parent": "Hand.L",
+          "gltf_position_in_root": [
+            -0.36,
+            0.53,
+            0.125
+          ]
+        },
+        {
+          "name": "Arm.R",
+          "kind": "pivot",
+          "parent": "robot",
+          "gltf_position_in_root": [
+            0.27,
+            1.07,
+            -0.0
+          ]
+        },
+        {
+          "name": "Forearm.R",
+          "kind": "pivot",
+          "parent": "Arm.R",
+          "gltf_position_in_root": [
+            0.35,
+            0.82,
+            0.02
+          ]
+        },
+        {
+          "name": "Hand.R",
+          "kind": "pivot",
+          "parent": "Forearm.R",
+          "gltf_position_in_root": [
+            0.36,
+            0.625,
+            0.09
+          ]
+        },
+        {
+          "name": "anchor_palm_R",
+          "kind": "anchor",
+          "parent": "Hand.R",
+          "gltf_position_in_root": [
+            0.36,
+            0.583,
+            0.068
+          ]
+        },
+        {
+          "name": "anchor_fingertips_R",
+          "kind": "anchor",
+          "parent": "Hand.R",
+          "gltf_position_in_root": [
+            0.36,
+            0.462,
+            0.118
+          ]
+        },
+        {
+          "name": "anchor_grip_R",
+          "kind": "anchor",
+          "parent": "Hand.R",
+          "gltf_position_in_root": [
+            0.36,
+            0.53,
+            0.125
+          ]
+        },
+        {
+          "name": "Leg.L",
+          "kind": "pivot",
+          "parent": "robot",
+          "gltf_position_in_root": [
+            -0.125,
+            0.68,
+            -0.0
+          ]
+        },
+        {
+          "name": "Shin.L",
+          "kind": "pivot",
+          "parent": "Leg.L",
+          "gltf_position_in_root": [
+            -0.125,
+            0.345,
+            0.009
+          ]
+        },
+        {
+          "name": "Foot.L",
+          "kind": "pivot",
+          "parent": "Shin.L",
+          "gltf_position_in_root": [
+            -0.125,
+            0.1,
+            0.03
+          ]
+        },
+        {
+          "name": "anchor_sole_L",
+          "kind": "anchor",
+          "parent": "Foot.L",
+          "gltf_position_in_root": [
+            -0.125,
+            0.0,
+            0.051
+          ]
+        },
+        {
+          "name": "Leg.R",
+          "kind": "pivot",
+          "parent": "robot",
+          "gltf_position_in_root": [
+            0.125,
+            0.68,
+            -0.0
+          ]
+        },
+        {
+          "name": "Shin.R",
+          "kind": "pivot",
+          "parent": "Leg.R",
+          "gltf_position_in_root": [
+            0.125,
+            0.345,
+            0.009
+          ]
+        },
+        {
+          "name": "Foot.R",
+          "kind": "pivot",
+          "parent": "Shin.R",
+          "gltf_position_in_root": [
+            0.125,
+            0.1,
+            0.03
+          ]
+        },
+        {
+          "name": "anchor_sole_R",
+          "kind": "anchor",
+          "parent": "Foot.R",
+          "gltf_position_in_root": [
+            0.125,
+            0.0,
+            0.051
+          ]
+        },
+        {
+          "name": "anchor_seat_contact",
+          "kind": "anchor",
+          "parent": "robot",
+          "gltf_position_in_root": [
+            0.0,
+            0.6,
+            -0.0
+          ]
+        },
+        {
+          "name": "anchor_chest_reader",
+          "kind": "anchor",
+          "parent": "robot",
+          "gltf_position_in_root": [
+            0.0,
+            1.04,
+            0.21
+          ]
+        }
+      ],
+      "anchors": [
+        {
+          "name": "anchor_gaze",
+          "kind": "gaze",
+          "parent": "Head",
+          "gltf_position_in_root": [
+            0.0,
+            1.49,
+            0.32
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "eye centre line, in front of the visor; aim this at the conversation partner"
+        },
+        {
+          "name": "anchor_mouth",
+          "kind": "voice",
+          "parent": "Head",
+          "gltf_position_in_root": [
+            0.0,
+            1.365,
+            0.307
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "runtime voice mouth slot (glTF head-local 0,-0.085,0.307); kept empty in the mesh"
+        },
+        {
+          "name": "anchor_headwear",
+          "kind": "attachment",
+          "parent": "Head",
+          "gltf_position_in_root": [
+            0.0,
+            1.765,
+            -0.0
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "crown; wardrobe headwear origin"
+        },
+        {
+          "name": "anchor_palm_L",
+          "kind": "contact",
+          "parent": "Hand.L",
+          "gltf_position_in_root": [
+            -0.36,
+            0.583,
+            0.068
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "palm surface centre; flat-hand table contact (palm faces the body at rest)"
+        },
+        {
+          "name": "anchor_fingertips_L",
+          "kind": "contact",
+          "parent": "Hand.L",
+          "gltf_position_in_root": [
+            -0.36,
+            0.462,
+            0.118
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "middle fingertip pad; touch / point / page-turn contact"
+        },
+        {
+          "name": "anchor_grip_L",
+          "kind": "attachment",
+          "parent": "Hand.L",
+          "gltf_position_in_root": [
+            -0.36,
+            0.53,
+            0.125
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "held-object attachment (folio, cup) between fingers and thumb"
+        },
+        {
+          "name": "anchor_palm_R",
+          "kind": "contact",
+          "parent": "Hand.R",
+          "gltf_position_in_root": [
+            0.36,
+            0.583,
+            0.068
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "palm surface centre; flat-hand table contact (palm faces the body at rest)"
+        },
+        {
+          "name": "anchor_fingertips_R",
+          "kind": "contact",
+          "parent": "Hand.R",
+          "gltf_position_in_root": [
+            0.36,
+            0.462,
+            0.118
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "middle fingertip pad; touch / point / page-turn contact"
+        },
+        {
+          "name": "anchor_grip_R",
+          "kind": "attachment",
+          "parent": "Hand.R",
+          "gltf_position_in_root": [
+            0.36,
+            0.53,
+            0.125
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "held-object attachment (folio, cup) between fingers and thumb"
+        },
+        {
+          "name": "anchor_sole_L",
+          "kind": "contact",
+          "parent": "Foot.L",
+          "gltf_position_in_root": [
+            -0.125,
+            0.0,
+            0.051
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "sole centre; ground contact"
+        },
+        {
+          "name": "anchor_sole_R",
+          "kind": "contact",
+          "parent": "Foot.R",
+          "gltf_position_in_root": [
+            0.125,
+            0.0,
+            0.051
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "sole centre; ground contact"
+        },
+        {
+          "name": "anchor_seat_contact",
+          "kind": "contact",
+          "parent": "robot",
+          "gltf_position_in_root": [
+            0.0,
+            0.6,
+            -0.0
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "seated pelvis/thigh underside at rest-pose height; align with a chair anchor_seat after applying poses.seated (root drops by 0.30 m)"
+        },
+        {
+          "name": "anchor_chest_reader",
+          "kind": "attachment",
+          "parent": "robot",
+          "gltf_position_in_root": [
+            0.0,
+            1.04,
+            0.21
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "chest instrument glass"
+        }
+      ],
+      "collision": {
+        "type": "capsule",
+        "radius": 0.32,
+        "height": 1.76,
+        "center": [
+          0,
+          0.88,
+          0
+        ],
+        "blocking": true,
+        "note": "same envelope as the legacy hero kit recommendation; seated: lower by 0.30 m",
+        "file": "hero-robot.collision.glb",
+        "bytes": 4128,
+        "sha256": "a80ea0f5bda2ed6f8aef0323487e9a071b13cc19820dc42e922bf70d1bd48923",
+        "triangles": 96
+      },
+      "source_blend": {
+        "file": "hero-robot.blend",
+        "sha256": "a9a273a8a75a0c5c2c2a6de701cea813ee2efd505b6bac2a3e38c79986bafdf4",
+        "bytes": 338240,
+        "contains": "LOD0 + collision proxy; LOD1 is regenerated by the script"
+      },
+      "texture_sources": [
+        {
+          "file": "textures/trim_graphite_and_brass_palette_basecolor.png",
+          "sha256": "e721cf97bc5e8dd46f7c8dc558af685a64449545c44213db8312a11947585090"
+        },
+        {
+          "file": "textures/trim_graphite_and_brass_palette_orm.png",
+          "sha256": "ecdf91c7af8fe807f717694c059351ec24f6528de07419c1799babb04b95cfc3"
+        }
+      ]
+    },
+    {
+      "name": "arrival-table",
+      "root_node": "arrival_table",
+      "lods": {
+        "lod0": {
+          "bytes": 417324,
+          "sha256": "2545dc451594825da0fdb22d49117df9e6d48b84711e90f134729684d6a27ac5",
+          "triangles": 5780,
+          "primitives_draw_calls": 2,
+          "meshes": 2,
+          "nodes": 21,
+          "materials": [
+            "Timber \u2022 oiled walnut",
+            "Trim \u2022 brass and bronze"
+          ],
+          "extensions_used": [],
+          "images": [
+            {
+              "name": "walnut_normal",
+              "mime": "image/jpeg",
+              "width": 512,
+              "height": 512,
+              "bytes": 49139,
+              "colorspace": "linear",
+              "decoded_bytes_with_mips": 1398101
+            },
+            {
+              "name": "walnut_basecolor",
+              "mime": "image/jpeg",
+              "width": 1024,
+              "height": 1024,
+              "bytes": 43487,
+              "colorspace": "sRGB",
+              "decoded_bytes_with_mips": 5592405
+            },
+            {
+              "name": "trim_brass_and_bronze_palette_basecolor",
+              "mime": "image/jpeg",
+              "width": 64,
+              "height": 64,
+              "bytes": 893,
+              "colorspace": "sRGB",
+              "decoded_bytes_with_mips": 21845
+            },
+            {
+              "name": "trim_brass_and_bronze_palette_orm",
+              "mime": "image/jpeg",
+              "width": 64,
+              "height": 64,
+              "bytes": 902,
+              "colorspace": "linear",
+              "decoded_bytes_with_mips": 21845
+            }
+          ],
+          "texture_decoded_bytes": 7034196,
+          "node_names": [
+            "anchor_cup_host",
+            "anchor_eye_companion",
+            "anchor_eye_guest",
+            "anchor_eye_host",
+            "anchor_folio_slot",
+            "anchor_gaze_shared",
+            "anchor_hand_companion_L",
+            "anchor_hand_companion_R",
+            "anchor_hand_guest_L",
+            "anchor_hand_guest_R",
+            "anchor_hand_host_L",
+            "anchor_hand_host_R",
+            "anchor_instrument",
+            "anchor_lantern",
+            "anchor_seat_companion",
+            "anchor_seat_guest",
+            "anchor_seat_host",
+            "anchor_table_surface",
+            "arrival_table_Timber \u2022 oiled walnut",
+            "arrival_table_Trim \u2022 brass and bronze",
+            "arrival_table"
+          ],
+          "file": "arrival-table.lod0.glb",
+          "detail": 1.0,
+          "blender_triangles": 5780
+        },
+        "lod1": {
+          "bytes": 203012,
+          "sha256": "512fdc5127360197c7443e8f1eb28c7a776916cffe49b665ea2304af477b606f",
+          "triangles": 1562,
+          "primitives_draw_calls": 2,
+          "meshes": 2,
+          "nodes": 21,
+          "materials": [
+            "Timber \u2022 oiled walnut",
+            "Trim \u2022 brass and bronze"
+          ],
+          "extensions_used": [],
+          "images": [
+            {
+              "name": "walnut_normal",
+              "mime": "image/jpeg",
+              "width": 512,
+              "height": 512,
+              "bytes": 49139,
+              "colorspace": "linear",
+              "decoded_bytes_with_mips": 1398101
+            },
+            {
+              "name": "walnut_basecolor",
+              "mime": "image/jpeg",
+              "width": 1024,
+              "height": 1024,
+              "bytes": 43487,
+              "colorspace": "sRGB",
+              "decoded_bytes_with_mips": 5592405
+            },
+            {
+              "name": "trim_brass_and_bronze_palette_basecolor",
+              "mime": "image/jpeg",
+              "width": 64,
+              "height": 64,
+              "bytes": 893,
+              "colorspace": "sRGB",
+              "decoded_bytes_with_mips": 21845
+            },
+            {
+              "name": "trim_brass_and_bronze_palette_orm",
+              "mime": "image/jpeg",
+              "width": 64,
+              "height": 64,
+              "bytes": 902,
+              "colorspace": "linear",
+              "decoded_bytes_with_mips": 21845
+            }
+          ],
+          "texture_decoded_bytes": 7034196,
+          "node_names": [
+            "anchor_cup_host",
+            "anchor_eye_companion",
+            "anchor_eye_guest",
+            "anchor_eye_host",
+            "anchor_folio_slot",
+            "anchor_gaze_shared",
+            "anchor_hand_companion_L",
+            "anchor_hand_companion_R",
+            "anchor_hand_guest_L",
+            "anchor_hand_guest_R",
+            "anchor_hand_host_L",
+            "anchor_hand_host_R",
+            "anchor_instrument",
+            "anchor_lantern",
+            "anchor_seat_companion",
+            "anchor_seat_guest",
+            "anchor_seat_host",
+            "anchor_table_surface",
+            "arrival_table_Timber \u2022 oiled walnut",
+            "arrival_table_Trim \u2022 brass and bronze",
+            "arrival_table"
+          ],
+          "file": "arrival-table.lod1.glb",
+          "detail": 0.45,
+          "blender_triangles": 1562
+        }
+      },
+      "budget": {
+        "source": "ruling: hero table / bookcase",
+        "lod0": 12000,
+        "lod1": 4000,
+        "lod2": 1000
+      },
+      "bounds": {
+        "min": [
+          -1.0025,
+          0.0,
+          -1.0025
+        ],
+        "max": [
+          1.0025,
+          0.6,
+          1.0025
+        ],
+        "size": [
+          2.005,
+          0.6,
+          2.005
+        ]
+      },
+      "pivot": {
+        "origin": "floor contact point under the asset centre",
+        "gltf": [
+          0,
+          0,
+          0
+        ]
+      },
+      "nodes": [
+        {
+          "name": "arrival_table",
+          "kind": "root",
+          "parent": null,
+          "gltf_position_in_root": [
+            0.0,
+            0.0,
+            -0.0
+          ]
+        },
+        {
+          "name": "anchor_table_surface",
+          "kind": "anchor",
+          "parent": "arrival_table",
+          "gltf_position_in_root": [
+            0.0,
+            0.6,
+            -0.0
+          ]
+        },
+        {
+          "name": "anchor_seat_host",
+          "kind": "anchor",
+          "parent": "arrival_table",
+          "gltf_position_in_root": [
+            0.0,
+            0.0,
+            -1.25
+          ]
+        },
+        {
+          "name": "anchor_eye_host",
+          "kind": "anchor",
+          "parent": "arrival_table",
+          "gltf_position_in_root": [
+            0.0,
+            1.19,
+            -0.93
+          ]
+        },
+        {
+          "name": "anchor_hand_host_L",
+          "kind": "anchor",
+          "parent": "arrival_table",
+          "gltf_position_in_root": [
+            -0.36,
+            0.6,
+            -0.87
+          ]
+        },
+        {
+          "name": "anchor_hand_host_R",
+          "kind": "anchor",
+          "parent": "arrival_table",
+          "gltf_position_in_root": [
+            0.36,
+            0.6,
+            -0.87
+          ]
+        },
+        {
+          "name": "anchor_seat_guest",
+          "kind": "anchor",
+          "parent": "arrival_table",
+          "gltf_position_in_root": [
+            1.1746,
+            0.0,
+            0.4275
+          ]
+        },
+        {
+          "name": "anchor_eye_guest",
+          "kind": "anchor",
+          "parent": "arrival_table",
+          "gltf_position_in_root": [
+            0.8739,
+            1.19,
+            0.3181
+          ]
+        },
+        {
+          "name": "anchor_hand_guest_L",
+          "kind": "anchor",
+          "parent": "arrival_table",
+          "gltf_position_in_root": [
+            0.9407,
+            0.6,
+            -0.0407
+          ]
+        },
+        {
+          "name": "anchor_hand_guest_R",
+          "kind": "anchor",
+          "parent": "arrival_table",
+          "gltf_position_in_root": [
+            0.6944,
+            0.6,
+            0.6358
+          ]
+        },
+        {
+          "name": "anchor_seat_companion",
+          "kind": "anchor",
+          "parent": "arrival_table",
+          "gltf_position_in_root": [
+            -1.1746,
+            0.0,
+            0.4275
+          ]
+        },
+        {
+          "name": "anchor_eye_companion",
+          "kind": "anchor",
+          "parent": "arrival_table",
+          "gltf_position_in_root": [
+            -0.8739,
+            1.19,
+            0.3181
+          ]
+        },
+        {
+          "name": "anchor_hand_companion_L",
+          "kind": "anchor",
+          "parent": "arrival_table",
+          "gltf_position_in_root": [
+            -0.6944,
+            0.6,
+            0.6358
+          ]
+        },
+        {
+          "name": "anchor_hand_companion_R",
+          "kind": "anchor",
+          "parent": "arrival_table",
+          "gltf_position_in_root": [
+            -0.9407,
+            0.6,
+            -0.0407
+          ]
+        },
+        {
+          "name": "anchor_folio_slot",
+          "kind": "anchor",
+          "parent": "arrival_table",
+          "gltf_position_in_root": [
+            0.36,
+            0.6,
+            -0.4
+          ]
+        },
+        {
+          "name": "anchor_gaze_shared",
+          "kind": "anchor",
+          "parent": "arrival_table",
+          "gltf_position_in_root": [
+            0.36,
+            0.65,
+            -0.4
+          ]
+        },
+        {
+          "name": "anchor_cup_host",
+          "kind": "anchor",
+          "parent": "arrival_table",
+          "gltf_position_in_root": [
+            -0.58,
+            0.6,
+            -0.7
+          ]
+        },
+        {
+          "name": "anchor_lantern",
+          "kind": "anchor",
+          "parent": "arrival_table",
+          "gltf_position_in_root": [
+            -0.4,
+            0.6,
+            0.34
+          ]
+        },
+        {
+          "name": "anchor_instrument",
+          "kind": "anchor",
+          "parent": "arrival_table",
+          "gltf_position_in_root": [
+            0.04,
+            0.6,
+            -0.02
+          ]
+        }
+      ],
+      "anchors": [
+        {
+          "name": "anchor_table_surface",
+          "kind": "surface",
+          "parent": "arrival_table",
+          "gltf_position_in_root": [
+            0.0,
+            0.6,
+            -0.0
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "table top centre; walkable-blocking cylinder r 1.0 h 0.6"
+        },
+        {
+          "name": "anchor_seat_host",
+          "kind": "seat",
+          "parent": "arrival_table",
+          "gltf_position_in_root": [
+            0.0,
+            0.0,
+            -1.25
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "place arrival_chair origin here; its -Y (glTF +Z) faces the table centre"
+        },
+        {
+          "name": "anchor_eye_host",
+          "kind": "gaze",
+          "parent": "arrival_table",
+          "gltf_position_in_root": [
+            0.0,
+            1.19,
+            -0.93
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "seated hero-robot eye centre; eye-contact height"
+        },
+        {
+          "name": "anchor_hand_host_L",
+          "kind": "contact",
+          "parent": "arrival_table",
+          "gltf_position_in_root": [
+            -0.36,
+            0.6,
+            -0.87
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "flat-palm contact point on the table top for a seated hero robot"
+        },
+        {
+          "name": "anchor_hand_host_R",
+          "kind": "contact",
+          "parent": "arrival_table",
+          "gltf_position_in_root": [
+            0.36,
+            0.6,
+            -0.87
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "flat-palm contact point on the table top for a seated hero robot"
+        },
+        {
+          "name": "anchor_seat_guest",
+          "kind": "seat",
+          "parent": "arrival_table",
+          "gltf_position_in_root": [
+            1.1746,
+            0.0,
+            0.4275
+          ],
+          "gltf_yaw_rad": -1.9199,
+          "note": "place arrival_chair origin here; its -Y (glTF +Z) faces the table centre"
+        },
+        {
+          "name": "anchor_eye_guest",
+          "kind": "gaze",
+          "parent": "arrival_table",
+          "gltf_position_in_root": [
+            0.8739,
+            1.19,
+            0.3181
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "seated hero-robot eye centre; eye-contact height"
+        },
+        {
+          "name": "anchor_hand_guest_L",
+          "kind": "contact",
+          "parent": "arrival_table",
+          "gltf_position_in_root": [
+            0.9407,
+            0.6,
+            -0.0407
+          ],
+          "gltf_yaw_rad": -1.9199,
+          "note": "flat-palm contact point on the table top for a seated hero robot"
+        },
+        {
+          "name": "anchor_hand_guest_R",
+          "kind": "contact",
+          "parent": "arrival_table",
+          "gltf_position_in_root": [
+            0.6944,
+            0.6,
+            0.6358
+          ],
+          "gltf_yaw_rad": -1.9199,
+          "note": "flat-palm contact point on the table top for a seated hero robot"
+        },
+        {
+          "name": "anchor_seat_companion",
+          "kind": "seat",
+          "parent": "arrival_table",
+          "gltf_position_in_root": [
+            -1.1746,
+            0.0,
+            0.4275
+          ],
+          "gltf_yaw_rad": 1.9199,
+          "note": "place arrival_chair origin here; its -Y (glTF +Z) faces the table centre"
+        },
+        {
+          "name": "anchor_eye_companion",
+          "kind": "gaze",
+          "parent": "arrival_table",
+          "gltf_position_in_root": [
+            -0.8739,
+            1.19,
+            0.3181
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "seated hero-robot eye centre; eye-contact height"
+        },
+        {
+          "name": "anchor_hand_companion_L",
+          "kind": "contact",
+          "parent": "arrival_table",
+          "gltf_position_in_root": [
+            -0.6944,
+            0.6,
+            0.6358
+          ],
+          "gltf_yaw_rad": 1.9199,
+          "note": "flat-palm contact point on the table top for a seated hero robot"
+        },
+        {
+          "name": "anchor_hand_companion_R",
+          "kind": "contact",
+          "parent": "arrival_table",
+          "gltf_position_in_root": [
+            -0.9407,
+            0.6,
+            -0.0407
+          ],
+          "gltf_yaw_rad": 1.9199,
+          "note": "flat-palm contact point on the table top for a seated hero robot"
+        },
+        {
+          "name": "anchor_folio_slot",
+          "kind": "attachment",
+          "parent": "arrival_table",
+          "gltf_position_in_root": [
+            0.36,
+            0.6,
+            -0.4
+          ],
+          "gltf_yaw_rad": -0.4363,
+          "note": "work folio rests here (interaction object), within the host right hand reach, read by the guest"
+        },
+        {
+          "name": "anchor_gaze_shared",
+          "kind": "gaze",
+          "parent": "arrival_table",
+          "gltf_position_in_root": [
+            0.36,
+            0.65,
+            -0.4
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "joint-attention target above the folio"
+        },
+        {
+          "name": "anchor_cup_host",
+          "kind": "attachment",
+          "parent": "arrival_table",
+          "gltf_position_in_root": [
+            -0.58,
+            0.6,
+            -0.7
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "cup + saucer"
+        },
+        {
+          "name": "anchor_lantern",
+          "kind": "light",
+          "parent": "arrival_table",
+          "gltf_position_in_root": [
+            -0.4,
+            0.6,
+            0.34
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "table lantern; keep clear of host-guest sightline"
+        },
+        {
+          "name": "anchor_instrument",
+          "kind": "attachment",
+          "parent": "arrival_table",
+          "gltf_position_in_root": [
+            0.04,
+            0.6,
+            -0.02
+          ],
+          "gltf_yaw_rad": -0.6109,
+          "note": "restrained table instrument, display faces the guest"
+        }
+      ],
+      "collision": {
+        "type": "cylinder",
+        "radius": 1.0,
+        "height": 0.6,
+        "center": [
+          0,
+          0.3,
+          0
+        ],
+        "blocking": true,
+        "file": "arrival-table.collision.glb",
+        "bytes": 3636,
+        "sha256": "110a245c99da5210afc9e0556aa109ce747d1fe821f33936512ebb4551b7fb86",
+        "triangles": 64
+      },
+      "source_blend": {
+        "file": "arrival-table.blend",
+        "sha256": "f5b139cce1f5aa243b69125bb7a1a14a24e0c5307f035b99f92cff687cfe0119",
+        "bytes": 213778,
+        "contains": "LOD0 + collision proxy; LOD1 is regenerated by the script"
+      },
+      "texture_sources": [
+        {
+          "file": "textures/leather_basecolor.png",
+          "sha256": "9b8b14ada7d01bb369bdbbf7bbeb7aa422e870e344029d45a7d0905774bf924e"
+        },
+        {
+          "file": "textures/leather_normal.png",
+          "sha256": "9a4eecdcecfa48f268b091718ef2c33c1ed302f891ba164fc842d8d20b3acf66"
+        },
+        {
+          "file": "textures/trim_brass_and_bronze_palette_basecolor.png",
+          "sha256": "877cbe9593419e24ff98a14ba4c92c586bcb80dda8b793c45156ea28fbbd70aa"
+        },
+        {
+          "file": "textures/trim_brass_and_bronze_palette_orm.png",
+          "sha256": "fda6810e985ad1a32ff6d47ce7be63c66fe4fa230d901f83d2b2ef11f372f2d0"
+        },
+        {
+          "file": "textures/walnut_basecolor.png",
+          "sha256": "1c150e502aa2fdb24fe6853335b464072705c610cbd40108deadb5e80dcb07b4"
+        },
+        {
+          "file": "textures/walnut_normal.png",
+          "sha256": "2e03ac4f325b816c51eb90b828b3eabdc66fc2fd480102effa1b2af9af6cfe3f"
+        },
+        {
+          "file": "textures/weave_basecolor.png",
+          "sha256": "9f168f3e223cbcd7ed7ef4e706e23dea518f8ad8c4d35944c255732955fdd286"
+        },
+        {
+          "file": "textures/weave_normal.png",
+          "sha256": "77ab64c22956a8b89d35ace12b6853d1f6e355ed9978d111247b45b72f590507"
+        }
+      ]
+    },
+    {
+      "name": "arrival-chair",
+      "root_node": "arrival_chair",
+      "lods": {
+        "lod0": {
+          "bytes": 400608,
+          "sha256": "aa4bfef29db2ffa3eb76a9f143973549030fc50c096ded877f7d1e9ec909e06b",
+          "triangles": 4716,
+          "primitives_draw_calls": 3,
+          "meshes": 3,
+          "nodes": 9,
+          "materials": [
+            "Fabric \u2022 moss weave",
+            "Timber \u2022 oiled walnut",
+            "Trim \u2022 brass and bronze"
+          ],
+          "extensions_used": [],
+          "images": [
+            {
+              "name": "weave_normal",
+              "mime": "image/jpeg",
+              "width": 512,
+              "height": 512,
+              "bytes": 61026,
+              "colorspace": "linear",
+              "decoded_bytes_with_mips": 1398101
+            },
+            {
+              "name": "weave_basecolor",
+              "mime": "image/jpeg",
+              "width": 512,
+              "height": 512,
+              "bytes": 23358,
+              "colorspace": "sRGB",
+              "decoded_bytes_with_mips": 1398101
+            },
+            {
+              "name": "walnut_normal",
+              "mime": "image/jpeg",
+              "width": 512,
+              "height": 512,
+              "bytes": 49139,
+              "colorspace": "linear",
+              "decoded_bytes_with_mips": 1398101
+            },
+            {
+              "name": "walnut_basecolor",
+              "mime": "image/jpeg",
+              "width": 1024,
+              "height": 1024,
+              "bytes": 43487,
+              "colorspace": "sRGB",
+              "decoded_bytes_with_mips": 5592405
+            },
+            {
+              "name": "trim_brass_and_bronze_palette_basecolor",
+              "mime": "image/jpeg",
+              "width": 64,
+              "height": 64,
+              "bytes": 893,
+              "colorspace": "sRGB",
+              "decoded_bytes_with_mips": 21845
+            },
+            {
+              "name": "trim_brass_and_bronze_palette_orm",
+              "mime": "image/jpeg",
+              "width": 64,
+              "height": 64,
+              "bytes": 902,
+              "colorspace": "linear",
+              "decoded_bytes_with_mips": 21845
+            }
+          ],
+          "texture_decoded_bytes": 9830398,
+          "node_names": [
+            "anchor_back",
+            "anchor_eye_seated",
+            "anchor_feet",
+            "anchor_seat",
+            "anchor_stand",
+            "arrival_chair_Fabric \u2022 moss weave",
+            "arrival_chair_Timber \u2022 oiled walnut",
+            "arrival_chair_Trim \u2022 brass and bronze",
+            "arrival_chair"
+          ],
+          "file": "arrival-chair.lod0.glb",
+          "detail": 1.0,
+          "blender_triangles": 4716
+        },
+        "lod1": {
+          "bytes": 259080,
+          "sha256": "32231ec5ee1afae59cf0c53e1a3da124b86c5d4954e8a537b322eff16ea08913",
+          "triangles": 1260,
+          "primitives_draw_calls": 3,
+          "meshes": 3,
+          "nodes": 9,
+          "materials": [
+            "Fabric \u2022 moss weave",
+            "Timber \u2022 oiled walnut",
+            "Trim \u2022 brass and bronze"
+          ],
+          "extensions_used": [],
+          "images": [
+            {
+              "name": "weave_normal",
+              "mime": "image/jpeg",
+              "width": 512,
+              "height": 512,
+              "bytes": 61026,
+              "colorspace": "linear",
+              "decoded_bytes_with_mips": 1398101
+            },
+            {
+              "name": "weave_basecolor",
+              "mime": "image/jpeg",
+              "width": 512,
+              "height": 512,
+              "bytes": 23358,
+              "colorspace": "sRGB",
+              "decoded_bytes_with_mips": 1398101
+            },
+            {
+              "name": "walnut_normal",
+              "mime": "image/jpeg",
+              "width": 512,
+              "height": 512,
+              "bytes": 49139,
+              "colorspace": "linear",
+              "decoded_bytes_with_mips": 1398101
+            },
+            {
+              "name": "walnut_basecolor",
+              "mime": "image/jpeg",
+              "width": 1024,
+              "height": 1024,
+              "bytes": 43487,
+              "colorspace": "sRGB",
+              "decoded_bytes_with_mips": 5592405
+            },
+            {
+              "name": "trim_brass_and_bronze_palette_basecolor",
+              "mime": "image/jpeg",
+              "width": 64,
+              "height": 64,
+              "bytes": 893,
+              "colorspace": "sRGB",
+              "decoded_bytes_with_mips": 21845
+            },
+            {
+              "name": "trim_brass_and_bronze_palette_orm",
+              "mime": "image/jpeg",
+              "width": 64,
+              "height": 64,
+              "bytes": 902,
+              "colorspace": "linear",
+              "decoded_bytes_with_mips": 21845
+            }
+          ],
+          "texture_decoded_bytes": 9830398,
+          "node_names": [
+            "anchor_back",
+            "anchor_eye_seated",
+            "anchor_feet",
+            "anchor_seat",
+            "anchor_stand",
+            "arrival_chair_Fabric \u2022 moss weave",
+            "arrival_chair_Timber \u2022 oiled walnut",
+            "arrival_chair_Trim \u2022 brass and bronze",
+            "arrival_chair"
+          ],
+          "file": "arrival-chair.lod1.glb",
+          "detail": 0.45,
+          "blender_triangles": 1260
+        }
+      },
+      "budget": {
+        "source": "ruling: repeated desk / bench / planter",
+        "lod0": 6000,
+        "lod1": 2000,
+        "lod2": 500
+      },
+      "bounds": {
+        "min": [
+          -0.3,
+          0.0,
+          -0.3344
+        ],
+        "max": [
+          0.3,
+          0.825,
+          0.265
+        ],
+        "size": [
+          0.6,
+          0.825,
+          0.5994
+        ]
+      },
+      "pivot": {
+        "origin": "floor contact point under the asset centre",
+        "gltf": [
+          0,
+          0,
+          0
+        ]
+      },
+      "nodes": [
+        {
+          "name": "arrival_chair",
+          "kind": "root",
+          "parent": null,
+          "gltf_position_in_root": [
+            0.0,
+            0.0,
+            -0.0
+          ]
+        },
+        {
+          "name": "anchor_seat",
+          "kind": "anchor",
+          "parent": "arrival_chair",
+          "gltf_position_in_root": [
+            0.0,
+            0.3,
+            -0.0
+          ]
+        },
+        {
+          "name": "anchor_back",
+          "kind": "anchor",
+          "parent": "arrival_chair",
+          "gltf_position_in_root": [
+            0.0,
+            0.6,
+            -0.1802
+          ]
+        },
+        {
+          "name": "anchor_feet",
+          "kind": "anchor",
+          "parent": "arrival_chair",
+          "gltf_position_in_root": [
+            0.0,
+            0.0,
+            0.36
+          ]
+        },
+        {
+          "name": "anchor_stand",
+          "kind": "anchor",
+          "parent": "arrival_chair",
+          "gltf_position_in_root": [
+            0.0,
+            0.0,
+            0.62
+          ]
+        },
+        {
+          "name": "anchor_eye_seated",
+          "kind": "anchor",
+          "parent": "arrival_chair",
+          "gltf_position_in_root": [
+            0.0,
+            1.19,
+            0.32
+          ]
+        }
+      ],
+      "anchors": [
+        {
+          "name": "anchor_seat",
+          "kind": "seat",
+          "parent": "arrival_chair",
+          "gltf_position_in_root": [
+            0.0,
+            0.3,
+            -0.0
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "compressed cushion surface; align hero robot anchor_seat_contact here (root drops 0.30 m)"
+        },
+        {
+          "name": "anchor_back",
+          "kind": "contact",
+          "parent": "arrival_chair",
+          "gltf_position_in_root": [
+            0.0,
+            0.6,
+            -0.1802
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "back cushion front face"
+        },
+        {
+          "name": "anchor_feet",
+          "kind": "contact",
+          "parent": "arrival_chair",
+          "gltf_position_in_root": [
+            0.0,
+            0.0,
+            0.36
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "seated soles land here"
+        },
+        {
+          "name": "anchor_stand",
+          "kind": "approach",
+          "parent": "arrival_chair",
+          "gltf_position_in_root": [
+            0.0,
+            0.0,
+            0.62
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "where a sitter stands, facing away from the table, before sitting / after rising"
+        },
+        {
+          "name": "anchor_eye_seated",
+          "kind": "gaze",
+          "parent": "arrival_chair",
+          "gltf_position_in_root": [
+            0.0,
+            1.19,
+            0.32
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "seated hero-robot eye centre"
+        }
+      ],
+      "collision": {
+        "type": "box",
+        "size": [
+          0.62,
+          0.86,
+          0.56
+        ],
+        "center": [
+          0,
+          0.43,
+          -0.02
+        ],
+        "blocking": true,
+        "file": "arrival-chair.collision.glb",
+        "bytes": 2044,
+        "sha256": "9ea6a6bc1b178a6b6c697352ed715f63abee1169a71de0ac2fdcd5cbac793679",
+        "triangles": 12
+      },
+      "source_blend": {
+        "file": "arrival-chair.blend",
+        "sha256": "88dfba0bfea7bacc054260910e9b360d4dd1b3f42715346f28acbd8c24bddd25",
+        "bytes": 202085,
+        "contains": "LOD0 + collision proxy; LOD1 is regenerated by the script"
+      },
+      "texture_sources": [
+        {
+          "file": "textures/leather_basecolor.png",
+          "sha256": "9b8b14ada7d01bb369bdbbf7bbeb7aa422e870e344029d45a7d0905774bf924e"
+        },
+        {
+          "file": "textures/leather_normal.png",
+          "sha256": "9a4eecdcecfa48f268b091718ef2c33c1ed302f891ba164fc842d8d20b3acf66"
+        },
+        {
+          "file": "textures/trim_brass_and_bronze_palette_basecolor.png",
+          "sha256": "877cbe9593419e24ff98a14ba4c92c586bcb80dda8b793c45156ea28fbbd70aa"
+        },
+        {
+          "file": "textures/trim_brass_and_bronze_palette_orm.png",
+          "sha256": "fda6810e985ad1a32ff6d47ce7be63c66fe4fa230d901f83d2b2ef11f372f2d0"
+        },
+        {
+          "file": "textures/walnut_basecolor.png",
+          "sha256": "1c150e502aa2fdb24fe6853335b464072705c610cbd40108deadb5e80dcb07b4"
+        },
+        {
+          "file": "textures/walnut_normal.png",
+          "sha256": "2e03ac4f325b816c51eb90b828b3eabdc66fc2fd480102effa1b2af9af6cfe3f"
+        },
+        {
+          "file": "textures/weave_basecolor.png",
+          "sha256": "9f168f3e223cbcd7ed7ef4e706e23dea518f8ad8c4d35944c255732955fdd286"
+        },
+        {
+          "file": "textures/weave_normal.png",
+          "sha256": "77ab64c22956a8b89d35ace12b6853d1f6e355ed9978d111247b45b72f590507"
+        }
+      ]
+    },
+    {
+      "name": "arrival-folio",
+      "root_node": "arrival_folio",
+      "lods": {
+        "lod0": {
+          "bytes": 86612,
+          "sha256": "c072d2defd0e330c7de29650b7a6bd518d306a7a097d7724b7f337c09e740cfb",
+          "triangles": 756,
+          "primitives_draw_calls": 4,
+          "meshes": 4,
+          "nodes": 9,
+          "materials": [
+            "Leather \u2022 tobacco",
+            "Trim \u2022 brass and bronze"
+          ],
+          "extensions_used": [],
+          "images": [
+            {
+              "name": "leather_normal",
+              "mime": "image/jpeg",
+              "width": 512,
+              "height": 512,
+              "bytes": 26931,
+              "colorspace": "linear",
+              "decoded_bytes_with_mips": 1398101
+            },
+            {
+              "name": "leather_basecolor",
+              "mime": "image/jpeg",
+              "width": 512,
+              "height": 512,
+              "bytes": 10213,
+              "colorspace": "sRGB",
+              "decoded_bytes_with_mips": 1398101
+            },
+            {
+              "name": "trim_brass_and_bronze_palette_basecolor",
+              "mime": "image/jpeg",
+              "width": 64,
+              "height": 64,
+              "bytes": 893,
+              "colorspace": "sRGB",
+              "decoded_bytes_with_mips": 21845
+            },
+            {
+              "name": "trim_brass_and_bronze_palette_orm",
+              "mime": "image/jpeg",
+              "width": 64,
+              "height": 64,
+              "bytes": 902,
+              "colorspace": "linear",
+              "decoded_bytes_with_mips": 21845
+            }
+          ],
+          "texture_decoded_bytes": 2839892,
+          "node_names": [
+            "anchor_folio_contact",
+            "anchor_folio_grip",
+            "anchor_folio_reading",
+            "arrival_folio_Leather \u2022 tobacco",
+            "arrival_folio_Trim \u2022 brass and bronze",
+            "Folio_Cover_Leather \u2022 tobacco",
+            "Folio_Cover_Trim \u2022 brass and bronze",
+            "Folio_Cover",
+            "arrival_folio"
+          ],
+          "file": "arrival-folio.lod0.glb",
+          "detail": 1.0,
+          "blender_triangles": 756
+        },
+        "lod1": {
+          "bytes": 68764,
+          "sha256": "5224862b0c5c207be35b585dc7a10804acf50671bba436995462506f782863fb",
+          "triangles": 376,
+          "primitives_draw_calls": 4,
+          "meshes": 4,
+          "nodes": 9,
+          "materials": [
+            "Leather \u2022 tobacco",
+            "Trim \u2022 brass and bronze"
+          ],
+          "extensions_used": [],
+          "images": [
+            {
+              "name": "leather_normal",
+              "mime": "image/jpeg",
+              "width": 512,
+              "height": 512,
+              "bytes": 26931,
+              "colorspace": "linear",
+              "decoded_bytes_with_mips": 1398101
+            },
+            {
+              "name": "leather_basecolor",
+              "mime": "image/jpeg",
+              "width": 512,
+              "height": 512,
+              "bytes": 10213,
+              "colorspace": "sRGB",
+              "decoded_bytes_with_mips": 1398101
+            },
+            {
+              "name": "trim_brass_and_bronze_palette_basecolor",
+              "mime": "image/jpeg",
+              "width": 64,
+              "height": 64,
+              "bytes": 893,
+              "colorspace": "sRGB",
+              "decoded_bytes_with_mips": 21845
+            },
+            {
+              "name": "trim_brass_and_bronze_palette_orm",
+              "mime": "image/jpeg",
+              "width": 64,
+              "height": 64,
+              "bytes": 902,
+              "colorspace": "linear",
+              "decoded_bytes_with_mips": 21845
+            }
+          ],
+          "texture_decoded_bytes": 2839892,
+          "node_names": [
+            "anchor_folio_contact",
+            "anchor_folio_grip",
+            "anchor_folio_reading",
+            "arrival_folio_Leather \u2022 tobacco",
+            "arrival_folio_Trim \u2022 brass and bronze",
+            "Folio_Cover_Leather \u2022 tobacco",
+            "Folio_Cover_Trim \u2022 brass and bronze",
+            "Folio_Cover",
+            "arrival_folio"
+          ],
+          "file": "arrival-folio.lod1.glb",
+          "detail": 0.45,
+          "blender_triangles": 376
+        }
+      },
+      "budget": {
+        "source": "lane: small hand prop",
+        "lod0": 2000,
+        "lod1": 600
+      },
+      "bounds": {
+        "min": [
+          -0.1705,
+          -0.0008,
+          -0.1205
+        ],
+        "max": [
+          0.163,
+          0.0228,
+          0.1205
+        ],
+        "size": [
+          0.3335,
+          0.0236,
+          0.241
+        ]
+      },
+      "pivot": {
+        "origin": "floor contact point under the asset centre",
+        "gltf": [
+          0,
+          0,
+          0
+        ]
+      },
+      "nodes": [
+        {
+          "name": "arrival_folio",
+          "kind": "root",
+          "parent": null,
+          "gltf_position_in_root": [
+            0.0,
+            0.0,
+            -0.0
+          ]
+        },
+        {
+          "name": "Folio_Cover",
+          "kind": "pivot",
+          "parent": "arrival_folio",
+          "gltf_position_in_root": [
+            -0.16,
+            0.019,
+            -0.0
+          ]
+        },
+        {
+          "name": "anchor_folio_grip",
+          "kind": "anchor",
+          "parent": "arrival_folio",
+          "gltf_position_in_root": [
+            0.14,
+            0.012,
+            0.0675
+          ]
+        },
+        {
+          "name": "anchor_folio_reading",
+          "kind": "anchor",
+          "parent": "arrival_folio",
+          "gltf_position_in_root": [
+            0.0,
+            0.03,
+            -0.0
+          ]
+        },
+        {
+          "name": "anchor_folio_contact",
+          "kind": "anchor",
+          "parent": "arrival_folio",
+          "gltf_position_in_root": [
+            0.0,
+            0.0,
+            -0.0
+          ]
+        }
+      ],
+      "anchors": [
+        {
+          "name": "anchor_folio_grip",
+          "kind": "attachment",
+          "parent": "arrival_folio",
+          "gltf_position_in_root": [
+            0.14,
+            0.012,
+            0.0675
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "hand grip on the free edge"
+        },
+        {
+          "name": "anchor_folio_reading",
+          "kind": "gaze",
+          "parent": "arrival_folio",
+          "gltf_position_in_root": [
+            0.0,
+            0.03,
+            -0.0
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "reading / camera target"
+        },
+        {
+          "name": "anchor_folio_contact",
+          "kind": "contact",
+          "parent": "arrival_folio",
+          "gltf_position_in_root": [
+            0.0,
+            0.0,
+            -0.0
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "rests on table top"
+        }
+      ],
+      "collision": {
+        "type": "box",
+        "size": [
+          0.34,
+          0.026,
+          0.25
+        ],
+        "center": [
+          0,
+          0.013,
+          0
+        ],
+        "blocking": false,
+        "file": "arrival-folio.collision.glb",
+        "bytes": 2020,
+        "sha256": "049ab564992c581f6af62aa2e81699b828a0a7d1f9dca59afca43b07a096627a",
+        "triangles": 12
+      },
+      "source_blend": {
+        "file": "arrival-folio.blend",
+        "sha256": "512714c0c2966114fc7464a4251b8d3918fbb4f2924566ad3d3c656683a3bf39",
+        "bytes": 107359,
+        "contains": "LOD0 + collision proxy; LOD1 is regenerated by the script"
+      },
+      "texture_sources": [
+        {
+          "file": "textures/leather_basecolor.png",
+          "sha256": "9b8b14ada7d01bb369bdbbf7bbeb7aa422e870e344029d45a7d0905774bf924e"
+        },
+        {
+          "file": "textures/leather_normal.png",
+          "sha256": "9a4eecdcecfa48f268b091718ef2c33c1ed302f891ba164fc842d8d20b3acf66"
+        },
+        {
+          "file": "textures/trim_brass_and_bronze_palette_basecolor.png",
+          "sha256": "877cbe9593419e24ff98a14ba4c92c586bcb80dda8b793c45156ea28fbbd70aa"
+        },
+        {
+          "file": "textures/trim_brass_and_bronze_palette_orm.png",
+          "sha256": "fda6810e985ad1a32ff6d47ce7be63c66fe4fa230d901f83d2b2ef11f372f2d0"
+        },
+        {
+          "file": "textures/walnut_basecolor.png",
+          "sha256": "1c150e502aa2fdb24fe6853335b464072705c610cbd40108deadb5e80dcb07b4"
+        },
+        {
+          "file": "textures/walnut_normal.png",
+          "sha256": "2e03ac4f325b816c51eb90b828b3eabdc66fc2fd480102effa1b2af9af6cfe3f"
+        },
+        {
+          "file": "textures/weave_basecolor.png",
+          "sha256": "9f168f3e223cbcd7ed7ef4e706e23dea518f8ad8c4d35944c255732955fdd286"
+        },
+        {
+          "file": "textures/weave_normal.png",
+          "sha256": "77ab64c22956a8b89d35ace12b6853d1f6e355ed9978d111247b45b72f590507"
+        }
+      ]
+    },
+    {
+      "name": "arrival-cup",
+      "root_node": "arrival_cup",
+      "lods": {
+        "lod0": {
+          "bytes": 49280,
+          "sha256": "d58375efcf72922ee9095a0aaaa98ccecdca26c2fd11e43c6d4e737aaded259f",
+          "triangles": 1450,
+          "primitives_draw_calls": 2,
+          "meshes": 2,
+          "nodes": 6,
+          "materials": [
+            "Stoneware \u2022 oat glaze",
+            "Trim \u2022 brass and bronze"
+          ],
+          "extensions_used": [
+            "KHR_materials_clearcoat"
+          ],
+          "images": [
+            {
+              "name": "trim_brass_and_bronze_palette_basecolor",
+              "mime": "image/jpeg",
+              "width": 64,
+              "height": 64,
+              "bytes": 893,
+              "colorspace": "sRGB",
+              "decoded_bytes_with_mips": 21845
+            },
+            {
+              "name": "trim_brass_and_bronze_palette_orm",
+              "mime": "image/jpeg",
+              "width": 64,
+              "height": 64,
+              "bytes": 902,
+              "colorspace": "linear",
+              "decoded_bytes_with_mips": 21845
+            }
+          ],
+          "texture_decoded_bytes": 43690,
+          "node_names": [
+            "anchor_cup_contact",
+            "anchor_cup_handle",
+            "anchor_cup_lip",
+            "arrival_cup_Stoneware \u2022 oat glaze",
+            "arrival_cup_Trim \u2022 brass and bronze",
+            "arrival_cup"
+          ],
+          "file": "arrival-cup.lod0.glb",
+          "detail": 1.0,
+          "blender_triangles": 1450
+        },
+        "lod1": {
+          "bytes": 20676,
+          "sha256": "50f1cd4860cd05d5a50dac8b2a2ad27cedcd6e1a015b6934f05efaf826e14c88",
+          "triangles": 492,
+          "primitives_draw_calls": 2,
+          "meshes": 2,
+          "nodes": 6,
+          "materials": [
+            "Stoneware \u2022 oat glaze",
+            "Trim \u2022 brass and bronze"
+          ],
+          "extensions_used": [
+            "KHR_materials_clearcoat"
+          ],
+          "images": [
+            {
+              "name": "trim_brass_and_bronze_palette_basecolor",
+              "mime": "image/jpeg",
+              "width": 64,
+              "height": 64,
+              "bytes": 893,
+              "colorspace": "sRGB",
+              "decoded_bytes_with_mips": 21845
+            },
+            {
+              "name": "trim_brass_and_bronze_palette_orm",
+              "mime": "image/jpeg",
+              "width": 64,
+              "height": 64,
+              "bytes": 902,
+              "colorspace": "linear",
+              "decoded_bytes_with_mips": 21845
+            }
+          ],
+          "texture_decoded_bytes": 43690,
+          "node_names": [
+            "anchor_cup_contact",
+            "anchor_cup_handle",
+            "anchor_cup_lip",
+            "arrival_cup_Stoneware \u2022 oat glaze",
+            "arrival_cup_Trim \u2022 brass and bronze",
+            "arrival_cup"
+          ],
+          "file": "arrival-cup.lod1.glb",
+          "detail": 0.45,
+          "blender_triangles": 492
+        }
+      },
+      "budget": {
+        "source": "lane: small hand prop",
+        "lod0": 1500,
+        "lod1": 500
+      },
+      "bounds": {
+        "min": [
+          -0.077,
+          0.0,
+          -0.077
+        ],
+        "max": [
+          0.077,
+          0.0853,
+          0.077
+        ],
+        "size": [
+          0.154,
+          0.0853,
+          0.154
+        ]
+      },
+      "pivot": {
+        "origin": "floor contact point under the asset centre",
+        "gltf": [
+          0,
+          0,
+          0
+        ]
+      },
+      "nodes": [
+        {
+          "name": "arrival_cup",
+          "kind": "root",
+          "parent": null,
+          "gltf_position_in_root": [
+            0.0,
+            0.0,
+            -0.0
+          ]
+        },
+        {
+          "name": "anchor_cup_handle",
+          "kind": "anchor",
+          "parent": "arrival_cup",
+          "gltf_position_in_root": [
+            0.064,
+            0.0508,
+            -0.0
+          ]
+        },
+        {
+          "name": "anchor_cup_lip",
+          "kind": "anchor",
+          "parent": "arrival_cup",
+          "gltf_position_in_root": [
+            -0.04,
+            0.0848,
+            -0.0
+          ]
+        },
+        {
+          "name": "anchor_cup_contact",
+          "kind": "anchor",
+          "parent": "arrival_cup",
+          "gltf_position_in_root": [
+            0.0,
+            0.0,
+            -0.0
+          ]
+        }
+      ],
+      "anchors": [
+        {
+          "name": "anchor_cup_handle",
+          "kind": "attachment",
+          "parent": "arrival_cup",
+          "gltf_position_in_root": [
+            0.064,
+            0.0508,
+            -0.0
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "handle grip"
+        },
+        {
+          "name": "anchor_cup_lip",
+          "kind": "contact",
+          "parent": "arrival_cup",
+          "gltf_position_in_root": [
+            -0.04,
+            0.0848,
+            -0.0
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "drinking edge"
+        },
+        {
+          "name": "anchor_cup_contact",
+          "kind": "contact",
+          "parent": "arrival_cup",
+          "gltf_position_in_root": [
+            0.0,
+            0.0,
+            -0.0
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "saucer foot on the table"
+        }
+      ],
+      "collision": {
+        "type": "box",
+        "size": [
+          0.155,
+          0.086,
+          0.155
+        ],
+        "center": [
+          0,
+          0.043,
+          0
+        ],
+        "blocking": false,
+        "file": "arrival-cup.collision.glb",
+        "bytes": 2040,
+        "sha256": "28ed3cfdc943e34080958eb0981c4a401a7aaa8cb089ca649d64a556243dea3e",
+        "triangles": 12
+      },
+      "source_blend": {
+        "file": "arrival-cup.blend",
+        "sha256": "ec546e7eb31d3527a80ba5572eee8cfd3f718c24f3fc91e66669d06d0aa8c4d2",
+        "bytes": 119876,
+        "contains": "LOD0 + collision proxy; LOD1 is regenerated by the script"
+      },
+      "texture_sources": [
+        {
+          "file": "textures/leather_basecolor.png",
+          "sha256": "9b8b14ada7d01bb369bdbbf7bbeb7aa422e870e344029d45a7d0905774bf924e"
+        },
+        {
+          "file": "textures/leather_normal.png",
+          "sha256": "9a4eecdcecfa48f268b091718ef2c33c1ed302f891ba164fc842d8d20b3acf66"
+        },
+        {
+          "file": "textures/trim_brass_and_bronze_palette_basecolor.png",
+          "sha256": "877cbe9593419e24ff98a14ba4c92c586bcb80dda8b793c45156ea28fbbd70aa"
+        },
+        {
+          "file": "textures/trim_brass_and_bronze_palette_orm.png",
+          "sha256": "fda6810e985ad1a32ff6d47ce7be63c66fe4fa230d901f83d2b2ef11f372f2d0"
+        },
+        {
+          "file": "textures/walnut_basecolor.png",
+          "sha256": "1c150e502aa2fdb24fe6853335b464072705c610cbd40108deadb5e80dcb07b4"
+        },
+        {
+          "file": "textures/walnut_normal.png",
+          "sha256": "2e03ac4f325b816c51eb90b828b3eabdc66fc2fd480102effa1b2af9af6cfe3f"
+        },
+        {
+          "file": "textures/weave_basecolor.png",
+          "sha256": "9f168f3e223cbcd7ed7ef4e706e23dea518f8ad8c4d35944c255732955fdd286"
+        },
+        {
+          "file": "textures/weave_normal.png",
+          "sha256": "77ab64c22956a8b89d35ace12b6853d1f6e355ed9978d111247b45b72f590507"
+        }
+      ]
+    },
+    {
+      "name": "arrival-lantern",
+      "root_node": "arrival_lantern",
+      "lods": {
+        "lod0": {
+          "bytes": 72788,
+          "sha256": "c89c3a45b37a1af6edc606f3287e069b0abfee6e9748dd5a0931381fc27f330f",
+          "triangles": 1712,
+          "primitives_draw_calls": 3,
+          "meshes": 3,
+          "nodes": 7,
+          "materials": [
+            "Glass \u2022 lantern",
+            "Lantern \u2022 warm emission",
+            "Trim \u2022 brass and bronze"
+          ],
+          "extensions_used": [
+            "KHR_materials_emissive_strength"
+          ],
+          "images": [
+            {
+              "name": "trim_brass_and_bronze_palette_basecolor",
+              "mime": "image/jpeg",
+              "width": 64,
+              "height": 64,
+              "bytes": 893,
+              "colorspace": "sRGB",
+              "decoded_bytes_with_mips": 21845
+            },
+            {
+              "name": "trim_brass_and_bronze_palette_orm",
+              "mime": "image/jpeg",
+              "width": 64,
+              "height": 64,
+              "bytes": 902,
+              "colorspace": "linear",
+              "decoded_bytes_with_mips": 21845
+            }
+          ],
+          "texture_decoded_bytes": 43690,
+          "node_names": [
+            "anchor_lantern_contact",
+            "anchor_lantern_handle",
+            "anchor_light",
+            "arrival_lantern_Glass \u2022 lantern",
+            "arrival_lantern_Lantern \u2022 warm emission",
+            "arrival_lantern_Trim \u2022 brass and bronze",
+            "arrival_lantern"
+          ],
+          "file": "arrival-lantern.lod0.glb",
+          "detail": 1.0,
+          "blender_triangles": 1712
+        },
+        "lod1": {
+          "bytes": 31140,
+          "sha256": "81900a13c037cf1d173f4ec1b5a1b1df231857fa182d46bcb448ad8b41eef31f",
+          "triangles": 652,
+          "primitives_draw_calls": 3,
+          "meshes": 3,
+          "nodes": 7,
+          "materials": [
+            "Glass \u2022 lantern",
+            "Lantern \u2022 warm emission",
+            "Trim \u2022 brass and bronze"
+          ],
+          "extensions_used": [
+            "KHR_materials_emissive_strength"
+          ],
+          "images": [
+            {
+              "name": "trim_brass_and_bronze_palette_basecolor",
+              "mime": "image/jpeg",
+              "width": 64,
+              "height": 64,
+              "bytes": 893,
+              "colorspace": "sRGB",
+              "decoded_bytes_with_mips": 21845
+            },
+            {
+              "name": "trim_brass_and_bronze_palette_orm",
+              "mime": "image/jpeg",
+              "width": 64,
+              "height": 64,
+              "bytes": 902,
+              "colorspace": "linear",
+              "decoded_bytes_with_mips": 21845
+            }
+          ],
+          "texture_decoded_bytes": 43690,
+          "node_names": [
+            "anchor_lantern_contact",
+            "anchor_lantern_handle",
+            "anchor_light",
+            "arrival_lantern_Glass \u2022 lantern",
+            "arrival_lantern_Lantern \u2022 warm emission",
+            "arrival_lantern_Trim \u2022 brass and bronze",
+            "arrival_lantern"
+          ],
+          "file": "arrival-lantern.lod1.glb",
+          "detail": 0.45,
+          "blender_triangles": 652
+        }
+      },
+      "budget": {
+        "source": "lane: table light prop",
+        "lod0": 3000,
+        "lod1": 1000
+      },
+      "bounds": {
+        "min": [
+          -0.072,
+          0.0,
+          -0.072
+        ],
+        "max": [
+          0.072,
+          0.2912,
+          0.072
+        ],
+        "size": [
+          0.144,
+          0.2912,
+          0.144
+        ]
+      },
+      "pivot": {
+        "origin": "floor contact point under the asset centre",
+        "gltf": [
+          0,
+          0,
+          0
+        ]
+      },
+      "nodes": [
+        {
+          "name": "arrival_lantern",
+          "kind": "root",
+          "parent": null,
+          "gltf_position_in_root": [
+            0.0,
+            0.0,
+            -0.0
+          ]
+        },
+        {
+          "name": "anchor_light",
+          "kind": "anchor",
+          "parent": "arrival_lantern",
+          "gltf_position_in_root": [
+            0.0,
+            0.1,
+            -0.0
+          ]
+        },
+        {
+          "name": "anchor_lantern_handle",
+          "kind": "anchor",
+          "parent": "arrival_lantern",
+          "gltf_position_in_root": [
+            0.0,
+            0.285,
+            -0.0
+          ]
+        },
+        {
+          "name": "anchor_lantern_contact",
+          "kind": "anchor",
+          "parent": "arrival_lantern",
+          "gltf_position_in_root": [
+            0.0,
+            0.0,
+            -0.0
+          ]
+        }
+      ],
+      "anchors": [
+        {
+          "name": "anchor_light",
+          "kind": "light",
+          "parent": "arrival_lantern",
+          "gltf_position_in_root": [
+            0.0,
+            0.1,
+            -0.0
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "point light origin (warm 2700K, small radius); emissive core is in the mesh"
+        },
+        {
+          "name": "anchor_lantern_handle",
+          "kind": "attachment",
+          "parent": "arrival_lantern",
+          "gltf_position_in_root": [
+            0.0,
+            0.285,
+            -0.0
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "carry ring"
+        },
+        {
+          "name": "anchor_lantern_contact",
+          "kind": "contact",
+          "parent": "arrival_lantern",
+          "gltf_position_in_root": [
+            0.0,
+            0.0,
+            -0.0
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "base on table"
+        }
+      ],
+      "collision": {
+        "type": "box",
+        "size": [
+          0.145,
+          0.29,
+          0.145
+        ],
+        "center": [
+          0,
+          0.145,
+          0
+        ],
+        "blocking": false,
+        "file": "arrival-lantern.collision.glb",
+        "bytes": 2052,
+        "sha256": "a9dd3f0a10c576b87782014e6810014488052442a537a74dd27f6a0a0fded411",
+        "triangles": 12
+      },
+      "source_blend": {
+        "file": "arrival-lantern.blend",
+        "sha256": "0bd145fd4c56499ff6d24f66fdcd7ca82aa500ff6a9774b7b3b177161cd3b85a",
+        "bytes": 122997,
+        "contains": "LOD0 + collision proxy; LOD1 is regenerated by the script"
+      },
+      "texture_sources": [
+        {
+          "file": "textures/leather_basecolor.png",
+          "sha256": "9b8b14ada7d01bb369bdbbf7bbeb7aa422e870e344029d45a7d0905774bf924e"
+        },
+        {
+          "file": "textures/leather_normal.png",
+          "sha256": "9a4eecdcecfa48f268b091718ef2c33c1ed302f891ba164fc842d8d20b3acf66"
+        },
+        {
+          "file": "textures/trim_brass_and_bronze_palette_basecolor.png",
+          "sha256": "877cbe9593419e24ff98a14ba4c92c586bcb80dda8b793c45156ea28fbbd70aa"
+        },
+        {
+          "file": "textures/trim_brass_and_bronze_palette_orm.png",
+          "sha256": "fda6810e985ad1a32ff6d47ce7be63c66fe4fa230d901f83d2b2ef11f372f2d0"
+        },
+        {
+          "file": "textures/walnut_basecolor.png",
+          "sha256": "1c150e502aa2fdb24fe6853335b464072705c610cbd40108deadb5e80dcb07b4"
+        },
+        {
+          "file": "textures/walnut_normal.png",
+          "sha256": "2e03ac4f325b816c51eb90b828b3eabdc66fc2fd480102effa1b2af9af6cfe3f"
+        },
+        {
+          "file": "textures/weave_basecolor.png",
+          "sha256": "9f168f3e223cbcd7ed7ef4e706e23dea518f8ad8c4d35944c255732955fdd286"
+        },
+        {
+          "file": "textures/weave_normal.png",
+          "sha256": "77ab64c22956a8b89d35ace12b6853d1f6e355ed9978d111247b45b72f590507"
+        }
+      ]
+    },
+    {
+      "name": "arrival-instrument",
+      "root_node": "arrival_instrument",
+      "lods": {
+        "lod0": {
+          "bytes": 95832,
+          "sha256": "55379a0dd91dda42cafa5e29d70a117d391c155fb64e017e9e257a5492698e31",
+          "triangles": 2292,
+          "primitives_draw_calls": 2,
+          "meshes": 2,
+          "nodes": 6,
+          "materials": [
+            "Display \u2022 jade phosphor",
+            "Trim \u2022 brass and bronze"
+          ],
+          "extensions_used": [],
+          "images": [
+            {
+              "name": "trim_brass_and_bronze_palette_basecolor",
+              "mime": "image/jpeg",
+              "width": 64,
+              "height": 64,
+              "bytes": 893,
+              "colorspace": "sRGB",
+              "decoded_bytes_with_mips": 21845
+            },
+            {
+              "name": "trim_brass_and_bronze_palette_orm",
+              "mime": "image/jpeg",
+              "width": 64,
+              "height": 64,
+              "bytes": 902,
+              "colorspace": "linear",
+              "decoded_bytes_with_mips": 21845
+            }
+          ],
+          "texture_decoded_bytes": 43690,
+          "node_names": [
+            "anchor_instrument_contact",
+            "anchor_instrument_face",
+            "anchor_instrument_touch",
+            "arrival_instrument_Display \u2022 jade phosphor",
+            "arrival_instrument_Trim \u2022 brass and bronze",
+            "arrival_instrument"
+          ],
+          "file": "arrival-instrument.lod0.glb",
+          "detail": 1.0,
+          "blender_triangles": 2292
+        },
+        "lod1": {
+          "bytes": 28796,
+          "sha256": "b330796fde5b18f4fd3fdc7de4729de913c5a02c0a6c1c7b2d6751106f3d6436",
+          "triangles": 592,
+          "primitives_draw_calls": 2,
+          "meshes": 2,
+          "nodes": 6,
+          "materials": [
+            "Display \u2022 jade phosphor",
+            "Trim \u2022 brass and bronze"
+          ],
+          "extensions_used": [],
+          "images": [
+            {
+              "name": "trim_brass_and_bronze_palette_basecolor",
+              "mime": "image/jpeg",
+              "width": 64,
+              "height": 64,
+              "bytes": 893,
+              "colorspace": "sRGB",
+              "decoded_bytes_with_mips": 21845
+            },
+            {
+              "name": "trim_brass_and_bronze_palette_orm",
+              "mime": "image/jpeg",
+              "width": 64,
+              "height": 64,
+              "bytes": 902,
+              "colorspace": "linear",
+              "decoded_bytes_with_mips": 21845
+            }
+          ],
+          "texture_decoded_bytes": 43690,
+          "node_names": [
+            "anchor_instrument_contact",
+            "anchor_instrument_face",
+            "anchor_instrument_touch",
+            "arrival_instrument_Display \u2022 jade phosphor",
+            "arrival_instrument_Trim \u2022 brass and bronze",
+            "arrival_instrument"
+          ],
+          "file": "arrival-instrument.lod1.glb",
+          "detail": 0.45,
+          "blender_triangles": 592
+        }
+      },
+      "budget": {
+        "source": "ruling: hero instrument 12k/4k/1k; lane target",
+        "lod0": 4000,
+        "lod1": 1500
+      },
+      "bounds": {
+        "min": [
+          -0.0885,
+          0.0,
+          -0.088
+        ],
+        "max": [
+          0.0885,
+          0.2135,
+          0.088
+        ],
+        "size": [
+          0.177,
+          0.2135,
+          0.176
+        ]
+      },
+      "pivot": {
+        "origin": "floor contact point under the asset centre",
+        "gltf": [
+          0,
+          0,
+          0
+        ]
+      },
+      "nodes": [
+        {
+          "name": "arrival_instrument",
+          "kind": "root",
+          "parent": null,
+          "gltf_position_in_root": [
+            0.0,
+            0.0,
+            -0.0
+          ]
+        },
+        {
+          "name": "anchor_instrument_face",
+          "kind": "anchor",
+          "parent": "arrival_instrument",
+          "gltf_position_in_root": [
+            0.0,
+            0.125,
+            0.01
+          ]
+        },
+        {
+          "name": "anchor_instrument_touch",
+          "kind": "anchor",
+          "parent": "arrival_instrument",
+          "gltf_position_in_root": [
+            0.0,
+            0.215,
+            -0.0
+          ]
+        },
+        {
+          "name": "anchor_instrument_contact",
+          "kind": "anchor",
+          "parent": "arrival_instrument",
+          "gltf_position_in_root": [
+            0.0,
+            0.0,
+            -0.0
+          ]
+        }
+      ],
+      "anchors": [
+        {
+          "name": "anchor_instrument_face",
+          "kind": "gaze",
+          "parent": "arrival_instrument",
+          "gltf_position_in_root": [
+            0.0,
+            0.125,
+            0.01
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "display centre; the display faces -Y (glTF +Z)"
+        },
+        {
+          "name": "anchor_instrument_touch",
+          "kind": "contact",
+          "parent": "arrival_instrument",
+          "gltf_position_in_root": [
+            0.0,
+            0.215,
+            -0.0
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "top of the ring"
+        },
+        {
+          "name": "anchor_instrument_contact",
+          "kind": "contact",
+          "parent": "arrival_instrument",
+          "gltf_position_in_root": [
+            0.0,
+            0.0,
+            -0.0
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "base on table"
+        }
+      ],
+      "collision": {
+        "type": "box",
+        "size": [
+          0.18,
+          0.22,
+          0.18
+        ],
+        "center": [
+          0,
+          0.11,
+          0
+        ],
+        "blocking": false,
+        "file": "arrival-instrument.collision.glb",
+        "bytes": 2060,
+        "sha256": "e6f62fff20db19b166188a20d2738c71b102fa530bcf725944d799681ab32195",
+        "triangles": 12
+      },
+      "source_blend": {
+        "file": "arrival-instrument.blend",
+        "sha256": "70ca57e03115a086d5c581d9b2abccf8a7210aecaae06d82cf8d7970adf8555c",
+        "bytes": 136477,
+        "contains": "LOD0 + collision proxy; LOD1 is regenerated by the script"
+      },
+      "texture_sources": [
+        {
+          "file": "textures/leather_basecolor.png",
+          "sha256": "9b8b14ada7d01bb369bdbbf7bbeb7aa422e870e344029d45a7d0905774bf924e"
+        },
+        {
+          "file": "textures/leather_normal.png",
+          "sha256": "9a4eecdcecfa48f268b091718ef2c33c1ed302f891ba164fc842d8d20b3acf66"
+        },
+        {
+          "file": "textures/trim_brass_and_bronze_palette_basecolor.png",
+          "sha256": "877cbe9593419e24ff98a14ba4c92c586bcb80dda8b793c45156ea28fbbd70aa"
+        },
+        {
+          "file": "textures/trim_brass_and_bronze_palette_orm.png",
+          "sha256": "fda6810e985ad1a32ff6d47ce7be63c66fe4fa230d901f83d2b2ef11f372f2d0"
+        },
+        {
+          "file": "textures/walnut_basecolor.png",
+          "sha256": "1c150e502aa2fdb24fe6853335b464072705c610cbd40108deadb5e80dcb07b4"
+        },
+        {
+          "file": "textures/walnut_normal.png",
+          "sha256": "2e03ac4f325b816c51eb90b828b3eabdc66fc2fd480102effa1b2af9af6cfe3f"
+        },
+        {
+          "file": "textures/weave_basecolor.png",
+          "sha256": "9f168f3e223cbcd7ed7ef4e706e23dea518f8ad8c4d35944c255732955fdd286"
+        },
+        {
+          "file": "textures/weave_normal.png",
+          "sha256": "77ab64c22956a8b89d35ace12b6853d1f6e355ed9978d111247b45b72f590507"
+        }
+      ]
+    }
+  ]
+}

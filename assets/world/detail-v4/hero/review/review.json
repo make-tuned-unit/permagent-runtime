@@ -1,0 +1,90 @@
+{
+  "renderer": "Blender 5.2.1 LTS Eevee, 960x540",
+  "source": "exported LOD GLBs re-imported (round trip)",
+  "shots": [
+    {
+      "file": "review/robot-front.jpg",
+      "what": "hero robot LOD0, neutral grey light, orthographic front"
+    },
+    {
+      "file": "review/robot-side.jpg",
+      "what": "hero robot LOD0, neutral grey light, orthographic side (robot left)"
+    },
+    {
+      "file": "review/robot-rear.jpg",
+      "what": "hero robot LOD0, neutral grey light, orthographic rear"
+    },
+    {
+      "file": "review/robot-three-quarter.jpg",
+      "what": "hero robot LOD0, neutral grey light, orthographic three-quarter"
+    },
+    {
+      "file": "review/robot-face-closeup.jpg",
+      "what": "face close-up (visor, eyes, ear hubs, shell seams)"
+    },
+    {
+      "file": "review/robot-hand-closeup.jpg",
+      "what": "hand close-up at rest (articulated fingers, wrist coupling)"
+    },
+    {
+      "file": "review/robot-feet-closeup.jpg",
+      "what": "feet: sole, toe cap, heel support, ground contact"
+    },
+    {
+      "file": "review/robot-relight-warm.jpg",
+      "what": "relight: low warm sun from the right + cool sky fill"
+    },
+    {
+      "file": "review/robot-relight-night.jpg",
+      "what": "relight: night, cool moon rim + warm lantern-like key"
+    },
+    {
+      "file": "review/robot-lod0-vs-lod1.jpg",
+      "what": "LOD0 left (20524 tris) vs LOD1 right (6060 tris)"
+    },
+    {
+      "file": "review/portrait-parity.png",
+      "what": "left: shipped desk portrait (native 10-desk.png crop, nearest-scaled); middle: legacy hero-kit v3b robot; right: v4 robot; same camera for the two renders"
+    },
+    {
+      "file": "review/ensemble-arrival.jpg",
+      "what": "arrival approach: host seated, open guest chair, folio, cup, lantern, instrument"
+    },
+    {
+      "file": "review/ensemble-reverse.jpg",
+      "what": "reverse arrival: from behind the host across the table to the open guest chair"
+    },
+    {
+      "file": "review/ensemble-side.jpg",
+      "what": "side elevation: seated contact (soles, cushion, palms), table and chair heights"
+    },
+    {
+      "file": "review/seated-face-hands-table.jpg",
+      "what": "matched view: seated guest eye height looking at host face, hands and table"
+    },
+    {
+      "file": "review/contact-closeup.jpg",
+      "what": "contact close-up: palm on table, cup on saucer, folio on table"
+    },
+    {
+      "file": "review/ensemble-relight-night.jpg",
+      "what": "relight: night, moonlight + lantern point light (runtime adds the light)"
+    },
+    {
+      "file": "review/chair-front-side-rear.jpg",
+      "what": "arrival chair: front, side, rear (orthographic)"
+    },
+    {
+      "file": "review/props-lineup.jpg",
+      "what": "folio, cup + saucer, lantern, table instrument"
+    },
+    {
+      "file": "review/table-three-quarter.jpg",
+      "what": "arrival table alone: plank field, breadboard ring, brass inlay, pedestal"
+    },
+    {
+      "file": "review/table-side-elevation.jpg",
+      "what": "table elevation: top thickness, apron, splayed legs on brass shoes"
+    }
+  ]
+}
