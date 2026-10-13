@@ -586,6 +586,552 @@
           }
         }
       ]
+    },
+    {
+      "id": "leather-r2-a",
+      "round": 2,
+      "request": "W3 leather; neutral round-two request; 512 px, 0.30 m",
+      "model": "fal-ai/z-image/turbo/tiling",
+      "prompt": "Warm brown aniline leather, fine grain, seamless tile, 512 px, base colour. A flat orthographic swatch of 0.30 metre of leather, uniform diffuse light, subtle natural grain, restrained warm brown variation. No seams, stitching, objects, writing, shadows or highlights.",
+      "params": {
+        "prompt": "Warm brown aniline leather, fine grain, seamless tile, 512 px, base colour. A flat orthographic swatch of 0.30 metre of leather, uniform diffuse light, subtle natural grain, restrained warm brown variation. No seams, stitching, objects, writing, shadows or highlights.",
+        "seed": 61012201,
+        "image_size": {
+          "width": 512,
+          "height": 512
+        },
+        "num_images": 1,
+        "num_inference_steps": 8,
+        "output_format": "png",
+        "tiling_mode": "both",
+        "tile_size": 64,
+        "tile_stride": 32,
+        "acceleration": "none",
+        "enable_prompt_expansion": false,
+        "enable_safety_checker": true,
+        "sync_mode": false
+      },
+      "seed": 61012201,
+      "file": null,
+      "sha256": null,
+      "bytes": null,
+      "px": null,
+      "licence": {
+        "record": "RIGHTS.md#round-2--2026-10-13-utc",
+        "name": "FAL hosted endpoint commercial-use output terms",
+        "model_url": "https://fal.ai/models/fal-ai/z-image/turbo/tiling",
+        "terms_url": "https://fal.ai/legal/terms-of-service",
+        "api_terms_url": "https://fal.ai/legal/api-services",
+        "commercial_use_permitted": true,
+        "commercial_use_statement": "Selected endpoint listing marks commercial use; subject to FAL service/API terms and input/output rights responsibilities. No output exists for this blocked attempt.",
+        "checked_at_utc": "2026-10-13",
+        "output_exists": false,
+        "attribution": "No separate mandatory attribution found on the checked listing; retain provenance; no CC0 or exclusivity claim."
+      },
+      "cost_usd": 0,
+      "status": "blocked_before_submission",
+      "estimate_usd": null,
+      "actual_cost_usd": 0,
+      "derivative_proposal": "W3 assets/world/detail-v4/hero/textures/leather_basecolor.png on the Arrival folio; no output, retain authored material.",
+      "target_px": [
+        512,
+        512
+      ],
+      "physical_scale_m": 0.3,
+      "history": [
+        {
+          "status": "prepared_not_submitted"
+        },
+        {
+          "status": "blocked_before_submission",
+          "at": "2026-10-13T02:06:14.169038+00:00",
+          "error": "MCP tool call requires approval, but approval policy is never"
+        }
+      ],
+      "request_id": null,
+      "submitted_at": null,
+      "attempt_recorded_at": "2026-10-13T02:06:14.169038+00:00",
+      "cost_basis": "No provider job submitted; no inference charge incurred. Published rate is preflight evidence only.",
+      "provider_status": "not_submitted",
+      "output_path": null,
+      "download_url": null,
+      "downloaded_at": null,
+      "provider": "fal",
+      "account_id": "github|5m4womwn5oan4fjuo2qmp172",
+      "schema_date_utc": "2026-10-13",
+      "model_version": "Z-Image Turbo Seamless Tiling; immutable internal revision not exposed",
+      "reference_origins": [],
+      "parent_request_ids": [],
+      "reviewer": "Codex W5 round 2",
+      "runtime_destination": "None; W3/W4/W6 retain acceptance and integration",
+      "measured_runtime_cost": null,
+      "cleanup_time_seconds": 0,
+      "original_metrics": null,
+      "decision": "No candidate image; blocked by host tool approval policy. Retain authored assets.",
+      "tileability": {
+        "verified": false,
+        "review": "Not performed: host blocked submission; no image exists. Planned: lossless 2x2 repeat and half-width/half-height offset with inspect_tiles.py; compare wrap MAE against interior-boundary median and p99, then inspect grain continuity visually. No seamless claim is made.",
+        "review_files": []
+      },
+      "derivatives": [],
+      "error": {
+        "origin": "host_tool_authorization",
+        "message": "MCP tool call requires approval, but approval policy is never",
+        "http_status": null,
+        "provider_error": false,
+        "evidence": "evidence/round2-submission-errors.json"
+      },
+      "billing": {
+        "published_unit_price_usd": 0.02,
+        "published_unit": "megapixels",
+        "configuration_price_usd": null,
+        "configuration_note": "Pixel billing rounding/minimum unverified; reserved up to $0.04 for one <=1024-square job.",
+        "pre_submission_reservation_usd": 0.04,
+        "reserved_usd": 0,
+        "reservation_released": true
+      },
+      "generation_method": {
+        "tiling_mode": "both",
+        "tile_size": 64,
+        "tile_stride": 32,
+        "documentation": "evidence/round2-preflight.json",
+        "note": "Actual schema controls, not prompt-only tiling; no output produced."
+      }
+    },
+    {
+      "id": "walnut-r2-a",
+      "round": 2,
+      "request": "W3/W4 shared walnut; exactly one further attempt; 1024 px, 1.0 m",
+      "model": "fal-ai/z-image/turbo/tiling",
+      "prompt": "Seamless orthographic base colour material study of dark warm oiled walnut timber at 1.0 metre per square tile, 1024 px. Fine straight to gently figured horizontal grain, tiny pores, restrained dark warm brown natural variation in the established palette #2a1a10 to #4a2c16. One continuous surface, diffuse illumination, no perspective, directional shadow, specular highlights, fixtures, symbols or text. No plank divisions, seams, vignette, border or large knots.",
+      "params": {
+        "prompt": "Seamless orthographic base colour material study of dark warm oiled walnut timber at 1.0 metre per square tile, 1024 px. Fine straight to gently figured horizontal grain, tiny pores, restrained dark warm brown natural variation in the established palette #2a1a10 to #4a2c16. One continuous surface, diffuse illumination, no perspective, directional shadow, specular highlights, fixtures, symbols or text. No plank divisions, seams, vignette, border or large knots.",
+        "seed": 61012202,
+        "image_size": {
+          "width": 1024,
+          "height": 1024
+        },
+        "num_images": 1,
+        "num_inference_steps": 8,
+        "output_format": "png",
+        "tiling_mode": "both",
+        "tile_size": 128,
+        "tile_stride": 64,
+        "acceleration": "none",
+        "enable_prompt_expansion": false,
+        "enable_safety_checker": true,
+        "sync_mode": false
+      },
+      "seed": 61012202,
+      "file": null,
+      "sha256": null,
+      "bytes": null,
+      "px": null,
+      "licence": {
+        "record": "RIGHTS.md#round-2--2026-10-13-utc",
+        "name": "FAL hosted endpoint commercial-use output terms",
+        "model_url": "https://fal.ai/models/fal-ai/z-image/turbo/tiling",
+        "terms_url": "https://fal.ai/legal/terms-of-service",
+        "api_terms_url": "https://fal.ai/legal/api-services",
+        "commercial_use_permitted": true,
+        "commercial_use_statement": "Selected endpoint listing marks commercial use; subject to FAL service/API terms and input/output rights responsibilities. No output exists for this blocked attempt.",
+        "checked_at_utc": "2026-10-13",
+        "output_exists": false,
+        "attribution": "No separate mandatory attribution found on the checked listing; retain provenance; no CC0 or exclusivity claim."
+      },
+      "cost_usd": 0,
+      "status": "blocked_before_submission",
+      "estimate_usd": null,
+      "actual_cost_usd": 0,
+      "derivative_proposal": "W3 assets/world/detail-v4/hero/textures/walnut_basecolor.png and W4 assets/world/detail-v4/environment/places/textures/walnut_basecolor.png; one accepted file would replace both. No output, retain authored materials.",
+      "target_px": [
+        1024,
+        1024
+      ],
+      "physical_scale_m": 1.0,
+      "history": [
+        {
+          "status": "prepared_not_submitted"
+        },
+        {
+          "status": "blocked_before_submission",
+          "at": "2026-10-13T02:06:14.169038+00:00",
+          "error": "MCP tool call requires approval, but approval policy is never"
+        }
+      ],
+      "request_id": null,
+      "submitted_at": null,
+      "attempt_recorded_at": "2026-10-13T02:06:14.169038+00:00",
+      "cost_basis": "No provider job submitted; no inference charge incurred. Published rate is preflight evidence only.",
+      "provider_status": "not_submitted",
+      "output_path": null,
+      "download_url": null,
+      "downloaded_at": null,
+      "provider": "fal",
+      "account_id": "github|5m4womwn5oan4fjuo2qmp172",
+      "schema_date_utc": "2026-10-13",
+      "model_version": "Z-Image Turbo Seamless Tiling; immutable internal revision not exposed",
+      "reference_origins": [],
+      "parent_request_ids": [],
+      "reviewer": "Codex W5 round 2",
+      "runtime_destination": "None; W3/W4/W6 retain acceptance and integration",
+      "measured_runtime_cost": null,
+      "cleanup_time_seconds": 0,
+      "original_metrics": null,
+      "decision": "No candidate image; blocked by host tool approval policy. Retain authored assets.",
+      "tileability": {
+        "verified": false,
+        "review": "Not performed: host blocked submission; no image exists. Planned: lossless 2x2 repeat and half-width/half-height offset with inspect_tiles.py; compare wrap MAE against interior-boundary median and p99, then inspect grain continuity visually. No seamless claim is made.",
+        "review_files": []
+      },
+      "derivatives": [],
+      "error": {
+        "origin": "host_tool_authorization",
+        "message": "MCP tool call requires approval, but approval policy is never",
+        "http_status": null,
+        "provider_error": false,
+        "evidence": "evidence/round2-submission-errors.json"
+      },
+      "billing": {
+        "published_unit_price_usd": 0.02,
+        "published_unit": "megapixels",
+        "configuration_price_usd": null,
+        "configuration_note": "Pixel billing rounding/minimum unverified; reserved up to $0.04 for one <=1024-square job.",
+        "pre_submission_reservation_usd": 0.04,
+        "reserved_usd": 0,
+        "reservation_released": true
+      },
+      "generation_method": {
+        "tiling_mode": "both",
+        "tile_size": 128,
+        "tile_stride": 64,
+        "documentation": "evidence/round2-preflight.json",
+        "note": "Actual schema controls, not prompt-only tiling; no output produced."
+      }
+    },
+    {
+      "id": "foliage-r2-a",
+      "round": 2,
+      "request": "W4 fixed-layout 2x2 foliage colour-and-opacity atlas; 1024 RGBA",
+      "model": "fal-ai/ideogram/v3/generate-transparent",
+      "prompt": "Original broadleaf color-and-opacity atlas for a relightable game asset; separate complete leaves, consistent orientation, transparent gutters, neutral diffuse illumination, coherent botanical family, subtle age variation, intact tips and stems. No directional highlights, cast shadows, scenery, pots, labels, or lettering. Base color and alpha only.\nExactly 1024x1024 RGBA, exactly four separate botanical sprigs in a fixed 2x2 grid of 512x512 tiles. Do not rearrange this layout. TOP LEFT (tile 2): heart-leaf vine sprig. TOP RIGHT (tile 3): dense radial cluster of narrow lanceolate olive-like grey-green leaves. BOTTOM LEFT (tile 0): narrow lanceolate olive-like grey-green sprig. BOTTOM RIGHT (tile 1): broad glossy laurel-like sprig, but represented only by neutral diffuse base colour with no painted shine. Every sprig rises from the bottom centre of its own tile. Every complete stem and leaf stays inside its own tile with at least a 4-pixel transparent gutter on all four sides. All four root stems point down. True transparent background, fully transparent gutters; no checkerboard pixels. Photorealistic botanical surface detail, not vector art. No grid lines.",
+      "params": {
+        "prompt": "Original broadleaf color-and-opacity atlas for a relightable game asset; separate complete leaves, consistent orientation, transparent gutters, neutral diffuse illumination, coherent botanical family, subtle age variation, intact tips and stems. No directional highlights, cast shadows, scenery, pots, labels, or lettering. Base color and alpha only.\nExactly 1024x1024 RGBA, exactly four separate botanical sprigs in a fixed 2x2 grid of 512x512 tiles. Do not rearrange this layout. TOP LEFT (tile 2): heart-leaf vine sprig. TOP RIGHT (tile 3): dense radial cluster of narrow lanceolate olive-like grey-green leaves. BOTTOM LEFT (tile 0): narrow lanceolate olive-like grey-green sprig. BOTTOM RIGHT (tile 1): broad glossy laurel-like sprig, but represented only by neutral diffuse base colour with no painted shine. Every sprig rises from the bottom centre of its own tile. Every complete stem and leaf stays inside its own tile with at least a 4-pixel transparent gutter on all four sides. All four root stems point down. True transparent background, fully transparent gutters; no checkerboard pixels. Photorealistic botanical surface detail, not vector art. No grid lines.",
+        "aspect_ratio": "1:1",
+        "rendering_speed": "QUALITY",
+        "expand_prompt": false,
+        "negative_prompt": "text, labels, lettering, grid lines, checkerboard, cast shadows, directional highlights, background, pots, scenery, clipped leaves, clipped stems",
+        "num_images": 1,
+        "seed": 61012203,
+        "sync_mode": false
+      },
+      "seed": 61012203,
+      "file": null,
+      "sha256": null,
+      "bytes": null,
+      "px": null,
+      "licence": {
+        "record": "RIGHTS.md#round-2--2026-10-13-utc",
+        "name": "FAL hosted endpoint commercial-use output terms",
+        "model_url": "https://fal.ai/models/fal-ai/ideogram/v3/generate-transparent",
+        "terms_url": "https://fal.ai/legal/terms-of-service",
+        "api_terms_url": "https://fal.ai/legal/api-services",
+        "commercial_use_permitted": true,
+        "commercial_use_statement": "Selected endpoint listing marks commercial use; subject to FAL service/API terms and input/output rights responsibilities. No output exists for this blocked attempt.",
+        "checked_at_utc": "2026-10-13",
+        "output_exists": false,
+        "attribution": "No separate mandatory attribution found on the checked listing; retain provenance; no CC0 or exclusivity claim."
+      },
+      "cost_usd": 0,
+      "status": "blocked_before_submission",
+      "estimate_usd": 0.09,
+      "actual_cost_usd": 0,
+      "derivative_proposal": "W4 assets/world/detail-v4/environment/botany/textures/foliage_atlas_basecolor_alpha.png with unchanged quadrant UVs; no output, retain authored atlas.",
+      "target_px": [
+        1024,
+        1024
+      ],
+      "physical_scale_m": null,
+      "history": [
+        {
+          "status": "prepared_not_submitted"
+        },
+        {
+          "status": "blocked_before_submission",
+          "at": "2026-10-13T02:06:14.169038+00:00",
+          "error": "MCP tool call requires approval, but approval policy is never"
+        }
+      ],
+      "request_id": null,
+      "submitted_at": null,
+      "attempt_recorded_at": "2026-10-13T02:06:14.169038+00:00",
+      "cost_basis": "No provider job submitted; no inference charge incurred. Published rate is preflight evidence only.",
+      "provider_status": "not_submitted",
+      "output_path": null,
+      "download_url": null,
+      "downloaded_at": null,
+      "provider": "fal",
+      "account_id": "github|5m4womwn5oan4fjuo2qmp172",
+      "schema_date_utc": "2026-10-13",
+      "model_version": "Ideogram v3 Transparent; immutable internal revision not exposed",
+      "reference_origins": [],
+      "parent_request_ids": [],
+      "reviewer": "Codex W5 round 2",
+      "runtime_destination": "None; W3/W4/W6 retain acceptance and integration",
+      "measured_runtime_cost": null,
+      "cleanup_time_seconds": 0,
+      "original_metrics": null,
+      "decision": "No candidate image; blocked by host tool approval policy. Retain authored assets.",
+      "tileability": {
+        "verified": false,
+        "review": "Not a repeating material. Not performed: host blocked submission; no RGBA output exists. Planned: verify exact 1024x1024 dimensions, four fixed 512 tiles, alpha channel, all four 4-texel gutters and bottom-centre stems, then inspect edges on light/dark backgrounds. No layout or alpha acceptance is made.",
+        "review_files": []
+      },
+      "derivatives": [],
+      "error": {
+        "origin": "host_tool_authorization",
+        "message": "MCP tool call requires approval, but approval policy is never",
+        "http_status": null,
+        "provider_error": false,
+        "evidence": "evidence/round2-submission-errors.json"
+      },
+      "billing": {
+        "published_unit_price_usd": 0.03,
+        "published_unit": "images",
+        "configuration_price_usd": 0.09,
+        "configuration_note": "QUALITY costs $0.09/image on endpoint page; base API rate $0.03 describes TURBO.",
+        "pre_submission_reservation_usd": 0.09,
+        "reserved_usd": 0,
+        "reservation_released": true
+      },
+      "generation_method": {
+        "native_alpha_endpoint": true,
+        "aspect_ratio": "1:1",
+        "exact_pixel_control": false,
+        "note": "Exact size and layout require output validation; none produced."
+      }
+    },
+    {
+      "id": "bark-r2-a",
+      "round": 2,
+      "request": "W4 grey olive bark; latest user size 1024 overrides receipt 512; 0.9 m",
+      "model": "fal-ai/z-image/turbo/tiling",
+      "prompt": "Seamless orthographic grey olive bark base colour, 1024x1024, 0.9 metre per tile, vertical fissures and restrained sparse lichen. Natural warm grey bark, fine fibrous detail and subtle age variation, uniform diffuse illumination. Tileable on both axes. No trunk silhouette, curvature, perspective, directional shadows, baked highlights, text, symbols or border.",
+      "params": {
+        "prompt": "Seamless orthographic grey olive bark base colour, 1024x1024, 0.9 metre per tile, vertical fissures and restrained sparse lichen. Natural warm grey bark, fine fibrous detail and subtle age variation, uniform diffuse illumination. Tileable on both axes. No trunk silhouette, curvature, perspective, directional shadows, baked highlights, text, symbols or border.",
+        "seed": 61012204,
+        "image_size": {
+          "width": 1024,
+          "height": 1024
+        },
+        "num_images": 1,
+        "num_inference_steps": 8,
+        "output_format": "png",
+        "tiling_mode": "both",
+        "tile_size": 128,
+        "tile_stride": 64,
+        "acceleration": "none",
+        "enable_prompt_expansion": false,
+        "enable_safety_checker": true,
+        "sync_mode": false
+      },
+      "seed": 61012204,
+      "file": null,
+      "sha256": null,
+      "bytes": null,
+      "px": null,
+      "licence": {
+        "record": "RIGHTS.md#round-2--2026-10-13-utc",
+        "name": "FAL hosted endpoint commercial-use output terms",
+        "model_url": "https://fal.ai/models/fal-ai/z-image/turbo/tiling",
+        "terms_url": "https://fal.ai/legal/terms-of-service",
+        "api_terms_url": "https://fal.ai/legal/api-services",
+        "commercial_use_permitted": true,
+        "commercial_use_statement": "Selected endpoint listing marks commercial use; subject to FAL service/API terms and input/output rights responsibilities. No output exists for this blocked attempt.",
+        "checked_at_utc": "2026-10-13",
+        "output_exists": false,
+        "attribution": "No separate mandatory attribution found on the checked listing; retain provenance; no CC0 or exclusivity claim."
+      },
+      "cost_usd": 0,
+      "status": "blocked_before_submission",
+      "estimate_usd": null,
+      "actual_cost_usd": 0,
+      "derivative_proposal": "W4 assets/world/detail-v4/environment/botany/textures/bark_basecolor.png; no output, retain authored bark.",
+      "target_px": [
+        1024,
+        1024
+      ],
+      "physical_scale_m": 0.9,
+      "history": [
+        {
+          "status": "prepared_not_submitted"
+        },
+        {
+          "status": "blocked_before_submission",
+          "at": "2026-10-13T02:06:14.169038+00:00",
+          "error": "MCP tool call requires approval, but approval policy is never"
+        }
+      ],
+      "request_id": null,
+      "submitted_at": null,
+      "attempt_recorded_at": "2026-10-13T02:06:14.169038+00:00",
+      "cost_basis": "No provider job submitted; no inference charge incurred. Published rate is preflight evidence only.",
+      "provider_status": "not_submitted",
+      "output_path": null,
+      "download_url": null,
+      "downloaded_at": null,
+      "provider": "fal",
+      "account_id": "github|5m4womwn5oan4fjuo2qmp172",
+      "schema_date_utc": "2026-10-13",
+      "model_version": "Z-Image Turbo Seamless Tiling; immutable internal revision not exposed",
+      "reference_origins": [],
+      "parent_request_ids": [],
+      "reviewer": "Codex W5 round 2",
+      "runtime_destination": "None; W3/W4/W6 retain acceptance and integration",
+      "measured_runtime_cost": null,
+      "cleanup_time_seconds": 0,
+      "original_metrics": null,
+      "decision": "No candidate image; blocked by host tool approval policy. Retain authored assets.",
+      "tileability": {
+        "verified": false,
+        "review": "Not performed: host blocked submission; no image exists. Planned: lossless 2x2 repeat and half-width/half-height offset with inspect_tiles.py; compare wrap MAE against interior-boundary median and p99, then inspect grain continuity visually. No seamless claim is made.",
+        "review_files": []
+      },
+      "derivatives": [],
+      "error": {
+        "origin": "host_tool_authorization",
+        "message": "MCP tool call requires approval, but approval policy is never",
+        "http_status": null,
+        "provider_error": false,
+        "evidence": "evidence/round2-submission-errors.json"
+      },
+      "billing": {
+        "published_unit_price_usd": 0.02,
+        "published_unit": "megapixels",
+        "configuration_price_usd": null,
+        "configuration_note": "Pixel billing rounding/minimum unverified; reserved up to $0.04 for one <=1024-square job.",
+        "pre_submission_reservation_usd": 0.04,
+        "reserved_usd": 0,
+        "reservation_released": true
+      },
+      "generation_method": {
+        "tiling_mode": "both",
+        "tile_size": 128,
+        "tile_stride": 64,
+        "documentation": "evidence/round2-preflight.json",
+        "note": "Actual schema controls, not prompt-only tiling; no output produced."
+      }
+    },
+    {
+      "id": "limestone-r2-a",
+      "round": 2,
+      "request": "W4 pale warm limestone; 1024 px, 1.0 m",
+      "model": "fal-ai/z-image/turbo/tiling",
+      "prompt": "Seamless orthographic material study of pale warm limestone at 1.0 metre per square tile, 1024x1024 base colour. Restrained natural variation, fine pitting and faint horizontal bedding. Pale warm stone in sRGB range #A89980 to #D6C9B0. Uniform diffuse illumination, flat continuous stone surface, no veins, cracks, joints, fixtures, perspective, directional shadow, specular highlights, symbols or text. Tileable on both axes.",
+      "params": {
+        "prompt": "Seamless orthographic material study of pale warm limestone at 1.0 metre per square tile, 1024x1024 base colour. Restrained natural variation, fine pitting and faint horizontal bedding. Pale warm stone in sRGB range #A89980 to #D6C9B0. Uniform diffuse illumination, flat continuous stone surface, no veins, cracks, joints, fixtures, perspective, directional shadow, specular highlights, symbols or text. Tileable on both axes.",
+        "seed": 61012205,
+        "image_size": {
+          "width": 1024,
+          "height": 1024
+        },
+        "num_images": 1,
+        "num_inference_steps": 8,
+        "output_format": "png",
+        "tiling_mode": "both",
+        "tile_size": 128,
+        "tile_stride": 64,
+        "acceleration": "none",
+        "enable_prompt_expansion": false,
+        "enable_safety_checker": true,
+        "sync_mode": false
+      },
+      "seed": 61012205,
+      "file": null,
+      "sha256": null,
+      "bytes": null,
+      "px": null,
+      "licence": {
+        "record": "RIGHTS.md#round-2--2026-10-13-utc",
+        "name": "FAL hosted endpoint commercial-use output terms",
+        "model_url": "https://fal.ai/models/fal-ai/z-image/turbo/tiling",
+        "terms_url": "https://fal.ai/legal/terms-of-service",
+        "api_terms_url": "https://fal.ai/legal/api-services",
+        "commercial_use_permitted": true,
+        "commercial_use_statement": "Selected endpoint listing marks commercial use; subject to FAL service/API terms and input/output rights responsibilities. No output exists for this blocked attempt.",
+        "checked_at_utc": "2026-10-13",
+        "output_exists": false,
+        "attribution": "No separate mandatory attribution found on the checked listing; retain provenance; no CC0 or exclusivity claim."
+      },
+      "cost_usd": 0,
+      "status": "blocked_before_submission",
+      "estimate_usd": null,
+      "actual_cost_usd": 0,
+      "derivative_proposal": "W4 assets/world/detail-v4/environment/places/textures/limestone_basecolor.png on benches, plinths, abutments, coping, steps and column bases; no output, retain authored limestone.",
+      "target_px": [
+        1024,
+        1024
+      ],
+      "physical_scale_m": 1.0,
+      "history": [
+        {
+          "status": "prepared_not_submitted"
+        },
+        {
+          "status": "blocked_before_submission",
+          "at": "2026-10-13T02:06:14.169038+00:00",
+          "error": "MCP tool call requires approval, but approval policy is never"
+        }
+      ],
+      "request_id": null,
+      "submitted_at": null,
+      "attempt_recorded_at": "2026-10-13T02:06:14.169038+00:00",
+      "cost_basis": "No provider job submitted; no inference charge incurred. Published rate is preflight evidence only.",
+      "provider_status": "not_submitted",
+      "output_path": null,
+      "download_url": null,
+      "downloaded_at": null,
+      "provider": "fal",
+      "account_id": "github|5m4womwn5oan4fjuo2qmp172",
+      "schema_date_utc": "2026-10-13",
+      "model_version": "Z-Image Turbo Seamless Tiling; immutable internal revision not exposed",
+      "reference_origins": [],
+      "parent_request_ids": [],
+      "reviewer": "Codex W5 round 2",
+      "runtime_destination": "None; W3/W4/W6 retain acceptance and integration",
+      "measured_runtime_cost": null,
+      "cleanup_time_seconds": 0,
+      "original_metrics": null,
+      "decision": "No candidate image; blocked by host tool approval policy. Retain authored assets.",
+      "tileability": {
+        "verified": false,
+        "review": "Not performed: host blocked submission; no image exists. Planned: lossless 2x2 repeat and half-width/half-height offset with inspect_tiles.py; compare wrap MAE against interior-boundary median and p99, then inspect grain continuity visually. No seamless claim is made.",
+        "review_files": []
+      },
+      "derivatives": [],
+      "error": {
+        "origin": "host_tool_authorization",
+        "message": "MCP tool call requires approval, but approval policy is never",
+        "http_status": null,
+        "provider_error": false,
+        "evidence": "evidence/round2-submission-errors.json"
+      },
+      "billing": {
+        "published_unit_price_usd": 0.02,
+        "published_unit": "megapixels",
+        "configuration_price_usd": null,
+        "configuration_note": "Pixel billing rounding/minimum unverified; reserved up to $0.04 for one <=1024-square job.",
+        "pre_submission_reservation_usd": 0.04,
+        "reserved_usd": 0,
+        "reservation_released": true
+      },
+      "generation_method": {
+        "tiling_mode": "both",
+        "tile_size": 128,
+        "tile_stride": 64,
+        "documentation": "evidence/round2-preflight.json",
+        "note": "Actual schema controls, not prompt-only tiling; no output produced."
+      }
     }
   ],
   "reconciliation": "evidence/october7-reconciliation.json",
@@ -611,5 +1157,33 @@
     "commit": null,
     "commit_error": "fatal: Unable to create '/Users/j/Documents/dev/permagent-runtime/.git/worktrees/world-production-20261006/index.lock': Operation not permitted",
     "push_attempted": false
-  }
+  },
+  "rounds": [
+    {
+      "round": 1,
+      "summary_scope": "Existing top-level financial/status/review/delivery fields continue to describe round 1. Its four item records remain unchanged.",
+      "estimated_total_usd": 0.6,
+      "actual_total_usd": null,
+      "status": "stopped_on_fal_error"
+    },
+    {
+      "round": 2,
+      "status": "blocked_before_submission",
+      "hard_cap_usd": 5,
+      "generation_tool_attempts": 5,
+      "provider_jobs_submitted": 0,
+      "completed_images": 0,
+      "estimated_total_usd": 0,
+      "actual_total_usd": 0,
+      "reserved_usd": 0,
+      "cap_reached": false,
+      "stop_reason": "MCP tool call requires approval, but approval policy is never",
+      "optional_deferred": [
+        "water-line staining decal: lowest priority; shared generation approval blocker; no attempt or charge"
+      ],
+      "receipt": "w5-receipt-round2-20261012.md",
+      "finalized_at": "2026-10-13T02:06:14.169038+00:00",
+      "cost_note": "Zero new inference spend; no job was created. Round-one $0.60 conservative exposure is unchanged and is not round-two spend."
+    }
+  ]
 }

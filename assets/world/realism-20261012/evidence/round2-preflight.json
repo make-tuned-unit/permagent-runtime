@@ -1,0 +1,3602 @@
+{
+  "account": {
+    "status": "ready",
+    "checked_at": "2026-10-13T02:02:33.730Z",
+    "account": {
+      "id": "github|5m4womwn5oan4fjuo2qmp172",
+      "name": "Jesse Sharratt"
+    },
+    "message": "No billing restriction was reported for this fal account. Check model pricing before generating; the API checks whether each job is allowed and affordable."
+  },
+  "surface_recommendation": {
+    "task": "Generate seamless, orthographic base-colour material textures (oiled walnut 1024x1024 representing 1 metre, grey bark, warm limestone, brown leather). Required: documented tileable/seamless output support through model or actual parameters, not prompt wording alone. Find appropriate FAL endpoint and commercial-use terms.",
+    "decision_id": "2095e0b2-89d0-4454-9101-12b079e1ba9c",
+    "decision_summary": {
+      "policy_version": "fit-first-v1",
+      "knowledge_status": "complete",
+      "recommended_endpoint_ids": [],
+      "draft_candidate_endpoint_ids": [],
+      "selection_bases": [
+        "unresolved"
+      ],
+      "decision_statuses": [
+        "evidence_unavailable"
+      ],
+      "rejected_candidate_count": 0,
+      "unresolved_candidate_count": 0
+    },
+    "interpreted_task": {
+      "category": "text-to-image",
+      "operation": "Image generation",
+      "source_basis": "task_text",
+      "requirements": {
+        "resolution": "1024x1024",
+        "output_format": "png",
+        "output_count": 1
+      }
+    },
+    "knowledge_status": "complete",
+    "knowledge_retrieval": {
+      "initial": "complete",
+      "enrichment": "complete"
+    },
+    "routing_status": "partial",
+    "routing_source": "published_guidance",
+    "flow_redirects": [],
+    "routing_warnings": [
+      "Semantic routing search unavailable; keyword and explicit routing remain available."
+    ],
+    "results": [
+      {
+        "label": "Image generation",
+        "decision_status": "evidence_unavailable",
+        "selection_basis": "unresolved",
+        "plan_kind": "unresolved",
+        "fit_candidates": [],
+        "tip": "Requested named model resolved from the live catalog. Honor it when it reflects the user's choice; an assistant's candidate is not a user instruction. No exact compatible match found for Image generation; inspect the conflict/fit checks before submitting. Use exact schema fields; do not assume shared parameters such as strength.",
+        "models": []
+      }
+    ],
+    "applicable_claims": [
+      {
+        "rank": 1,
+        "body": "Default for new text-to-image work, including text, infographics, and consistent people or products. Supports 1K\u20134K and up to 14 references. Google's October 2026 tests favored 2.1 over Pro on reported image tasks. Use Pro when named or for an existing Pro-tuned workflow.",
+        "claim_id": "db3eej4regj68t5qdslg",
+        "domain": null,
+        "task": {
+          "id": "dad79b4regj2f7u8g8og",
+          "name": "Text to image",
+          "category": "text-to-image"
+        },
+        "source": "curated",
+        "published_at": "2026-10-08T00:43:56.559Z",
+        "updated_at": "2026-10-08T00:45:45.606Z",
+        "evidence_basis": null,
+        "sample_size": null,
+        "confidence": null,
+        "endpoint_id": "google/nano-banana-2.1"
+      },
+      {
+        "rank": 2,
+        "body": "Use for an explicit Pro request or an existing Pro-tuned, approved workflow. Google describes Pro as suited to complex graphic design, precise brand work, and product mockups. Compare outputs on the actual brief before switching from 2.1; do not assume Pro is better by name.",
+        "claim_id": "db3efbkregj690dqehug",
+        "domain": null,
+        "task": {
+          "id": "dad79b4regj2f7u8g8og",
+          "name": "Text to image",
+          "category": "text-to-image"
+        },
+        "source": "curated",
+        "published_at": "2026-10-08T00:45:34.665Z",
+        "updated_at": "2026-10-08T00:45:45.607Z",
+        "evidence_basis": null,
+        "sample_size": null,
+        "confidence": null,
+        "endpoint_id": "fal-ai/nano-banana-pro"
+      },
+      {
+        "rank": 3,
+        "body": "Fast, high-quality stylization and generation.",
+        "claim_id": "dad7d0sregj292e8nm00",
+        "domain": null,
+        "task": {
+          "id": "dad79b4regj2f7u8g8og",
+          "name": "Text to image",
+          "category": "text-to-image"
+        },
+        "source": "curated",
+        "published_at": "2026-09-04T07:42:59.342Z",
+        "updated_at": "2026-10-08T00:45:45.608Z",
+        "evidence_basis": null,
+        "sample_size": null,
+        "confidence": null,
+        "endpoint_id": "fal-ai/nano-banana-2"
+      },
+      {
+        "rank": 4,
+        "body": "Very high quality; pick for maximum-fidelity flagship results.",
+        "claim_id": "dad7d0sregj292e8nm0g",
+        "domain": null,
+        "task": {
+          "id": "dad79b4regj2f7u8g8og",
+          "name": "Text to image",
+          "category": "text-to-image"
+        },
+        "source": "curated",
+        "published_at": "2026-09-04T07:42:59.345Z",
+        "updated_at": "2026-10-08T00:45:45.608Z",
+        "evidence_basis": null,
+        "sample_size": null,
+        "confidence": null,
+        "endpoint_id": "openai/gpt-image-2"
+      },
+      {
+        "rank": 5,
+        "body": "SOTA prompt understanding, native text rendering, dense and structured layouts.",
+        "claim_id": "dad7d0sregj292e8nm10",
+        "domain": null,
+        "task": {
+          "id": "dad79b4regj2f7u8g8og",
+          "name": "Text to image",
+          "category": "text-to-image"
+        },
+        "source": "curated",
+        "published_at": "2026-09-04T07:42:59.347Z",
+        "updated_at": "2026-10-08T00:45:45.609Z",
+        "evidence_basis": null,
+        "sample_size": null,
+        "confidence": null,
+        "endpoint_id": "bytedance/seedream/v5/pro/text-to-image"
+      },
+      {
+        "endpoint_id": "google/nano-banana-2.1",
+        "kind": "usage_tip",
+        "body": "Use google/nano-banana-2.1 for text-only prompts. When the user supplies reference images, use google/nano-banana-2.1/edit and pass image_urls. Check the endpoint schema before each run. Source: https://fal.ai/nano-banana-2.1",
+        "source": "curated",
+        "task": null,
+        "rank": null
+      },
+      {
+        "endpoint_id": "google/nano-banana-2.1",
+        "kind": "weakness",
+        "body": "Small text, especially at 1K, and long paragraphs can be blurry. Character continuity can drift, and marked edits can ignore part of an instruction. Check final copy and identity. Source: https://deepmind.google/models/model-cards/nano-banana-2-1/",
+        "source": "curated",
+        "task": null,
+        "rank": null
+      },
+      {
+        "endpoint_id": "fal-ai/nano-banana-pro",
+        "kind": "usage_tip",
+        "body": "Use the /edit route when the user attaches images; the base route is text-to-image only.",
+        "source": "curated",
+        "task": null,
+        "rank": null
+      },
+      {
+        "endpoint_id": "bytedance/seedream/v5/pro/text-to-image",
+        "kind": "usage_tip",
+        "body": "Use bytedance/seedream/v5/pro/edit for editing; same strengths in text rendering and dense layouts.",
+        "source": "curated",
+        "task": null,
+        "rank": null
+      }
+    ],
+    "candidates": [
+      {
+        "endpoint_id": "google/nano-banana-2.1",
+        "category": "text-to-image",
+        "discovery_source": "published_task_guidance"
+      },
+      {
+        "endpoint_id": "blackforestlabs/flux-3/text-to-image",
+        "display_name": "Flux 3 Image",
+        "category": "text-to-image",
+        "discovery_source": "catalog_candidate"
+      },
+      {
+        "endpoint_id": "ideogram/v4.5",
+        "display_name": "Ideogram V4.5 Text to Image",
+        "category": "text-to-image",
+        "discovery_source": "catalog_candidate"
+      },
+      {
+        "endpoint_id": "recraft/v4.1/flash/text-to-image",
+        "display_name": "Recraft V4.1 Flash Text to Image",
+        "category": "text-to-image",
+        "discovery_source": "catalog_candidate"
+      },
+      {
+        "endpoint_id": "bytedance/seedream/v5/flash/text-to-image",
+        "display_name": "Seedream",
+        "category": "text-to-image",
+        "discovery_source": "catalog_candidate"
+      },
+      {
+        "endpoint_id": "fal-ai/nano-banana-pro",
+        "category": "text-to-image",
+        "discovery_source": "published_task_guidance"
+      },
+      {
+        "endpoint_id": "fal-ai/nano-banana-2",
+        "category": "text-to-image",
+        "discovery_source": "published_task_guidance"
+      },
+      {
+        "endpoint_id": "openai/gpt-image-2",
+        "category": "text-to-image",
+        "discovery_source": "published_task_guidance"
+      },
+      {
+        "endpoint_id": "bytedance/seedream/v5/pro/text-to-image",
+        "category": "text-to-image",
+        "discovery_source": "published_task_guidance"
+      }
+    ],
+    "model_knowledge": {
+      "models": [
+        {
+          "endpoint_id": "google/nano-banana-2.1",
+          "display_name": "Nano Banana 2.1",
+          "category": "text-to-image",
+          "relevance": null,
+          "insights": [
+            {
+              "kind": "default_pick",
+              "body": "Default for new text-to-image work, including text, infographics, and consistent people or products. Supports 1K\u20134K and up to 14 references. Google's October 2026 tests favored 2.1 over Pro on reported image tasks. Use Pro when named or for an existing Pro-tuned workflow.",
+              "source": "curated",
+              "task": {
+                "name": "Text to image",
+                "category": "text-to-image"
+              },
+              "rank": 1
+            },
+            {
+              "kind": "usage_tip",
+              "body": "Use google/nano-banana-2.1 for text-only prompts. When the user supplies reference images, use google/nano-banana-2.1/edit and pass image_urls. Check the endpoint schema before each run. Source: https://fal.ai/nano-banana-2.1",
+              "source": "curated",
+              "task": null,
+              "rank": null
+            },
+            {
+              "kind": "weakness",
+              "body": "Small text, especially at 1K, and long paragraphs can be blurry. Character continuity can drift, and marked edits can ignore part of an instruction. Check final copy and identity. Source: https://deepmind.google/models/model-cards/nano-banana-2-1/",
+              "source": "curated",
+              "task": null,
+              "rank": null
+            }
+          ]
+        },
+        {
+          "endpoint_id": "fal-ai/nano-banana-pro",
+          "display_name": "Nano Banana Pro",
+          "category": "text-to-image",
+          "relevance": null,
+          "insights": [
+            {
+              "kind": "default_pick",
+              "body": "Use for an explicit Pro request or an existing Pro-tuned, approved workflow. Google describes Pro as suited to complex graphic design, precise brand work, and product mockups. Compare outputs on the actual brief before switching from 2.1; do not assume Pro is better by name.",
+              "source": "curated",
+              "task": {
+                "name": "Text to image",
+                "category": "text-to-image"
+              },
+              "rank": 2
+            },
+            {
+              "kind": "usage_tip",
+              "body": "Use the /edit route when the user attaches images; the base route is text-to-image only.",
+              "source": "curated",
+              "task": null,
+              "rank": null
+            }
+          ]
+        },
+        {
+          "endpoint_id": "fal-ai/nano-banana-2",
+          "display_name": "Nano Banana 2",
+          "category": "text-to-image",
+          "relevance": null,
+          "insights": [
+            {
+              "kind": "default_pick",
+              "body": "Fast, high-quality stylization and generation.",
+              "source": "curated",
+              "task": {
+                "name": "Text to image",
+                "category": "text-to-image"
+              },
+              "rank": 3
+            }
+          ]
+        },
+        {
+          "endpoint_id": "openai/gpt-image-2",
+          "display_name": "GPT Image 2 API",
+          "category": "text-to-image",
+          "relevance": null,
+          "insights": [
+            {
+              "kind": "default_pick",
+              "body": "Very high quality; pick for maximum-fidelity flagship results.",
+              "source": "curated",
+              "task": {
+                "name": "Text to image",
+                "category": "text-to-image"
+              },
+              "rank": 4
+            }
+          ]
+        },
+        {
+          "endpoint_id": "bytedance/seedream/v5/pro/text-to-image",
+          "display_name": "Seedream 5.0 Pro Text to Image",
+          "category": "text-to-image",
+          "relevance": null,
+          "insights": [
+            {
+              "kind": "default_pick",
+              "body": "SOTA prompt understanding, native text rendering, dense and structured layouts.",
+              "source": "curated",
+              "task": {
+                "name": "Text to image",
+                "category": "text-to-image"
+              },
+              "rank": 5
+            },
+            {
+              "kind": "usage_tip",
+              "body": "Use bytedance/seedream/v5/pro/edit for editing; same strengths in text rendering and dense layouts.",
+              "source": "curated",
+              "task": null,
+              "rank": null
+            }
+          ]
+        },
+        {
+          "endpoint_id": "blackforestlabs/flux-3/text-to-image",
+          "display_name": "Flux 3 Image",
+          "category": "text-to-image",
+          "relevance": null,
+          "insights": []
+        },
+        {
+          "endpoint_id": "ideogram/v4.5",
+          "display_name": "Ideogram V4.5 Text to Image",
+          "category": "text-to-image",
+          "relevance": null,
+          "insights": []
+        },
+        {
+          "endpoint_id": "recraft/v4.1/flash/text-to-image",
+          "display_name": "Recraft V4.1 Flash Text to Image",
+          "category": "text-to-image",
+          "relevance": null,
+          "insights": []
+        },
+        {
+          "endpoint_id": "bytedance/seedream/v5/flash/text-to-image",
+          "display_name": "Seedream",
+          "category": "text-to-image",
+          "relevance": null,
+          "insights": []
+        }
+      ],
+      "evidence": {
+        "version": 3,
+        "compiled_at": "2026-10-12T02:00:07.192Z",
+        "window_start": "2026-10-05T00:00:00.000Z",
+        "window_end": "2026-10-12T00:00:00.000Z",
+        "evaluated_at": "2026-10-13T02:02:34.989Z",
+        "latency_definition": "Successful execution observations in milliseconds; mixed workloads; excludes queue/startup; not runtime guarantees.",
+        "instructions": "Successful execution observations in milliseconds; mixed workloads; excludes queue/startup; not runtime guarantees. Report p50/p90 with their measurement window. Null means unknown, never zero. Trending is the analytics category rank at its source timestamp, not adoption or quality. New means registry publication within 30 days of the response evaluation time, not first usage. Lab recommendations are authored guidance, not measured latency, trending or newness. Use the existing pricing tool for current prices, preserving billing units and required configuration; these observations contain no prices.",
+        "models": [
+          {
+            "endpoint_id": "google/nano-banana-2.1",
+            "evidence": {
+              "endpoint_id": "google/nano-banana-2.1",
+              "title": "Nano Banana 2.1",
+              "category": "text-to-image",
+              "usage_tier": null,
+              "latency": {
+                "p50_ms": null,
+                "p90_ms": null,
+                "sufficient_evidence": false,
+                "latest_request_at": null
+              },
+              "trending": {
+                "category_rank": 8,
+                "computed_at": "2026-10-11T09:49:06.521Z"
+              },
+              "published_at": "2026-10-06T16:02:31.852Z",
+              "is_new": true
+            }
+          },
+          {
+            "endpoint_id": "fal-ai/nano-banana-pro",
+            "evidence": {
+              "endpoint_id": "fal-ai/nano-banana-pro",
+              "title": "Nano Banana Pro",
+              "category": "text-to-image",
+              "usage_tier": "high",
+              "latency": {
+                "p50_ms": 25525,
+                "p90_ms": 37320,
+                "sufficient_evidence": true,
+                "latest_request_at": "2026-10-11T23:59:57.941Z"
+              },
+              "trending": {
+                "category_rank": 2,
+                "computed_at": "2026-10-11T09:49:06.521Z"
+              },
+              "published_at": "2025-11-20T14:24:45.001Z",
+              "is_new": false
+            }
+          },
+          {
+            "endpoint_id": "fal-ai/nano-banana-2",
+            "evidence": {
+              "endpoint_id": "fal-ai/nano-banana-2",
+              "title": "Nano Banana 2",
+              "category": "text-to-image",
+              "usage_tier": "high",
+              "latency": {
+                "p50_ms": 11153,
+                "p90_ms": 19353,
+                "sufficient_evidence": true,
+                "latest_request_at": "2026-10-11T23:59:59.801Z"
+              },
+              "trending": {
+                "category_rank": 3,
+                "computed_at": "2026-10-11T09:49:06.521Z"
+              },
+              "published_at": "2026-02-26T16:08:01.361Z",
+              "is_new": false
+            }
+          },
+          {
+            "endpoint_id": "openai/gpt-image-2",
+            "evidence": {
+              "endpoint_id": "openai/gpt-image-2",
+              "title": "GPT Image 2 API",
+              "category": "text-to-image",
+              "usage_tier": null,
+              "latency": {
+                "p50_ms": null,
+                "p90_ms": null,
+                "sufficient_evidence": false,
+                "latest_request_at": null
+              },
+              "trending": {
+                "category_rank": 4,
+                "computed_at": "2026-10-11T09:49:06.521Z"
+              },
+              "published_at": "2026-04-21T19:15:20.183Z",
+              "is_new": false
+            }
+          },
+          {
+            "endpoint_id": "bytedance/seedream/v5/pro/text-to-image",
+            "evidence": {
+              "endpoint_id": "bytedance/seedream/v5/pro/text-to-image",
+              "title": "Seedream 5.0 Pro Text to Image",
+              "category": "text-to-image",
+              "usage_tier": null,
+              "latency": {
+                "p50_ms": null,
+                "p90_ms": null,
+                "sufficient_evidence": false,
+                "latest_request_at": null
+              },
+              "trending": {
+                "category_rank": 12,
+                "computed_at": "2026-10-11T09:49:06.521Z"
+              },
+              "published_at": "2026-07-08T13:18:11.843Z",
+              "is_new": false
+            }
+          },
+          {
+            "endpoint_id": "blackforestlabs/flux-3/text-to-image",
+            "evidence": {
+              "endpoint_id": "blackforestlabs/flux-3/text-to-image",
+              "title": "Flux 3 Image",
+              "category": "text-to-image",
+              "usage_tier": null,
+              "latency": {
+                "p50_ms": null,
+                "p90_ms": null,
+                "sufficient_evidence": false,
+                "latest_request_at": null
+              },
+              "trending": {
+                "category_rank": 20,
+                "computed_at": "2026-10-11T09:49:06.521Z"
+              },
+              "published_at": "2026-10-01T19:12:23.466Z",
+              "is_new": true
+            }
+          },
+          {
+            "endpoint_id": "ideogram/v4.5",
+            "evidence": {
+              "endpoint_id": "ideogram/v4.5",
+              "title": "Ideogram V4.5 Text to Image",
+              "category": "text-to-image",
+              "usage_tier": null,
+              "latency": {
+                "p50_ms": null,
+                "p90_ms": null,
+                "sufficient_evidence": false,
+                "latest_request_at": null
+              },
+              "trending": {
+                "category_rank": 29,
+                "computed_at": "2026-10-11T09:49:06.521Z"
+              },
+              "published_at": "2026-09-30T16:55:56.790Z",
+              "is_new": true
+            }
+          },
+          {
+            "endpoint_id": "recraft/v4.1/flash/text-to-image",
+            "evidence": {
+              "endpoint_id": "recraft/v4.1/flash/text-to-image",
+              "title": "Recraft V4.1 Flash Text to Image",
+              "category": "text-to-image",
+              "usage_tier": null,
+              "latency": {
+                "p50_ms": null,
+                "p90_ms": null,
+                "sufficient_evidence": false,
+                "latest_request_at": null
+              },
+              "trending": {
+                "category_rank": 54,
+                "computed_at": "2026-10-11T09:49:06.521Z"
+              },
+              "published_at": "2026-09-23T15:08:13.966Z",
+              "is_new": true
+            }
+          },
+          {
+            "endpoint_id": "bytedance/seedream/v5/flash/text-to-image",
+            "evidence": {
+              "endpoint_id": "bytedance/seedream/v5/flash/text-to-image",
+              "title": "Seedream",
+              "category": "text-to-image",
+              "usage_tier": null,
+              "latency": {
+                "p50_ms": null,
+                "p90_ms": null,
+                "sufficient_evidence": false,
+                "latest_request_at": null
+              },
+              "trending": {
+                "category_rank": 35,
+                "computed_at": "2026-10-11T09:49:06.521Z"
+              },
+              "published_at": "2026-09-23T10:00:07.749Z",
+              "is_new": true
+            }
+          }
+        ]
+      },
+      "unavailable_endpoint_ids": [
+        "tileable/seamless"
+      ],
+      "stats_available": true,
+      "note": "Successful execution observations in milliseconds; mixed workloads; excludes queue/startup; not runtime guarantees. Report p50/p90 with their measurement window. Null means unknown, never zero. Trending is the analytics category rank at its source timestamp, not adoption or quality. New means registry publication within 30 days of the response evaluation time, not first usage. Lab recommendations are authored guidance, not measured latency, trending or newness. Use the existing pricing tool for current prices, preserving billing units and required configuration; these observations contain no prices."
+    },
+    "ranking_note": "The models list preserves the Platform API's Explore discovery order: Trending for browsing, relevance for keyword searches. Its rank is a list position, not a quality score. Fresh published task/domain routing determines the curated starting pick. Legacy default_pick rows in model_knowledge are unscoped advice, not applicable routing ranks. Candidates labelled recent_catalog use acknowledged server publication-date order; current_catalog is ordinary discovery when Recent cannot be confirmed. Neither recency nor missing statistics establishes quality or latency.",
+    "next_steps": "Honor an explicitly requested model; verify its exact endpoint and do not silently substitute it.\nCopy endpoint_id exactly from the live catalog. Namespaces and versions vary by provider: never add or change a provider prefix, invent an endpoint from a model name, or reuse a guessed alias. When a named model is missing or unavailable, search_models can resolve current catalog matches; explain any mismatch with the requested endpoint before choosing a replacement. An unavailable endpoint alone does not establish that the user connected the wrong account.\nOtherwise use current applicable published guidance in recommended_model and model_knowledge after checking the user's real sources, required capabilities and scoped budget. Follow the next compatible published fallback and explain why. If published guidance is missing or outdated, use search_models and search_docs to evaluate current candidates. A new endpoint can qualify without adoption statistics, but recency alone does not establish quality. Do not submit a choice with decision_status needs_input, no_compatible_candidate or evidence_unavailable. A workflow_needed result needs a verified dependent plan before spend.\nWith draft_inspection_required, draft_candidate establishes technical/reference fit only. Generate a draft only within existing user authorization and the checked budget, then inspect it against original conditioning sources before dependent generation or approval. Preservation stays unverified; a draft candidate is not a final recommended_model or permission to spend.\nCatalog order, popularity and release recency are discovery signals, not quality or latency rankings. Fast subject motion describes movement in the scene, not generation latency. Only treat user-requested settings as hard constraints; do not invent an exact resolution or audio requirement to justify switching models.\nLive retrieval does not establish when guidance was authored. Without an update date, freshness is unknown; verify capabilities in current schemas/docs and do not claim the pick is the newest or fastest without evidence. Skills and workflow examples supply production advice, not competing model defaults. Prefer current published task/domain guidance over bundled family rankings. Use get_pricing for the actual settings before material spending. Cost estimates preserve units and cover only known quantities, not final billing guarantees. Pass the optional decision_id to run_model, submit_job or each applicable batch item; it links observations and is never authorization. Inspect get_model_schema, then use run_model or submit_job and present completed media."
+  },
+  "atlas_recommendation": {
+    "task": "Generate original botanical colour-and-opacity atlas, 1024x1024 RGBA, true alpha, strict fixed 2x2 quadrants: top-left heart-leaf vine; top-right radial narrow grey-green leaves; bottom-left lanceolate olive-like sprig; bottom-right laurel-like sprig. Bottom-centre stems, 4-pixel gutters, neutral diffuse illumination. Need commercial-use outputs. Could use alpha removal step if required; identify supported workflow.",
+    "decision_id": "5484bf70-2030-4ea2-b2f3-ea98ff0d5b5f",
+    "decision_summary": {
+      "policy_version": "fit-first-v1",
+      "knowledge_status": "complete",
+      "recommended_endpoint_ids": [],
+      "draft_candidate_endpoint_ids": [],
+      "selection_bases": [
+        "unresolved"
+      ],
+      "decision_statuses": [
+        "needs_input"
+      ],
+      "rejected_candidate_count": 4,
+      "unresolved_candidate_count": 7
+    },
+    "interpreted_task": {
+      "category": "text-to-image",
+      "operation": "Image generation",
+      "source_basis": "task_text",
+      "requirements": {
+        "resolution": "1024x1024",
+        "output_format": "png",
+        "output_count": 1
+      }
+    },
+    "knowledge_status": "complete",
+    "knowledge_retrieval": {
+      "initial": "complete",
+      "enrichment": "complete"
+    },
+    "routing_status": "partial",
+    "routing_source": "published_guidance",
+    "flow_redirects": [],
+    "routing_warnings": [
+      "Semantic routing search unavailable; keyword and explicit routing remain available."
+    ],
+    "results": [
+      {
+        "label": "Image generation",
+        "decision_status": "needs_input",
+        "selection_basis": "unresolved",
+        "plan_kind": "unresolved",
+        "fit_candidates": [
+          {
+            "endpoint_id": "google/nano-banana-2.1",
+            "display_name": "Nano Banana 2.1",
+            "description": "Nano Banana 2.1 by Google generates images from text prompts, with output resolutions up to 4K, adjustable aspect ratios, and optional web search grounding.",
+            "category": "text-to-image",
+            "fit_status": "fail",
+            "fit_checks": [
+              {
+                "requirement": "resolution",
+                "status": "fail",
+                "basis": "Current input schema field resolution"
+              },
+              {
+                "requirement": "output_format",
+                "status": "pass",
+                "basis": "Current input schema field output_format"
+              },
+              {
+                "requirement": "output_count",
+                "status": "pass",
+                "basis": "Current input schema field num_images"
+              },
+              {
+                "requirement": "budget",
+                "status": "unknown",
+                "basis": "The current billing unit, price or quantity is unresolved"
+              }
+            ],
+            "cost": {
+              "status": "unknown",
+              "estimate_usd": null,
+              "budget_fit": "unknown",
+              "advisory_only": true,
+              "configuration_complete": false,
+              "limitations": "Rate \u00d7 known units only. Configuration rules, minimum charges and rounding are unavailable; this is not a final charge guarantee.",
+              "price": {
+                "endpoint_id": "google/nano-banana-2.1",
+                "unit_price": 1,
+                "unit": "units",
+                "currency": "USD"
+              },
+              "reason": "quantity_unavailable"
+            }
+          },
+          {
+            "endpoint_id": "fal-ai/nano-banana-pro",
+            "display_name": "Nano Banana Pro",
+            "description": "Nano Banana Pro is Google's new state-of-the-art image generation and editing model",
+            "category": "text-to-image",
+            "fit_status": "fail",
+            "fit_checks": [
+              {
+                "requirement": "resolution",
+                "status": "fail",
+                "basis": "Current input schema field resolution"
+              },
+              {
+                "requirement": "output_format",
+                "status": "pass",
+                "basis": "Current input schema field output_format"
+              },
+              {
+                "requirement": "output_count",
+                "status": "pass",
+                "basis": "Current input schema field num_images"
+              },
+              {
+                "requirement": "budget",
+                "status": "pass",
+                "basis": "Within the rate \u00d7 known quantity estimate; final billing rules remain unverified"
+              }
+            ],
+            "cost": {
+              "status": "estimated",
+              "estimate_usd": 0.15,
+              "budget_fit": "within_estimate",
+              "advisory_only": true,
+              "configuration_complete": false,
+              "limitations": "Rate \u00d7 known units only. Configuration rules, minimum charges and rounding are unavailable; this is not a final charge guarantee.",
+              "price": {
+                "endpoint_id": "fal-ai/nano-banana-pro",
+                "unit_price": 0.15,
+                "unit": "images",
+                "currency": "USD"
+              },
+              "quantity": 1,
+              "quantity_basis": "planned_image_count"
+            }
+          },
+          {
+            "endpoint_id": "fal-ai/nano-banana-2",
+            "display_name": "Nano Banana 2",
+            "description": "Nano Banana 2 is Google's new state-of-the-art fast image generation and editing model",
+            "category": "text-to-image",
+            "fit_status": "fail",
+            "fit_checks": [
+              {
+                "requirement": "resolution",
+                "status": "fail",
+                "basis": "Current input schema field resolution"
+              },
+              {
+                "requirement": "output_format",
+                "status": "pass",
+                "basis": "Current input schema field output_format"
+              },
+              {
+                "requirement": "output_count",
+                "status": "pass",
+                "basis": "Current input schema field num_images"
+              },
+              {
+                "requirement": "budget",
+                "status": "pass",
+                "basis": "Within the rate \u00d7 known quantity estimate; final billing rules remain unverified"
+              }
+            ],
+            "cost": {
+              "status": "estimated",
+              "estimate_usd": 0.08,
+              "budget_fit": "within_estimate",
+              "advisory_only": true,
+              "configuration_complete": false,
+              "limitations": "Rate \u00d7 known units only. Configuration rules, minimum charges and rounding are unavailable; this is not a final charge guarantee.",
+              "price": {
+                "endpoint_id": "fal-ai/nano-banana-2",
+                "unit_price": 0.08,
+                "unit": "images",
+                "currency": "USD"
+              },
+              "quantity": 1,
+              "quantity_basis": "planned_image_count"
+            }
+          },
+          {
+            "endpoint_id": "openai/gpt-image-2",
+            "display_name": "GPT Image 2 API",
+            "description": "GPT Image 2, OpenAI's latest image model, is capable of creating extremely detailed images with fine typography.",
+            "category": "text-to-image",
+            "fit_status": "unknown",
+            "fit_checks": [
+              {
+                "requirement": "resolution",
+                "status": "unknown",
+                "basis": "The current schema does not establish this capability"
+              },
+              {
+                "requirement": "output_format",
+                "status": "pass",
+                "basis": "Current input schema field output_format"
+              },
+              {
+                "requirement": "output_count",
+                "status": "pass",
+                "basis": "Current input schema field num_images"
+              },
+              {
+                "requirement": "budget",
+                "status": "unknown",
+                "basis": "The current billing unit, price or quantity is unresolved"
+              }
+            ],
+            "cost": {
+              "status": "unknown",
+              "estimate_usd": null,
+              "budget_fit": "unknown",
+              "advisory_only": true,
+              "configuration_complete": false,
+              "limitations": "Rate \u00d7 known units only. Configuration rules, minimum charges and rounding are unavailable; this is not a final charge guarantee.",
+              "price": {
+                "endpoint_id": "openai/gpt-image-2",
+                "unit_price": 1,
+                "unit": "units",
+                "currency": "USD"
+              },
+              "reason": "quantity_unavailable"
+            }
+          },
+          {
+            "endpoint_id": "bytedance/seedream/v5/pro/text-to-image",
+            "display_name": "Seedream 5.0 Pro Text to Image",
+            "description": "ByteDance's Seedream 5.0 Pro is flagship text-to-image model, with deep-thinking prompt understanding, native text in 14 languages, and precise control over dense layouts and structured designs.",
+            "category": "text-to-image",
+            "fit_status": "unknown",
+            "fit_checks": [
+              {
+                "requirement": "resolution",
+                "status": "unknown",
+                "basis": "The current schema does not establish this capability"
+              },
+              {
+                "requirement": "output_format",
+                "status": "pass",
+                "basis": "Current input schema field output_format"
+              },
+              {
+                "requirement": "output_count",
+                "status": "pass",
+                "basis": "Current input schema field num_images"
+              },
+              {
+                "requirement": "budget",
+                "status": "unknown",
+                "basis": "The current billing unit, price or quantity is unresolved"
+              }
+            ],
+            "cost": {
+              "status": "unknown",
+              "estimate_usd": null,
+              "budget_fit": "unknown",
+              "advisory_only": true,
+              "configuration_complete": false,
+              "limitations": "Rate \u00d7 known units only. Configuration rules, minimum charges and rounding are unavailable; this is not a final charge guarantee.",
+              "price": {
+                "endpoint_id": "bytedance/seedream/v5/pro/text-to-image",
+                "unit_price": 0.0675,
+                "unit": "units",
+                "currency": "USD"
+              },
+              "reason": "quantity_unavailable"
+            }
+          },
+          {
+            "endpoint_id": "fal-ai/flux/schnell",
+            "display_name": "FLUX.1 [schnell]",
+            "description": "FLUX.1 [schnell] is a 12 billion parameter flow transformer that generates high-quality images from text in 1 to 4 steps, suitable for personal and commercial use.",
+            "category": "text-to-image",
+            "fit_status": "unknown",
+            "fit_checks": [
+              {
+                "requirement": "resolution",
+                "status": "unknown",
+                "basis": "The current schema does not establish this capability"
+              },
+              {
+                "requirement": "output_format",
+                "status": "pass",
+                "basis": "Current input schema field output_format"
+              },
+              {
+                "requirement": "output_count",
+                "status": "pass",
+                "basis": "Current input schema field num_images"
+              },
+              {
+                "requirement": "budget",
+                "status": "unknown",
+                "basis": "The current billing unit, price or quantity is unresolved"
+              }
+            ],
+            "cost": {
+              "status": "unknown",
+              "estimate_usd": null,
+              "budget_fit": "unknown",
+              "advisory_only": true,
+              "configuration_complete": false,
+              "limitations": "Rate \u00d7 known units only. Configuration rules, minimum charges and rounding are unavailable; this is not a final charge guarantee.",
+              "price": {
+                "endpoint_id": "fal-ai/flux/schnell",
+                "unit_price": 0.003,
+                "unit": "megapixels",
+                "currency": "USD"
+              },
+              "reason": "quantity_unavailable"
+            }
+          },
+          {
+            "endpoint_id": "openai/gpt-image-2.5/flare/text-to-image",
+            "display_name": "GPT Image 2.5 Flare Text to Image",
+            "description": "OpenAI's default image model for most applications. Fast, high-quality generation with natural lighting, rich textures, and support for complex layouts including transparent backgrounds.",
+            "category": "text-to-image",
+            "fit_status": "unknown",
+            "fit_checks": [
+              {
+                "requirement": "resolution",
+                "status": "unknown",
+                "basis": "The current schema does not establish this capability"
+              },
+              {
+                "requirement": "output_format",
+                "status": "pass",
+                "basis": "Current input schema field output_format"
+              },
+              {
+                "requirement": "output_count",
+                "status": "pass",
+                "basis": "Current input schema field num_images"
+              },
+              {
+                "requirement": "budget",
+                "status": "unknown",
+                "basis": "The current billing unit, price or quantity is unresolved"
+              }
+            ],
+            "cost": {
+              "status": "unknown",
+              "estimate_usd": null,
+              "budget_fit": "unknown",
+              "advisory_only": true,
+              "configuration_complete": false,
+              "limitations": "Rate \u00d7 known units only. Configuration rules, minimum charges and rounding are unavailable; this is not a final charge guarantee.",
+              "price": {
+                "endpoint_id": "openai/gpt-image-2.5/flare/text-to-image",
+                "unit_price": 1,
+                "unit": "units",
+                "currency": "USD"
+              },
+              "reason": "quantity_unavailable"
+            }
+          },
+          {
+            "endpoint_id": "blackforestlabs/flux-3/text-to-image",
+            "display_name": "Flux 3 Image",
+            "description": "FLUX 3 Image is Black Forest Labs' newest image model. Generate detailed, well-composed images in native 2K and 4K with precise layout control and improved text rendering.",
+            "category": "text-to-image",
+            "fit_status": "fail",
+            "fit_checks": [
+              {
+                "requirement": "resolution",
+                "status": "fail",
+                "basis": "Current input schema field resolution"
+              },
+              {
+                "requirement": "output_format",
+                "status": "pass",
+                "basis": "Current input schema field output_format"
+              },
+              {
+                "requirement": "output_count",
+                "status": "unknown",
+                "basis": "The current schema does not establish this capability"
+              },
+              {
+                "requirement": "budget",
+                "status": "unknown",
+                "basis": "The current billing unit, price or quantity is unresolved"
+              }
+            ],
+            "cost": {
+              "status": "unknown",
+              "estimate_usd": null,
+              "budget_fit": "unknown",
+              "advisory_only": true,
+              "configuration_complete": false,
+              "limitations": "Rate \u00d7 known units only. Configuration rules, minimum charges and rounding are unavailable; this is not a final charge guarantee.",
+              "price": {
+                "endpoint_id": "blackforestlabs/flux-3/text-to-image",
+                "unit_price": 0.024,
+                "unit": "megapixels",
+                "currency": "USD"
+              },
+              "reason": "quantity_unavailable"
+            }
+          },
+          {
+            "endpoint_id": "ideogram/v4.5",
+            "display_name": "Ideogram V4.5 Text to Image",
+            "description": "Generate high-quality images, posters, and logos with Ideogram 4.5, with accurate text rendering and low, medium, or high quality tiers.",
+            "category": "text-to-image",
+            "fit_status": "unknown",
+            "fit_checks": [
+              {
+                "requirement": "resolution",
+                "status": "unknown",
+                "basis": "The current schema does not establish this capability"
+              },
+              {
+                "requirement": "output_format",
+                "status": "unknown",
+                "basis": "The current schema does not establish this capability"
+              },
+              {
+                "requirement": "output_count",
+                "status": "pass",
+                "basis": "Current input schema field num_images"
+              },
+              {
+                "requirement": "budget",
+                "status": "unknown",
+                "basis": "The current billing unit, price or quantity is unresolved"
+              }
+            ],
+            "cost": {
+              "status": "unknown",
+              "estimate_usd": null,
+              "budget_fit": "unknown",
+              "advisory_only": true,
+              "configuration_complete": false,
+              "limitations": "Rate \u00d7 known units only. Configuration rules, minimum charges and rounding are unavailable; this is not a final charge guarantee.",
+              "price": {
+                "endpoint_id": "ideogram/v4.5",
+                "unit_price": 0.001,
+                "unit": "units",
+                "currency": "USD"
+              },
+              "reason": "quantity_unavailable"
+            }
+          },
+          {
+            "endpoint_id": "recraft/v4.1/flash/text-to-image",
+            "display_name": "Recraft V4.1 Flash Text to Image",
+            "description": "Recraft V4.1 Flash generates raster images from text prompts, including photography, illustrations, and mixed-media compositions, with controls for image size, color palette, and background color.",
+            "category": "text-to-image",
+            "fit_status": "unknown",
+            "fit_checks": [
+              {
+                "requirement": "resolution",
+                "status": "unknown",
+                "basis": "The current schema does not establish this capability"
+              },
+              {
+                "requirement": "output_format",
+                "status": "unknown",
+                "basis": "The current schema does not establish this capability"
+              },
+              {
+                "requirement": "output_count",
+                "status": "unknown",
+                "basis": "The current schema does not establish this capability"
+              },
+              {
+                "requirement": "budget",
+                "status": "pass",
+                "basis": "Within the rate \u00d7 known quantity estimate; final billing rules remain unverified"
+              }
+            ],
+            "cost": {
+              "status": "estimated",
+              "estimate_usd": 0.007,
+              "budget_fit": "within_estimate",
+              "advisory_only": true,
+              "configuration_complete": false,
+              "limitations": "Rate \u00d7 known units only. Configuration rules, minimum charges and rounding are unavailable; this is not a final charge guarantee.",
+              "price": {
+                "endpoint_id": "recraft/v4.1/flash/text-to-image",
+                "unit_price": 0.007,
+                "unit": "images",
+                "currency": "USD"
+              },
+              "quantity": 1,
+              "quantity_basis": "planned_image_count"
+            }
+          },
+          {
+            "endpoint_id": "bytedance/seedream/v5/flash/text-to-image",
+            "display_name": "Seedream",
+            "description": "Seedream 5.0 Flash is a fast image generation and editing model, built for workflows where speed and budget matter.",
+            "category": "text-to-image",
+            "fit_status": "unknown",
+            "fit_checks": [
+              {
+                "requirement": "resolution",
+                "status": "unknown",
+                "basis": "The current schema does not establish this capability"
+              },
+              {
+                "requirement": "output_format",
+                "status": "pass",
+                "basis": "Current input schema field output_format"
+              },
+              {
+                "requirement": "output_count",
+                "status": "pass",
+                "basis": "Current input schema field num_images"
+              },
+              {
+                "requirement": "budget",
+                "status": "pass",
+                "basis": "Within the rate \u00d7 known quantity estimate; final billing rules remain unverified"
+              }
+            ],
+            "cost": {
+              "status": "estimated",
+              "estimate_usd": 0.027,
+              "budget_fit": "within_estimate",
+              "advisory_only": true,
+              "configuration_complete": false,
+              "limitations": "Rate \u00d7 known units only. Configuration rules, minimum charges and rounding are unavailable; this is not a final charge guarantee.",
+              "price": {
+                "endpoint_id": "bytedance/seedream/v5/flash/text-to-image",
+                "unit_price": 0.027,
+                "unit": "images",
+                "currency": "USD"
+              },
+              "quantity": 1,
+              "quantity_basis": "planned_image_count"
+            }
+          }
+        ],
+        "tip": "Choose for this task using live catalog candidates, published model_knowledge and verified schemas. No automatic model-family default is applied. Use exact schema fields; do not assume shared parameters such as strength.",
+        "models": [
+          {
+            "endpoint_id": "fal-ai/flux/schnell",
+            "display_name": "FLUX.1 [schnell]",
+            "description": "FLUX.1 [schnell] is a 12 billion parameter flow transformer that generates high-quality images from text in 1 to 4 steps, suitable for personal and commercial use.",
+            "category": "text-to-image",
+            "rank": 1
+          },
+          {
+            "endpoint_id": "fal-ai/nano-banana-pro",
+            "display_name": "Nano Banana Pro",
+            "description": "Nano Banana Pro is Google's new state-of-the-art image generation and editing model",
+            "category": "text-to-image",
+            "rank": 2
+          },
+          {
+            "endpoint_id": "fal-ai/nano-banana-2",
+            "display_name": "Nano Banana 2",
+            "description": "Nano Banana 2 is Google's new state-of-the-art fast image generation and editing model",
+            "category": "text-to-image",
+            "rank": 3
+          },
+          {
+            "endpoint_id": "openai/gpt-image-2",
+            "display_name": "GPT Image 2 API",
+            "description": "GPT Image 2, OpenAI's latest image model, is capable of creating extremely detailed images with fine typography.",
+            "category": "text-to-image",
+            "rank": 4
+          },
+          {
+            "endpoint_id": "openai/gpt-image-2.5/flare/text-to-image",
+            "display_name": "GPT Image 2.5 Flare Text to Image",
+            "description": "OpenAI's default image model for most applications. Fast, high-quality generation with natural lighting, rich textures, and support for complex layouts including transparent backgrounds.",
+            "category": "text-to-image",
+            "rank": 5
+          }
+        ]
+      }
+    ],
+    "applicable_claims": [
+      {
+        "rank": 1,
+        "body": "Default for new text-to-image work, including text, infographics, and consistent people or products. Supports 1K\u20134K and up to 14 references. Google's October 2026 tests favored 2.1 over Pro on reported image tasks. Use Pro when named or for an existing Pro-tuned workflow.",
+        "claim_id": "db3eej4regj68t5qdslg",
+        "domain": null,
+        "task": {
+          "id": "dad79b4regj2f7u8g8og",
+          "name": "Text to image",
+          "category": "text-to-image"
+        },
+        "source": "curated",
+        "published_at": "2026-10-08T00:43:56.559Z",
+        "updated_at": "2026-10-08T00:45:45.606Z",
+        "evidence_basis": null,
+        "sample_size": null,
+        "confidence": null,
+        "endpoint_id": "google/nano-banana-2.1"
+      },
+      {
+        "rank": 2,
+        "body": "Use for an explicit Pro request or an existing Pro-tuned, approved workflow. Google describes Pro as suited to complex graphic design, precise brand work, and product mockups. Compare outputs on the actual brief before switching from 2.1; do not assume Pro is better by name.",
+        "claim_id": "db3efbkregj690dqehug",
+        "domain": null,
+        "task": {
+          "id": "dad79b4regj2f7u8g8og",
+          "name": "Text to image",
+          "category": "text-to-image"
+        },
+        "source": "curated",
+        "published_at": "2026-10-08T00:45:34.665Z",
+        "updated_at": "2026-10-08T00:45:45.607Z",
+        "evidence_basis": null,
+        "sample_size": null,
+        "confidence": null,
+        "endpoint_id": "fal-ai/nano-banana-pro"
+      },
+      {
+        "rank": 3,
+        "body": "Fast, high-quality stylization and generation.",
+        "claim_id": "dad7d0sregj292e8nm00",
+        "domain": null,
+        "task": {
+          "id": "dad79b4regj2f7u8g8og",
+          "name": "Text to image",
+          "category": "text-to-image"
+        },
+        "source": "curated",
+        "published_at": "2026-09-04T07:42:59.342Z",
+        "updated_at": "2026-10-08T00:45:45.608Z",
+        "evidence_basis": null,
+        "sample_size": null,
+        "confidence": null,
+        "endpoint_id": "fal-ai/nano-banana-2"
+      },
+      {
+        "rank": 4,
+        "body": "Very high quality; pick for maximum-fidelity flagship results.",
+        "claim_id": "dad7d0sregj292e8nm0g",
+        "domain": null,
+        "task": {
+          "id": "dad79b4regj2f7u8g8og",
+          "name": "Text to image",
+          "category": "text-to-image"
+        },
+        "source": "curated",
+        "published_at": "2026-09-04T07:42:59.345Z",
+        "updated_at": "2026-10-08T00:45:45.608Z",
+        "evidence_basis": null,
+        "sample_size": null,
+        "confidence": null,
+        "endpoint_id": "openai/gpt-image-2"
+      },
+      {
+        "rank": 5,
+        "body": "SOTA prompt understanding, native text rendering, dense and structured layouts.",
+        "claim_id": "dad7d0sregj292e8nm10",
+        "domain": null,
+        "task": {
+          "id": "dad79b4regj2f7u8g8og",
+          "name": "Text to image",
+          "category": "text-to-image"
+        },
+        "source": "curated",
+        "published_at": "2026-09-04T07:42:59.347Z",
+        "updated_at": "2026-10-08T00:45:45.609Z",
+        "evidence_basis": null,
+        "sample_size": null,
+        "confidence": null,
+        "endpoint_id": "bytedance/seedream/v5/pro/text-to-image"
+      },
+      {
+        "endpoint_id": "google/nano-banana-2.1",
+        "kind": "usage_tip",
+        "body": "Use google/nano-banana-2.1 for text-only prompts. When the user supplies reference images, use google/nano-banana-2.1/edit and pass image_urls. Check the endpoint schema before each run. Source: https://fal.ai/nano-banana-2.1",
+        "source": "curated",
+        "task": null,
+        "rank": null
+      },
+      {
+        "endpoint_id": "google/nano-banana-2.1",
+        "kind": "weakness",
+        "body": "Small text, especially at 1K, and long paragraphs can be blurry. Character continuity can drift, and marked edits can ignore part of an instruction. Check final copy and identity. Source: https://deepmind.google/models/model-cards/nano-banana-2-1/",
+        "source": "curated",
+        "task": null,
+        "rank": null
+      },
+      {
+        "endpoint_id": "fal-ai/nano-banana-pro",
+        "kind": "usage_tip",
+        "body": "Use the /edit route when the user attaches images; the base route is text-to-image only.",
+        "source": "curated",
+        "task": null,
+        "rank": null
+      },
+      {
+        "endpoint_id": "bytedance/seedream/v5/pro/text-to-image",
+        "kind": "usage_tip",
+        "body": "Use bytedance/seedream/v5/pro/edit for editing; same strengths in text rendering and dense layouts.",
+        "source": "curated",
+        "task": null,
+        "rank": null
+      }
+    ],
+    "candidates": [
+      {
+        "endpoint_id": "google/nano-banana-2.1",
+        "category": "text-to-image",
+        "discovery_source": "published_task_guidance"
+      },
+      {
+        "endpoint_id": "blackforestlabs/flux-3/text-to-image",
+        "display_name": "Flux 3 Image",
+        "category": "text-to-image",
+        "discovery_source": "catalog_candidate"
+      },
+      {
+        "endpoint_id": "ideogram/v4.5",
+        "display_name": "Ideogram V4.5 Text to Image",
+        "category": "text-to-image",
+        "discovery_source": "catalog_candidate"
+      },
+      {
+        "endpoint_id": "recraft/v4.1/flash/text-to-image",
+        "display_name": "Recraft V4.1 Flash Text to Image",
+        "category": "text-to-image",
+        "discovery_source": "catalog_candidate"
+      },
+      {
+        "endpoint_id": "bytedance/seedream/v5/flash/text-to-image",
+        "display_name": "Seedream",
+        "category": "text-to-image",
+        "discovery_source": "catalog_candidate"
+      },
+      {
+        "endpoint_id": "fal-ai/nano-banana-pro",
+        "category": "text-to-image",
+        "discovery_source": "published_task_guidance"
+      },
+      {
+        "endpoint_id": "fal-ai/nano-banana-2",
+        "category": "text-to-image",
+        "discovery_source": "published_task_guidance"
+      },
+      {
+        "endpoint_id": "openai/gpt-image-2",
+        "category": "text-to-image",
+        "discovery_source": "published_task_guidance"
+      },
+      {
+        "endpoint_id": "bytedance/seedream/v5/pro/text-to-image",
+        "category": "text-to-image",
+        "discovery_source": "published_task_guidance"
+      },
+      {
+        "endpoint_id": "fal-ai/flux/schnell",
+        "display_name": "FLUX.1 [schnell]",
+        "category": "text-to-image",
+        "discovery_source": "catalog_candidate"
+      },
+      {
+        "endpoint_id": "openai/gpt-image-2.5/flare/text-to-image",
+        "display_name": "GPT Image 2.5 Flare Text to Image",
+        "category": "text-to-image",
+        "discovery_source": "catalog_candidate"
+      }
+    ],
+    "model_knowledge": {
+      "models": [
+        {
+          "endpoint_id": "google/nano-banana-2.1",
+          "display_name": "Nano Banana 2.1",
+          "category": "text-to-image",
+          "relevance": null,
+          "insights": [
+            {
+              "kind": "default_pick",
+              "body": "Default for new text-to-image work, including text, infographics, and consistent people or products. Supports 1K\u20134K and up to 14 references. Google's October 2026 tests favored 2.1 over Pro on reported image tasks. Use Pro when named or for an existing Pro-tuned workflow.",
+              "source": "curated",
+              "task": {
+                "name": "Text to image",
+                "category": "text-to-image"
+              },
+              "rank": 1
+            },
+            {
+              "kind": "usage_tip",
+              "body": "Use google/nano-banana-2.1 for text-only prompts. When the user supplies reference images, use google/nano-banana-2.1/edit and pass image_urls. Check the endpoint schema before each run. Source: https://fal.ai/nano-banana-2.1",
+              "source": "curated",
+              "task": null,
+              "rank": null
+            },
+            {
+              "kind": "weakness",
+              "body": "Small text, especially at 1K, and long paragraphs can be blurry. Character continuity can drift, and marked edits can ignore part of an instruction. Check final copy and identity. Source: https://deepmind.google/models/model-cards/nano-banana-2-1/",
+              "source": "curated",
+              "task": null,
+              "rank": null
+            }
+          ]
+        },
+        {
+          "endpoint_id": "fal-ai/nano-banana-pro",
+          "display_name": "Nano Banana Pro",
+          "category": "text-to-image",
+          "relevance": null,
+          "insights": [
+            {
+              "kind": "default_pick",
+              "body": "Use for an explicit Pro request or an existing Pro-tuned, approved workflow. Google describes Pro as suited to complex graphic design, precise brand work, and product mockups. Compare outputs on the actual brief before switching from 2.1; do not assume Pro is better by name.",
+              "source": "curated",
+              "task": {
+                "name": "Text to image",
+                "category": "text-to-image"
+              },
+              "rank": 2
+            },
+            {
+              "kind": "usage_tip",
+              "body": "Use the /edit route when the user attaches images; the base route is text-to-image only.",
+              "source": "curated",
+              "task": null,
+              "rank": null
+            }
+          ]
+        },
+        {
+          "endpoint_id": "fal-ai/nano-banana-2",
+          "display_name": "Nano Banana 2",
+          "category": "text-to-image",
+          "relevance": null,
+          "insights": [
+            {
+              "kind": "default_pick",
+              "body": "Fast, high-quality stylization and generation.",
+              "source": "curated",
+              "task": {
+                "name": "Text to image",
+                "category": "text-to-image"
+              },
+              "rank": 3
+            }
+          ]
+        },
+        {
+          "endpoint_id": "openai/gpt-image-2",
+          "display_name": "GPT Image 2 API",
+          "category": "text-to-image",
+          "relevance": null,
+          "insights": [
+            {
+              "kind": "default_pick",
+              "body": "Very high quality; pick for maximum-fidelity flagship results.",
+              "source": "curated",
+              "task": {
+                "name": "Text to image",
+                "category": "text-to-image"
+              },
+              "rank": 4
+            }
+          ]
+        },
+        {
+          "endpoint_id": "bytedance/seedream/v5/pro/text-to-image",
+          "display_name": "Seedream 5.0 Pro Text to Image",
+          "category": "text-to-image",
+          "relevance": null,
+          "insights": [
+            {
+              "kind": "default_pick",
+              "body": "SOTA prompt understanding, native text rendering, dense and structured layouts.",
+              "source": "curated",
+              "task": {
+                "name": "Text to image",
+                "category": "text-to-image"
+              },
+              "rank": 5
+            },
+            {
+              "kind": "usage_tip",
+              "body": "Use bytedance/seedream/v5/pro/edit for editing; same strengths in text rendering and dense layouts.",
+              "source": "curated",
+              "task": null,
+              "rank": null
+            }
+          ]
+        },
+        {
+          "endpoint_id": "fal-ai/flux/schnell",
+          "display_name": "FLUX.1 [schnell]",
+          "category": "text-to-image",
+          "relevance": null,
+          "insights": []
+        },
+        {
+          "endpoint_id": "openai/gpt-image-2.5/flare/text-to-image",
+          "display_name": "GPT Image 2.5 Flare Text to Image",
+          "category": "text-to-image",
+          "relevance": null,
+          "insights": []
+        },
+        {
+          "endpoint_id": "blackforestlabs/flux-3/text-to-image",
+          "display_name": "Flux 3 Image",
+          "category": "text-to-image",
+          "relevance": null,
+          "insights": []
+        },
+        {
+          "endpoint_id": "ideogram/v4.5",
+          "display_name": "Ideogram V4.5 Text to Image",
+          "category": "text-to-image",
+          "relevance": null,
+          "insights": []
+        },
+        {
+          "endpoint_id": "recraft/v4.1/flash/text-to-image",
+          "display_name": "Recraft V4.1 Flash Text to Image",
+          "category": "text-to-image",
+          "relevance": null,
+          "insights": []
+        },
+        {
+          "endpoint_id": "bytedance/seedream/v5/flash/text-to-image",
+          "display_name": "Seedream",
+          "category": "text-to-image",
+          "relevance": null,
+          "insights": []
+        }
+      ],
+      "evidence": {
+        "version": 3,
+        "compiled_at": "2026-10-12T02:00:07.192Z",
+        "window_start": "2026-10-05T00:00:00.000Z",
+        "window_end": "2026-10-12T00:00:00.000Z",
+        "evaluated_at": "2026-10-13T02:02:35.158Z",
+        "latency_definition": "Successful execution observations in milliseconds; mixed workloads; excludes queue/startup; not runtime guarantees.",
+        "instructions": "Successful execution observations in milliseconds; mixed workloads; excludes queue/startup; not runtime guarantees. Report p50/p90 with their measurement window. Null means unknown, never zero. Trending is the analytics category rank at its source timestamp, not adoption or quality. New means registry publication within 30 days of the response evaluation time, not first usage. Lab recommendations are authored guidance, not measured latency, trending or newness. Use the existing pricing tool for current prices, preserving billing units and required configuration; these observations contain no prices.",
+        "models": [
+          {
+            "endpoint_id": "google/nano-banana-2.1",
+            "evidence": {
+              "endpoint_id": "google/nano-banana-2.1",
+              "title": "Nano Banana 2.1",
+              "category": "text-to-image",
+              "usage_tier": null,
+              "latency": {
+                "p50_ms": null,
+                "p90_ms": null,
+                "sufficient_evidence": false,
+                "latest_request_at": null
+              },
+              "trending": {
+                "category_rank": 8,
+                "computed_at": "2026-10-11T09:49:06.521Z"
+              },
+              "published_at": "2026-10-06T16:02:31.852Z",
+              "is_new": true
+            }
+          },
+          {
+            "endpoint_id": "fal-ai/nano-banana-pro",
+            "evidence": {
+              "endpoint_id": "fal-ai/nano-banana-pro",
+              "title": "Nano Banana Pro",
+              "category": "text-to-image",
+              "usage_tier": "high",
+              "latency": {
+                "p50_ms": 25525,
+                "p90_ms": 37320,
+                "sufficient_evidence": true,
+                "latest_request_at": "2026-10-11T23:59:57.941Z"
+              },
+              "trending": {
+                "category_rank": 2,
+                "computed_at": "2026-10-11T09:49:06.521Z"
+              },
+              "published_at": "2025-11-20T14:24:45.001Z",
+              "is_new": false
+            }
+          },
+          {
+            "endpoint_id": "fal-ai/nano-banana-2",
+            "evidence": {
+              "endpoint_id": "fal-ai/nano-banana-2",
+              "title": "Nano Banana 2",
+              "category": "text-to-image",
+              "usage_tier": "high",
+              "latency": {
+                "p50_ms": 11153,
+                "p90_ms": 19353,
+                "sufficient_evidence": true,
+                "latest_request_at": "2026-10-11T23:59:59.801Z"
+              },
+              "trending": {
+                "category_rank": 3,
+                "computed_at": "2026-10-11T09:49:06.521Z"
+              },
+              "published_at": "2026-02-26T16:08:01.361Z",
+              "is_new": false
+            }
+          },
+          {
+            "endpoint_id": "openai/gpt-image-2",
+            "evidence": {
+              "endpoint_id": "openai/gpt-image-2",
+              "title": "GPT Image 2 API",
+              "category": "text-to-image",
+              "usage_tier": null,
+              "latency": {
+                "p50_ms": null,
+                "p90_ms": null,
+                "sufficient_evidence": false,
+                "latest_request_at": null
+              },
+              "trending": {
+                "category_rank": 4,
+                "computed_at": "2026-10-11T09:49:06.521Z"
+              },
+              "published_at": "2026-04-21T19:15:20.183Z",
+              "is_new": false
+            }
+          },
+          {
+            "endpoint_id": "bytedance/seedream/v5/pro/text-to-image",
+            "evidence": {
+              "endpoint_id": "bytedance/seedream/v5/pro/text-to-image",
+              "title": "Seedream 5.0 Pro Text to Image",
+              "category": "text-to-image",
+              "usage_tier": null,
+              "latency": {
+                "p50_ms": null,
+                "p90_ms": null,
+                "sufficient_evidence": false,
+                "latest_request_at": null
+              },
+              "trending": {
+                "category_rank": 12,
+                "computed_at": "2026-10-11T09:49:06.521Z"
+              },
+              "published_at": "2026-07-08T13:18:11.843Z",
+              "is_new": false
+            }
+          },
+          {
+            "endpoint_id": "fal-ai/flux/schnell",
+            "evidence": {
+              "endpoint_id": "fal-ai/flux/schnell",
+              "title": "FLUX.1 [schnell]",
+              "category": "text-to-image",
+              "usage_tier": "high",
+              "latency": {
+                "p50_ms": 1861,
+                "p90_ms": 2861,
+                "sufficient_evidence": true,
+                "latest_request_at": "2026-10-11T23:59:59.685Z"
+              },
+              "trending": {
+                "category_rank": 1,
+                "computed_at": "2026-10-11T09:49:06.521Z"
+              },
+              "published_at": "2024-11-25T00:00:00.000Z",
+              "is_new": false
+            }
+          },
+          {
+            "endpoint_id": "openai/gpt-image-2.5/flare/text-to-image",
+            "evidence": {
+              "endpoint_id": "openai/gpt-image-2.5/flare/text-to-image",
+              "title": "GPT Image 2.5 Flare Text to Image",
+              "category": "text-to-image",
+              "usage_tier": null,
+              "latency": {
+                "p50_ms": null,
+                "p90_ms": null,
+                "sufficient_evidence": false,
+                "latest_request_at": null
+              },
+              "trending": {
+                "category_rank": 5,
+                "computed_at": "2026-10-11T09:49:06.521Z"
+              },
+              "published_at": "2026-09-08T20:10:48.775Z",
+              "is_new": false
+            }
+          },
+          {
+            "endpoint_id": "blackforestlabs/flux-3/text-to-image",
+            "evidence": {
+              "endpoint_id": "blackforestlabs/flux-3/text-to-image",
+              "title": "Flux 3 Image",
+              "category": "text-to-image",
+              "usage_tier": null,
+              "latency": {
+                "p50_ms": null,
+                "p90_ms": null,
+                "sufficient_evidence": false,
+                "latest_request_at": null
+              },
+              "trending": {
+                "category_rank": 20,
+                "computed_at": "2026-10-11T09:49:06.521Z"
+              },
+              "published_at": "2026-10-01T19:12:23.466Z",
+              "is_new": true
+            }
+          },
+          {
+            "endpoint_id": "ideogram/v4.5",
+            "evidence": {
+              "endpoint_id": "ideogram/v4.5",
+              "title": "Ideogram V4.5 Text to Image",
+              "category": "text-to-image",
+              "usage_tier": null,
+              "latency": {
+                "p50_ms": null,
+                "p90_ms": null,
+                "sufficient_evidence": false,
+                "latest_request_at": null
+              },
+              "trending": {
+                "category_rank": 29,
+                "computed_at": "2026-10-11T09:49:06.521Z"
+              },
+              "published_at": "2026-09-30T16:55:56.790Z",
+              "is_new": true
+            }
+          },
+          {
+            "endpoint_id": "recraft/v4.1/flash/text-to-image",
+            "evidence": {
+              "endpoint_id": "recraft/v4.1/flash/text-to-image",
+              "title": "Recraft V4.1 Flash Text to Image",
+              "category": "text-to-image",
+              "usage_tier": null,
+              "latency": {
+                "p50_ms": null,
+                "p90_ms": null,
+                "sufficient_evidence": false,
+                "latest_request_at": null
+              },
+              "trending": {
+                "category_rank": 54,
+                "computed_at": "2026-10-11T09:49:06.521Z"
+              },
+              "published_at": "2026-09-23T15:08:13.966Z",
+              "is_new": true
+            }
+          },
+          {
+            "endpoint_id": "bytedance/seedream/v5/flash/text-to-image",
+            "evidence": {
+              "endpoint_id": "bytedance/seedream/v5/flash/text-to-image",
+              "title": "Seedream",
+              "category": "text-to-image",
+              "usage_tier": null,
+              "latency": {
+                "p50_ms": null,
+                "p90_ms": null,
+                "sufficient_evidence": false,
+                "latest_request_at": null
+              },
+              "trending": {
+                "category_rank": 35,
+                "computed_at": "2026-10-11T09:49:06.521Z"
+              },
+              "published_at": "2026-09-23T10:00:07.749Z",
+              "is_new": true
+            }
+          }
+        ]
+      },
+      "unavailable_endpoint_ids": [],
+      "stats_available": true,
+      "note": "Successful execution observations in milliseconds; mixed workloads; excludes queue/startup; not runtime guarantees. Report p50/p90 with their measurement window. Null means unknown, never zero. Trending is the analytics category rank at its source timestamp, not adoption or quality. New means registry publication within 30 days of the response evaluation time, not first usage. Lab recommendations are authored guidance, not measured latency, trending or newness. Use the existing pricing tool for current prices, preserving billing units and required configuration; these observations contain no prices."
+    },
+    "ranking_note": "The models list preserves the Platform API's Explore discovery order: Trending for browsing, relevance for keyword searches. Its rank is a list position, not a quality score. Fresh published task/domain routing determines the curated starting pick. Legacy default_pick rows in model_knowledge are unscoped advice, not applicable routing ranks. Candidates labelled recent_catalog use acknowledged server publication-date order; current_catalog is ordinary discovery when Recent cannot be confirmed. Neither recency nor missing statistics establishes quality or latency.",
+    "next_steps": "Honor an explicitly requested model; verify its exact endpoint and do not silently substitute it.\nCopy endpoint_id exactly from the live catalog. Namespaces and versions vary by provider: never add or change a provider prefix, invent an endpoint from a model name, or reuse a guessed alias. When a named model is missing or unavailable, search_models can resolve current catalog matches; explain any mismatch with the requested endpoint before choosing a replacement. An unavailable endpoint alone does not establish that the user connected the wrong account.\nOtherwise use current applicable published guidance in recommended_model and model_knowledge after checking the user's real sources, required capabilities and scoped budget. Follow the next compatible published fallback and explain why. If published guidance is missing or outdated, use search_models and search_docs to evaluate current candidates. A new endpoint can qualify without adoption statistics, but recency alone does not establish quality. Do not submit a choice with decision_status needs_input, no_compatible_candidate or evidence_unavailable. A workflow_needed result needs a verified dependent plan before spend.\nWith draft_inspection_required, draft_candidate establishes technical/reference fit only. Generate a draft only within existing user authorization and the checked budget, then inspect it against original conditioning sources before dependent generation or approval. Preservation stays unverified; a draft candidate is not a final recommended_model or permission to spend.\nCatalog order, popularity and release recency are discovery signals, not quality or latency rankings. Fast subject motion describes movement in the scene, not generation latency. Only treat user-requested settings as hard constraints; do not invent an exact resolution or audio requirement to justify switching models.\nLive retrieval does not establish when guidance was authored. Without an update date, freshness is unknown; verify capabilities in current schemas/docs and do not claim the pick is the newest or fastest without evidence. Skills and workflow examples supply production advice, not competing model defaults. Prefer current published task/domain guidance over bundled family rankings. Use get_pricing for the actual settings before material spending. Cost estimates preserve units and cover only known quantities, not final billing guarantees. Pass the optional decision_id to run_model, submit_job or each applicable batch item; it links observations and is never authorization. Inspect get_model_schema, then use run_model or submit_job and present completed media."
+  },
+  "seamless_search": {
+    "models": [
+      {
+        "endpoint_id": "fal-ai/seedvr/upscale/image/seamless",
+        "name": "SeedVR2",
+        "category": "image-to-image",
+        "description": "Use SeedVR2 to upscale images, retaining seamless tiling",
+        "tags": [
+          "upscale",
+          "image-to-image",
+          "seamless",
+          "tiling"
+        ]
+      },
+      {
+        "endpoint_id": "fal-ai/z-image/turbo/tiling/lora",
+        "name": "Z-Image Turbo Seamless Tiling Lora",
+        "category": "text-to-image",
+        "description": "Generate seamlessly tiling photorealistic images from text using Z-Image Turbo and custom LoRA",
+        "tags": [
+          "z-image",
+          "turbo",
+          "seamless",
+          "tiling"
+        ]
+      },
+      {
+        "endpoint_id": "fal-ai/z-image/turbo/tiling",
+        "name": "Z-Image Turbo Seamless Tiling",
+        "category": "text-to-image",
+        "description": "Generate seamlessly tiling photorealistic images from text using Z-Image Turbo",
+        "tags": [
+          "z-image",
+          "turbo",
+          "seamless",
+          "tiling"
+        ]
+      },
+      {
+        "endpoint_id": "pixelcut/looping-video",
+        "name": "Pixelcut Looping Video",
+        "category": "image-to-video",
+        "description": "Turn one product photo into a seamless 5 to 15 second video loop with a locked camera, subtle ambient motion or a full 360\u00b0 spin.",
+        "tags": [
+          "image-to-video",
+          "looping",
+          "e-commerce",
+          "product"
+        ]
+      },
+      {
+        "endpoint_id": "pixelcut/video-background-removal",
+        "name": "Pixelcut Video Background Removal",
+        "category": "video-to-video",
+        "description": "Pixelcut's Video Background Remover is an AI segmentation model that erases backgrounds frame by frame, with seamless temporal consistency.",
+        "tags": [
+          "transform",
+          "utility",
+          "rembg"
+        ]
+      },
+      {
+        "endpoint_id": "mirelo-ai/sfx1.6/extend-audio",
+        "name": "Mirelo SFX1.6",
+        "category": "audio-to-audio",
+        "description": "Extend any sound effect with seamless, natural tails.",
+        "tags": [
+          "audio-to-audio",
+          "sfx"
+        ]
+      },
+      {
+        "endpoint_id": "fal-ai/patina/material/extract",
+        "name": "PATINA",
+        "category": "image-to-image",
+        "description": "Extract seamless tiling textures with PBR attribute maps from images",
+        "tags": [
+          "material",
+          "pbr",
+          "extraction"
+        ]
+      },
+      {
+        "endpoint_id": "ideogram/v4/tiling/lora",
+        "name": "Ideogram V4.0q Tiling LoRA",
+        "category": "image-to-image",
+        "description": "Ideogram V4.0q Tiling LoRA produces seamless repeatable patterns guided by a custom-trained LoRA, locking a specific aesthetic or motif into tileable textures for cohesive, large-scale surface design.",
+        "tags": [
+          "stylized",
+          "transform",
+          "realism"
+        ]
+      },
+      {
+        "endpoint_id": "ideogram/v4/tiling",
+        "name": "Ideogram V4.0q Tiling",
+        "category": "image-to-image",
+        "description": "Ideogram V4.0q Tiling generates seamless, edge-matching textures and patterns that repeat infinitely in any direction, ideal for backgrounds, surfaces, and wallpapers.",
+        "tags": [
+          "stylized",
+          "transform",
+          "realism"
+        ]
+      },
+      {
+        "endpoint_id": "fal-ai/patina/material",
+        "name": "PATINA",
+        "category": "text-to-image",
+        "description": "Generate complete seamlessly tiling PBR materials including normal, roughness, basecolor, height and metalness maps up to 8K",
+        "tags": [
+          "material",
+          "pbr",
+          "displacement",
+          "metalness",
+          "normal",
+          "roughness",
+          "basecolor",
+          "albedo",
+          "height",
+          ""
+        ]
+      }
+    ],
+    "total_shown": 10,
+    "selection_guidance": "Before choosing a model for a new operation, call recommend_model with the user's task and constraints unless the user named a model or explicitly requested a model set/comparison. Reuse that recommendation for the operation; do not repeatedly request the same recommendation.\nFor an explicit set/comparison, use list_model_sets to resolve the requested operation and sets, then use its exact returned endpoint IDs within the user's requested scope. Read each selected model's live schema and applicable published guidance, build its input from the user's brief and references, and preserve required settings. Explain incompatible or unavailable members instead of silently replacing them, approximating settings, or running the rest of a large set. Set membership is discovery, never authorization or proof of task fit.\nHonor an explicitly requested model; verify its exact endpoint and do not silently substitute it.\nCopy endpoint_id exactly from the live catalog. Namespaces and versions vary by provider: never add or change a provider prefix, invent an endpoint from a model name, or reuse a guessed alias. When a named model is missing or unavailable, search_models can resolve current catalog matches; explain any mismatch with the requested endpoint before choosing a replacement. An unavailable endpoint alone does not establish that the user connected the wrong account.\nOtherwise use current applicable published guidance in recommended_model and model_knowledge after checking the user's real sources, required capabilities and scoped budget. Follow the next compatible published fallback and explain why. If published guidance is missing or outdated, use search_models and search_docs to evaluate current candidates. A new endpoint can qualify without adoption statistics, but recency alone does not establish quality. Do not submit a choice with decision_status needs_input, no_compatible_candidate or evidence_unavailable. A workflow_needed result needs a verified dependent plan before spend.\nWith draft_inspection_required, draft_candidate establishes technical/reference fit only. Generate a draft only within existing user authorization and the checked budget, then inspect it against original conditioning sources before dependent generation or approval. Preservation stays unverified; a draft candidate is not a final recommended_model or permission to spend.\nCatalog order, popularity and release recency are discovery signals, not quality or latency rankings. Fast subject motion describes movement in the scene, not generation latency. Only treat user-requested settings as hard constraints; do not invent an exact resolution or audio requirement to justify switching models.\nLive retrieval does not establish when guidance was authored. Without an update date, freshness is unknown; verify capabilities in current schemas/docs and do not claim the pick is the newest or fastest without evidence. Skills and workflow examples supply production advice, not competing model defaults. Prefer current published task/domain guidance over bundled family rankings. Use get_pricing for the actual settings before material spending. Cost estimates preserve units and cover only known quantities, not final billing guarantees. Pass the optional decision_id to run_model, submit_job or each applicable batch item; it links observations and is never authorization.",
+    "ranking_note": "Uses Explore's shared discovery order: Trending when browsing a category without query, relevance when searching keywords. List position is not a quality or speed score.",
+    "has_more": true,
+    "next_cursor": "Mg",
+    "hint": "More results available. Call search_models again with this next_cursor to page, or refine your search."
+  },
+  "transparent_search": {
+    "models": [
+      {
+        "endpoint_id": "topaz/upscale/image/transparent",
+        "name": "Topaz Upscale Image Transparent",
+        "category": "image-to-image",
+        "description": "Professional transparent-image upscaling powered by Topaz Labs. Preserves the alpha channel end to end with PNG output. Best for logos, stickers and assets with transparency.",
+        "tags": [
+          "upscale",
+          "image"
+        ]
+      },
+      {
+        "endpoint_id": "fal-ai/ideogram/v3/generate-transparent",
+        "name": "Ideogram Transparent",
+        "category": "text-to-image",
+        "description": "Generate images with transparent backgrounds using Ideogram Transparent model",
+        "tags": [
+          "stylized",
+          "transform",
+          "typography"
+        ]
+      },
+      {
+        "endpoint_id": "openai/gpt-image-2.5/flare/text-to-image",
+        "name": "GPT Image 2.5 Flare Text to Image",
+        "category": "text-to-image",
+        "description": "OpenAI's default image model for most applications. Fast, high-quality generation with natural lighting, rich textures, and support for complex layouts including transparent backgrounds.",
+        "tags": [
+          "realism",
+          "typography",
+          "stylized"
+        ]
+      },
+      {
+        "endpoint_id": "bytedance/seedream/v5/pro/layerize",
+        "name": "Seedream 5.0 Pro Layerize",
+        "category": "image-to-image",
+        "description": "Splits a finished image into independent, editable transparent-PNG layers \u2014 background plus separate elements, from a text description, returning 2 to 17 layers per call for non-destructive reuse in design tools.",
+        "tags": [
+          "utility",
+          "editing"
+        ]
+      },
+      {
+        "endpoint_id": "bria/fibo-lite/generate/structured_prompt",
+        "name": "Fibo Lite",
+        "category": "text-to-json",
+        "description": "Convert plain text into Fibo-Lite's transparent JSON-structured prompts - Bria's unique controllability layer that no closed model offers. Built for agentic and enterprise workflows.",
+        "tags": [
+          "bria",
+          "fibo",
+          "structured-prompt"
+        ]
+      }
+    ],
+    "total_shown": 5,
+    "selection_guidance": "Before choosing a model for a new operation, call recommend_model with the user's task and constraints unless the user named a model or explicitly requested a model set/comparison. Reuse that recommendation for the operation; do not repeatedly request the same recommendation.\nFor an explicit set/comparison, use list_model_sets to resolve the requested operation and sets, then use its exact returned endpoint IDs within the user's requested scope. Read each selected model's live schema and applicable published guidance, build its input from the user's brief and references, and preserve required settings. Explain incompatible or unavailable members instead of silently replacing them, approximating settings, or running the rest of a large set. Set membership is discovery, never authorization or proof of task fit.\nHonor an explicitly requested model; verify its exact endpoint and do not silently substitute it.\nCopy endpoint_id exactly from the live catalog. Namespaces and versions vary by provider: never add or change a provider prefix, invent an endpoint from a model name, or reuse a guessed alias. When a named model is missing or unavailable, search_models can resolve current catalog matches; explain any mismatch with the requested endpoint before choosing a replacement. An unavailable endpoint alone does not establish that the user connected the wrong account.\nOtherwise use current applicable published guidance in recommended_model and model_knowledge after checking the user's real sources, required capabilities and scoped budget. Follow the next compatible published fallback and explain why. If published guidance is missing or outdated, use search_models and search_docs to evaluate current candidates. A new endpoint can qualify without adoption statistics, but recency alone does not establish quality. Do not submit a choice with decision_status needs_input, no_compatible_candidate or evidence_unavailable. A workflow_needed result needs a verified dependent plan before spend.\nWith draft_inspection_required, draft_candidate establishes technical/reference fit only. Generate a draft only within existing user authorization and the checked budget, then inspect it against original conditioning sources before dependent generation or approval. Preservation stays unverified; a draft candidate is not a final recommended_model or permission to spend.\nCatalog order, popularity and release recency are discovery signals, not quality or latency rankings. Fast subject motion describes movement in the scene, not generation latency. Only treat user-requested settings as hard constraints; do not invent an exact resolution or audio requirement to justify switching models.\nLive retrieval does not establish when guidance was authored. Without an update date, freshness is unknown; verify capabilities in current schemas/docs and do not claim the pick is the newest or fastest without evidence. Skills and workflow examples supply production advice, not competing model defaults. Prefer current published task/domain guidance over bundled family rankings. Use get_pricing for the actual settings before material spending. Cost estimates preserve units and cover only known quantities, not final billing guarantees. Pass the optional decision_id to run_model, submit_job or each applicable batch item; it links observations and is never authorization.",
+    "ranking_note": "Uses Explore's shared discovery order: Trending when browsing a category without query, relevance when searching keywords. List position is not a quality or speed score.",
+    "has_more": true,
+    "next_cursor": "Mg",
+    "hint": "More results available. Call search_models again with this next_cursor to page, or refine your search."
+  },
+  "schemas": [
+    {
+      "endpoint_id": "fal-ai/z-image/turbo/tiling",
+      "display_name": "Z-Image Turbo Seamless Tiling",
+      "category": "text-to-image",
+      "description": "Generate seamlessly tiling photorealistic images from text using Z-Image Turbo",
+      "input_params": [
+        {
+          "name": "acceleration",
+          "type": "string",
+          "description": "The acceleration level to use.",
+          "required": false,
+          "default": "regular",
+          "enum": [
+            "none",
+            "regular",
+            "high"
+          ]
+        },
+        {
+          "name": "prompt",
+          "type": "string",
+          "description": "The prompt to generate an image from.",
+          "required": true
+        },
+        {
+          "name": "enable_prompt_expansion",
+          "type": "boolean",
+          "description": "Whether to enable prompt expansion. Note: this will increase the price by 0.0025 credits per request.",
+          "required": false,
+          "default": false
+        },
+        {
+          "name": "tile_size",
+          "type": "integer",
+          "description": "Tile size in latent space. Must be even (divisible by 2) for patchification. Automatically capped to the generated image dimensions on tiled axes. (64 = 512px, 128 = 1024px, 256 = 2048px).",
+          "required": false,
+          "default": 128
+        },
+        {
+          "name": "image_size",
+          "type": "object | string",
+          "description": "The size of the generated image. Use 'auto' to match the input image size (or 1024x1024 if no image).",
+          "required": false,
+          "default": "square_hd"
+        },
+        {
+          "name": "output_format",
+          "type": "string",
+          "description": "The format of the generated image.",
+          "required": false,
+          "default": "png",
+          "enum": [
+            "jpeg",
+            "png",
+            "webp"
+          ]
+        },
+        {
+          "name": "tiling_mode",
+          "type": "string",
+          "description": "Tiling direction: 'both' (omnidirectional), 'horizontal' (left-right only), 'vertical' (top-bottom only).",
+          "required": false,
+          "default": "both",
+          "enum": [
+            "both",
+            "horizontal",
+            "vertical"
+          ]
+        },
+        {
+          "name": "num_images",
+          "type": "integer",
+          "description": "The number of images to generate.",
+          "required": false,
+          "default": 1
+        },
+        {
+          "name": "num_inference_steps",
+          "type": "integer",
+          "description": "The number of inference steps to perform.",
+          "required": false,
+          "default": 8
+        },
+        {
+          "name": "mask_image_url",
+          "type": "string | null",
+          "description": "URL of a mask image for inpainting. White regions are regenerated, black regions are preserved. Requires image_url.",
+          "required": false
+        },
+        {
+          "name": "seed",
+          "type": "integer | null",
+          "description": "\n            The same seed and the same prompt given to the same version of the model\n            will output the same image every time.\n        ",
+          "required": false
+        },
+        {
+          "name": "image_url",
+          "type": "string | null",
+          "description": "URL of an image for image-to-image or inpainting. When provided without mask_image_url, performs image-to-image; with mask_image_url, performs inpainting.",
+          "required": false
+        },
+        {
+          "name": "tile_stride",
+          "type": "integer",
+          "description": "Tile stride in latent space. Must be even (divisible by 2). Automatically capped to half the effective tile size. (32 = 256px, 64 = 512px, 128 = 1024px).",
+          "required": false,
+          "default": 64
+        },
+        {
+          "name": "enable_safety_checker",
+          "type": "boolean",
+          "description": "If set to true, the safety checker will be enabled. Disabling it requires account authorization; unauthorized requests are always checked, and images flagged as unsafe are returned as black images.",
+          "required": false,
+          "default": true
+        },
+        {
+          "name": "sync_mode",
+          "type": "boolean",
+          "description": "If `True`, the media will be returned as a data URI and the output data won't be available in the request history.",
+          "required": false,
+          "default": false
+        },
+        {
+          "name": "strength",
+          "type": "number",
+          "description": "How much to transform the input image. Only used when image_url is provided.",
+          "required": false,
+          "default": 0.6
+        }
+      ],
+      "output_fields": [
+        {
+          "name": "images",
+          "type": "array<object>",
+          "description": "The generated image files info.",
+          "required": true
+        },
+        {
+          "name": "prompt",
+          "type": "string",
+          "description": "The prompt used for generating the image.",
+          "required": true
+        },
+        {
+          "name": "seed",
+          "type": "integer",
+          "description": "Seed of the generated Image. It will be the same value of the one passed in the input or the randomly generated that was used in case none was passed.",
+          "required": true
+        },
+        {
+          "name": "has_nsfw_concepts",
+          "type": "array<boolean>",
+          "description": "Whether the generated images contain NSFW concepts.",
+          "required": true
+        },
+        {
+          "name": "timings",
+          "type": "object",
+          "description": "The timings of the generation process.",
+          "required": true
+        }
+      ],
+      "input_schema": {
+        "title": "ZImageTurboTilingInput",
+        "x-fal-order-properties": [
+          "prompt",
+          "image_size",
+          "num_inference_steps",
+          "seed",
+          "sync_mode",
+          "num_images",
+          "enable_safety_checker",
+          "output_format",
+          "acceleration",
+          "enable_prompt_expansion",
+          "image_url",
+          "mask_image_url",
+          "strength",
+          "tile_size",
+          "tile_stride",
+          "tiling_mode"
+        ],
+        "required": [
+          "prompt"
+        ],
+        "properties": {
+          "acceleration": {
+            "default": "regular",
+            "description": "The acceleration level to use.",
+            "enum": [
+              "none",
+              "regular",
+              "high"
+            ],
+            "title": "Acceleration",
+            "type": "string"
+          },
+          "prompt": {
+            "description": "The prompt to generate an image from.",
+            "title": "Prompt",
+            "examples": [
+              "A hyper-realistic, high-resolution 4k texture of an ancient weathered brick wall heavily overgrown with lush green moss and soft lichens. The bricks are aged, featuring deep earthy tones, natural cracks, and gritty textures. Vibrant emerald moss fills the mortar lines and spills over the rough surfaces of the stones. Uniform, flat cinematic lighting ensures no harsh shadows, highlighting the intricate organic details and damp stone surfaces. The composition is a perfectly balanced overhead view, showcasing a rich tapestry of botanical growth and masonry craftsmanship with professional clarity and hyper-detailed grit."
+            ],
+            "type": "string"
+          },
+          "enable_prompt_expansion": {
+            "default": false,
+            "description": "Whether to enable prompt expansion. Note: this will increase the price by 0.0025 credits per request.",
+            "title": "Enable Prompt Expansion",
+            "type": "boolean"
+          },
+          "tile_size": {
+            "maximum": 256,
+            "default": 128,
+            "multipleOf": 2,
+            "description": "Tile size in latent space. Must be even (divisible by 2) for patchification. Automatically capped to the generated image dimensions on tiled axes. (64 = 512px, 128 = 1024px, 256 = 2048px).",
+            "minimum": 32,
+            "title": "Tile Size",
+            "type": "integer"
+          },
+          "image_size": {
+            "anyOf": [
+              {
+                "x-fal-order-properties": [
+                  "width",
+                  "height"
+                ],
+                "properties": {
+                  "height": {
+                    "maximum": 14142,
+                    "exclusiveMinimum": 0,
+                    "default": 512,
+                    "description": "The height of the generated image.",
+                    "title": "Height",
+                    "type": "integer"
+                  },
+                  "width": {
+                    "maximum": 14142,
+                    "exclusiveMinimum": 0,
+                    "default": 512,
+                    "description": "The width of the generated image.",
+                    "title": "Width",
+                    "type": "integer"
+                  }
+                },
+                "title": "ImageSize",
+                "type": "object"
+              },
+              {
+                "enum": [
+                  "square_hd",
+                  "square",
+                  "portrait_4_3",
+                  "portrait_16_9",
+                  "landscape_4_3",
+                  "landscape_16_9",
+                  "auto"
+                ],
+                "type": "string"
+              }
+            ],
+            "description": "The size of the generated image. Use 'auto' to match the input image size (or 1024x1024 if no image).",
+            "title": "Image Size",
+            "default": "square_hd"
+          },
+          "output_format": {
+            "default": "png",
+            "description": "The format of the generated image.",
+            "enum": [
+              "jpeg",
+              "png",
+              "webp"
+            ],
+            "title": "Output Format",
+            "type": "string"
+          },
+          "tiling_mode": {
+            "default": "both",
+            "description": "Tiling direction: 'both' (omnidirectional), 'horizontal' (left-right only), 'vertical' (top-bottom only).",
+            "enum": [
+              "both",
+              "horizontal",
+              "vertical"
+            ],
+            "title": "Tiling Mode",
+            "type": "string"
+          },
+          "num_images": {
+            "maximum": 4,
+            "default": 1,
+            "description": "The number of images to generate.",
+            "minimum": 1,
+            "title": "Number of Images",
+            "type": "integer"
+          },
+          "num_inference_steps": {
+            "maximum": 8,
+            "default": 8,
+            "description": "The number of inference steps to perform.",
+            "minimum": 1,
+            "title": "Number of Inference Steps",
+            "type": "integer"
+          },
+          "mask_image_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "URL of a mask image for inpainting. White regions are regenerated, black regions are preserved. Requires image_url.",
+            "title": "Mask Image URL"
+          },
+          "seed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "\n            The same seed and the same prompt given to the same version of the model\n            will output the same image every time.\n        ",
+            "title": "Seed"
+          },
+          "image_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "URL of an image for image-to-image or inpainting. When provided without mask_image_url, performs image-to-image; with mask_image_url, performs inpainting.",
+            "title": "Image URL"
+          },
+          "tile_stride": {
+            "maximum": 128,
+            "default": 64,
+            "multipleOf": 2,
+            "description": "Tile stride in latent space. Must be even (divisible by 2). Automatically capped to half the effective tile size. (32 = 256px, 64 = 512px, 128 = 1024px).",
+            "minimum": 16,
+            "title": "Tile Stride",
+            "type": "integer"
+          },
+          "enable_safety_checker": {
+            "default": true,
+            "description": "If set to true, the safety checker will be enabled. Disabling it requires account authorization; unauthorized requests are always checked, and images flagged as unsafe are returned as black images.",
+            "title": "Enable Safety Checker",
+            "type": "boolean"
+          },
+          "sync_mode": {
+            "default": false,
+            "description": "If `True`, the media will be returned as a data URI and the output data won't be available in the request history.",
+            "title": "Sync Mode",
+            "type": "boolean"
+          },
+          "strength": {
+            "maximum": 1,
+            "exclusiveMinimum": 0,
+            "default": 0.6,
+            "description": "How much to transform the input image. Only used when image_url is provided.",
+            "title": "Strength",
+            "type": "number"
+          }
+        },
+        "type": "object"
+      },
+      "output_schema": {
+        "title": "ZImageTurboTilingOutput",
+        "x-fal-order-properties": [
+          "images",
+          "timings",
+          "seed",
+          "has_nsfw_concepts",
+          "prompt"
+        ],
+        "required": [
+          "images",
+          "timings",
+          "seed",
+          "has_nsfw_concepts",
+          "prompt"
+        ],
+        "properties": {
+          "images": {
+            "items": {
+              "title": "ImageFile",
+              "x-fal-order-properties": [
+                "url",
+                "content_type",
+                "file_name",
+                "file_size",
+                "width",
+                "height"
+              ],
+              "required": [
+                "url"
+              ],
+              "properties": {
+                "file_name": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "The name of the file. It will be auto-generated if not provided.",
+                  "title": "File Name",
+                  "examples": [
+                    "z9RV14K95DvU.png"
+                  ]
+                },
+                "height": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "The height of the image",
+                  "title": "Height"
+                },
+                "content_type": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "The mime type of the file.",
+                  "title": "Content Type",
+                  "examples": [
+                    "image/png"
+                  ]
+                },
+                "file_size": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "The size of the file in bytes.",
+                  "title": "File Size",
+                  "examples": [
+                    4404019
+                  ]
+                },
+                "url": {
+                  "description": "The URL where the file can be downloaded from.",
+                  "title": "Url",
+                  "type": "string"
+                },
+                "width": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "The width of the image",
+                  "title": "Width"
+                }
+              },
+              "type": "object"
+            },
+            "description": "The generated image files info.",
+            "title": "Images",
+            "examples": [
+              [
+                {
+                  "height": 2048,
+                  "url": "https://v3b.fal.media/files/b/0a9276c3/6KxxMb0bPmfNLH3DqcuSf_qRUe8cIL.png",
+                  "content_type": "image/png",
+                  "width": 2048
+                }
+              ]
+            ],
+            "type": "array"
+          },
+          "prompt": {
+            "description": "The prompt used for generating the image.",
+            "title": "Prompt",
+            "type": "string"
+          },
+          "seed": {
+            "description": "Seed of the generated Image. It will be the same value of the one passed in the input or the randomly generated that was used in case none was passed.",
+            "title": "Seed",
+            "type": "integer"
+          },
+          "has_nsfw_concepts": {
+            "items": {
+              "type": "boolean"
+            },
+            "description": "Whether the generated images contain NSFW concepts.",
+            "title": "Has Nsfw Concepts",
+            "type": "array"
+          },
+          "timings": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "description": "The timings of the generation process.",
+            "title": "Timings",
+            "type": "object"
+          }
+        },
+        "type": "object"
+      },
+      "exact_input_schema": {
+        "$ref": "#/components/schemas/ZImageTurboTilingInput"
+      },
+      "exact_output_schema": {
+        "$ref": "#/components/schemas/ZImageTurboTilingOutput"
+      },
+      "components": {
+        "securitySchemes": {
+          "apiKeyAuth": {
+            "type": "apiKey",
+            "in": "header",
+            "name": "Authorization",
+            "description": "Fal Key"
+          }
+        },
+        "schemas": {
+          "QueueStatus": {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "IN_QUEUE",
+                  "IN_PROGRESS",
+                  "COMPLETED"
+                ]
+              },
+              "request_id": {
+                "type": "string",
+                "description": "The request id."
+              },
+              "response_url": {
+                "type": "string",
+                "description": "The response url."
+              },
+              "status_url": {
+                "type": "string",
+                "description": "The status url."
+              },
+              "cancel_url": {
+                "type": "string",
+                "description": "The cancel url."
+              },
+              "logs": {
+                "type": "object",
+                "description": "The logs.",
+                "additionalProperties": true
+              },
+              "metrics": {
+                "type": "object",
+                "description": "The metrics.",
+                "additionalProperties": true
+              },
+              "queue_position": {
+                "type": "integer",
+                "description": "The queue position."
+              }
+            },
+            "required": [
+              "status",
+              "request_id"
+            ]
+          },
+          "ZImageTurboTilingInput": {
+            "title": "ZImageTurboTilingInput",
+            "x-fal-order-properties": [
+              "prompt",
+              "image_size",
+              "num_inference_steps",
+              "seed",
+              "sync_mode",
+              "num_images",
+              "enable_safety_checker",
+              "output_format",
+              "acceleration",
+              "enable_prompt_expansion",
+              "image_url",
+              "mask_image_url",
+              "strength",
+              "tile_size",
+              "tile_stride",
+              "tiling_mode"
+            ],
+            "required": [
+              "prompt"
+            ],
+            "properties": {
+              "acceleration": {
+                "default": "regular",
+                "description": "The acceleration level to use.",
+                "enum": [
+                  "none",
+                  "regular",
+                  "high"
+                ],
+                "title": "Acceleration",
+                "type": "string"
+              },
+              "prompt": {
+                "description": "The prompt to generate an image from.",
+                "title": "Prompt",
+                "examples": [
+                  "A hyper-realistic, high-resolution 4k texture of an ancient weathered brick wall heavily overgrown with lush green moss and soft lichens. The bricks are aged, featuring deep earthy tones, natural cracks, and gritty textures. Vibrant emerald moss fills the mortar lines and spills over the rough surfaces of the stones. Uniform, flat cinematic lighting ensures no harsh shadows, highlighting the intricate organic details and damp stone surfaces. The composition is a perfectly balanced overhead view, showcasing a rich tapestry of botanical growth and masonry craftsmanship with professional clarity and hyper-detailed grit."
+                ],
+                "type": "string"
+              },
+              "enable_prompt_expansion": {
+                "default": false,
+                "description": "Whether to enable prompt expansion. Note: this will increase the price by 0.0025 credits per request.",
+                "title": "Enable Prompt Expansion",
+                "type": "boolean"
+              },
+              "tile_size": {
+                "maximum": 256,
+                "default": 128,
+                "multipleOf": 2,
+                "description": "Tile size in latent space. Must be even (divisible by 2) for patchification. Automatically capped to the generated image dimensions on tiled axes. (64 = 512px, 128 = 1024px, 256 = 2048px).",
+                "minimum": 32,
+                "title": "Tile Size",
+                "type": "integer"
+              },
+              "image_size": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ImageSize"
+                  },
+                  {
+                    "enum": [
+                      "square_hd",
+                      "square",
+                      "portrait_4_3",
+                      "portrait_16_9",
+                      "landscape_4_3",
+                      "landscape_16_9",
+                      "auto"
+                    ],
+                    "type": "string"
+                  }
+                ],
+                "description": "The size of the generated image. Use 'auto' to match the input image size (or 1024x1024 if no image).",
+                "title": "Image Size",
+                "default": "square_hd"
+              },
+              "output_format": {
+                "default": "png",
+                "description": "The format of the generated image.",
+                "enum": [
+                  "jpeg",
+                  "png",
+                  "webp"
+                ],
+                "title": "Output Format",
+                "type": "string"
+              },
+              "tiling_mode": {
+                "default": "both",
+                "description": "Tiling direction: 'both' (omnidirectional), 'horizontal' (left-right only), 'vertical' (top-bottom only).",
+                "enum": [
+                  "both",
+                  "horizontal",
+                  "vertical"
+                ],
+                "title": "Tiling Mode",
+                "type": "string"
+              },
+              "num_images": {
+                "maximum": 4,
+                "default": 1,
+                "description": "The number of images to generate.",
+                "minimum": 1,
+                "title": "Number of Images",
+                "type": "integer"
+              },
+              "num_inference_steps": {
+                "maximum": 8,
+                "default": 8,
+                "description": "The number of inference steps to perform.",
+                "minimum": 1,
+                "title": "Number of Inference Steps",
+                "type": "integer"
+              },
+              "mask_image_url": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "URL of a mask image for inpainting. White regions are regenerated, black regions are preserved. Requires image_url.",
+                "title": "Mask Image URL"
+              },
+              "seed": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "\n            The same seed and the same prompt given to the same version of the model\n            will output the same image every time.\n        ",
+                "title": "Seed"
+              },
+              "image_url": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "URL of an image for image-to-image or inpainting. When provided without mask_image_url, performs image-to-image; with mask_image_url, performs inpainting.",
+                "title": "Image URL"
+              },
+              "tile_stride": {
+                "maximum": 128,
+                "default": 64,
+                "multipleOf": 2,
+                "description": "Tile stride in latent space. Must be even (divisible by 2). Automatically capped to half the effective tile size. (32 = 256px, 64 = 512px, 128 = 1024px).",
+                "minimum": 16,
+                "title": "Tile Stride",
+                "type": "integer"
+              },
+              "enable_safety_checker": {
+                "default": true,
+                "description": "If set to true, the safety checker will be enabled. Disabling it requires account authorization; unauthorized requests are always checked, and images flagged as unsafe are returned as black images.",
+                "title": "Enable Safety Checker",
+                "type": "boolean"
+              },
+              "sync_mode": {
+                "default": false,
+                "description": "If `True`, the media will be returned as a data URI and the output data won't be available in the request history.",
+                "title": "Sync Mode",
+                "type": "boolean"
+              },
+              "strength": {
+                "maximum": 1,
+                "exclusiveMinimum": 0,
+                "default": 0.6,
+                "description": "How much to transform the input image. Only used when image_url is provided.",
+                "title": "Strength",
+                "type": "number"
+              }
+            },
+            "type": "object"
+          },
+          "ZImageTurboTilingOutput": {
+            "title": "ZImageTurboTilingOutput",
+            "x-fal-order-properties": [
+              "images",
+              "timings",
+              "seed",
+              "has_nsfw_concepts",
+              "prompt"
+            ],
+            "required": [
+              "images",
+              "timings",
+              "seed",
+              "has_nsfw_concepts",
+              "prompt"
+            ],
+            "properties": {
+              "images": {
+                "items": {
+                  "$ref": "#/components/schemas/ImageFile"
+                },
+                "description": "The generated image files info.",
+                "title": "Images",
+                "examples": [
+                  [
+                    {
+                      "height": 2048,
+                      "url": "https://v3b.fal.media/files/b/0a9276c3/6KxxMb0bPmfNLH3DqcuSf_qRUe8cIL.png",
+                      "content_type": "image/png",
+                      "width": 2048
+                    }
+                  ]
+                ],
+                "type": "array"
+              },
+              "prompt": {
+                "description": "The prompt used for generating the image.",
+                "title": "Prompt",
+                "type": "string"
+              },
+              "seed": {
+                "description": "Seed of the generated Image. It will be the same value of the one passed in the input or the randomly generated that was used in case none was passed.",
+                "title": "Seed",
+                "type": "integer"
+              },
+              "has_nsfw_concepts": {
+                "items": {
+                  "type": "boolean"
+                },
+                "description": "Whether the generated images contain NSFW concepts.",
+                "title": "Has Nsfw Concepts",
+                "type": "array"
+              },
+              "timings": {
+                "additionalProperties": {
+                  "type": "number"
+                },
+                "description": "The timings of the generation process.",
+                "title": "Timings",
+                "type": "object"
+              }
+            },
+            "type": "object"
+          },
+          "ImageSize": {
+            "x-fal-order-properties": [
+              "width",
+              "height"
+            ],
+            "properties": {
+              "height": {
+                "maximum": 14142,
+                "exclusiveMinimum": 0,
+                "default": 512,
+                "description": "The height of the generated image.",
+                "title": "Height",
+                "type": "integer"
+              },
+              "width": {
+                "maximum": 14142,
+                "exclusiveMinimum": 0,
+                "default": 512,
+                "description": "The width of the generated image.",
+                "title": "Width",
+                "type": "integer"
+              }
+            },
+            "title": "ImageSize",
+            "type": "object"
+          },
+          "ImageFile": {
+            "title": "ImageFile",
+            "x-fal-order-properties": [
+              "url",
+              "content_type",
+              "file_name",
+              "file_size",
+              "width",
+              "height"
+            ],
+            "required": [
+              "url"
+            ],
+            "properties": {
+              "file_name": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The name of the file. It will be auto-generated if not provided.",
+                "title": "File Name",
+                "examples": [
+                  "z9RV14K95DvU.png"
+                ]
+              },
+              "height": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The height of the image",
+                "title": "Height"
+              },
+              "content_type": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The mime type of the file.",
+                "title": "Content Type",
+                "examples": [
+                  "image/png"
+                ]
+              },
+              "file_size": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The size of the file in bytes.",
+                "title": "File Size",
+                "examples": [
+                  4404019
+                ]
+              },
+              "url": {
+                "description": "The URL where the file can be downloaded from.",
+                "title": "Url",
+                "type": "string"
+              },
+              "width": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "description": "The width of the image",
+                "title": "Width"
+              }
+            },
+            "type": "object"
+          }
+        }
+      },
+      "openapi_version": "3.0.4",
+      "selection_guidance": "Before choosing a model for a new operation, call recommend_model with the user's task and constraints unless the user named a model or explicitly requested a model set/comparison. Reuse that recommendation for the operation; do not repeatedly request the same recommendation.\nFor an explicit set/comparison, use list_model_sets to resolve the requested operation and sets, then use its exact returned endpoint IDs within the user's requested scope. Read each selected model's live schema and applicable published guidance, build its input from the user's brief and references, and preserve required settings. Explain incompatible or unavailable members instead of silently replacing them, approximating settings, or running the rest of a large set. Set membership is discovery, never authorization or proof of task fit.\nHonor an explicitly requested model; verify its exact endpoint and do not silently substitute it.\nCopy endpoint_id exactly from the live catalog. Namespaces and versions vary by provider: never add or change a provider prefix, invent an endpoint from a model name, or reuse a guessed alias. When a named model is missing or unavailable, search_models can resolve current catalog matches; explain any mismatch with the requested endpoint before choosing a replacement. An unavailable endpoint alone does not establish that the user connected the wrong account.\nOtherwise use current applicable published guidance in recommended_model and model_knowledge after checking the user's real sources, required capabilities and scoped budget. Follow the next compatible published fallback and explain why. If published guidance is missing or outdated, use search_models and search_docs to evaluate current candidates. A new endpoint can qualify without adoption statistics, but recency alone does not establish quality. Do not submit a choice with decision_status needs_input, no_compatible_candidate or evidence_unavailable. A workflow_needed result needs a verified dependent plan before spend.\nWith draft_inspection_required, draft_candidate establishes technical/reference fit only. Generate a draft only within existing user authorization and the checked budget, then inspect it against original conditioning sources before dependent generation or approval. Preservation stays unverified; a draft candidate is not a final recommended_model or permission to spend.\nCatalog order, popularity and release recency are discovery signals, not quality or latency rankings. Fast subject motion describes movement in the scene, not generation latency. Only treat user-requested settings as hard constraints; do not invent an exact resolution or audio requirement to justify switching models.\nLive retrieval does not establish when guidance was authored. Without an update date, freshness is unknown; verify capabilities in current schemas/docs and do not claim the pick is the newest or fastest without evidence. Skills and workflow examples supply production advice, not competing model defaults. Prefer current published task/domain guidance over bundled family rankings. Use get_pricing for the actual settings before material spending. Cost estimates preserve units and cover only known quantities, not final billing guarantees. Pass the optional decision_id to run_model, submit_job or each applicable batch item; it links observations and is never authorization.",
+      "knowledge_status": "complete",
+      "knowledge_retrieval": {
+        "fetched_at": "2026-10-13T02:02:59.522Z",
+        "warnings": []
+      },
+      "model_knowledge": {
+        "models": [
+          {
+            "endpoint_id": "fal-ai/z-image/turbo/tiling",
+            "display_name": "Z-Image Turbo Seamless Tiling",
+            "category": "text-to-image",
+            "relevance": null,
+            "insights": []
+          }
+        ],
+        "evidence": {
+          "version": 3,
+          "compiled_at": "2026-10-12T02:00:07.192Z",
+          "window_start": "2026-10-05T00:00:00.000Z",
+          "window_end": "2026-10-12T00:00:00.000Z",
+          "evaluated_at": "2026-10-13T02:02:59.845Z",
+          "latency_definition": "Successful execution observations in milliseconds; mixed workloads; excludes queue/startup; not runtime guarantees.",
+          "instructions": "Successful execution observations in milliseconds; mixed workloads; excludes queue/startup; not runtime guarantees. Report p50/p90 with their measurement window. Null means unknown, never zero. Trending is the analytics category rank at its source timestamp, not adoption or quality. New means registry publication within 30 days of the response evaluation time, not first usage. Lab recommendations are authored guidance, not measured latency, trending or newness. Use the existing pricing tool for current prices, preserving billing units and required configuration; these observations contain no prices.",
+          "models": [
+            {
+              "endpoint_id": "fal-ai/z-image/turbo/tiling",
+              "evidence": {
+                "endpoint_id": "fal-ai/z-image/turbo/tiling",
+                "title": "Z-Image Turbo Seamless Tiling",
+                "category": "text-to-image",
+                "usage_tier": "high",
+                "latency": {
+                  "p50_ms": 6608,
+                  "p90_ms": 10005,
+                  "sufficient_evidence": true,
+                  "latest_request_at": "2026-10-11T23:59:46.060Z"
+                },
+                "trending": {
+                  "category_rank": 71,
+                  "computed_at": "2026-10-11T09:49:06.521Z"
+                },
+                "published_at": "2026-03-17T03:10:40.551Z",
+                "is_new": false
+              }
+            }
+          ]
+        },
+        "unavailable_endpoint_ids": [],
+        "stats_available": true,
+        "note": "Successful execution observations in milliseconds; mixed workloads; excludes queue/startup; not runtime guarantees. Report p50/p90 with their measurement window. Null means unknown, never zero. Trending is the analytics category rank at its source timestamp, not adoption or quality. New means registry publication within 30 days of the response evaluation time, not first usage. Lab recommendations are authored guidance, not measured latency, trending or newness. Use the existing pricing tool for current prices, preserving billing units and required configuration; these observations contain no prices."
+      }
+    },
+    {
+      "endpoint_id": "fal-ai/ideogram/v3/generate-transparent",
+      "display_name": "Ideogram Transparent",
+      "category": "text-to-image",
+      "description": "Generate images with transparent backgrounds using Ideogram Transparent model",
+      "input_params": [
+        {
+          "name": "rendering_speed",
+          "type": "string",
+          "description": "The rendering speed to use.",
+          "required": false,
+          "default": "BALANCED",
+          "enum": [
+            "TURBO",
+            "BALANCED",
+            "QUALITY"
+          ]
+        },
+        {
+          "name": "aspect_ratio",
+          "type": "string",
+          "description": "The aspect ratio of the generated image.",
+          "required": false,
+          "default": "1:1",
+          "enum": [
+            "1:3",
+            "3:1",
+            "1:2",
+            "2:1",
+            "9:16",
+            "16:9",
+            "10:16",
+            "16:10",
+            "2:3",
+            "3:2",
+            "3:4",
+            "4:3",
+            "4:5",
+            "5:4",
+            "1:1"
+          ]
+        },
+        {
+          "name": "seed",
+          "type": "integer | null",
+          "description": "Seed for the random number generator",
+          "required": false
+        },
+        {
+          "name": "expand_prompt",
+          "type": "boolean",
+          "description": "Determine if MagicPrompt should be used in generating the request or not.",
+          "required": false,
+          "default": true
+        },
+        {
+          "name": "num_images",
+          "type": "integer",
+          "description": "Number of images to generate.",
+          "required": false,
+          "default": 1
+        },
+        {
+          "name": "negative_prompt",
+          "type": "string",
+          "description": "Description of what to exclude from an image. Descriptions in the prompt take precedence to descriptions in the negative prompt.",
+          "required": false,
+          "default": ""
+        },
+        {
+          "name": "sync_mode",
+          "type": "boolean",
+          "description": "If `True`, the media will be returned as a data URI and the output data won't be available in the request history.",
+          "required": false,
+          "default": false
+        },
+        {
+          "name": "prompt",
+          "type": "string",
+          "required": true
+        }
+      ],
+      "output_fields": [
+        {
+          "name": "seed",
+          "type": "integer",
+          "description": "Seed used for the random number generator",
+          "required": true
+        },
+        {
+          "name": "images",
+          "type": "array<object>",
+          "required": true
+        }
+      ],
+      "input_schema": {
+        "properties": {
+          "rendering_speed": {
+            "enum": [
+              "TURBO",
+              "BALANCED",
+              "QUALITY"
+            ],
+            "default": "BALANCED",
+            "description": "The rendering speed to use.",
+            "title": "Rendering Speed",
+            "type": "string"
+          },
+          "aspect_ratio": {
+            "enum": [
+              "1:3",
+              "3:1",
+              "1:2",
+              "2:1",
+              "9:16",
+              "16:9",
+              "10:16",
+              "16:10",
+              "2:3",
+              "3:2",
+              "3:4",
+              "4:3",
+              "4:5",
+              "5:4",
+              "1:1"
+            ],
+            "default": "1:1",
+            "description": "The aspect ratio of the generated image.",
+            "title": "Aspect Ratio",
+            "type": "string"
+          },
+          "seed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seed",
+            "description": "Seed for the random number generator"
+          },
+          "expand_prompt": {
+            "default": true,
+            "description": "Determine if MagicPrompt should be used in generating the request or not.",
+            "title": "Expand Prompt",
+            "type": "boolean"
+          },
+          "num_images": {
+            "minimum": 1,
+            "default": 1,
+            "description": "Number of images to generate.",
+            "maximum": 8,
+            "type": "integer",
+            "title": "Num Images"
+          },
+          "negative_prompt": {
+            "default": "",
+            "description": "Description of what to exclude from an image. Descriptions in the prompt take precedence to descriptions in the negative prompt.",
+            "title": "Negative Prompt",
+            "type": "string"
+          },
+          "sync_mode": {
+            "default": false,
+            "description": "If `True`, the media will be returned as a data URI and the output data won't be available in the request history.",
+            "title": "Sync Mode",
+            "type": "boolean"
+          },
+          "prompt": {
+            "title": "Prompt",
+            "examples": [
+              "A logo for Ideogram Coffee."
+            ],
+            "type": "string"
+          }
+        },
+        "x-fal-order-properties": [
+          "prompt",
+          "aspect_ratio",
+          "rendering_speed",
+          "expand_prompt",
+          "negative_prompt",
+          "num_images",
+          "seed",
+          "sync_mode"
+        ],
+        "title": "TransparentInputV3",
+        "type": "object",
+        "required": [
+          "prompt"
+        ]
+      },
+      "output_schema": {
+        "properties": {
+          "seed": {
+            "title": "Seed",
+            "description": "Seed used for the random number generator",
+            "type": "integer",
+            "examples": [
+              123456
+            ]
+          },
+          "images": {
+            "title": "Images",
+            "examples": [
+              [
+                {
+                  "url": "https://v3.fal.media/files/lion/AUfCjtLkLOsdc9zEFrV-5_image.png"
+                }
+              ]
+            ],
+            "type": "array",
+            "items": {
+              "properties": {
+                "content_type": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Content Type",
+                  "description": "The mime type of the file.",
+                  "examples": [
+                    "image/png"
+                  ]
+                },
+                "file_name": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "File Name",
+                  "description": "The name of the file. It will be auto-generated if not provided.",
+                  "examples": [
+                    "z9RV14K95DvU.png"
+                  ]
+                },
+                "file_size": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "File Size",
+                  "description": "The size of the file in bytes.",
+                  "examples": [
+                    4404019
+                  ]
+                },
+                "url": {
+                  "title": "Url",
+                  "description": "The URL where the file can be downloaded from.",
+                  "type": "string"
+                }
+              },
+              "x-fal-order-properties": [
+                "url",
+                "content_type",
+                "file_name",
+                "file_size"
+              ],
+              "title": "File",
+              "type": "object",
+              "required": [
+                "url"
+              ]
+            }
+          }
+        },
+        "x-fal-order-properties": [
+          "images",
+          "seed"
+        ],
+        "title": "TransparentOutputV3",
+        "type": "object",
+        "required": [
+          "images",
+          "seed"
+        ]
+      },
+      "exact_input_schema": {
+        "$ref": "#/components/schemas/IdeogramV3GenerateTransparentInput"
+      },
+      "exact_output_schema": {
+        "$ref": "#/components/schemas/IdeogramV3GenerateTransparentOutput"
+      },
+      "components": {
+        "securitySchemes": {
+          "apiKeyAuth": {
+            "type": "apiKey",
+            "in": "header",
+            "name": "Authorization",
+            "description": "Fal Key"
+          }
+        },
+        "schemas": {
+          "QueueStatus": {
+            "type": "object",
+            "properties": {
+              "status": {
+                "type": "string",
+                "enum": [
+                  "IN_QUEUE",
+                  "IN_PROGRESS",
+                  "COMPLETED"
+                ]
+              },
+              "request_id": {
+                "type": "string",
+                "description": "The request id."
+              },
+              "response_url": {
+                "type": "string",
+                "description": "The response url."
+              },
+              "status_url": {
+                "type": "string",
+                "description": "The status url."
+              },
+              "cancel_url": {
+                "type": "string",
+                "description": "The cancel url."
+              },
+              "logs": {
+                "type": "object",
+                "description": "The logs.",
+                "additionalProperties": true
+              },
+              "metrics": {
+                "type": "object",
+                "description": "The metrics.",
+                "additionalProperties": true
+              },
+              "queue_position": {
+                "type": "integer",
+                "description": "The queue position."
+              }
+            },
+            "required": [
+              "status",
+              "request_id"
+            ]
+          },
+          "IdeogramV3GenerateTransparentInput": {
+            "properties": {
+              "rendering_speed": {
+                "enum": [
+                  "TURBO",
+                  "BALANCED",
+                  "QUALITY"
+                ],
+                "default": "BALANCED",
+                "description": "The rendering speed to use.",
+                "title": "Rendering Speed",
+                "type": "string"
+              },
+              "aspect_ratio": {
+                "enum": [
+                  "1:3",
+                  "3:1",
+                  "1:2",
+                  "2:1",
+                  "9:16",
+                  "16:9",
+                  "10:16",
+                  "16:10",
+                  "2:3",
+                  "3:2",
+                  "3:4",
+                  "4:3",
+                  "4:5",
+                  "5:4",
+                  "1:1"
+                ],
+                "default": "1:1",
+                "description": "The aspect ratio of the generated image.",
+                "title": "Aspect Ratio",
+                "type": "string"
+              },
+              "seed": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Seed",
+                "description": "Seed for the random number generator"
+              },
+              "expand_prompt": {
+                "default": true,
+                "description": "Determine if MagicPrompt should be used in generating the request or not.",
+                "title": "Expand Prompt",
+                "type": "boolean"
+              },
+              "num_images": {
+                "minimum": 1,
+                "default": 1,
+                "description": "Number of images to generate.",
+                "maximum": 8,
+                "type": "integer",
+                "title": "Num Images"
+              },
+              "negative_prompt": {
+                "default": "",
+                "description": "Description of what to exclude from an image. Descriptions in the prompt take precedence to descriptions in the negative prompt.",
+                "title": "Negative Prompt",
+                "type": "string"
+              },
+              "sync_mode": {
+                "default": false,
+                "description": "If `True`, the media will be returned as a data URI and the output data won't be available in the request history.",
+                "title": "Sync Mode",
+                "type": "boolean"
+              },
+              "prompt": {
+                "title": "Prompt",
+                "examples": [
+                  "A logo for Ideogram Coffee."
+                ],
+                "type": "string"
+              }
+            },
+            "x-fal-order-properties": [
+              "prompt",
+              "aspect_ratio",
+              "rendering_speed",
+              "expand_prompt",
+              "negative_prompt",
+              "num_images",
+              "seed",
+              "sync_mode"
+            ],
+            "title": "TransparentInputV3",
+            "type": "object",
+            "required": [
+              "prompt"
+            ]
+          },
+          "IdeogramV3GenerateTransparentOutput": {
+            "properties": {
+              "seed": {
+                "title": "Seed",
+                "description": "Seed used for the random number generator",
+                "type": "integer",
+                "examples": [
+                  123456
+                ]
+              },
+              "images": {
+                "title": "Images",
+                "examples": [
+                  [
+                    {
+                      "url": "https://v3.fal.media/files/lion/AUfCjtLkLOsdc9zEFrV-5_image.png"
+                    }
+                  ]
+                ],
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/File"
+                }
+              }
+            },
+            "x-fal-order-properties": [
+              "images",
+              "seed"
+            ],
+            "title": "TransparentOutputV3",
+            "type": "object",
+            "required": [
+              "images",
+              "seed"
+            ]
+          },
+          "File": {
+            "properties": {
+              "content_type": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Content Type",
+                "description": "The mime type of the file.",
+                "examples": [
+                  "image/png"
+                ]
+              },
+              "file_name": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "File Name",
+                "description": "The name of the file. It will be auto-generated if not provided.",
+                "examples": [
+                  "z9RV14K95DvU.png"
+                ]
+              },
+              "file_size": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "File Size",
+                "description": "The size of the file in bytes.",
+                "examples": [
+                  4404019
+                ]
+              },
+              "url": {
+                "title": "Url",
+                "description": "The URL where the file can be downloaded from.",
+                "type": "string"
+              }
+            },
+            "x-fal-order-properties": [
+              "url",
+              "content_type",
+              "file_name",
+              "file_size"
+            ],
+            "title": "File",
+            "type": "object",
+            "required": [
+              "url"
+            ]
+          }
+        }
+      },
+      "openapi_version": "3.0.4",
+      "selection_guidance": "Before choosing a model for a new operation, call recommend_model with the user's task and constraints unless the user named a model or explicitly requested a model set/comparison. Reuse that recommendation for the operation; do not repeatedly request the same recommendation.\nFor an explicit set/comparison, use list_model_sets to resolve the requested operation and sets, then use its exact returned endpoint IDs within the user's requested scope. Read each selected model's live schema and applicable published guidance, build its input from the user's brief and references, and preserve required settings. Explain incompatible or unavailable members instead of silently replacing them, approximating settings, or running the rest of a large set. Set membership is discovery, never authorization or proof of task fit.\nHonor an explicitly requested model; verify its exact endpoint and do not silently substitute it.\nCopy endpoint_id exactly from the live catalog. Namespaces and versions vary by provider: never add or change a provider prefix, invent an endpoint from a model name, or reuse a guessed alias. When a named model is missing or unavailable, search_models can resolve current catalog matches; explain any mismatch with the requested endpoint before choosing a replacement. An unavailable endpoint alone does not establish that the user connected the wrong account.\nOtherwise use current applicable published guidance in recommended_model and model_knowledge after checking the user's real sources, required capabilities and scoped budget. Follow the next compatible published fallback and explain why. If published guidance is missing or outdated, use search_models and search_docs to evaluate current candidates. A new endpoint can qualify without adoption statistics, but recency alone does not establish quality. Do not submit a choice with decision_status needs_input, no_compatible_candidate or evidence_unavailable. A workflow_needed result needs a verified dependent plan before spend.\nWith draft_inspection_required, draft_candidate establishes technical/reference fit only. Generate a draft only within existing user authorization and the checked budget, then inspect it against original conditioning sources before dependent generation or approval. Preservation stays unverified; a draft candidate is not a final recommended_model or permission to spend.\nCatalog order, popularity and release recency are discovery signals, not quality or latency rankings. Fast subject motion describes movement in the scene, not generation latency. Only treat user-requested settings as hard constraints; do not invent an exact resolution or audio requirement to justify switching models.\nLive retrieval does not establish when guidance was authored. Without an update date, freshness is unknown; verify capabilities in current schemas/docs and do not claim the pick is the newest or fastest without evidence. Skills and workflow examples supply production advice, not competing model defaults. Prefer current published task/domain guidance over bundled family rankings. Use get_pricing for the actual settings before material spending. Cost estimates preserve units and cover only known quantities, not final billing guarantees. Pass the optional decision_id to run_model, submit_job or each applicable batch item; it links observations and is never authorization.",
+      "knowledge_status": "complete",
+      "knowledge_retrieval": {
+        "fetched_at": "2026-10-13T02:02:59.698Z",
+        "warnings": []
+      },
+      "model_knowledge": {
+        "models": [
+          {
+            "endpoint_id": "fal-ai/ideogram/v3/generate-transparent",
+            "display_name": "Ideogram Transparent",
+            "category": "text-to-image",
+            "relevance": null,
+            "insights": []
+          }
+        ],
+        "evidence": {
+          "version": 3,
+          "compiled_at": "2026-10-12T02:00:07.192Z",
+          "window_start": "2026-10-05T00:00:00.000Z",
+          "window_end": "2026-10-12T00:00:00.000Z",
+          "evaluated_at": "2026-10-13T02:03:00.058Z",
+          "latency_definition": "Successful execution observations in milliseconds; mixed workloads; excludes queue/startup; not runtime guarantees.",
+          "instructions": "Successful execution observations in milliseconds; mixed workloads; excludes queue/startup; not runtime guarantees. Report p50/p90 with their measurement window. Null means unknown, never zero. Trending is the analytics category rank at its source timestamp, not adoption or quality. New means registry publication within 30 days of the response evaluation time, not first usage. Lab recommendations are authored guidance, not measured latency, trending or newness. Use the existing pricing tool for current prices, preserving billing units and required configuration; these observations contain no prices.",
+          "models": [
+            {
+              "endpoint_id": "fal-ai/ideogram/v3/generate-transparent",
+              "evidence": {
+                "endpoint_id": "fal-ai/ideogram/v3/generate-transparent",
+                "title": "Ideogram Transparent",
+                "category": "text-to-image",
+                "usage_tier": "medium",
+                "latency": {
+                  "p50_ms": 16340,
+                  "p90_ms": 27271,
+                  "sufficient_evidence": true,
+                  "latest_request_at": "2026-10-11T23:16:56.693Z"
+                },
+                "trending": {
+                  "category_rank": 86,
+                  "computed_at": "2026-10-11T09:49:06.521Z"
+                },
+                "published_at": "2026-04-07T13:35:57.791Z",
+                "is_new": false
+              }
+            }
+          ]
+        },
+        "unavailable_endpoint_ids": [],
+        "stats_available": true,
+        "note": "Successful execution observations in milliseconds; mixed workloads; excludes queue/startup; not runtime guarantees. Report p50/p90 with their measurement window. Null means unknown, never zero. Trending is the analytics category rank at its source timestamp, not adoption or quality. New means registry publication within 30 days of the response evaluation time, not first usage. Lab recommendations are authored guidance, not measured latency, trending or newness. Use the existing pricing tool for current prices, preserving billing units and required configuration; these observations contain no prices."
+      }
+    }
+  ],
+  "pricing": {
+    "prices": [
+      {
+        "endpoint_id": "fal-ai/z-image/turbo/tiling",
+        "unit_price": 0.02,
+        "unit": "megapixels",
+        "currency": "USD"
+      },
+      {
+        "endpoint_id": "fal-ai/ideogram/v3/generate-transparent",
+        "unit_price": 0.03,
+        "unit": "images",
+        "currency": "USD"
+      }
+    ],
+    "next_cursor": null,
+    "has_more": false
+  },
+  "selected_endpoints": [
+    "fal-ai/z-image/turbo/tiling",
+    "fal-ai/ideogram/v3/generate-transparent"
+  ],
+  "selection_resolution": "General recommender did not resolve specialized capabilities and treated literal 1024x1024 as an unmatched resolution enum. Targeted catalog discovery plus exact schemas establish both-axis latent tiling at custom 1024 or 512 for Z-Image, and native transparency with 1:1 ratio for Ideogram. Ideogram exposes no exact pixel-size control: actual dimensions and layout would require verification after output. Commercial-use labels and configuration-specific prices were verified on model pages. Safety checker remains enabled; no prompt expansion. Optional decal was deferred; Ideogram does not expose a 4:1 aspect ratio."
+}

@@ -107,3 +107,48 @@ fatal: Unable to create '/Users/j/Documents/dev/permagent-runtime/.git/worktrees
 ```
 
 The W5 files are preserved and staged only within `assets/world/realism-20261012/`. No push was attempted. Commit hooks were disabled for this attempt to honor the no-build instruction; the failure occurred before any hook or commit ran. No alternate Git directory, index, or permission workaround was attempted.
+
+
+## Round 2 — 2026-10-12 local / 2026-10-13 UTC
+
+**Blocked before submission: no new images, no new inference spend.** The configured FAL MCP is connected and its read-only account/catalog/schema/pricing tools worked. Every generation-tool invocation was denied by the host with the identical exact message:
+
+```text
+MCP tool call requires approval, but approval policy is never
+```
+
+This is a **host tool authorization error**, not an HTTP 422 or a new FAL content-policy refusal. It returned no provider request ID, HTTP status, output URL or image. The host did not execute the generation calls. Following the user's instruction, W5 recorded each failure and moved to the next requested item once; no second candidate, retry, alternate source, account change or approval workaround was attempted. The optional water-line decal is deferred under this shared blocker.
+
+### Prepared requests and outcome
+
+| ID | Model | Seed | Requested pixels / scale | Result / new cost |
+|---|---|---:|---|---|
+| leather-r2-a | `fal-ai/z-image/turbo/tiling` | 61012201 | 512² / 0.30 m | Host blocked; no original; $0 |
+| walnut-r2-a | `fal-ai/z-image/turbo/tiling` | 61012202 | 1024² / 1.0 m | Host blocked; no original; $0 |
+| foliage-r2-a | `fal-ai/ideogram/v3/generate-transparent` | 61012203 | 1024² RGBA / four fixed 512² tiles | Host blocked; no original; $0 |
+| bark-r2-a | `fal-ai/z-image/turbo/tiling` | 61012204 | 1024² / 0.9 m | Host blocked; no original; $0 |
+| limestone-r2-a | `fal-ai/z-image/turbo/tiling` | 61012205 | 1024² / 1.0 m | Host blocked; no original; $0 |
+
+The leather prompt begins “Warm brown aniline leather, fine grain, seamless tile, 512 px, base colour.” It is new neutral wording, not the refused round-one prompt. Walnut had exactly one further attempted submission. The first three prioritized requests were attempted in the user's order, then bark and limestone. No candidates reached generation.
+
+Every attempt has the original schema's model, exact prompt/params/seed, account, status, costs, rights, proposed destination and review fields in `LEDGER.json`. Absent original paths, SHA-256 values, bytes and dimensions are explicitly null rather than invented. `REQUESTS-round2.json` preserves all five recipes; `evidence/round2-submission-errors.json` preserves the exact tool arguments and errors. These are records, not queued jobs; do not poll them as jobs.
+
+### Model fit and planned validation
+
+General recommendation did not resolve the specialized tiling requirement; its literal `1024x1024` resolution check also conflicted with enum-based models. Targeted catalog discovery and live schemas identified [Z-Image Turbo Seamless Tiling](https://fal.ai/models/fal-ai/z-image/turbo/tiling). Its actual controls were prepared as `tiling_mode=both`, `tile_size=128`, `tile_stride=64` for 1024 px; leather uses 64/32 at 512 px. All surface requests use 8 steps, one PNG, acceleration none, prompt expansion false, safety checker true and sync mode false. No safety control was disabled.
+
+The required walnut verification method was prepared but **could not be performed**: `inspect_tiles.py` would decode the original, composite an unmodified lossless 2×2 repeat and half-width/half-height wrap offset, then compare opposite-edge MAE to interior-boundary distributions. A human-style visual inspection of the repeat and offset would decide grain continuity; a numeric pass alone would not establish tileability. No round-two surface may be called seamless or accepted without those missing checks.
+
+[Ideogram Transparent](https://fal.ai/models/fal-ai/ideogram/v3/generate-transparent) supports native alpha. The atlas recipe uses 1:1, QUALITY, one image, seed 61012203 and no prompt expansion. Exact 1024² output is a prompt requirement because this endpoint has no pixel-dimension control; it must be measured. W4's layout is preserved verbatim in the request and in `evidence/round2-scope.json`: top-left heart-leaf vine (tile 2), top-right radial cluster of the narrow leaf (tile 3), bottom-left olive-like narrow grey-green sprig (tile 0), bottom-right laurel-like sprig (tile 1), each rooted bottom-centre inside a 4-texel gutter. Alpha, gutters, intact leaves, root positions, edge fringes and neutral lighting all remain unchecked because no output exists. The atlas is not a seamless repeating material.
+
+The latest user instruction requests bark at 1024 px and overrides W4's older 512 px request. Its scale remains 0.9 m. Limestone remains 1024 px at 1 m, #A89980–#D6C9B0, with fine pitting and faint bedding and no veins. The optional 512×128 alpha water-line strip remains deferred; no crop, resize, paid job or candidate was created.
+
+### Costs, rights and handoff
+
+**Round-two spend: $0.00 of $5.00; cap not reached.** Five host tool attempts, zero provider jobs, zero downloaded images, zero derivatives. Proposed reservations totaled $0.25 (four surface jobs up to $0.04 each plus the $0.09 QUALITY atlas), all released after rejection. The Z-Image page gives $0.02/megapixel; exact pixel billing rounding/minimums remain unverified, so no precise per-surface quote is claimed. Ideogram's generic pricing API reports the $0.03 base tier; its model page explicitly prices the selected QUALITY setting at $0.09. No billing balance or final charges are inferred from account-ready status.
+
+Round one's $0.60 conservative exposure and its four item records are unchanged. Top-level ledger summary fields remain labeled by the appended `rounds` entries as the round-one historical summary; round-two totals are in the round-2 summary and each new item. The zero new spend does not reinterpret the old failed-job charge reservation.
+
+Endpoint-specific commercial-use statements and service/API terms are appended in `RIGHTS.md`; no input images or external asset sources were substituted. Proposed replacements are the W3 folio leather, shared W3/W4 walnut, and W4 foliage, bark and limestone paths listed in each ledger item. **Retain authored materials and the existing round-one decisions.** W3/W4/W6 still own integration, supporting maps, UV scale, relighting and runtime acceptance.
+
+All writes are under `assets/world/realism-20261012/`. No original images were overwritten, no other-lane files were modified or staged, and no cargo, npm, Blender, build, commit or push was run. The coordinator owns any commit. The round-two handoff is `w5-receipt-round2-20261012.md` in this directory; see it for staging verification.

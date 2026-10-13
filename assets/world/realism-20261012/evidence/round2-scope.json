@@ -1,0 +1,27 @@
+{
+  "round": 2,
+  "recorded_at": "2026-10-13T02:06:14.169038+00:00",
+  "ruling_path": "/Users/j/Documents/dev/permagent-worktrees/wq-reports/astra/ruling-world-production-20261012.md",
+  "ruling_sha256": "69aaec4b36e385694b09f10b9b690dd41d02b4e42ac0b3e1c5960cabc5efc08d",
+  "w4_receipt_path": "/Users/j/Documents/dev/permagent-worktrees/wq-reports/world/w4-receipt-20261012.md",
+  "w4_receipt_sha256": "2569de6c6b122d55f19954564164b1c19de01516113522dfcbc8cafb4c92c8f7",
+  "w4_request_section_verbatim": "## Requests for W5\n\nThese are for FAL through Codex, within Fable's budget reconciliation. Every output is a candidate base colour only; W4 derives any other maps under inspection.\n\n1. **Foliage colour-and-opacity atlas.** This uses Astra's botanical prompt contract unchanged. It replaces `botany/textures/foliage_atlas_basecolor_alpha.png`.\n   - 1024\u00d71024 RGBA, laid out as a 2\u00d72 grid of 512 tiles. The UVs are fixed, so the layout must be kept.\n   - Tile 0, bottom-left: a narrow lanceolate sprig, olive-like and grey-green.\n   - Tile 1, bottom-right: a broad glossy laurel-like sprig.\n   - Tile 2, top-left: a heart-leaf vine sprig.\n   - Tile 3, top-right: a dense radial cluster of the tile-0 leaf.\n   - Each sprig rises from bottom-centre and lies within a 4-texel gutter.\n   - Separate complete leaves, true alpha, neutral diffuse light, no highlights, shadows, labels or lettering.\n   - It needs commercial-use rights and a ledger entry.\n2. **Grey olive bark.**\n   - Seamless and orthographic, 0.9 m per tile, with vertical fissures and restrained lichen.\n   - Diffuse light, no text.\n   - 512\u00d7512 base colour, tileable on both axes.\n   - Replaces `bark_basecolor.png`.\n3. **Warm limestone.**\n   - Use the surface prompt contract, at 1.0 m per tile.\n   - Pale warm stone in the sRGB range #A89980 to #D6C9B0, with fine pitting and faint bedding, no veins or fixtures.\n   - 1024\u00d71024, tileable.\n   - Replaces `limestone_basecolor.png` in benches, plinths, abutments, coping, steps and column bases.\n4. **Oiled walnut.** This is the same request as W3's request 1. One accepted file replaces the walnut in both lanes, because the hashes are identical today.\n5. **Optional: a water-line staining decal.**\n   - A 1.0 \u00d7 0.15 m strip at 512\u00d7128 RGBA: mineral staining and a faint moss line, fading upward.\n   - No text, no geometry cues.\n   - It would sit on the coping and abutment water faces above `anchor_water_line`.\n   - Lowest priority.\n\nUntil any of these are accepted, the authored procedural maps stay. Their provenance is recorded in each manifest.\n\n",
+  "size_precedence": "Latest user instruction requests bark 1024; W4 receipt requests 512. Latest user instruction wins.",
+  "atlas_layout": {
+    "image": [
+      1024,
+      1024
+    ],
+    "tiles": [
+      512,
+      512
+    ],
+    "gutter_texels": 4,
+    "tile_0": "bottom-left narrow lanceolate olive-like grey-green sprig",
+    "tile_1": "bottom-right broad glossy laurel-like sprig; neutral base colour only",
+    "tile_2": "top-left heart-leaf vine sprig",
+    "tile_3": "top-right dense radial cluster of tile-0 leaf",
+    "stems": "bottom-centre of each tile"
+  },
+  "scope": "All round-two writes are inside assets/world/realism-20261012/. No build, commit, integration or other-lane mutation."
+}

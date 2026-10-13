@@ -1,0 +1,109 @@
+[
+  {
+    "id": "leather-r2-a",
+    "endpoint_id": "fal-ai/z-image/turbo/tiling",
+    "input": {
+      "prompt": "Warm brown aniline leather, fine grain, seamless tile, 512 px, base colour. A flat orthographic swatch of 0.30 metre of leather, uniform diffuse light, subtle natural grain, restrained warm brown variation. No seams, stitching, objects, writing, shadows or highlights.",
+      "seed": 61012201,
+      "image_size": {
+        "width": 512,
+        "height": 512
+      },
+      "num_images": 1,
+      "num_inference_steps": 8,
+      "output_format": "png",
+      "tiling_mode": "both",
+      "tile_size": 64,
+      "tile_stride": 32,
+      "acceleration": "none",
+      "enable_prompt_expansion": false,
+      "enable_safety_checker": true,
+      "sync_mode": false
+    },
+    "reserved_usd": 0.04
+  },
+  {
+    "id": "walnut-r2-a",
+    "endpoint_id": "fal-ai/z-image/turbo/tiling",
+    "input": {
+      "prompt": "Seamless orthographic base colour material study of dark warm oiled walnut timber at 1.0 metre per square tile, 1024 px. Fine straight to gently figured horizontal grain, tiny pores, restrained dark warm brown natural variation in the established palette #2a1a10 to #4a2c16. One continuous surface, diffuse illumination, no perspective, directional shadow, specular highlights, fixtures, symbols or text. No plank divisions, seams, vignette, border or large knots.",
+      "seed": 61012202,
+      "image_size": {
+        "width": 1024,
+        "height": 1024
+      },
+      "num_images": 1,
+      "num_inference_steps": 8,
+      "output_format": "png",
+      "tiling_mode": "both",
+      "tile_size": 128,
+      "tile_stride": 64,
+      "acceleration": "none",
+      "enable_prompt_expansion": false,
+      "enable_safety_checker": true,
+      "sync_mode": false
+    },
+    "reserved_usd": 0.04
+  },
+  {
+    "id": "foliage-r2-a",
+    "endpoint_id": "fal-ai/ideogram/v3/generate-transparent",
+    "input": {
+      "prompt": "Original broadleaf color-and-opacity atlas for a relightable game asset; separate complete leaves, consistent orientation, transparent gutters, neutral diffuse illumination, coherent botanical family, subtle age variation, intact tips and stems. No directional highlights, cast shadows, scenery, pots, labels, or lettering. Base color and alpha only.\nExactly 1024x1024 RGBA, exactly four separate botanical sprigs in a fixed 2x2 grid of 512x512 tiles. Do not rearrange this layout. TOP LEFT (tile 2): heart-leaf vine sprig. TOP RIGHT (tile 3): dense radial cluster of narrow lanceolate olive-like grey-green leaves. BOTTOM LEFT (tile 0): narrow lanceolate olive-like grey-green sprig. BOTTOM RIGHT (tile 1): broad glossy laurel-like sprig, but represented only by neutral diffuse base colour with no painted shine. Every sprig rises from the bottom centre of its own tile. Every complete stem and leaf stays inside its own tile with at least a 4-pixel transparent gutter on all four sides. All four root stems point down. True transparent background, fully transparent gutters; no checkerboard pixels. Photorealistic botanical surface detail, not vector art. No grid lines.",
+      "aspect_ratio": "1:1",
+      "rendering_speed": "QUALITY",
+      "expand_prompt": false,
+      "negative_prompt": "text, labels, lettering, grid lines, checkerboard, cast shadows, directional highlights, background, pots, scenery, clipped leaves, clipped stems",
+      "num_images": 1,
+      "seed": 61012203,
+      "sync_mode": false
+    },
+    "reserved_usd": 0.09
+  },
+  {
+    "id": "bark-r2-a",
+    "endpoint_id": "fal-ai/z-image/turbo/tiling",
+    "input": {
+      "prompt": "Seamless orthographic grey olive bark base colour, 1024x1024, 0.9 metre per tile, vertical fissures and restrained sparse lichen. Natural warm grey bark, fine fibrous detail and subtle age variation, uniform diffuse illumination. Tileable on both axes. No trunk silhouette, curvature, perspective, directional shadows, baked highlights, text, symbols or border.",
+      "seed": 61012204,
+      "image_size": {
+        "width": 1024,
+        "height": 1024
+      },
+      "num_images": 1,
+      "num_inference_steps": 8,
+      "output_format": "png",
+      "tiling_mode": "both",
+      "tile_size": 128,
+      "tile_stride": 64,
+      "acceleration": "none",
+      "enable_prompt_expansion": false,
+      "enable_safety_checker": true,
+      "sync_mode": false
+    },
+    "reserved_usd": 0.04
+  },
+  {
+    "id": "limestone-r2-a",
+    "endpoint_id": "fal-ai/z-image/turbo/tiling",
+    "input": {
+      "prompt": "Seamless orthographic material study of pale warm limestone at 1.0 metre per square tile, 1024x1024 base colour. Restrained natural variation, fine pitting and faint horizontal bedding. Pale warm stone in sRGB range #A89980 to #D6C9B0. Uniform diffuse illumination, flat continuous stone surface, no veins, cracks, joints, fixtures, perspective, directional shadow, specular highlights, symbols or text. Tileable on both axes.",
+      "seed": 61012205,
+      "image_size": {
+        "width": 1024,
+        "height": 1024
+      },
+      "num_images": 1,
+      "num_inference_steps": 8,
+      "output_format": "png",
+      "tiling_mode": "both",
+      "tile_size": 128,
+      "tile_stride": 64,
+      "acceleration": "none",
+      "enable_prompt_expansion": false,
+      "enable_safety_checker": true,
+      "sync_mode": false
+    },
+    "reserved_usd": 0.04
+  }
+]
