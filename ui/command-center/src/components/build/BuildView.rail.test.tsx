@@ -23,8 +23,25 @@ const dashboard = vi.hoisted(() => ({
   },
 }));
 
+const harness = vi.hoisted(() => ({ runs: [] as Array<Record<string, unknown>> }));
+vi.mock('../../lib/api', async importOriginal => ({
+  ...(await importOriginal<typeof import('../../lib/api')>()),
+  api: {
+    getActiveHarnessRuns: () => Promise.resolve(harness.runs),
+    getHarnessRunHistory: () => Promise.resolve([]),
+  },
+}));
+
+/** The dashboard lists every recently-touched session; only a harness run with
+ *  a turn in flight is a Build session, so `withFlight` registers both. */
 function withFlight(...in_flight: Flight[]) {
   dashboard.data = { agent: { name: 'Aria' }, in_flight };
+  harness.runs = in_flight.map(f => ({ runId: `run-${f.id}`, sessionId: f.id, promptTitle: f.title, status: 'running', elapsedMs: 0 }));
+}
+/** A plain chat session: on the dashboard, but no harness run. */
+function withChatSessionOnly(...in_flight: Flight[]) {
+  dashboard.data = { agent: { name: 'Aria' }, in_flight };
+  harness.runs = [];
 }
 
 vi.mock('../dashboard/useDashboard', () => ({
@@ -96,6 +113,28 @@ describe('Build progress rail', () => {
     // label (above) and the glass tip on focus both name what is being counted.
     act(() => { (rail.parentElement as HTMLElement).focus(); });
     expect(document.querySelector('[role="tooltip"]')?.textContent).toMatch(/Step 3 of 5/);
+  });
+
+  it('a newly created chat session does not change the Build header (G4)', async () => {
+    withChatSessionOnly({ id: '20261013_1', title: 'Session 20261013_1', progress: 0 });
+    await render();
+    const header = container.querySelector('[data-testid="view-header"]')!.textContent!;
+    expect(header).toContain('Aria · idle');
+    expect(header).toContain('the terminal below is a plain shell');
+    expect(header).not.toContain('thinking');
+    expect(header).not.toContain('Session 20261013_1');
+    expect(header).not.toContain('Take over');
+    expect(container.querySelector('[data-testid="build-progress-rail"]')).toBeNull();
+  });
+
+  it('a queued or finished harness run is not a turn in flight', async () => {
+    withChatSessionOnly();
+    harness.runs = [{ runId: 'r', sessionId: 's', promptTitle: 'Queued job', status: 'queued', elapsedMs: 0 },
+      { runId: 'r2', sessionId: 's2', promptTitle: 'Done job', status: 'succeeded', elapsedMs: 9 }];
+    await render();
+    const header = container.querySelector('[data-testid="view-header"]')!.textContent!;
+    expect(header).not.toContain('thinking');
+    expect(header).not.toContain('Take over');
   });
 
   it('says what an idle Build tab is for, truthfully — the terminal is a plain shell until a project is launched (B1)', async () => {

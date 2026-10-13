@@ -13,7 +13,8 @@ import { claimLaunch } from './pendingLaunch';
 import { Browser } from '../browser';
 import { ProjectChip } from './ProjectChip';
 import { CostStatusline } from './CostStatusline';
-import { progressRailStep } from '../../lib/buildProgress';
+import { progressRailStep, selectBuildTask } from '../../lib/buildProgress';
+import { useActiveHarnessRuns } from './useActiveHarnessRuns';
 import type { Project } from './useProjects';
 import { ViewHeader } from '../common/ViewHeader';
 import { Button } from '../common/Button';
@@ -129,8 +130,11 @@ export function BuildView() {
   }, [pendingTerminalLaunch, setPendingTerminalLaunch, buildTerminalHidden, toggleBuildTerminal]);
 
   const agentName = data?.agent.name ?? 'Agent';
-  const hasActive = (data?.in_flight.length ?? 0) > 0;
-  const activeTask = hasActive ? data!.in_flight[0] : null;
+  // Only a coding-harness run with a turn in flight counts. A plain chat
+  // session (the dock creates one on open) is not a Build session.
+  const harnessRuns = useActiveHarnessRuns();
+  const activeTask = selectBuildTask(harnessRuns, data?.in_flight ?? []);
+  const hasActive = activeTask !== null;
 
   // Take over: open the in-flight session in the chat dock so the user can
   // steer (or stop) the run directly. `in_flight[i].id` IS a session id — the
