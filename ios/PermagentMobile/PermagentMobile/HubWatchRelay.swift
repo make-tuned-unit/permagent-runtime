@@ -207,12 +207,17 @@ final class HubWatchRelay: NSObject, WCSessionDelegate {
         do {
             let sid = try await MobileSession.chatSessionId()
             var acc = AssistantAccumulator()
+            var lastSent = Date.distantPast
             for try await delta in APIClient.shared.replyStream(text, sessionId: sid) {
                 acc.apply(delta)
+                // One message per token floods WCSession (sends fail and the
+                // fallbacks pile up behind the final reply). Progress at ~1 Hz.
+                guard Date().timeIntervalSince(lastSent) >= 1 else { continue }
+                lastSent = Date()
                 var payload = WatchResponse.ack(id, op: "chatDelta")
                 payload.text = acc.text.isEmpty ? acc.thinking : acc.text
                 payload.thinking = acc.text.isEmpty && !acc.thinking.isEmpty
-                send(payload)
+                send(payload, durable: false)
             }
             var done = WatchResponse.ack(id, op: "chatDelta")
             done.done = true
@@ -259,23 +264,22 @@ final class HubWatchRelay: NSObject, WCSessionDelegate {
         }
     }
 
-    private func send(_ payload: WatchResponse) {
+    /// `durable` payloads (the final reply, failures, status) also go by
+    /// transferUserInfo, which survives an unreachable or backgrounded watch;
+    /// the watch drops the duplicate. Progress deltas are live-only: a queued
+    /// stale delta arriving after the reply is worse than a missed one.
+    private func send(_ payload: WatchResponse, durable: Bool = true) {
         let data = Self.encode(payload)
         let session = WCSession.default
         guard session.activationState == .activated else { return }
-        if session.isReachable {
-            Self.sendMessageData(session, data)
-        } else {
-            session.transferUserInfo(["payload": data])
-        }
+        if session.isReachable { Self.sendMessageData(session, data) }
+        if durable { session.transferUserInfo(["payload": data]) }
     }
 
     /// The error handler runs on WCSession's queue; build it nonisolated so
     /// it does not inherit main-actor isolation (Swift 6 libdispatch trap).
     private nonisolated static func sendMessageData(_ session: WCSession, _ data: Data) {
-        session.sendMessageData(data, replyHandler: nil, errorHandler: { @Sendable _ in
-            WCSession.default.transferUserInfo(["payload": data])
-        })
+        session.sendMessageData(data, replyHandler: nil, errorHandler: { @Sendable _ in })
     }
 
     private static func encode(_ payload: WatchResponse) -> Data {

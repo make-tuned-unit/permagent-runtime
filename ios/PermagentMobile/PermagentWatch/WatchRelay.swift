@@ -32,6 +32,10 @@ final class WatchRelay: NSObject, ObservableObject, WCSessionDelegate {
     private var queuedRecordings: [QueuedRecording] = []
     private var activeTransferIds: Set<String> = []
     private var responseWatchdog: Task<Void, Never>?
+    /// Request ids whose final chatDelta already landed. The phone sends the
+    /// final reply over two routes (live message + durable userInfo) and
+    /// stale progress deltas can trail in behind it; none may undo the result.
+    private var finishedChatIds: Set<String> = []
 
     func start() {
         guard WCSession.isSupported() else {
@@ -223,9 +227,16 @@ final class WatchRelay: NSObject, ObservableObject, WCSessionDelegate {
                 chatThinking = false
             }
         case "chatDelta":
+            let final = reply.done == true || reply.ok == false
+            // Duplicate or late progress for a turn that is over (or was given
+            // up on) must not flip "Thinking…" back on or replace the reply.
+            if finishedChatIds.contains(reply.id) { return }
+            if !final && !chatBusy { return }
             if let text = reply.text { chatText = text }
             chatThinking = reply.thinking ?? false
-            if reply.done == true || reply.ok == false {
+            if !final { armResponseWatchdog(kind: "chat") }
+            if final {
+                finishedChatIds.insert(reply.id)
                 responseWatchdog?.cancel()
                 chatBusy = false
                 chatThinking = false
@@ -372,12 +383,14 @@ final class WatchRelay: NSObject, ObservableObject, WCSessionDelegate {
     private func armResponseWatchdog(kind: String) {
         responseWatchdog?.cancel()
         responseWatchdog = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(90))
+            try? await Task.sleep(for: .seconds(kind == "chat" ? 40 : 90))
             guard !Task.isCancelled, let self else { return }
             if kind == "chat", self.chatBusy {
                 self.chatBusy = false
                 self.chatThinking = false
-                self.notice = "The iPhone did not finish this turn. Your recording is saved; try again when it reconnects."
+                // Shown in the reply slot so the orb never sits on "Thinking…".
+                // A reply that lands later still replaces this (see apply).
+                self.chatText = "Reply is on your iPhone."
             } else if kind != "chat", self.noteBusy {
                 self.noteBusy = false
                 self.notice = "The iPhone did not finish transcribing. Your recording is saved for retry."
