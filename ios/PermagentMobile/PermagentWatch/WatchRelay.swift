@@ -179,21 +179,32 @@ final class WatchRelay: NSObject, ObservableObject, WCSessionDelegate {
             return
         }
         if session.isReachable {
-            session.sendMessageData(data, replyHandler: { [weak self] reply in
-                Task { @MainActor in self?.apply(reply) }
-            }, errorHandler: { [weak self] _ in
-                Task { @MainActor in
-                    self?.notice = "Hold your iPhone nearby."
-                    self?.chatBusy = false
-                    self?.chatThinking = false
-                    self?.noteBusy = false
-                    self?.responseWatchdog?.cancel()
-                }
-            })
+            Self.sendMessageData(session, data, relay: self)
         } else {
             session.transferUserInfo(["request": data])
             notice = "iPhone sleeping — queued."
         }
+    }
+
+    /// WCSession invokes these handlers on its own background queue. Closures
+    /// formed inside a @MainActor method inherit main-actor isolation under
+    /// Swift 6 and trip a libdispatch assertion, so build them here in a
+    /// nonisolated context and hop to the main actor explicitly.
+    private nonisolated static func sendMessageData(_ session: WCSession, _ data: Data,
+                                                    relay: WatchRelay) {
+        session.sendMessageData(data, replyHandler: { @Sendable [weak relay] reply in
+            Task { @MainActor in relay?.apply(reply) }
+        }, errorHandler: { @Sendable [weak relay] _ in
+            Task { @MainActor in relay?.sendFailed() }
+        })
+    }
+
+    private func sendFailed() {
+        notice = "Hold your iPhone nearby."
+        chatBusy = false
+        chatThinking = false
+        noteBusy = false
+        responseWatchdog?.cancel()
     }
 
     private func apply(_ data: Data) {

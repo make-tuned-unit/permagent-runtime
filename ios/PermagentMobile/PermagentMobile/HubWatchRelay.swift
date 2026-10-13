@@ -255,12 +255,18 @@ final class HubWatchRelay: NSObject, WCSessionDelegate {
         let session = WCSession.default
         guard session.activationState == .activated else { return }
         if session.isReachable {
-            session.sendMessageData(data, replyHandler: nil) { _ in
-                WCSession.default.transferUserInfo(["payload": data])
-            }
+            Self.sendMessageData(session, data)
         } else {
             session.transferUserInfo(["payload": data])
         }
+    }
+
+    /// The error handler runs on WCSession's queue; build it nonisolated so
+    /// it does not inherit main-actor isolation (Swift 6 libdispatch trap).
+    private nonisolated static func sendMessageData(_ session: WCSession, _ data: Data) {
+        session.sendMessageData(data, replyHandler: nil, errorHandler: { @Sendable _ in
+            WCSession.default.transferUserInfo(["payload": data])
+        })
     }
 
     private static func encode(_ payload: WatchResponse) -> Data {
