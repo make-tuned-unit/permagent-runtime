@@ -248,6 +248,11 @@ async fn stream_event(
     }
 }
 
+/// Sent through the existing `MessageEvent::Error` channel when a turn arrives
+/// while no provider/model is configured.
+pub const NO_PROVIDER_MESSAGE: &str =
+    "No model is configured. Choose a provider in Settings → Models, then send again.";
+
 #[allow(clippy::too_many_lines)]
 #[utoipa::path(
     post,
@@ -343,6 +348,32 @@ pub async fn reply(
                 return;
             }
         };
+
+        // No model configured: keep the accepted user message and say what to
+        // do. Without this the turn died inside the agent with a bare
+        // "Provider not set" and the message was lost (nothing was appended).
+        if agent.provider().await.is_err() {
+            if let Err(e) = state
+                .session_manager()
+                .add_message(&session_id, &user_message)
+                .await
+            {
+                tracing::warn!(
+                    "Failed to persist user message for {} while no provider is set: {}",
+                    session_id,
+                    e
+                );
+            }
+            stream_event(
+                MessageEvent::Error {
+                    error: NO_PROVIDER_MESSAGE.to_string(),
+                },
+                &task_tx,
+                &cancel_token,
+            )
+            .await;
+            return;
+        }
 
         let session_config = SessionConfig {
             id: session_id.clone(),
@@ -658,6 +689,12 @@ pub fn routes(state: Arc<AppState>) -> Router {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn no_provider_message_is_actionable() {
+        assert!(NO_PROVIDER_MESSAGE.contains("Settings"));
+        assert!(!NO_PROVIDER_MESSAGE.contains("Provider not set"));
+    }
 
     mod integration_tests {
         use super::*;
