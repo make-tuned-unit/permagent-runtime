@@ -10,7 +10,7 @@ import { act } from 'react-dom/test-utils';
 
 vi.mock('../../lib/api', () => ({
   // Every other api call the panel makes on mount stays pending forever.
-  api: new Proxy({ listDevices: vi.fn() } as Record<string, unknown>, {
+  api: new Proxy({ listDevices: vi.fn(), getHealth: vi.fn() } as Record<string, unknown>, {
     get: (t, k: string) => (k in t ? t[k] : () => new Promise(() => {})),
   }),
   apiFetch: vi.fn(),
@@ -21,10 +21,12 @@ vi.mock('./MessagingGatewaysSection', () => ({ MessagingGatewaysSection: () => n
 
 import { api, apiFetch } from '../../lib/api';
 import { DevicesPanel } from './SettingsView';
+import { useCommandCenter } from '../../lib/store';
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
 const listDevices = vi.mocked(api.listDevices);
+const getHealth = vi.mocked(api.getHealth);
 let container: HTMLDivElement;
 let root: Root;
 
@@ -32,6 +34,7 @@ beforeEach(() => {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
+  getHealth.mockReset().mockResolvedValue(true);
   vi.mocked(apiFetch).mockReset().mockReturnValue(new Promise(() => {}) as never);
 });
 afterEach(() => {
@@ -62,5 +65,59 @@ describe('Devices panel loading state', () => {
     await act(async () => { await Promise.resolve(); await Promise.resolve(); });
     expect(status()).toBeUndefined();
     expect(container.textContent).toContain('No devices paired yet');
+  });
+});
+
+describe('Devices panel recovery', () => {
+  const flush = async () => { await act(async () => { await Promise.resolve(); await Promise.resolve(); }); };
+
+  it('refetches when the hub comes back and shows the empty state', async () => {
+    vi.useFakeTimers();
+    try {
+      getHealth.mockReset().mockResolvedValue(false);
+      listDevices.mockReset().mockRejectedValue(new Error('down'));
+      await act(async () => { root.render(<DevicesPanel />); });
+      await flush();
+      expect(status()).toContain('is the daemon reachable');
+      getHealth.mockResolvedValue(true);
+      listDevices.mockReset().mockResolvedValue([]);
+      await act(async () => { vi.advanceTimersByTime(5_000); });
+      await flush();
+      expect(status()).toBeUndefined();
+      expect(container.textContent).toContain('No devices paired yet');
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('refetches when the live stream reconnects', async () => {
+    useCommandCenter.setState({ connectionStatus: 'disconnected' });
+    listDevices.mockReset().mockRejectedValue(new Error('down'));
+    await act(async () => { root.render(<DevicesPanel />); });
+    await flush();
+    expect(status()).toContain('is the daemon reachable');
+    listDevices.mockReset().mockResolvedValue([]);
+    await act(async () => { useCommandCenter.setState({ connectionStatus: 'connected' }); });
+    await flush();
+    expect(status()).toBeUndefined();
+    expect(container.textContent).toContain('No devices paired yet');
+  });
+
+  it('Retry refetches', async () => {
+    listDevices.mockReset().mockRejectedValue(new Error('down'));
+    await act(async () => { root.render(<DevicesPanel />); });
+    await flush();
+    const retry = container.querySelector('[data-testid="devices-retry"]') as HTMLButtonElement;
+    expect(retry).toBeTruthy();
+    listDevices.mockReset().mockResolvedValue([]);
+    await act(async () => { retry.click(); });
+    await flush();
+    expect(listDevices).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[data-testid="devices-retry"]')).toBeNull();
+    expect(container.textContent).toContain('No devices paired yet');
+  });
+
+  it('does not offer Retry while loading', async () => {
+    listDevices.mockReset().mockReturnValue(new Promise(() => {}) as never);
+    await act(async () => { root.render(<DevicesPanel />); });
+    expect(container.querySelector('[data-testid="devices-retry"]')).toBeNull();
   });
 });

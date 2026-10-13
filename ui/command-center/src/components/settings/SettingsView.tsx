@@ -2068,9 +2068,33 @@ export function DevicesPanel() {
   const isHub = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
   const [detail, setDetail] = useState(0); // progressive disclosure depth
   const [hubUp, setHubUp] = useState<boolean | null>(null);
+  // Hub reachability is polled while the panel is open: when it flips back to
+  // reachable (or the live event stream reconnects) the device list is
+  // re-fetched, so "Device list unavailable" does not outlive the outage.
+  const hubUpRef = useRef<boolean | null>(null);
+  const loadDevicesRef = useRef(loadDevices);
+  loadDevicesRef.current = loadDevices;
   useEffect(() => {
-    api.getHealth().then(setHubUp);
+    let alive = true;
+    const probe = () => {
+      Promise.resolve(api.getHealth()).then(up => {
+        if (!alive) return;
+        const was = hubUpRef.current;
+        hubUpRef.current = up;
+        setHubUp(up);
+        if (up && was === false) loadDevicesRef.current();
+      }).catch(() => {});
+    };
+    probe();
+    const t = setInterval(probe, 5_000);
+    return () => { alive = false; clearInterval(t); };
   }, []);
+  const streamStatus = useCommandCenter(s => s.connectionStatus);
+  const prevStream = useRef(streamStatus);
+  useEffect(() => {
+    if (streamStatus === 'connected' && prevStream.current !== 'connected') loadDevicesRef.current();
+    prevStream.current = streamStatus;
+  }, [streamStatus]);
   return (
     <div>
       <H1 sub="One Brain, one truth: your strongest machine is the hub — every other device connects to it. No accounts, no sync conflicts; pairing is a URL, opened once per device.">Devices</H1>
@@ -2124,6 +2148,9 @@ export function DevicesPanel() {
         {devices === null && (
           <div data-testid="devices-status" style={{ fontSize: textSize.caption, color: colors.textDim, padding: '6px 0' }}>
             {devicesFailed ? 'Device list unavailable — is the daemon reachable?' : 'Loading devices…'}
+            {devicesFailed && (
+              <Button colors={colors} variant="ghost" onClick={loadDevices} style={{ marginLeft: space.md }} data-testid="devices-retry">Retry</Button>
+            )}
           </div>
         )}
         {devices?.length === 0 && (
