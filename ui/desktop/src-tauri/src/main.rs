@@ -267,7 +267,20 @@ fn check_for_updates(handle: tauri::AppHandle) {
 }
 
 fn main() {
+    let launch_epoch_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock is before the Unix epoch")
+        .as_millis();
     let builder = tauri::Builder::default()
+        // Plugin initialization scripts also cover config-created windows:
+        // publish the process launch time before any frontend script runs.
+        .plugin(
+            tauri::plugin::Builder::<tauri::Wry>::new("launch-clock")
+                .js_init_script(format!(
+                    "Object.defineProperty(window, '__PERMAGENT_LAUNCH_EPOCH_MS__', {{ value: {launch_epoch_ms} }});"
+                ))
+                .build(),
+        )
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {

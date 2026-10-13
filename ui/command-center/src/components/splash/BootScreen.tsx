@@ -25,6 +25,24 @@ const RETRY_DELAY_MS = 1000;
 
 type Status = 'connecting' | 'retrying' | 'failed' | 'unpaired';
 
+declare global {
+  interface Window {
+    /** Injected at document start by the native launch-clock plugin. */
+    __PERMAGENT_LAUNCH_EPOCH_MS__?: number;
+  }
+}
+
+function launchEpochMs(): number {
+  const epoch = window.__PERMAGENT_LAUNCH_EPOCH_MS__;
+  return typeof epoch === 'number' && Number.isFinite(epoch) && epoch > 0
+    ? epoch
+    : performance.timeOrigin;
+}
+
+function remainingSeconds(deadline: number): number {
+  return Math.max(0, Math.ceil((deadline - Date.now()) / 100) / 10);
+}
+
 /**
  * The daemon-connecting boot state — shown between the logo splash and the
  * running app while the frontend waits for the local daemon to answer.
@@ -39,13 +57,13 @@ type Status = 'connecting' | 'retrying' | 'failed' | 'unpaired';
  */
 export function BootScreen({ onReady, onMalformed }: Props) {
   const { colors, reduceMotion } = useTheme();
-  const [status, setStatus] = useState<Status>('connecting');
+  // Shell startup and page loading spend the same budget as connection attempts.
+  // This is initialized once; only the Retry button may replace the deadline.
+  const [deadline, setDeadline] = useState(() => launchEpochMs() + BOOT_DEADLINE_MS);
+  const [status, setStatus] = useState<Status>(() => Date.now() >= deadline ? 'failed' : 'connecting');
   const failureDetail = useDaemonFailure();
   const [attempt, setAttempt] = useState(0);
   const [mounted, setMounted] = useState(false);
-  // Bumping this re-runs the connect effect below — the Retry button's entire
-  // job.
-  const [retryKey, setRetryKey] = useState(0);
 
   useEffect(() => {
     const frame = requestAnimationFrame(() => setMounted(true));
@@ -54,12 +72,13 @@ export function BootScreen({ onReady, onMalformed }: Props) {
 
   const callbacks = useRef({ onReady, onMalformed });
   callbacks.current = { onReady, onMalformed };
-  const [remaining, setRemaining] = useState(10);
+  const [remaining, setRemaining] = useState(() => remainingSeconds(deadline));
 
   useEffect(() => {
-    const deadline = performance.now() + BOOT_DEADLINE_MS;
     let finished = false;
     let current: AbortController | undefined;
+    let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+    let countdown: ReturnType<typeof setInterval> | undefined;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     let attemptTimer: ReturnType<typeof setTimeout> | undefined;
     const stop = () => {
@@ -74,17 +93,19 @@ export function BootScreen({ onReady, onMalformed }: Props) {
     // Independent of fetch/auth/body parsing: even an implementation that ignores
     // AbortSignal cannot hold the recovery screen hostage. Only an explicit Retry
     // starts a new deadline, never a request retry or changed parent callback.
-    const deadlineTimer = setTimeout(fail, BOOT_DEADLINE_MS);
-    const countdown = setInterval(() => {
-      setRemaining(Math.max(0, Math.ceil((deadline - performance.now()) / 1000)));
+    const budget = deadline - Date.now();
+    if (budget <= 0) { fail(); return stop; }
+    deadlineTimer = setTimeout(fail, budget);
+    countdown = setInterval(() => {
+      setRemaining(remainingSeconds(deadline));
     }, 250);
     setStatus('connecting');
     setAttempt(0);
-    setRemaining(10);
+    setRemaining(remainingSeconds(deadline));
 
     const connect = async (n: number) => {
       if (finished) return;
-      const left = deadline - performance.now();
+      const left = deadline - Date.now();
       if (left <= 0) { fail(); return; }
       setAttempt(n);
       setStatus(n === 1 ? 'connecting' : 'retrying');
@@ -99,7 +120,7 @@ export function BootScreen({ onReady, onMalformed }: Props) {
           }),
         ]);
         if (finished) return;
-        if (performance.now() >= deadline) { fail(); return; }
+        if (Date.now() >= deadline) { fail(); return; }
         const route = classifyStartupConfig(config);
         stop();
         if (route === 'malformed') callbacks.current.onMalformed();
@@ -110,13 +131,13 @@ export function BootScreen({ onReady, onMalformed }: Props) {
         if ((e as { status?: number })?.status === 401 && getDaemonTokenError()) {
           stop(); setStatus('unpaired'); return;
         }
-        if (n >= MAX_ATTEMPTS || performance.now() >= deadline) { fail(); return; }
-        retryTimer = setTimeout(() => void connect(n + 1), Math.min(RETRY_DELAY_MS, deadline - performance.now()));
+        if (n >= MAX_ATTEMPTS || Date.now() >= deadline) { fail(); return; }
+        retryTimer = setTimeout(() => void connect(n + 1), Math.min(RETRY_DELAY_MS, deadline - Date.now()));
       }
     };
     void connect(1);
     return stop;
-  }, [retryKey]);
+  }, [deadline]);
 
   const copy = status === 'unpaired'
     ? {
@@ -138,7 +159,10 @@ export function BootScreen({ onReady, onMalformed }: Props) {
 
   // D9: spring token, under 500ms, gated on reduce motion — a plain instant
   // cut with the setting on, same as the splash it follows.
-  const fade = reduceMotion ? 'none' : `opacity ${duration.smooth}ms ${ease.smooth}`;
+  const recovery = status === 'failed' || status === 'unpaired';
+  // Recovery must be visible immediately, even if the shell spent the budget
+  // before this component mounted or its entry fade finished.
+  const fade = reduceMotion || recovery ? 'none' : `opacity ${duration.smooth}ms ${ease.smooth}`;
   // No reduce-motion routing needed here: Mobius freezes every state under
   // the setting at the source (see the `motionDisabled` gate in Mobius.tsx),
   // so 'calibrating'/'sleeping' are safe to use directly.
@@ -151,7 +175,7 @@ export function BootScreen({ onReady, onMalformed }: Props) {
         background: `radial-gradient(ellipse 70% 50% at 50% 45%, ${colors.cyanWash} 0%, ${colors.bg} 70%)`,
         display: 'flex', flexDirection: 'column',
         alignItems: 'center', justifyContent: 'center',
-        opacity: mounted ? 1 : 0,
+        opacity: mounted || recovery ? 1 : 0,
         transition: fade,
       }}
     >
@@ -182,7 +206,7 @@ export function BootScreen({ onReady, onMalformed }: Props) {
         )}
         {(status === 'failed' || status === 'unpaired') && (
           <div style={{ marginTop: space.xxl, display: 'flex', justifyContent: 'center' }}>
-            <Button colors={colors} variant="primary" onClick={() => setRetryKey(k => k + 1)}>
+            <Button colors={colors} variant="primary" onClick={() => setDeadline(Date.now() + BOOT_DEADLINE_MS)}>
               Retry
             </Button>
           </div>

@@ -35,6 +35,7 @@ let root: Root;
 
 beforeEach(() => {
   vi.useFakeTimers();
+  window.__PERMAGENT_LAUNCH_EPOCH_MS__ = Date.now();
   getConfigMock.mockReset();
   container = document.createElement('div');
   document.body.appendChild(container);
@@ -44,6 +45,7 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   container.remove();
+  delete window.__PERMAGENT_LAUNCH_EPOCH_MS__;
   vi.useRealTimers();
 });
 
@@ -156,6 +158,98 @@ describe('BootScreen', () => {
 
 
 describe('absolute startup deadline', () => {
+  it('spends shell startup time: 8.5s remain after a 1.5s launch, with Retry exactly at launch + 10s', async () => {
+    window.__PERMAGENT_LAUNCH_EPOCH_MS__ = Date.now() - 1500;
+    let answer!: (value: never) => void;
+    getConfigMock.mockImplementation(() => new Promise(resolve => { answer = resolve; }));
+    const onReady = vi.fn();
+    act(() => root.render(<BootScreen onReady={onReady} onMalformed={vi.fn()} />));
+    expect(container.textContent).toContain('8.5s remaining');
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    expect(getConfigMock.mock.calls[0][0]?.aborted).toBe(true);
+    expect(container.textContent).toContain('6.5s remaining');
+    await act(async () => { await vi.advanceTimersByTimeAsync(6499); });
+    expect(container.querySelector('button')).toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    const retry = container.querySelector('button') as HTMLButtonElement;
+    expect(retry.textContent).toContain('Retry');
+    expect(retry.disabled).toBe(false);
+    expect(Date.now()).toBe(window.__PERMAGENT_LAUNCH_EPOCH_MS__ + 10_000);
+    expect(getConfigMock.mock.calls.every(([signal]) => signal?.aborted)).toBe(true);
+    await act(async () => { answer({ config: { wizard_complete: true } } as never); });
+    expect(onReady).not.toHaveBeenCalled();
+  });
+
+  it('mounts directly into visible recovery after an 11s shell startup, without starting a request', () => {
+    window.__PERMAGENT_LAUNCH_EPOCH_MS__ = Date.now() - 11_000;
+    act(() => root.render(<BootScreen onReady={vi.fn()} onMalformed={vi.fn()} />));
+    expect(container.textContent).toContain("Couldn't reach Permagent's background service");
+    expect(container.textContent).not.toContain('remaining');
+    const retry = container.querySelector('button') as HTMLButtonElement;
+    expect(retry.textContent).toContain('Retry');
+    expect(retry.disabled).toBe(false);
+    const screen = container.firstElementChild as HTMLElement;
+    expect(screen.style.opacity).toBe('1');
+    expect(screen.style.transition).toBe('none');
+    expect(getConfigMock).not.toHaveBeenCalled();
+  });
+
+  it('uses navigation timeOrigin in a web build without Tauri', async () => {
+    delete window.__PERMAGENT_LAUNCH_EPOCH_MS__;
+    expect('__TAURI_INTERNALS__' in window).toBe(false);
+    const original = Object.getOwnPropertyDescriptor(performance, 'timeOrigin');
+    Object.defineProperty(performance, 'timeOrigin', { configurable: true, value: Date.now() - 1500 });
+    try {
+      getConfigMock.mockReturnValue(new Promise(() => {}));
+      act(() => root.render(<BootScreen onReady={vi.fn()} onMalformed={vi.fn()} />));
+      expect(container.textContent).toContain('8.5s remaining');
+      await act(async () => { await vi.advanceTimersByTimeAsync(8499); });
+      expect(container.querySelector('button')).toBeNull();
+      await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+      expect(container.querySelector('button')?.textContent).toContain('Retry');
+    } finally {
+      if (original) Object.defineProperty(performance, 'timeOrigin', original);
+      else Reflect.deleteProperty(performance, 'timeOrigin');
+    }
+  });
+
+  it('only an explicit Retry grants a fresh 10s window and permits successful recovery', async () => {
+    window.__PERMAGENT_LAUNCH_EPOCH_MS__ = Date.now() - 11_000;
+    const onReady = vi.fn();
+    const onMalformed = vi.fn();
+    getConfigMock.mockReturnValue(new Promise(() => {}));
+    act(() => root.render(<BootScreen onReady={onReady} onMalformed={onMalformed} />));
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(getConfigMock).not.toHaveBeenCalled();
+    act(() => (container.querySelector('button') as HTMLButtonElement).click());
+    expect(container.textContent).toContain('10s remaining');
+    await act(async () => { await vi.advanceTimersByTimeAsync(9999); });
+    expect(container.querySelector('button')).toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(container.querySelector('button')?.textContent).toContain('Retry');
+    getConfigMock.mockResolvedValue({ config: { wizard_complete: true } });
+    act(() => (container.querySelector('button') as HTMLButtonElement).click());
+    await flush();
+    expect(onReady).toHaveBeenCalledTimes(1);
+    expect(onReady).toHaveBeenCalledWith('app');
+  });
+
+  it('remounting cannot renew the process-launch deadline', async () => {
+    window.__PERMAGENT_LAUNCH_EPOCH_MS__ = Date.now() - 1500;
+    getConfigMock.mockReturnValue(new Promise(() => {}));
+    act(() => root.render(<BootScreen key="first" onReady={vi.fn()} onMalformed={vi.fn()} />));
+    await act(async () => { await vi.advanceTimersByTimeAsync(8000); });
+    act(() => root.render(<BootScreen key="second" onReady={vi.fn()} onMalformed={vi.fn()} />));
+    expect(container.textContent).toContain('0.5s remaining');
+    const activeSignal = getConfigMock.mock.calls[getConfigMock.mock.calls.length - 1][0];
+    await act(async () => { await vi.advanceTimersByTimeAsync(499); });
+    expect(container.querySelector('button')).toBeNull();
+    expect(activeSignal?.aborted).toBe(false);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(container.querySelector('button')?.textContent).toContain('Retry');
+    expect(activeSignal?.aborted).toBe(true);
+  });
+
   it('aborts hung attempts and offers recovery at exactly 10s, ignoring late success', async () => {
     let answer!: (value: never) => void;
     getConfigMock.mockImplementation(() => new Promise(resolve => { answer = resolve; }));
