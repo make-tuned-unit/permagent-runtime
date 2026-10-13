@@ -269,13 +269,16 @@ export function MeetingRecorder({ open }: { open: boolean }) {
 
   const handleStart = useCallback(async () => {
     const project = visibleProjects.find(p => p.id === selectedId);
-    if (!project || !canStart) return;
+    // G11: no source (or an unavailable app / unready dictation) never leaves the
+    // dialog and never reaches getUserMedia. The inline "Choose at least one
+    // source" alert is already on screen whenever hasSource is false.
+    if (!project || !hasSource || !canStart) return;
     setPickerOpen(false);
     setFilter('');
     await start({ projectId: project.id, projectName: project.name });
     // The notepad is the point of the panel — put the cursor in it.
     requestAnimationFrame(() => notepadRef.current?.focus());
-  }, [visibleProjects, selectedId, start, canStart]);
+  }, [visibleProjects, selectedId, start, canStart, hasSource]);
 
   // Escape closes the picker and Enter starts with the current selection: a
   // modal you can only leave with the mouse is the one that feels stuck.
@@ -287,12 +290,14 @@ export function MeetingRecorder({ open }: { open: boolean }) {
       // have their activation intercepted into acquiring microphone access.
       const shortcutTarget = e.target === filterRef.current || e.target === dialogRef.current;
       if (e.key === 'Enter' && selectedId && shortcutTarget) {
-        e.preventDefault(); void handleStart();
+        e.preventDefault();
+        if (!hasSource || !canStart) return; // G11: the shortcut honours the same gate as the button
+        void handleStart();
       }
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-  }, [pickerOpen, selectedId, handleStart]);
+  }, [pickerOpen, selectedId, handleStart, hasSource, canStart]);
 
   // A single match after filtering is unambiguous — preselect it so Enter works.
   useEffect(() => {
@@ -341,7 +346,9 @@ export function MeetingRecorder({ open }: { open: boolean }) {
     return saved !== null;
   };
 
-  const active = busy || state === 'error';
+  // G11: a failed start must not light the rail row as if a recording were
+  // live; the error is shown by the dock/panel, not by the nav item.
+  const active = busy;
   const panelWidth = expanded ? 520 : 360;
 
   /** Shared button look — the panel had five near-identical inline copies, and
@@ -776,6 +783,8 @@ export function MeetingRecorder({ open }: { open: boolean }) {
                 colors={colors}
                 onClick={handleStart}
                 disabled={!selectedId || !canStart}
+                aria-disabled={!selectedId || !canStart}
+                data-testid="meeting-start"
                 style={{
                   '--pa-btn-bg': colors.cyanSoft,
                   '--pa-btn-fg': colors.cyan,

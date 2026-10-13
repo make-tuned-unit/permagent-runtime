@@ -90,4 +90,34 @@ describe('Record sources with system audio available', () => {
     expect(noSource()).toMatch(/at least one source/);       // nothing selected
     expect(start().disabled).toBe(true);
   });
+  it('G11: with no source Start is truly disabled, Enter does nothing, the dialog stays open; mic-only enables Start', async () => {
+    act(() => recordButton().click());
+    await flush();
+    await act(async () => { await Promise.resolve(); });
+    const d = dialog()!;
+    const box = (label: string) => Array.from(d.querySelectorAll('label'))
+      .find(l => l.textContent?.includes(label))!.querySelector('input')!;
+    const start = () => d.querySelector<HTMLButtonElement>('[data-testid="meeting-start"]')!;
+    act(() => { Array.from(d.querySelectorAll('button')).find(b => b.textContent?.trim() === 'Synthetic One')!.click(); });
+    // Mic-only (default): Start enabled.
+    expect(start().disabled).toBe(false);
+    expect(start().getAttribute('aria-disabled')).toBe('false');
+    act(() => box('Record my microphone').click());
+    expect(box('Record my microphone').checked).toBe(false);
+    expect(start().disabled).toBe(true);
+    expect(start().getAttribute('aria-disabled')).toBe('true');
+    expect(d.textContent).toContain('Choose at least one source to record.');
+    // A click on the disabled control and Enter in the dialog start nothing.
+    act(() => start().click());
+    act(() => { d.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); });
+    await flush();
+    expect(dialog()).not.toBeNull();
+    expect(d.textContent).toContain('Choose at least one source to record.');
+    expect(document.body.textContent).not.toContain('Invalid constraint');
+    // The rail row is not lit by anything that happened.
+    expect(recordButton().style.getPropertyValue('--pa-btn-bg')).not.toContain('24');
+    // Re-selecting a source re-enables Start.
+    act(() => box('Record my microphone').click());
+    expect(start().disabled).toBe(false);
+  });
 });
