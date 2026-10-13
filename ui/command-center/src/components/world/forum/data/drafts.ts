@@ -196,7 +196,7 @@ export function worldStorage(): KeyValueStorage & { persistent: boolean } {
       const probe = '__permagent.world.probe__';
       ls.setItem(probe, '1');
       ls.removeItem(probe);
-      return { getItem: (k) => { try { return ls.getItem(k); } catch { return null; } }, setItem: (k, v) => { try { ls.setItem(k, v); } catch { /* full or blocked: keep in memory */ } }, persistent: true };
+      return { getItem: (k) => { try { return ls.getItem(k); } catch { return null; } }, setItem: (k, v) => { ls.setItem(k, v); }, persistent: true };
     }
   } catch { /* fall through */ }
   const mem = new Map<string, string>();
@@ -214,11 +214,21 @@ export interface DraftEdit {
  * Draft store over a storage. Every method is local: none takes a client, so
  * none can send. W2 wires `restore` to place selection and `update` to typing.
  */
-export function createDraftStore(storage: KeyValueStorage, clock: () => string = () => new Date().toISOString()) {
-  const read = (): DraftState => parseDrafts(storage.getItem(DRAFTS_STORAGE_KEY));
-  const write = (s: Pick<DraftState, 'drafts'>) => storage.setItem(DRAFTS_STORAGE_KEY, serializeDrafts(s));
-  const readNotes = (): FieldNoteState => parseFieldNotes(storage.getItem(FIELD_NOTES_STORAGE_KEY));
-  const writeNotes = (s: Pick<FieldNoteState, 'notes'>) => storage.setItem(FIELD_NOTES_STORAGE_KEY, serializeFieldNotes(s));
+export function createDraftStore(storage: KeyValueStorage & { persistent?: boolean }, clock: () => string = () => new Date().toISOString()) {
+  // Writes can fail after the initial probe (quota, blocked site data). The
+  // latest value is kept in memory so the draft is not lost, and `persistence`
+  // reports that it is NOT on disk instead of implying it was saved.
+  const memory = new Map<string, string>();
+  let writeFailed = storage.persistent === false;
+  const get = (key: string): string | null => memory.get(key) ?? storage.getItem(key);
+  const put = (key: string, value: string) => {
+    memory.set(key, value);
+    try { storage.setItem(key, value); writeFailed = storage.persistent === false; memory.delete(key); } catch { writeFailed = true; }
+  };
+  const read = (): DraftState => parseDrafts(get(DRAFTS_STORAGE_KEY));
+  const write = (s: Pick<DraftState, 'drafts'>) => put(DRAFTS_STORAGE_KEY, serializeDrafts(s));
+  const readNotes = (): FieldNoteState => parseFieldNotes(get(FIELD_NOTES_STORAGE_KEY));
+  const writeNotes = (s: Pick<FieldNoteState, 'notes'>) => put(FIELD_NOTES_STORAGE_KEY, serializeFieldNotes(s));
 
   return {
     /** Selecting a place restores its draft. Reads only; never sends. */
@@ -259,6 +269,8 @@ export function createDraftStore(storage: KeyValueStorage, clock: () => string =
       write({ drafts });
     },
     all(): DraftState { return read(); },
+    /** 'not_saved' while the last write failed (or storage is memory-only): panels render "not saved to disk". */
+    persistence(): 'saved' | 'not_saved' { return writeFailed ? 'not_saved' : 'saved'; },
 
     notes(): FieldNoteState { return readNotes(); },
     /** Keep a local note. Local only: nothing reaches the Brain or a project. */

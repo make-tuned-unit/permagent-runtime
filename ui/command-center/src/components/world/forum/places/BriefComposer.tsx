@@ -68,6 +68,7 @@ export function BriefComposer(props: BriefComposerProps) {
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [ack, setAck] = useState<PlaceSendAck | null>(null);
+  const [persistence, setPersistence] = useState<'saved' | 'not_saved'>(() => drafts.persistence?.() ?? 'saved');
 
   // A different context (project / agent) is a different draft: restore it.
   const loadedKey = useRef(key);
@@ -84,6 +85,7 @@ export function BriefComposer(props: BriefComposerProps) {
   const edit = useCallback((change: Parameters<WorldDraftStore['update']>[3]) => {
     const next = drafts.update(placeId, projectId, agentWorldId, change);
     setDraft(next);
+    setPersistence(drafts.persistence?.() ?? 'saved');
     setAck(null);
     onEvent?.({ type: 'draft_changed', placeId, draftKey: key });
   }, [drafts, placeId, projectId, agentWorldId, onEvent, key]);
@@ -144,6 +146,9 @@ export function BriefComposer(props: BriefComposerProps) {
     <div ref={containerRef} style={styles.layer} data-layer="composer" aria-label={heading} role="group">
       <h3 style={{ ...styles.strong, margin: 0 }}>{heading}</h3>
       <p style={styles.note} data-draft-stage={draft.sent ? 'sent' : hasText ? 'draft' : 'empty'}>{stage}</p>
+      {persistence === 'not_saved' && (
+        <p style={styles.note} role="status" data-testid="draft-not-saved">Not saved to disk: this draft is only kept while the World is open.</p>
+      )}
       <div role="group" aria-label="What kind of request" style={styles.actions}>
         {intents.map((i) => (
           <Button key={i} colors={colors} variant={intent === i ? 'ghostOn' : 'ghost'} flashSuccess={false} aria-pressed={intent === i} onClick={() => setIntent(i)}>{INTENT_LABEL[i]}</Button>

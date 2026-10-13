@@ -17,6 +17,32 @@ function memStorage(): KeyValueStorage & { map: Map<string, string> } {
 let tick = 0;
 const clock = () => new Date(FIXTURE_NOW + (tick += 1000)).toISOString();
 
+describe('drafts: persistence failure', () => {
+  it('keeps the draft in memory and reports not_saved when a write fails after the probe', () => {
+    const storage = memStorage();
+    const store = createDraftStore(storage, clock);
+    store.update('commons', null, 'henry', { brief: 'first' });
+    expect(store.persistence()).toBe('saved');
+    storage.setItem = () => { throw new Error('QuotaExceededError'); };
+    const next = store.update('commons', null, 'henry', { brief: 'second' });
+    expect(next.brief).toBe('second');
+    expect(store.persistence()).toBe('not_saved');
+    expect(store.restore('commons', null, 'henry')?.brief).toBe('second');
+    expect(JSON.parse(storage.map.get(DRAFTS_STORAGE_KEY)!).drafts[draftKey('commons', null, 'henry')].brief).toBe('first');
+  });
+  it('recovers to saved when a later write succeeds', () => {
+    const storage = memStorage();
+    const ok = storage.setItem;
+    const store = createDraftStore(storage, clock);
+    storage.setItem = () => { throw new Error('blocked'); };
+    store.update('commons', null, 'henry', { brief: 'a' });
+    expect(store.persistence()).toBe('not_saved');
+    storage.setItem = ok;
+    store.update('commons', null, 'henry', { brief: 'b' });
+    expect(store.persistence()).toBe('saved');
+  });
+});
+
 describe('drafts', () => {
   it('persists per place + project + agent under a versioned permagent.world.* key', () => {
     const storage = memStorage();
