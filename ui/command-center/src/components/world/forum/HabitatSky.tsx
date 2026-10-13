@@ -1,4 +1,4 @@
-import { Suspense, useEffect, useMemo, useRef } from 'react';
+import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { useTexture } from '@react-three/drei';
 import { useFrame, useThree } from '@react-three/fiber';
 import { BackSide, Color, DoubleSide, Group, LinearFilter, SRGBColorSpace, Vector3 } from 'three';
@@ -233,13 +233,15 @@ function HabitatCelestialBodies() {
 
 export function HabitatSky({ appearance }: { appearance: 'day' | 'night' }) {
   const nightFallback = <GaiaSurveyFallback/>;
+  const [seen, setSeen] = useState({ day: appearance === 'day', night: appearance === 'night' });
+  useEffect(() => { setSeen(previous => previous[appearance] ? previous : { ...previous, [appearance]: true }); }, [appearance]);
   return <>
-    {appearance === 'day' ? <>
+    {(seen.day || appearance === 'day') && <group visible={appearance === 'day'}>
       <PanoramaWithFallback/>
       {HABITAT_HORIZON_CARDS.map(card => <HorizonCard key={card.id} card={card}/>)}
-    </> : <GardenAssetBoundary onFailure={() => {}} fallback={nightFallback}>
-      <Suspense fallback={nightFallback}><GaiaSurveyBackdrop appearance={appearance}/></Suspense>
-    </GardenAssetBoundary>}
-    {appearance === 'night' && <HabitatCelestialBodies/>}
+    </group>}
+    {(seen.night || appearance === 'night') && <group visible={appearance === 'night'}><GardenAssetBoundary onFailure={() => {}} fallback={nightFallback}>
+      <Suspense fallback={nightFallback}><GaiaSurveyBackdrop appearance="night"/></Suspense>
+    </GardenAssetBoundary><HabitatCelestialBodies/></group>}
   </>;
 }

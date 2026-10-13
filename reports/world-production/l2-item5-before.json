@@ -1,0 +1,173 @@
+{
+  "initial": {
+    "canvases": 3,
+    "contexts": 3,
+    "listeners": 4,
+    "inputListeners": 0,
+    "timers": 3
+  },
+  "created": 23,
+  "hiddenInvalidations": 200,
+  "cycles": [
+    {
+      "hidden": {
+        "canvases": 1,
+        "contexts": 1,
+        "listeners": 4,
+        "inputListeners": 0,
+        "timers": 1
+      },
+      "resumed": {
+        "canvases": 3,
+        "contexts": 3,
+        "listeners": 4,
+        "inputListeners": 0,
+        "timers": 3
+      }
+    },
+    {
+      "hidden": {
+        "canvases": 1,
+        "contexts": 1,
+        "listeners": 4,
+        "inputListeners": 0,
+        "timers": 1
+      },
+      "resumed": {
+        "canvases": 3,
+        "contexts": 3,
+        "listeners": 4,
+        "inputListeners": 0,
+        "timers": 3
+      }
+    },
+    {
+      "hidden": {
+        "canvases": 1,
+        "contexts": 1,
+        "listeners": 4,
+        "inputListeners": 0,
+        "timers": 1
+      },
+      "resumed": {
+        "canvases": 3,
+        "contexts": 3,
+        "listeners": 4,
+        "inputListeners": 0,
+        "timers": 3
+      }
+    },
+    {
+      "hidden": {
+        "canvases": 1,
+        "contexts": 1,
+        "listeners": 4,
+        "inputListeners": 0,
+        "timers": 1
+      },
+      "resumed": {
+        "canvases": 3,
+        "contexts": 3,
+        "listeners": 4,
+        "inputListeners": 0,
+        "timers": 3
+      }
+    },
+    {
+      "hidden": {
+        "canvases": 1,
+        "contexts": 1,
+        "listeners": 4,
+        "inputListeners": 0,
+        "timers": 0
+      },
+      "resumed": {
+        "canvases": 3,
+        "contexts": 3,
+        "listeners": 4,
+        "inputListeners": 0,
+        "timers": 2
+      }
+    },
+    {
+      "hidden": {
+        "canvases": 1,
+        "contexts": 1,
+        "listeners": 4,
+        "inputListeners": 0,
+        "timers": 0
+      },
+      "resumed": {
+        "canvases": 3,
+        "contexts": 3,
+        "listeners": 4,
+        "inputListeners": 0,
+        "timers": 2
+      }
+    },
+    {
+      "hidden": {
+        "canvases": 1,
+        "contexts": 1,
+        "listeners": 4,
+        "inputListeners": 0,
+        "timers": 0
+      },
+      "resumed": {
+        "canvases": 3,
+        "contexts": 3,
+        "listeners": 4,
+        "inputListeners": 0,
+        "timers": 2
+      }
+    },
+    {
+      "hidden": {
+        "canvases": 1,
+        "contexts": 1,
+        "listeners": 4,
+        "inputListeners": 0,
+        "timers": 0
+      },
+      "resumed": {
+        "canvases": 3,
+        "contexts": 3,
+        "listeners": 4,
+        "inputListeners": 0,
+        "timers": 2
+      }
+    },
+    {
+      "hidden": {
+        "canvases": 1,
+        "contexts": 1,
+        "listeners": 4,
+        "inputListeners": 0,
+        "timers": 0
+      },
+      "resumed": {
+        "canvases": 3,
+        "contexts": 3,
+        "listeners": 4,
+        "inputListeners": 0,
+        "timers": 2
+      }
+    },
+    {
+      "hidden": {
+        "canvases": 1,
+        "contexts": 1,
+        "listeners": 4,
+        "inputListeners": 0,
+        "timers": 0
+      },
+      "resumed": {
+        "canvases": 3,
+        "contexts": 3,
+        "listeners": 4,
+        "inputListeners": 0,
+        "timers": 2
+      }
+    }
+  ]
+}

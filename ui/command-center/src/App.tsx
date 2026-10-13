@@ -125,7 +125,7 @@ export function MainContent() {
           style={{ display: (!showSettings && !showSkills && !showHistory && ws.id === activeWorkspaceId) ? 'block' : 'none' }}
         >
           <ErrorBoundary surface="the workspace">
-            <WorkspaceRenderer workspaceId={ws.id} />
+            <WorkspaceRenderer workspaceId={ws.id} visible={!showSettings && !showSkills && !showHistory && ws.id === activeWorkspaceId} />
           </ErrorBoundary>
         </div>
       ))}

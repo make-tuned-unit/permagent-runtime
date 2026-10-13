@@ -1,124 +1,84 @@
-import { useEffect, useState } from 'react';
-import { useThree } from '@react-three/fiber';
+import { useEffect, useRef } from 'react';
+import { useFrame, useThree } from '@react-three/fiber';
 import * as THREE from 'three';
-import {
-  environmentIntensity,
-  faceUrls,
-  loadEnvironmentManifest,
-  type Appearance,
-} from './bakedEnvironment';
+import { environmentIntensity, faceUrls, loadEnvironmentManifest, type Appearance } from './bakedEnvironment';
 
-/**
- * Image-based lighting, derived from the forum's own sky.
- *
- * Until now every surface was lit by a hemisphere light and two directionals,
- * which gives shape but no ENVIRONMENT: water, glass and bronze had nothing to
- * reflect, so they read as coloured plastic. This renders the existing sky dome
- * into a cube map once, runs it through three's PMREM filter and hands the
- * result to `scene.environment`, which every `MeshStandardMaterial` in the GLB
- * picks up for free.
- *
- * Deriving it from the sky rather than shipping an HDRI is the point: the
- * reflections are always the sky actually overhead, so day and night agree with
- * each other automatically, nothing is downloaded, and no third-party asset or
- * licence enters the bundle.
- *
- * Cost is one cube render, not one per frame. The sky is static apart from
- * drifting clouds and the odd meteor, neither of which changes the light, so
- * re-filtering on every frame would buy nothing at real expense.
- */
-export function ForumEnvironment({ appearance }: { appearance: Appearance }) {
-  const scene = useThree((state) => state.scene);
-  const renderer = useThree((state) => state.gl);
-  const [baked, setBaked] = useState<THREE.CubeTexture | null>(null);
+type Environment = { target: THREE.WebGLRenderTarget; intensity: number };
+const noop = () => {};
 
-  // Prefer the sky Unreal baked for this appearance. It is an ordinary set of
-  // six images, so a user without an engine gets the same lighting as this
-  // machine; when a build ships without one, `manifest` is null and the
-  // derived-from-our-own-sky path below runs exactly as before.
+/** Two owned environment targets per Canvas at most. Keep the previous usable
+ * map while loading; never regenerate/dispose it merely to leave a workspace. */
+export function ForumEnvironment({ appearance, active = true, attempt = 0, request = appearance, onApplied = noop, onFailure = noop }: {
+  appearance: Appearance; active?: boolean; attempt?: number; request?: Appearance;
+  onApplied?: (appearance: Appearance) => void; onFailure?: (appearance: Appearance) => void;
+}) {
+  const scene = useThree(state => state.scene);
+  const renderer = useThree(state => state.gl);
+  const cache = useRef(new Map<Appearance, Environment>());
+  const ready = useRef<Appearance | null>(null);
+  const reported = useRef<Appearance | null>(null);
+
   useEffect(() => {
-    let cancelled = false;
-    let loaded: THREE.CubeTexture | null = null;
-    const base = import.meta.env.BASE_URL;
-    void loadEnvironmentManifest(base, appearance).then((manifest) => {
-      if (cancelled || !manifest) return;
-      new THREE.CubeTextureLoader().load(
-        faceUrls(base, appearance),
-        (texture) => {
-          if (cancelled) {
-            texture.dispose();
-            return;
-          }
-          texture.colorSpace = THREE.SRGBColorSpace;
-          loaded = texture;
-          setBaked(texture);
-        },
-        undefined,
-        // A face that fails to decode leaves the scene on its derived sky
-        // rather than on a half-built cube map.
-        () => undefined,
-      );
-    });
+    const previous = scene.environment;
+    const previousIntensity = scene.environmentIntensity;
+    const owned = cache.current;
     return () => {
-      cancelled = true;
-      loaded?.dispose();
-      setBaked(null);
+      scene.environment = previous;
+      scene.environmentIntensity = previousIntensity;
+      for (const { target } of owned.values()) target.dispose();
+      owned.clear();
     };
-  }, [appearance]);
+  }, [scene, renderer]);
 
   useEffect(() => {
-    if (baked) {
-      // The baked sky is already the light arriving at the island; PMREM
-      // filters it so rough surfaces read as rough rather than mirror-bright.
-      const pmremBaked = new THREE.PMREMGenerator(renderer);
-      const filtered = pmremBaked.fromCubemap(baked);
-      const previousBaked = scene.environment;
-      scene.environment = filtered.texture;
-      scene.environmentIntensity = environmentIntensity(appearance);
-      return () => {
-        scene.environment = previousBaked;
-        filtered.dispose();
-        pmremBaked.dispose();
-      };
-    }
-    // The sky is drawn by meshes tagged with a large negative render order
-    // (`SKY_RENDER_ORDER`), and those are exactly what should light the island.
-    // Everything else is hidden for the one cube render, so the island does not
-    // light itself — a feedback loop that reads as a washed-out haze.
-    const hidden: THREE.Object3D[] = [];
-    scene.traverse((object) => {
-      const isSky = object.renderOrder <= -100;
-      const mesh = object as THREE.Mesh;
-      if (!isSky && mesh.isMesh && object.visible) {
-        object.visible = false;
-        hidden.push(object);
-      }
-    });
+    ready.current = null;
+    reported.current = null;
+    if (!active) return;
+    const apply = (environment: Environment) => {
+      scene.environment = environment.target.texture;
+      scene.environmentIntensity = environment.intensity;
+      ready.current = appearance;
+    };
+    const hit = cache.current.get(appearance);
+    if (hit) { apply(hit); return; }
+    let cancelled = false;
+    let expired = false;
+    const timer = window.setTimeout(() => { expired = true; onFailure(appearance); }, 5000);
+    const current = () => !cancelled && !expired;
+    const prepare = (baked: THREE.CubeTexture | null) => {
+      if (!current()) { baked?.dispose(); return; }
+      const hidden: THREE.Object3D[] = [];
+      let pmrem: THREE.PMREMGenerator | null = null;
+      try {
+        pmrem = new THREE.PMREMGenerator(renderer);
+        if (!baked) scene.traverse(object => {
+          if (object.renderOrder > -100 && (object as THREE.Mesh).isMesh && object.visible) {
+            object.visible = false; hidden.push(object);
+          }
+        });
+        const target = baked ? pmrem.fromCubemap(baked) : pmrem.fromScene(scene, 0.04, 0.1, 1200);
+        const environment = { target, intensity: baked ? environmentIntensity(appearance) : appearance === 'night' ? 0.35 : 0.6 };
+        cache.current.set(appearance, environment);
+        apply(environment);
+        window.clearTimeout(timer);
+      } catch { onFailure(appearance); window.clearTimeout(timer); }
+      finally { for (const object of hidden) object.visible = true; baked?.dispose(); pmrem?.dispose(); }
+    };
+    void loadEnvironmentManifest(import.meta.env.BASE_URL, appearance).then(manifest => {
+      if (!current()) return;
+      if (!manifest) { prepare(null); return; }
+      new THREE.CubeTextureLoader().load(faceUrls(import.meta.env.BASE_URL, appearance), texture => {
+        texture.colorSpace = THREE.SRGBColorSpace;
+        prepare(texture);
+      }, undefined, () => prepare(null));
+    }).catch(() => { if (current()) prepare(null); });
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [scene, renderer, appearance, active, attempt, request, onFailure]);
 
-    const pmrem = new THREE.PMREMGenerator(renderer);
-    let target: THREE.WebGLRenderTarget | null = null;
-    try {
-      pmrem.compileCubemapShader();
-      target = pmrem.fromScene(scene, 0.04, 0.1, 1200);
-      const previous = scene.environment;
-      scene.environment = target.texture;
-      // A light touch: the sky is bright, and at full strength it flattens the
-      // key light's modelling. This lifts shadowed faces without erasing them.
-      scene.environmentIntensity = appearance === 'night' ? 0.35 : 0.6;
-      for (const object of hidden) object.visible = true;
-      return () => {
-        scene.environment = previous;
-        target?.dispose();
-        pmrem.dispose();
-      };
-    } catch {
-      // A context loss or an unsupported float target must not take the world
-      // with it: the scene simply keeps the lighting it had before.
-      for (const object of hidden) object.visible = true;
-      pmrem.dispose();
-      return undefined;
-    }
-  }, [scene, renderer, appearance, baked]);
-
+  useFrame(() => {
+    if (!active || ready.current !== appearance || reported.current === appearance) return;
+    reported.current = appearance;
+    onApplied(appearance);
+  });
   return null;
 }

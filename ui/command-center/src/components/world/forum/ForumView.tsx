@@ -1,3 +1,7 @@
+import { ForumActivity, ForumCanvasActivity } from './ForumActivity';
+import { ForumLightingPreparation, clearForumLightingPreparation } from './ForumLightingPreparation';
+import { useForumLightingReadiness } from './useForumLightingReadiness';
+import { ForumStageBoundary, ForumStageReady, ForumStageStatus, WORLD_READY_BUDGET_MS, type ForumStageState } from './ForumStageStatus';
 import { useAppNavigationRequests, consumeNavigationRequest } from '../../../lib/appNavigationRequests';
 import { HabitatScene, HabitatLighting, HabitatNavigation } from './HabitatScene';
 import { OrchestratorConversation } from './OrchestratorConversation';
@@ -252,7 +256,9 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
   const material = useGlass('glassHi');
   const systemAppearance = useSystemAppearance();
   const [lighting, setLighting] = useForumLighting();
-  const appearance = lighting === 'system' ? systemAppearance : lighting;
+  const requestedAppearance = lighting === 'system' ? systemAppearance : lighting;
+  const light = useForumLightingReadiness(requestedAppearance);
+  const appearance = light.appearance;
   const [compact, setCompact] = useState(() => new URLSearchParams(window.location.search).get('campus') !== '1');
   const [overview, setOverview] = useState(false);
   const [directing,setDirecting]=useState<string|null>(null);
@@ -294,16 +300,29 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
   // `visible` is the host's own claim; `onScreen` is what the layout actually
   // gives this instance. Both must hold before the world renders or takes keys.
   const onPanel = visible && onScreen;
+  const active = onPanel && pageVisible;
+  const [stageState, setStageState] = useState<ForumStageState>('loading');
+  const [stageAttempt, setStageAttempt] = useState(0);
+  const stageReady = useCallback(() => setStageState(state => state === 'failed' ? state : 'ready'), []);
+  const stageFailed = useCallback(() => setStageState('failed'), []);
+  const retryStage = useCallback(() => { setStageState('loading'); setStageAttempt(n => n + 1); }, []);
+  useEffect(() => {
+    if (!onPanel || !pageVisible || stageState !== 'loading') return;
+    const timer = window.setTimeout(() => setStageState('slow'), WORLD_READY_BUDGET_MS);
+    return () => window.clearTimeout(timer);
+  }, [onPanel, pageVisible, stageState, stageAttempt]);
+  const [sceneStarted, setSceneStarted] = useState(false);
+  useEffect(() => { if (onPanel && pageVisible) setSceneStarted(true); }, [onPanel, pageVisible]);
   useEffect(() => {
     const store = useCommandCenter.getState();
-    store.setWorldConversationActive(conversation && onPanel);
+    store.setWorldConversationActive(conversation && active);
     return () => {
       const latest = useCommandCenter.getState();
       const handingOff = latest.worldConversationActive && latest.voiceEngine?.handsFree;
       latest.setWorldConversationActive(false);
       if (handingOff && !latest.chatWindowOpen) latest.openChatDock();
     };
-  }, [conversation, onPanel]);
+  }, [conversation, active]);
   const sitWithOrchestrator = () => {
     setSelected('henry'); setDeskOpen(false); setWalking(false); setFlying(false);
     setDirecting(null); setFollow(null); setAgoraOpen(false); setConversation(true);
@@ -319,7 +338,7 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
   // Leaving the panel ends walk mode, which unmounts ForumWalk — that removes
   // its window keydown/mousemove listeners and releases pointer lock, so a
   // hidden World cannot keep eating WASD from the workspace you switched to.
-  useEffect(() => { if (!onPanel) { setWalking(false); setConversation(false); } }, [onPanel]);
+  useEffect(() => { if (!active) { setWalking(false); setFlying(false); setConversation(false); } }, [active]);
   const [focusAgent, setFocusAgent] = useState<{id:string;revision:number}|null>(null);
   const exitWalk = useCallback(()=>setWalking(false),[]);
   const inspectAgent = useCallback((id:string)=>{setSelected(id);setDeskOpen(true);setTab('meet');},[]);
@@ -345,14 +364,14 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
   // Escape leaves the Agora. While walking, ForumWalk owns Escape and calls the
   // same handler; this listener covers the overview (non-walking) case.
   useEffect(()=>{
-    if (!agoraOpen || walking) return;
+    if (!active || !agoraOpen || walking) return;
     const key=(e:KeyboardEvent)=>{ if(e.code==='Escape'){ e.preventDefault(); leaveMesh(); } };
     window.addEventListener('keydown',key);
     return ()=>window.removeEventListener('keydown',key);
-  },[agoraOpen,walking,leaveMesh]);
+  },[active,agoraOpen,walking,leaveMesh]);
   // Leaving the panel closes the Agora with it, so returning to World never
   // lands in a room the user did not ask for.
-  useEffect(()=>{ if(!onPanel) setAgoraOpen(false); },[onPanel]);
+  useEffect(()=>{ if(!active) setAgoraOpen(false); },[active]);
   const style = { '--forum-bg': colors.bg, '--forum-panel': colors.surface, '--forum-inset': colors.inputBg,
     '--forum-text': colors.text, '--forum-muted': colors.textMuted, '--forum-border': colors.border,
     '--forum-accent': colors.cyan, '--forum-accent-soft': colors.cyanSoft, '--forum-ink': colors.textOnCyan,
@@ -471,7 +490,7 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
   // other screen is theirs, and a hidden World must never consume it. Walking,
   // flying, the Agora and the conversation own Escape themselves.
   useEffect(() => {
-    if (!onPanel || !deskOpen || walking || flying || agoraOpen || conversation) return;
+    if (!active || !deskOpen || walking || flying || agoraOpen || conversation) return;
     const key = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' && e.code !== 'Escape') return;
       if (e.defaultPrevented) return;
@@ -486,17 +505,17 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
     };
     window.addEventListener('keydown', key, true);
     return () => window.removeEventListener('keydown', key, true);
-  }, [onPanel, deskOpen, walking, flying, agoraOpen, conversation, toggleDesk]);
+  }, [active, deskOpen, walking, flying, agoraOpen, conversation, toggleDesk]);
 
   // The HUD rests when you are not driving; flying counts as driving.
-  const hud = useHudPresence({ walking: walking || flying, enabled: !agoraOpen });
+  const hud = useHudPresence({ walking: walking || flying, enabled: active && !agoraOpen });
   const workFeed = <section className="forum-work"><div className="eyebrow">WORK IN FLIGHT</div>{!loaded ? <p>Waiting for the job feed. No activity is inferred.</p> : goals.length === 0 ? <p>No active jobs reported.</p> : goals.map(g=><div className="forum-job" key={g.id}><b>{g.title}</b><span>{g.state.replace(/_/g,' ')}</span>{onOpenGoal&&g.project_id&&<Button colors={colors} flashSuccess={false} onClick={()=>onOpenGoal(g.project_id!,g.id)}>Open job</Button>}</div>)}</section>;
   const capabilities = <ForumCapabilities onManageAgent={onManageAgent} onSkills={onNavigate?()=>onNavigate('skills'):undefined} onDevelop={()=>{
         setSelected('henry');setKind('Capability');setTab('task');setSaved(false);
         setBrief('Using our conversation and existing goals, identify a missing capability that would help. Build and test it with the existing tools, preserve the established permissions, and save a reusable skill with evidence of what it can do.');
         setCriteria('Demonstrate the capability on a representative task; record tests, limitations and the registered skill.');
       }}/>;
-  return <main ref={shellRef} className="forum-shell" style={style} data-narrow={narrowShell} data-habitat={compact} data-conversation={conversation} data-appearance={appearance} data-desk={deskOpen ? 'open' : 'closed'}>
+  return <ForumActivity.Provider value={active}><main ref={shellRef} className="forum-shell" style={style} data-narrow={narrowShell} data-habitat={compact} data-conversation={conversation} data-appearance={appearance} data-desk={deskOpen ? 'open' : 'closed'}>
     <section
       ref={worldRef}
       className="forum-world"
@@ -519,21 +538,24 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
           portal into this host with z-index up to 16777271 by default; with
           no context around them they out-ranked the HUD lanes and QA saw
           "Automate" drawn over the Places rail and "Build" over the job feed. */}
-      <Canvas className="forum-canvas" frameloop={onPanel && pageVisible ? 'always' : 'never'} shadows={{ type: PCFShadowMap }} dpr={[1, 1.5]} camera={{ position: [...(compact ? HABITAT_ARRIVAL.position : FORUM_VISTA.position)] as [number,number,number], fov: compact ? HABITAT_ARRIVAL.fov : FORUM_VISTA.fov, near: FORUM_CAMERA_NEAR, far: FORUM_CAMERA_FAR }} gl={{ antialias: true, toneMapping: AgXToneMapping, toneMappingExposure: FORUM_EXPOSURE }}>
-        {agoraOpen ? <MeshAgora walking={walking} /> : compact ? <HabitatLighting appearance={appearance} /> : <ForumLighting appearance={appearance} />}
+      <ForumStageBoundary key={stageAttempt} onFailure={stageFailed}>{(sceneStarted || (onPanel && pageVisible)) && <Canvas className="forum-canvas" frameloop={onPanel && pageVisible ? 'always' : 'never'} shadows={{ type: PCFShadowMap }} dpr={[1, 1.5]} camera={{ position: [...(compact ? HABITAT_ARRIVAL.position : FORUM_VISTA.position)] as [number,number,number], fov: compact ? HABITAT_ARRIVAL.fov : FORUM_VISTA.fov, near: FORUM_CAMERA_NEAR, far: FORUM_CAMERA_FAR }} gl={{ antialias: true, toneMapping: AgXToneMapping, toneMappingExposure: FORUM_EXPOSURE }}>
+        {onPanel && pageVisible && <ForumLightingPreparation key={`${requestedAppearance}:${compact}:${light.attempt}`} appearance={requestedAppearance} compact={compact} attempt={light.attempt} onPrepared={light.prepared} onFailure={light.failed} />}
+        <ForumCanvasActivity active={active} />
+        <ForumStageReady active={onPanel && pageVisible} onReady={stageReady} onFailure={stageFailed} />
+        {agoraOpen ? <MeshAgora walking={walking} /> : compact ? <HabitatLighting appearance={appearance} skyAttempt={light.attempt} /> : <ForumLighting appearance={appearance} />}
         {/* The forum is hidden rather than unmounted while the Agora is open:
             an invisible group costs no draw calls, and keeping it mounted means
             the GLB is never fetched twice and its collision BVH — which the
             walker is still standing on out at the gate — is never rebuilt. */}
         <group visible={!agoraOpen}>
           {compact ? <><HabitatScene directing={directing} onDirected={(_,ok)=>{if(ok)setDirecting(null);}} />{kitReady && <GardenAssetBoundary onFailure={kitFailure}><Suspense fallback={null}><HeroGardenDecor /></Suspense></GardenAssetBoundary>}</> : <VaultBoundary fallback={<Fallback />}><Suspense fallback={<Fallback />}><ForumAsset /></Suspense></VaultBoundary>}
-          <ForumEnvironment appearance={appearance} />
+          <ForumEnvironment appearance={appearance} active={onPanel && pageVisible} attempt={light.attempt} request={requestedAppearance} onApplied={light.didApply} onFailure={light.failed} />
           {compact && <HabitatOrrery conversation={conversation} onOverview={()=>{setWalking(false);setFlying(false);setFocusAgent(null);setOverview(true);setFollow(null);setDirecting(null);}} />}
           {!compact && <ForumWater />}
           {!compact && <Suspense fallback={null}><ForumShips /></Suspense>}
           <Suspense fallback={null}>{compact && kitReady ? <GardenAssetBoundary onFailure={kitFailure}><HeroGardenAgents conversation={conversation} following={follow} directing={directing} socialActive={onPanel && pageVisible} selected={selected} hovered={hovered} orchestratorName={configuredName||'Your orchestrator'} onHover={setHovered} onSelect={selectAndFocusAgent} /></GardenAssetBoundary> : <ForumAgents compact={compact} hoveredAgent={hovered} onHoverAgent={setHovered} onSelectAgent={id => selectAndFocusAgent(id, { markUnsaved: true })} />}</Suspense>
         </group>
-        {flying
+        {active && flying
           ? <Suspense fallback={null}><ForumFlight
               onExit={() => setFlying(false)}
               onDisembark={(at) => {
@@ -544,12 +566,13 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
                 setWalking(true);
               }}
             /></Suspense>
-          : walking
+          : active && walking
           ? <ForumWalk start={walkStartOverride ?? walkStart} onExit={exitWalk} onInspect={inspectAgent} inMesh={agoraOpen} onEnterMesh={enterMesh} onExitMesh={leaveMesh} onMeshPrompt={setMeshPrompt} onInteractionPrompt={setInteractionPrompt} onEvidence={compact ? ()=>{setInteractionPrompt(null);setWalking(false);setDeskOpen(true);setTab('evidence');} : undefined} />
           : !agoraOpen && (compact ? <HabitatNavigation conversation={conversation} district={district} focusAgent={focusAgent} overview={overview} follow={follow} /> : <ForumNavigation district={district} focusAgent={focusAgent} />)}
         <ForumPostProcessing appearance={appearance} gentle={compact} />
         <PerfSampler />
-      </Canvas>
+      </Canvas>}</ForumStageBoundary>
+      <ForumStageStatus state={stageState} onRetry={retryStage} />
       {/* The left edge is ONE column, not five boxes each pinned to the corner
           with its own hand-tuned offset. The place rail was added to that
           corner after the cards were, open by default and on top of them, and
@@ -564,7 +587,7 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
           otherwise reads as a quiet world (see ForumAuthNotice). */}
       <ForumAuthNotice compact={compact} />
       {assetNotice && <div className="habitat-asset-alert" role="status">{assetNotice}</div>}
-      {!cards.isDismissed('brand') && <header className="forum-brand"><DismissCard label="the world title" onDismiss={()=>cards.dismiss('brand')} /><div><div className="eyebrow">{compact ? 'PERMAGENT / WORLD' : 'WORLD / SOLAR FORUM'}</div><h1 style={typeRamp.display}>The Solar Forum</h1><p>Living forum · <span data-testid="forum-appearance">{appearance === 'night' ? 'Night' : 'Day'} / {lighting === 'system' ? 'follows system appearance' : 'World lighting override'}</span></p></div></header>}
+      {!cards.isDismissed('brand') && <header className="forum-brand"><DismissCard label="the world title" onDismiss={()=>cards.dismiss('brand')} /><div><div className="eyebrow">{compact ? 'PERMAGENT / WORLD' : 'WORLD / SOLAR FORUM'}</div><h1 style={typeRamp.display}>The Solar Forum</h1><p>Living forum · <span data-testid="forum-appearance">{light.applied ? light.applied === 'night' ? 'Night' : 'Day' : 'Preparing lighting'} / {lighting === 'system' ? 'follows system appearance' : 'World lighting override'}</span></p></div></header>}
       <ForumPlaceRail
         places={places.map(d => ({ id: d.id, name: d.name, subtitle: d.subtitle }))}
         activeId={districtId}
@@ -610,7 +633,7 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
         </Button>
       </div>}
 
-      {conversation && <OrchestratorConversation name={configuredName || 'Your orchestrator'} onLeave={leaveTable} />}
+      {active && conversation && <OrchestratorConversation name={configuredName || 'Your orchestrator'} onLeave={leaveTable} />}
       {walking && <div className="forum-crosshair" aria-hidden="true">+</div>}
       {walking && interactionPrompt && !agoraOpen && <div className="forum-interaction-prompt" role="status">{interactionPrompt}</div>}
       {/* The bottom-right corner keeps the Agora return, skiff, and walk
@@ -641,7 +664,7 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
       </div>
     </section>
     <aside className="forum-panel" id="forum-agent-desk" aria-label="Agent learning and task desk" aria-hidden={!deskOpen}>
-      {compact ? <div className="agent-desk-header"><h2>Agent desk</h2><Button colors={colors} variant="bare" flashSuccess={false} aria-label="Close agent desk" onClick={toggleDesk}>×</Button></div> : <><div className="garden-view-options"><label>World light <select aria-label="World lighting" value={lighting} onChange={e=>setLighting(e.target.value as 'system'|'day'|'night')}><option value="system">System appearance</option><option value="day">Warm daylight</option><option value="night">Lantern night</option></select></label><Button colors={colors} variant="ghost" flashSuccess={false} onClick={()=>{setWalking(false);setFlying(false);setAgoraOpen(false);setWalkFrom(null);setWalkStartOverride(null);setDistrictId('commons');setFocusAgent(null);setCompact(v=>!v);}}>{compact ? 'Previous campus' : 'Compact garden'}</Button></div>      <div className="eyebrow">AGENT DESK</div><h2 style={typeRamp.title}>Meet your collaborators.</h2>
+      {compact ? <div className="agent-desk-header"><h2>Agent desk</h2><Button colors={colors} variant="bare" flashSuccess={false} aria-label="Close agent desk" onClick={toggleDesk}>×</Button></div> : <><div className="garden-view-options"><label>World light <select aria-label="World lighting" value={lighting} onChange={e=>setLighting(e.target.value as 'system'|'day'|'night')}><option value="system">System appearance</option><option value="day">Warm daylight</option><option value="night">Lantern night</option></select></label><p role="status" aria-live="polite" data-testid="forum-lighting-status">{light.error ? `Could not apply ${requestedAppearance} lighting. Previous lighting retained.` : light.pending ? `Preparing ${requestedAppearance} lighting…${light.applied ? ` ${light.applied === 'day' ? 'Day' : 'Night'} is still applied.` : ''}` : `${light.applied === 'day' ? 'Day' : 'Night'} lighting applied.`}</p>{light.error && <Button colors={colors} flashSuccess={false} onClick={() => { clearForumLightingPreparation(requestedAppearance); light.retry(); }}>Retry lighting</Button>}<Button colors={colors} variant="ghost" flashSuccess={false} onClick={()=>{setWalking(false);setFlying(false);setAgoraOpen(false);setWalkFrom(null);setWalkStartOverride(null);setDistrictId('commons');setFocusAgent(null);setCompact(v=>!v);}}>{compact ? 'Previous campus' : 'Compact garden'}</Button></div>      <div className="eyebrow">AGENT DESK</div><h2 style={typeRamp.title}>Meet your collaborators.</h2>
       <p className="intro">{district.description}</p>
 </>}
       {onNavigate && district.tool && district.id !== 'commons' && <Button colors={colors} variant="ghost" onClick={()=>onNavigate(district.tool!)} flashSuccess={false}>Open {district.name} ↗</Button>}
@@ -673,9 +696,9 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
       {compact ? <div className="agent-desk-support">
         <details className="agent-desk-disclosure"><summary>Work in flight <span>{loaded ? `${goals.length} active` : 'Feed pending'}</span></summary>{workFeed}</details>
         <details className="agent-desk-disclosure"><summary>Tools & skills</summary>{capabilities}</details>
-        <details className="habitat-world-settings"><summary>World settings</summary><div className="garden-view-options"><label>World light <select aria-label="World lighting" value={lighting} onChange={e=>setLighting(e.target.value as 'system'|'day'|'night')}><option value="system">System appearance</option><option value="day">Warm daylight</option><option value="night">Lantern night</option></select></label><Button colors={colors} variant="ghost" flashSuccess={false} onClick={()=>{setWalking(false);setFlying(false);setAgoraOpen(false);setWalkFrom(null);setWalkStartOverride(null);setDistrictId('commons');setFocusAgent(null);setCompact(v=>!v);}}>{compact ? 'Previous campus' : 'Compact garden'}</Button><p className="note">Milky Way backdrop: ESA/Gaia/DPAC; CC BY-SA 3.0 IGO; acknowledgement A. Moitinho. <a href="https://www.esa.int/ESA_Multimedia/Images/2020/12/The_colour_of_the_sky_from_Gaia_s_Early_Data_Release_32" target="_blank" rel="noreferrer">Source</a> · <a href="https://creativecommons.org/licenses/by-sa/3.0/igo/" target="_blank" rel="noreferrer">License</a>. Artistic orientation and exposure; not epoch-calibrated. Procedural planets remain illustrative.</p></div></details>
+        <details className="habitat-world-settings"><summary>World settings</summary><div className="garden-view-options"><label>World light <select aria-label="World lighting" value={lighting} onChange={e=>setLighting(e.target.value as 'system'|'day'|'night')}><option value="system">System appearance</option><option value="day">Warm daylight</option><option value="night">Lantern night</option></select></label><p role="status" aria-live="polite" data-testid="forum-lighting-status">{light.error ? `Could not apply ${requestedAppearance} lighting. Previous lighting retained.` : light.pending ? `Preparing ${requestedAppearance} lighting…${light.applied ? ` ${light.applied === 'day' ? 'Day' : 'Night'} is still applied.` : ''}` : `${light.applied === 'day' ? 'Day' : 'Night'} lighting applied.`}</p>{light.error && <Button colors={colors} flashSuccess={false} onClick={() => { clearForumLightingPreparation(requestedAppearance); light.retry(); }}>Retry lighting</Button>}<Button colors={colors} variant="ghost" flashSuccess={false} onClick={()=>{setWalking(false);setFlying(false);setAgoraOpen(false);setWalkFrom(null);setWalkStartOverride(null);setDistrictId('commons');setFocusAgent(null);setCompact(v=>!v);}}>{compact ? 'Previous campus' : 'Compact garden'}</Button><p className="note">Milky Way backdrop: ESA/Gaia/DPAC; CC BY-SA 3.0 IGO; acknowledgement A. Moitinho. <a href="https://www.esa.int/ESA_Multimedia/Images/2020/12/The_colour_of_the_sky_from_Gaia_s_Early_Data_Release_32" target="_blank" rel="noreferrer">Source</a> · <a href="https://creativecommons.org/licenses/by-sa/3.0/igo/" target="_blank" rel="noreferrer">License</a>. Artistic orientation and exposure; not epoch-calibrated. Procedural planets remain illustrative.</p></div></details>
       </div> : <>{workFeed}{capabilities}</>}
       <footer>{compact ? 'PERMAGENT / WORLD' : 'WORLD / SOLAR FORUM'} <span>{compact ? 'The Solar Forum' : 'Architecture study'}</span></footer>
     </aside>
-  </main>;
+  </main></ForumActivity.Provider>;
 }

@@ -24,12 +24,12 @@ export function HabitatScene({directing,onDirected}:{directing:string|null;onDir
     <Suspense fallback={null}><HabitatArchitecture/></Suspense><HabitatPlanting/><HabitatWater/>
   </group>;
 }
-export function HabitatLighting({appearance}:{appearance:'day'|'night'}){
+export function HabitatLighting({appearance,skyAttempt=0}:{appearance:'day'|'night';skyAttempt?:number}){
   const day=appearance==='day';
   const sunTarget=useMemo(()=>{const target=new Object3D();target.position.set(1,0,-20);return target;},[]);
   const sunPosition=useMemo(()=>HABITAT_SUN_DIR.clone().multiplyScalar(52).add(sunTarget.position),[]);
   return <>
-  <HabitatSky appearance={appearance}/>
+  <HabitatSky key={skyAttempt} appearance={appearance}/>
   <color attach="background" args={[day?'#2A1E14':'#010208']}/>
   {day
     ? <fogExp2 attach="fog" args={['#C4D2DC', .0021]}/>

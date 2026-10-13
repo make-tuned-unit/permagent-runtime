@@ -207,7 +207,8 @@ describe('ForumView agent select→focus wiring', () => {
     await renderWithManifest(true, false);
     await act(async () => { useCommandCenter.setState({ pendingWorldAgent: 'council' }); });
     expect(useCommandCenter.getState().pendingWorldAgent).toBe('council');
-    expect(navigationFocus()).toBeNull();
+    // First visibility initializes Canvas; the pending request stays in the store.
+    expect(canvasChildren).toBeNull();
 
     await act(async () => { root.render(<ForumView visible />); });
     expect(useCommandCenter.getState().pendingWorldAgent).toBeNull();

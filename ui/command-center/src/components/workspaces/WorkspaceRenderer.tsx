@@ -1,4 +1,4 @@
-import { useCallback, lazy, Suspense } from 'react';
+import { useCallback, lazy, Suspense, createContext, useContext, useEffect, useState } from 'react';
 import { Panel, Group, Separator } from 'react-resizable-panels';
 import { useCommandCenter } from '../../lib/store';
 import { font } from '../../styles/tokens';
@@ -32,11 +32,23 @@ import { AutomateView } from '../automate/AutomateView';
 import { ProjectsView } from '../projects/ProjectsView';
 import { PeopleView } from '../people/PeopleView';
 
+const WorkspaceVisible = createContext(true);
+
+// First visibility pays for the lazy module and scene once. Later switches
+// retain the scene but synchronously revoke rendering/input ownership; they
+// must not wait for ResizeObserver to report the host's display:none.
+function WorldPanel() {
+  const visible = useContext(WorkspaceVisible);
+  const [visited, setVisited] = useState(false);
+  useEffect(() => { if (visible) setVisited(true); }, [visible]);
+  return visible || visited ? <LazyWorldRoute visible={visible} /> : null;
+}
+
 const TOOL_COMPONENTS: Record<ToolType, React.ComponentType> = {
   chat: ChatView,
   skills: SkillsPanel,
   trace: ExecutionTrace,
-  world: LazyWorldRoute,
+  world: WorldPanel,
   terminal: TerminalManager,
   browser: Browser,
   memory: BrainView,
@@ -163,7 +175,7 @@ function LayoutChildPanel({
   );
 }
 
-export function WorkspaceRenderer({ workspaceId }: { workspaceId: string }) {
+export function WorkspaceRenderer({ workspaceId, visible = true }: { workspaceId: string; visible?: boolean }) {
   const { colors } = useTheme();
   const workspace = useCommandCenter(s =>
     s.workspaces.find(w => w.id === workspaceId)
@@ -172,13 +184,13 @@ export function WorkspaceRenderer({ workspaceId }: { workspaceId: string }) {
 
   const handleResize = useCallback(
     (path: string, sizes: number[]) => {
-      if (!workspace) return;
+      if (!workspace || !visible) return;
       const updated = updateSizesAtPath(workspace.layoutJson, path, sizes);
       if (updated) {
         updateLayout(workspaceId, updated);
       }
     },
-    [workspace, workspaceId, updateLayout]
+    [workspace, workspaceId, updateLayout, visible]
   );
 
   if (!workspace) {
@@ -190,13 +202,13 @@ export function WorkspaceRenderer({ workspaceId }: { workspaceId: string }) {
   }
 
   return (
-    <div className="h-full w-full">
+    <WorkspaceVisible.Provider value={visible}><div className="h-full w-full">
       <LayoutNodeRenderer
         node={workspace.layoutJson}
         path="root"
         onResize={handleResize}
       />
-    </div>
+    </div></WorkspaceVisible.Provider>
   );
 }
 
@@ -206,6 +218,7 @@ function updateSizesAtPath(
   newSizes: number[]
 ): LayoutNode | null {
   if (path === 'root' && node.type === 'split') {
+    if (node.sizes.length === newSizes.length && node.sizes.every((size, i) => size === newSizes[i])) return null;
     return { ...node, sizes: newSizes };
   }
 
@@ -220,6 +233,7 @@ function updateSizesAtPath(
   if (parts.length === 2) {
     const child = node.children[childIndex];
     if (child.type === 'split') {
+      if (child.sizes.length === newSizes.length && child.sizes.every((size, i) => size === newSizes[i])) return null;
       const newChildren = [...node.children];
       newChildren[childIndex] = { ...child, sizes: newSizes };
       return { ...node, children: newChildren };

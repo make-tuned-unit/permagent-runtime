@@ -1,3 +1,4 @@
+import { useForumActivity } from './ForumActivity';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
 import { useEffect, useMemo, useState } from 'react';
@@ -9,10 +10,10 @@ import { disposeHeroRobot, buildHeroRobot, HERO_KIT_URL, heroProportions } from 
 
 type PortraitSize = 'desk' | 'dock' | 'profile';
 
-function DemandIdle({ reducedMotion }: { reducedMotion: boolean }) {
+function DemandIdle({ reducedMotion, active }: { reducedMotion: boolean; active: boolean }) {
   const invalidate = useThree(state => state.invalidate);
   useEffect(() => {
-    if (reducedMotion) return;
+    if (reducedMotion || !active) return;
     let stopped = false;
     let timer: number | undefined;
     const requestFrame = () => {
@@ -25,7 +26,7 @@ function DemandIdle({ reducedMotion }: { reducedMotion: boolean }) {
       stopped = true;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [invalidate, reducedMotion]);
+  }, [invalidate, reducedMotion, active]);
   return null;
 }
 
@@ -43,9 +44,9 @@ function PortraitRobot({ id, reducedMotion }: { id: string; reducedMotion: boole
   </group>;
 }
 
-function PortraitScene({ id, reducedMotion }: { id: string; reducedMotion: boolean }) {
+function PortraitScene({ id, reducedMotion, active }: { id: string; reducedMotion: boolean; active: boolean }) {
   return <>
-    <DemandIdle reducedMotion={reducedMotion} />
+    <DemandIdle reducedMotion={reducedMotion} active={active} />
     <ambientLight intensity={1.35} />
     <directionalLight position={[-2.2, 3.2, 3.4]} intensity={2.4} color="#ffe2b8" />
     <directionalLight position={[2.4, 1.8, 2]} intensity={1.25} color="#b9d9ed" />
@@ -64,7 +65,11 @@ function useDocumentVisible() {
 }
 
 export function HeroAgentPortrait({ id, size, label }: { id: string; size: PortraitSize; label?: string }) {
-  const visible = useDocumentVisible();
+  const pageVisible = useDocumentVisible();
+  const hostActive = useForumActivity();
+  const active = hostActive && pageVisible;
+  const [visited, setVisited] = useState(false);
+  useEffect(() => { if (active) setVisited(true); }, [active]);
   const reducedMotion = useForumReducedMotion();
   const [failedId, setFailedId] = useState<string | null>(null);
   const failed = failedId === id;
@@ -76,14 +81,14 @@ export function HeroAgentPortrait({ id, size, label }: { id: string; size: Portr
     role={label ? 'img' : undefined}
     aria-hidden={label ? undefined : true}
   >
-    {visible && <GardenAssetBoundary key={id} onFailure={() => setFailedId(id)} fallback={<div className="agent-portrait-fallback" style={{ width: dimension, height: size === 'dock' ? 28 : size === 'profile' ? 136 : 260, display: 'grid', placeContent: 'center', textAlign: 'center', fontSize: textSize.micro, color: 'var(--forum-muted)' }}><span aria-hidden="true">◇</span>{size !== 'dock' && <span>Portrait unavailable</span>}</div>}><Canvas
-      frameloop="demand"
+    {(visited || active) && <GardenAssetBoundary key={id} onFailure={() => setFailedId(id)} fallback={<div className="agent-portrait-fallback" style={{ width: dimension, height: size === 'dock' ? 28 : size === 'profile' ? 136 : 260, display: 'grid', placeContent: 'center', textAlign: 'center', fontSize: textSize.micro, color: 'var(--forum-muted)' }}><span aria-hidden="true">◇</span>{size !== 'dock' && <span>Portrait unavailable</span>}</div>}><Canvas
+      frameloop={active ? 'demand' : 'never'}
       dpr={[1, 1.5]}
       camera={{ position: [0, .88, 3.2], fov: 31, near: .1, far: 20 }}
       gl={{ alpha: true, antialias: true }}
       style={{ width: dimension, height: size === 'dock' ? 28 : size === 'profile' ? 136 : 260, background: 'transparent' }}
     >
-      <PortraitScene id={id} reducedMotion={reducedMotion} />
+      <PortraitScene id={id} reducedMotion={reducedMotion} active={active} />
     </Canvas></GardenAssetBoundary>}
   </div>;
 }

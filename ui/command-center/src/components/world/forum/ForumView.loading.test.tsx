@@ -1,0 +1,50 @@
+/** @vitest-environment jsdom */
+import { act } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+const gpu = vi.hoisted(() => ({ fail: false, props: null as Record<string, any> | null }));
+vi.mock('@react-three/fiber', () => ({ Canvas: (props: Record<string, any>) => { gpu.props = props; if (gpu.fail) throw new Error('WebGL unavailable'); return <canvas />; } }));
+vi.mock('./HeroAgentPortrait', () => ({ HeroAgentPortrait: () => null }));
+vi.mock('./ForumConversation', () => ({ ForumConversation: () => null }));
+vi.mock('./ForumCapabilities', () => ({ ForumCapabilities: () => null }));
+vi.mock('../agents/goalActivity', () => ({ useActiveGoals: () => ({ goals: [], loaded: true }) }));
+import { ForumView } from './ForumView';
+import { ForumStageReady, WORLD_READY_BUDGET_MS } from './ForumStageStatus';
+(globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
+let root: Root, host: HTMLDivElement;
+beforeEach(() => { vi.useFakeTimers(); window.history.replaceState({}, '', '/?campus=1'); localStorage.clear(); gpu.fail = false; vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false }))); host = document.createElement('div'); document.body.append(host); root = createRoot(host); });
+afterEach(() => { act(() => root.unmount()); host.remove(); window.history.replaceState({}, '', '/'); vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+it('shows immediate stage feedback while suspended and keeps HUD and navigation interactive', () => {
+  const navigate = vi.fn(); const start = performance.now();
+  act(() => root.render(<ForumView onNavigate={navigate} />));
+  expect(host.textContent).toContain('Loading World…');
+  const feedbackMs = performance.now() - start;
+  expect(feedbackMs).toBeLessThan(500);
+  const build = [...host.querySelectorAll('button')].find(b => b.textContent?.includes('Build') && b.getAttribute('role') === 'radio')!;
+  act(() => build.click());
+  const action = [...host.querySelectorAll('button')].find(b => b.textContent?.includes('Open Build'))!;
+  expect(action).toBeTruthy(); act(() => action.click()); expect(navigate).toHaveBeenCalledWith('build');
+  const ready = gpu.props!.children.find((child: any) => child?.type === ForumStageReady);
+  act(() => ready.props.onReady());
+  expect(host.textContent).not.toContain('Loading World…');
+  console.info('L2 loading feedback ms', feedbackMs);
+});
+it('offers recovery at five seconds and can still finish a slow load', () => {
+  act(() => root.render(<ForumView />));
+  act(() => vi.advanceTimersByTime(WORLD_READY_BUDGET_MS));
+  expect(host.textContent).toContain('World is taking longer');
+  expect([...host.querySelectorAll('button')].some(b => b.textContent === 'Retry World')).toBe(true);
+  const ready = gpu.props!.children.find((child: any) => child?.type === ForumStageReady);
+  act(() => ready.props.onReady());
+  expect(host.textContent).not.toContain('World is taking longer');
+});
+it('keeps recovery outside a failed Canvas and retries only on request', () => {
+  vi.spyOn(console, 'error').mockImplementation(() => {}); gpu.fail = true;
+  act(() => root.render(<ForumView />));
+  expect(host.textContent).toContain('World could not start');
+  expect(host.querySelector('[aria-label="World places"]')).toBeTruthy();
+  gpu.fail = false;
+  act(() => [...host.querySelectorAll('button')].find(b => b.textContent === 'Retry World')!.click());
+  expect(host.querySelector('canvas')).toBeTruthy();
+  expect(host.textContent).toContain('Loading World…');
+});
