@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect, useImperativeHandle, forwardRef, type CSSProperties } from 'react';
 import { useCommandCenter } from '../../lib/store';
+import { QuickStartHint } from './QuickStartHint';
 import { SEARCH_TEMPLATE_KEY, getSearchTemplate, resolveAddress } from './addressInput';
 import { concentric, duration, ease, font, radius, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
@@ -1450,30 +1451,11 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
                 <kbd className="px-1.5 py-0.5 rounded text-[10px]" style={{ fontFamily: font.mono, backgroundColor: colors.fillSubtle }}>Cmd+L</kbd> to
                 focus the address bar
               </p>
-              <div className="mt-6 flex flex-wrap gap-2 justify-center">
-                {['google.com', 'github.com'].map((site) => (
-                  <Button
-                    key={site}
-                    colors={colors}
-                    variant="bare"
-                    onClick={() => handleNavigate(`https://${site}`)}
-                    style={{
-                      ...chromeBareVars(colors, {
-                        bg: colors.fillSubtle,
-                        pad: `${CHROME_GEOM.tabPadY}px ${CHROME_GEOM.tabPadX}px`,
-                        radiusPx: radius.sm,
-                      }),
-                      '--pa-btn-bg-hover': colors.cyanSoft,
-                      '--pa-btn-fg-hover': colors.cyan,
-                      '--pa-btn-bg-active': colors.cyanGlow,
-                      fontFamily: font.body,
-                      fontSize: textSize.caption,
-                    } as CSSProperties}
-                  >
-                    {site}
-                  </Button>
-                ))}
-              </div>
+              <QuickStartHint
+                template={getSearchTemplate()}
+                colors={colors}
+                onFocusAddress={() => document.querySelector<HTMLInputElement>('.browser-url-input')?.focus()}
+              />
             </div>
           </div>
         ) : null /* Child webview renders natively over this area */}

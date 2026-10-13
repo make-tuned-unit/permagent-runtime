@@ -650,11 +650,10 @@ describe('download-converted navigation closes its dead tab', () => {
 });
 
 describe('empty-state quick links', () => {
-  it('lists plain destinations only, never an OAuth endpoint', () => {
-    const m = BROWSER_TSX.match(/\{\[('[^\]]*)\]\.map\(\(site\)/);
-    expect(m, 'quick-link list not found').not.toBeNull();
-    expect(m![1]).not.toContain('accounts.');
-    expect(m![1].split(',').length).toBeLessThanOrEqual(4);
+  it('hardcodes no vendor destinations (QuickStartHint shows a neutral hint or the user template)', () => {
+    expect(BROWSER_TSX).not.toMatch(/\['google\.com'/);
+    expect(BROWSER_TSX).not.toMatch(/https:\/\/\$\{site\}/);
+    expect(BROWSER_TSX).toContain('<QuickStartHint');
   });
 });
 
