@@ -1,6 +1,6 @@
-import { settleStartup } from './forumStartupTestUtils';
+import { sceneChildren, settleStartup } from './forumStartupTestUtils';
 /** @vitest-environment jsdom */
-import { act } from 'react';
+import React, { act, Suspense } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 const gpu = vi.hoisted(() => ({ fail: false, props: null as Record<string, any> | null }));
@@ -11,9 +11,11 @@ vi.mock('./ForumCapabilities', () => ({ ForumCapabilities: () => null }));
 vi.mock('../agents/goalActivity', () => ({ useActiveGoals: () => ({ goals: [], loaded: true }) }));
 import { ForumView } from './ForumView';
 import { ForumStageReady, WORLD_READY_BUDGET_MS } from './ForumStageStatus';
+import { ForumPostProcessing } from './ForumPostProcessing';
+import { noteForumAssetLoaded, noteForumAssetRequest, resetForumAssetRetryForTests } from './forumAssetRetry';
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 let root: Root, host: HTMLDivElement;
-beforeEach(() => { vi.useFakeTimers(); window.history.replaceState({}, '', '/?campus=1'); localStorage.clear(); gpu.fail = false; vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false }))); host = document.createElement('div'); document.body.append(host); root = createRoot(host); });
+beforeEach(() => { resetForumAssetRetryForTests(); vi.useFakeTimers(); window.history.replaceState({}, '', '/?campus=1'); localStorage.clear(); gpu.fail = false; vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false }))); host = document.createElement('div'); document.body.append(host); root = createRoot(host); });
 afterEach(() => { act(() => root.unmount()); host.remove(); window.history.replaceState({}, '', '/'); vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 it('shows immediate stage feedback while suspended and keeps HUD and navigation interactive', () => {
   const navigate = vi.fn(); const start = performance.now();
@@ -26,7 +28,7 @@ it('shows immediate stage feedback while suspended and keeps HUD and navigation 
   const action = [...host.querySelectorAll('button')].find(b => b.textContent?.includes('Open Build'))!;
   expect(action).toBeTruthy(); act(() => action.click()); expect(navigate).toHaveBeenCalledWith('build');
   settleStartup();
-  const ready = gpu.props!.children.find((child: any) => child?.type === ForumStageReady);
+  const ready = sceneChildren(gpu.props!).find((child: any) => child?.type === ForumStageReady);
   act(() => ready.props.onReady());
   expect(host.textContent).not.toContain('Loading World…');
   console.info('L2 loading feedback ms', feedbackMs);
@@ -37,7 +39,7 @@ it('offers recovery at five seconds and can still finish a slow load', () => {
   expect(host.textContent).toContain('World is taking longer');
   expect([...host.querySelectorAll('button')].some(b => b.textContent === 'Retry World')).toBe(true);
   settleStartup();
-  const ready = gpu.props!.children.find((child: any) => child?.type === ForumStageReady);
+  const ready = sceneChildren(gpu.props!).find((child: any) => child?.type === ForumStageReady);
   act(() => ready.props.onReady());
   expect(host.textContent).not.toContain('World is taking longer');
 });
@@ -51,4 +53,42 @@ it('keeps recovery outside a failed Canvas and retries only on request', () => {
   act(() => [...host.querySelectorAll('button')].find(b => b.textContent === 'Retry World')!.click());
   expect(host.querySelector('canvas')).toBeTruthy();
   expect(host.textContent).toContain('Loading World…');
+});
+it('keeps every scene suspension inside the Canvas so the route Suspense never hides the HUD or Retry', () => {
+  // R3F v8 rethrows an uncaught in-Canvas suspension to the DOM tree; the nearest boundary there is
+  // WorkspaceRenderer's World route, whose fallback replaced the whole World (native r35, stalled assets).
+  act(() => root.render(<ForumView />));
+  settleStartup();
+  const top = React.Children.toArray(gpu.props!.children) as any[];
+  const boundary = top.filter(child => child?.type === Suspense);
+  expect(boundary).toHaveLength(1);
+  // Outside the boundary: only components that never suspend.
+  expect(top.filter(child => child?.type !== Suspense).map(child => child.type.name).sort()).toEqual(['ForumCanvasActivity', 'PerfSampler']);
+  const scene = sceneChildren(boundary[0].props);
+  for (const type of [ForumStageReady, ForumPostProcessing]) expect(scene.some(child => child?.type === type)).toBe(true);
+  expect(scene.some(child => child?.type === 'group')).toBe(true);
+});
+it('Retry World drops cached failed loads and re-reads the kit manifest', () => {
+  vi.spyOn(console, 'error').mockImplementation(() => {}); gpu.fail = true;
+  act(() => root.render(<ForumView />));
+  settleStartup();
+  const failedClear = vi.fn(), loadedClear = vi.fn();
+  noteForumAssetRequest('test:failed', ['world/failed.webp'], failedClear);
+  noteForumAssetRequest('test:loaded', ['world/loaded.webp'], loadedClear);
+  noteForumAssetLoaded('world/loaded.webp');
+  const manifestReads = () => vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith('garden-hero/manifest.json')).length;
+  const before = manifestReads();
+  gpu.fail = false;
+  act(() => [...host.querySelectorAll('button')].find(b => b.textContent === 'Retry World')!.click());
+  expect(failedClear).toHaveBeenCalledTimes(1);
+  expect(loadedClear).not.toHaveBeenCalled();
+  expect(manifestReads()).toBe(before + 1);
+  expect(host.textContent).toContain('Loading World…');
+});
+it('does not tell a failed World that it is still loading', () => {
+  vi.spyOn(console, 'error').mockImplementation(() => {}); gpu.fail = true;
+  act(() => root.render(<ForumView />));
+  settleStartup();
+  expect(host.textContent).toContain('World could not start');
+  expect(host.textContent).not.toContain('while it loads');
 });

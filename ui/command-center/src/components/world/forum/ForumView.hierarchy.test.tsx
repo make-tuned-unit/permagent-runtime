@@ -1,4 +1,4 @@
-import { settleStartup } from './forumStartupTestUtils';
+import { sceneChildren, settleStartup } from './forumStartupTestUtils';
 /** @vitest-environment jsdom */
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -39,22 +39,22 @@ async function render() {
   await act(async () => root.render(<ForumView />));
   await settleStartup();
   act(() => {
-    const children = gpu.props!.children;
+    const children = sceneChildren(gpu.props!);
     children.find((c: any) => c?.type === ForumStageReady).props.onReady();
     children.find((c: any) => c?.type === ForumLightingPreparation).props.onPrepared('day');
   });
-  act(() => gpu.props!.children.find((c: any) => c?.type === 'group').props.children.find((c: any) => c?.type === ForumEnvironment).props.onApplied('day'));
+  act(() => sceneChildren(gpu.props!).find((c: any) => c?.type === 'group').props.children.find((c: any) => c?.type === ForumEnvironment).props.onApplied('day'));
 }
 function button(text: string) { return [...host.querySelectorAll('button')].find(b => b.textContent === text)!; }
 function click(text: string) { act(() => button(text).click()); }
 it('keeps the same walk mounted with input suspended across workspace leave and return', async () => {
   await render(); click('Walk the world');
-  const walk = () => gpu.props!.children.find((child: any) => child?.type === ForumWalk);
+  const walk = () => sceneChildren(gpu.props!).find((child: any) => child?.type === ForumWalk);
   const start = walk().props.start;
   expect(walk().props.active).toBe(true);
   act(() => root.render(<ForumView visible={false} />));
   expect(walk().props.active).toBe(false); expect(walk().props.start).toBe(start);
-  expect(gpu.props!.children.some((child: any) => child?.type === HabitatNavigation)).toBe(false);
+  expect(sceneChildren(gpu.props!).some((child: any) => child?.type === HabitatNavigation)).toBe(false);
   act(() => root.render(<ForumView />));
   expect(walk().props.active).toBe(true); expect(walk().props.start).toBe(start);
   expect(button('Walk the world')).toBeUndefined();
@@ -66,17 +66,17 @@ it('arrives at eye level with the desk closed and exposes exactly one explicit o
   expect(host.querySelector('.forum-shell')?.getAttribute('data-desk')).toBe('closed');
   expect(localStorage.getItem('permagent.forum.desk')).toBeNull();
   expect(button('Overview').getAttribute('aria-pressed')).toBe('false');
-  expect(gpu.props!.children.find((c: any) => c?.type === HabitatNavigation).props.overview).toBe(false);
+  expect(sceneChildren(gpu.props!).find((c: any) => c?.type === HabitatNavigation).props.overview).toBe(false);
   click('Walk the world'); expect(button('Walk the world')).toBeUndefined();
   expect([...host.querySelectorAll('button')].filter(b => /overview/i.test(b.textContent ?? ''))).toHaveLength(1);
   click('Overview'); expect(button('Overview').getAttribute('aria-pressed')).toBe('true');
-  expect(gpu.props!.children.find((c: any) => c?.type === HabitatNavigation).props.overview).toBe(true);
+  expect(sceneChildren(gpu.props!).find((c: any) => c?.type === HabitatNavigation).props.overview).toBe(true);
 });
 it('preserves the chosen place, desk and explicit overview across workspace leave and return', async () => {
   await render(); click('Agent desk');
   const archive = [...host.querySelectorAll<HTMLButtonElement>('[role="radio"]')].find(b => b.textContent?.includes('Garden archive'))!;
   act(() => archive.click());
-  const navigation = () => gpu.props!.children.find((c: any) => c?.type === HabitatNavigation).props;
+  const navigation = () => sceneChildren(gpu.props!).find((c: any) => c?.type === HabitatNavigation).props;
   expect(navigation().district.id).toBe('gallery');
   act(() => root.render(<ForumView visible={false} />));
   act(() => root.render(<ForumView />));

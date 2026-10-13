@@ -1,7 +1,7 @@
 import { useForumActivity } from './ForumActivity';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { useGLTF } from '@react-three/drei';
-import { useEffect, useMemo, useState } from 'react';
+import { Suspense, useEffect, useMemo, useState } from 'react';
 import { textSize } from '../../../styles/tokens';
 import { useForumReducedMotion } from './useForumReducedMotion';
 import { GardenAssetBoundary } from './GardenAssetBoundary';
@@ -88,7 +88,10 @@ export function HeroAgentPortrait({ id, size, label }: { id: string; size: Portr
       gl={{ alpha: true, antialias: true }}
       style={{ width: dimension, height: size === 'dock' ? 28 : size === 'profile' ? 136 : 260, background: 'transparent' }}
     >
-      <PortraitScene id={id} reducedMotion={reducedMotion} active={active} />
+      {/* Keep a slow or stalled kit inside this Canvas: R3F rethrows an uncaught
+          suspension to the DOM tree, and the nearest boundary there is the World
+          route's, which would replace the whole World and its Retry. */}
+      <Suspense fallback={null}><PortraitScene id={id} reducedMotion={reducedMotion} active={active} /></Suspense>
     </Canvas></GardenAssetBoundary>}
   </div>;
 }

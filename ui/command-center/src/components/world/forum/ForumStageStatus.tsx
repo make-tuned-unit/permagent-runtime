@@ -46,7 +46,7 @@ export function ForumStageStatus({ state, onRetry }: { state: ForumStageState; o
       background: colors.surface, color: colors.text, fontSize: textSize.body,
     }}>
       <p>{state === 'failed' ? 'World could not start.' : state === 'slow' ? 'World is taking longer to load.' : 'Loading World…'}</p>
-      <p style={{ color: colors.textMuted }}>You can use the controls or navigate elsewhere while it loads.</p>
+      <p style={{ color: colors.textMuted }}>{state === 'failed' ? 'The controls and the rest of the app still work.' : 'You can use the controls or navigate elsewhere while it loads.'}</p>
       {recovery && <Button colors={colors} flashSuccess={false} style={{ pointerEvents: 'auto' }} onClick={onRetry}>Retry World</Button>}
     </div>
   </div>;

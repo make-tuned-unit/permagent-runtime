@@ -1,6 +1,7 @@
 import { useLoader, useThree } from '@react-three/fiber';
 import { ImageBitmapLoader, Loader, Texture, TextureLoader, LinearFilter, NoColorSpace, RepeatWrapping, SRGBColorSpace, type WebGLRenderer } from 'three';
 import { measureForumStartup, scheduleForumStartup } from './forumStartup';
+import { noteForumAssetLoaded, noteForumAssetRequest } from './forumAssetRetry';
 
 /** Explicit asynchronous image decode. Keep the loader identity shared by sky
  * preparation and rendering so choosing an appearance never fetches it twice. */
@@ -10,7 +11,7 @@ export class ForumTextureLoader extends Loader<Texture> {
       return new TextureLoader(this.manager).setPath(this.path).load(url, texture => {
         const image = texture.image as HTMLImageElement;
         image.decoding = 'async';
-        void (image.decode?.() ?? Promise.resolve()).then(() => onLoad?.(texture), onError);
+        void (image.decode?.() ?? Promise.resolve()).then(() => { noteForumAssetLoaded(url); onLoad?.(texture); }, onError);
       }, onProgress, onError);
     }
     const texture = new Texture();
@@ -18,6 +19,7 @@ export class ForumTextureLoader extends Loader<Texture> {
       measureForumStartup('texture decoded / assign', () => {
         texture.image = bitmap; texture.flipY = false; texture.needsUpdate = true;
         texture.addEventListener('dispose', () => bitmap.close());
+        noteForumAssetLoaded(url);
         onLoad?.(texture);
       });
     }, onProgress, onError);
@@ -59,6 +61,8 @@ function configure(texture: Texture, preset: ForumTexturePreset) {
 }
 export function useForumTexture<T extends string | string[]>(input: T, preset: ForumTexturePreset | ((index: number) => ForumTexturePreset) = 'color'): T extends string[] ? Texture[] : Texture {
   const renderer = useThree(state => state.gl);
+  const urls = Array.isArray(input) ? input as string[] : [input as string];
+  noteForumAssetRequest(`texture:${urls.join('\n')}`, urls, () => useLoader.clear(ForumTextureLoader, input));
   const textures = useLoader(ForumTextureLoader, input);
   const entries = (Array.isArray(textures) ? textures : [textures]).map((texture, index) => { configure(texture, typeof preset === 'function' ? preset(index) : preset); return prepare(renderer, texture); });
   const error = entries.find(entry => entry.error)?.error;

@@ -1,4 +1,4 @@
-import { settleStartup } from './forumStartupTestUtils';
+import { sceneChildren, settleStartup } from './forumStartupTestUtils';
 /** @vitest-environment jsdom */
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -16,8 +16,8 @@ import { ForumEnvironment } from './ForumEnvironment';
 let root: Root, host: HTMLDivElement;
 beforeEach(async () => { localStorage.clear(); localStorage.setItem('permagent.forum.lighting', 'day'); vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false }))); host = document.createElement('div'); document.body.append(host); root = createRoot(host); act(() => root.render(<ForumView />)); await settleStartup(); });
 afterEach(() => { act(() => root.unmount()); host.remove(); vi.unstubAllGlobals(); });
-function preparation() { return gpu.props!.children.find((child: any) => child?.type === ForumLightingPreparation).props; }
-function environment() { return gpu.props!.children.find((child: any) => child?.type === 'group').props.children.find((child: any) => child?.type === ForumEnvironment).props; }
+function preparation() { return sceneChildren(gpu.props!).find((child: any) => child?.type === ForumLightingPreparation).props; }
+function environment() { return sceneChildren(gpu.props!).find((child: any) => child?.type === 'group').props.children.find((child: any) => child?.type === ForumEnvironment).props; }
 function select(value: string) { act(() => { const control = host.querySelector('[aria-label="World lighting"]') as HTMLSelectElement; control.value = value; control.dispatchEvent(new Event('change', { bubbles: true })); }); }
 function status() { return host.querySelector('[data-testid="forum-lighting-status"]')!.textContent; }
 it('acknowledges selection immediately and retains applied day until night is ready', () => {

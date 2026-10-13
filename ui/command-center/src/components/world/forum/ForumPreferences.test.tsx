@@ -6,7 +6,9 @@ const renderer = vi.hoisted(() => ({ fail: false }));
 vi.mock('@react-three/fiber', () => ({
   Canvas: ({ children }: { children: ReactElement<{ reducedMotion: boolean }> }) => {
     if (renderer.fail) throw new Error('Hero asset unavailable');
-    return <div data-portrait-reduced={String(children.props.reducedMotion)} />;
+    // The portrait scene sits inside the Canvas' own Suspense boundary.
+    const scene = (children.props as { children?: ReactElement<{ reducedMotion: boolean }> }).children ?? children;
+    return <div data-portrait-reduced={String(scene.props.reducedMotion)} />;
   },
 }));
 import { HeroAgentPortrait } from './HeroAgentPortrait';

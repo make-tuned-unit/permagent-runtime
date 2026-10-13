@@ -1,4 +1,5 @@
 import { scheduleForumStartup } from './forumStartup';
+import { trackForumGltfLoader } from './forumAssetRetry';
 import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
 
 /**
@@ -33,6 +34,7 @@ export function withMeshopt<T extends MeshoptCapableLoader>(loader: T): T {
  */
 export const extendForumLoader = (loader: MeshoptCapableLoader): void => {
   loader.setMeshoptDecoder(typeof Worker === 'function' ? browserDecoder : MeshoptDecoder);
+  trackForumGltfLoader(loader);
 };
 
 // One same-origin module worker shared by the GLTF resource cache. Unlike

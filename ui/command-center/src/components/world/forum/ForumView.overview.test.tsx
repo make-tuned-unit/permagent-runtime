@@ -16,8 +16,9 @@ const scene = vi.hoisted(() => ({
 vi.mock('@react-three/fiber', async () => {
   const React = await import('react');
   return {
-    Canvas: ({ children }: any) => <>{React.Children.toArray(children).filter((child: any) =>
-      ['HabitatNavigation', 'ForumCanvasActivity'].includes(child?.type?.name))}</>,
+    // Looks through the in-Canvas Suspense boundary that holds the scene.
+    Canvas: ({ children }: any) => { const flat = (node: any): any[] => React.Children.toArray(node).flatMap((child: any) => child?.type === React.Suspense ? flat(child.props.children) : [child]); return <>{flat(children).filter((child: any) =>
+      ['HabitatNavigation', 'ForumCanvasActivity'].includes(child?.type?.name))}</>; },
     useThree: (pick: (s: typeof scene) => unknown) => pick(scene),
     useFrame: (frame: unknown) => { scene.frame = frame; },
   };

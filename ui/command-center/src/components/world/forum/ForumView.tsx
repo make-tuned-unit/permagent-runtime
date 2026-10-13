@@ -3,6 +3,7 @@ import { ForumActivity, ForumCanvasActivity } from './ForumActivity';
 import { ForumLightingPreparation, clearForumLightingPreparation } from './ForumLightingPreparation';
 import { useForumLightingReadiness } from './useForumLightingReadiness';
 import { ForumStageBoundary, ForumStageReady, ForumStageStatus, WORLD_READY_BUDGET_MS, type ForumStageState } from './ForumStageStatus';
+import { clearUnsettledForumAssets } from './forumAssetRetry';
 import { useAppNavigationRequests, consumeNavigationRequest } from '../../../lib/appNavigationRequests';
 import { HabitatScene, HabitatLighting, HabitatNavigation } from './HabitatScene';
 import { OrchestratorConversation } from './OrchestratorConversation';
@@ -270,7 +271,9 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
   const [kitReady, setKitReady] = useState(false);
   const [assetNotice,setAssetNotice]=useState('');
   const kitFailure=useCallback(()=>{setKitReady(false);setAssetNotice('Detailed assets could not load. The walkable garden and agent controls remain available.');},[]);
-  useEffect(()=>{let cancelled=false;fetch(`${import.meta.env.BASE_URL}world/garden-hero/manifest.json`).then(r=>r.ok?r.json():null).then(value=>{if(!cancelled && (value?.version?.startsWith('hero-kit-v1.1') || value?.version?.startsWith('hero-kit-v2') || value?.version === 'hero-kit-v3b'))setKitReady(true);}).catch(()=>{});return()=>{cancelled=true;};},[]);
+  // Retry World re-reads the kit manifest too: a failed read otherwise leaves the garden without its agents for the session.
+  const [kitAttempt,setKitAttempt]=useState(0);
+  useEffect(()=>{let cancelled=false;fetch(`${import.meta.env.BASE_URL}world/garden-hero/manifest.json`).then(r=>r.ok?r.json():null).then(value=>{if(!cancelled && (value?.version?.startsWith('hero-kit-v1.1') || value?.version?.startsWith('hero-kit-v2') || value?.version === 'hero-kit-v3b'))setKitReady(true);}).catch(()=>{});return()=>{cancelled=true;};},[kitAttempt]);
   const places = compact ? HABITAT_PLACES : DISTRICTS;
   // The agent wears the name its user gave it, everywhere. `useOrchestratorName`
   // reads that from the daemon; the store's `agentName` is the same name kept
@@ -308,7 +311,12 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
   const [stageAttempt, setStageAttempt] = useState(0);
   const stageReady = useCallback(() => setStageState(state => state === 'failed' ? state : 'ready'), []);
   const stageFailed = useCallback(() => setStageState('failed'), []);
-  const retryStage = useCallback(() => { setStageState('loading'); setHabitatReady(false); setStageAttempt(n => n + 1); }, []);
+  const retryStage = useCallback(() => {
+    // Without this the remounted Canvas re-throws the cached failure (or waits on the stalled request) and Retry never recovers.
+    clearUnsettledForumAssets();
+    setAssetNotice(''); setKitAttempt(n => n + 1);
+    setStageState('loading'); setHabitatReady(false); setStageAttempt(n => n + 1);
+  }, []);
   useEffect(() => {
     if (!onPanel || !pageVisible || stageState !== 'loading') return;
     const timer = window.setTimeout(() => setStageState('slow'), WORLD_READY_BUDGET_MS);
@@ -549,8 +557,11 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
           no context around them they out-ranked the HUD lanes and QA saw
           "Automate" drawn over the Places rail and "Build" over the job feed. */}
       <ForumStageBoundary key={stageAttempt} onFailure={stageFailed}>{(startupStage >= 1) && <Canvas className="forum-canvas" frameloop={onPanel && pageVisible ? 'always' : 'never'} shadows={{ type: PCFShadowMap }} dpr={[1, 1.5]} camera={{ position: [...(compact ? HABITAT_ARRIVAL.position : FORUM_VISTA.position)] as [number,number,number], fov: compact ? HABITAT_ARRIVAL.fov : FORUM_VISTA.fov, near: FORUM_CAMERA_NEAR, far: FORUM_CAMERA_FAR }} gl={{ antialias: true, toneMapping: AgXToneMapping, toneMappingExposure: FORUM_EXPOSURE }}>
-        {startupStage >= 2 && onPanel && pageVisible && <ForumLightingPreparation key={`${requestedAppearance}:${compact}:${light.attempt}`} appearance={requestedAppearance} compact={compact} attempt={light.attempt} onPrepared={light.prepared} onFailure={light.failed} />}
         <ForumCanvasActivity active={active} />
+        {/* Every scene suspension stays inside the Canvas. R3F would otherwise rethrow it
+            to the route Suspense, which hides this whole view (HUD, stage status, Retry). */}
+        <Suspense fallback={null}>
+        {startupStage >= 2 && onPanel && pageVisible && <ForumLightingPreparation key={`${requestedAppearance}:${compact}:${light.attempt}`} appearance={requestedAppearance} compact={compact} attempt={light.attempt} onPrepared={light.prepared} onFailure={light.failed} />}
         <ForumStageReady active={active && startupStage >= 4 && (!compact || habitatReady)} onReady={stageReady} onFailure={stageFailed} />
         {startupStage >= 2 && (agoraOpen ? <MeshAgora walking={walking} /> : compact ? <HabitatLighting appearance={appearance} skyAttempt={light.attempt} /> : <ForumLighting appearance={appearance} />)}
         {/* The forum is hidden rather than unmounted while the Agora is open:
@@ -580,6 +591,7 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
           ? <ForumWalk active={active} start={walkStartOverride ?? walkStart} onExit={exitWalk} onInspect={inspectAgent} inMesh={agoraOpen} onEnterMesh={enterMesh} onExitMesh={leaveMesh} onMeshPrompt={setMeshPrompt} onInteractionPrompt={setInteractionPrompt} onEvidence={compact ? ()=>{setInteractionPrompt(null);setWalking(false);setDeskOpen(true);setTab('evidence');} : undefined} />
           : !agoraOpen && (compact ? <HabitatNavigation conversation={conversation} district={district} focusAgent={focusAgent} overview={overview} overviewRevision={overviewRevision} follow={follow} /> : <ForumNavigation district={district} focusAgent={focusAgent} />)}
         {startupStage >= 4 && <ForumPostProcessing appearance={appearance} gentle={compact} />}
+        </Suspense>
         <PerfSampler />
       </Canvas>}</ForumStageBoundary>
       <ForumStageStatus state={stageState} onRetry={retryStage} />
