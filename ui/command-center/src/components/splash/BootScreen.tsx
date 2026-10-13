@@ -32,11 +32,19 @@ declare global {
   }
 }
 
-function launchEpochMs(): number {
+/** The injected launch epoch only describes the FIRST page load of the process.
+ *  A reload or a later window (chat pop-out, pane window) begins long after
+ *  launch and must get its own full budget from its own page origin. */
+export const FIRST_LOAD_BOUND_MS = 5_000;
+
+function bootBaseMs(): number {
+  const origin = performance.timeOrigin;
   const epoch = window.__PERMAGENT_LAUNCH_EPOCH_MS__;
-  return typeof epoch === 'number' && Number.isFinite(epoch) && epoch > 0
-    ? epoch
-    : performance.timeOrigin;
+  if (typeof epoch === 'number' && Number.isFinite(epoch) && epoch > 0
+    && origin - epoch <= FIRST_LOAD_BOUND_MS) {
+    return epoch;
+  }
+  return origin;
 }
 
 function remainingSeconds(deadline: number): number {
@@ -59,7 +67,7 @@ export function BootScreen({ onReady, onMalformed }: Props) {
   const { colors, reduceMotion } = useTheme();
   // Shell startup and page loading spend the same budget as connection attempts.
   // This is initialized once; only the Retry button may replace the deadline.
-  const [deadline, setDeadline] = useState(() => launchEpochMs() + BOOT_DEADLINE_MS);
+  const [deadline, setDeadline] = useState(() => bootBaseMs() + BOOT_DEADLINE_MS);
   const [status, setStatus] = useState<Status>(() => Date.now() >= deadline ? 'failed' : 'connecting');
   const failureDetail = useDaemonFailure();
   const [attempt, setAttempt] = useState(0);

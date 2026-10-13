@@ -33,8 +33,14 @@ const getConfigMock = vi.mocked(api.getConfig);
 let container: HTMLDivElement;
 let root: Root;
 
+const originalTimeOrigin = Object.getOwnPropertyDescriptor(performance, 'timeOrigin');
+function setTimeOrigin(value: number) {
+  Object.defineProperty(performance, 'timeOrigin', { configurable: true, value });
+}
+
 beforeEach(() => {
   vi.useFakeTimers();
+  setTimeOrigin(Date.now());
   window.__PERMAGENT_LAUNCH_EPOCH_MS__ = Date.now();
   getConfigMock.mockReset();
   container = document.createElement('div');
@@ -46,6 +52,8 @@ afterEach(() => {
   act(() => root.unmount());
   container.remove();
   delete window.__PERMAGENT_LAUNCH_EPOCH_MS__;
+  if (originalTimeOrigin) Object.defineProperty(performance, 'timeOrigin', originalTimeOrigin);
+  else Reflect.deleteProperty(performance, 'timeOrigin');
   vi.useRealTimers();
 });
 
@@ -182,6 +190,7 @@ describe('absolute startup deadline', () => {
 
   it('mounts directly into visible recovery after an 11s shell startup, without starting a request', () => {
     window.__PERMAGENT_LAUNCH_EPOCH_MS__ = Date.now() - 11_000;
+    setTimeOrigin(window.__PERMAGENT_LAUNCH_EPOCH_MS__ + 3000); // first load, page began 3s after launch
     act(() => root.render(<BootScreen onReady={vi.fn()} onMalformed={vi.fn()} />));
     expect(container.textContent).toContain("Couldn't reach Permagent's background service");
     expect(container.textContent).not.toContain('remaining');
@@ -213,8 +222,46 @@ describe('absolute startup deadline', () => {
     }
   });
 
+  it('a reload 60s after launch gets a fresh deadline from its own page origin and tries the daemon', async () => {
+    const launch = Date.now() - 60_000;
+    window.__PERMAGENT_LAUNCH_EPOCH_MS__ = launch;
+    setTimeOrigin(Date.now() - 1000); // this page began 59s after launch
+    getConfigMock.mockResolvedValue({ config: { wizard_complete: true } });
+    const onReady = vi.fn();
+    act(() => root.render(<BootScreen onReady={onReady} onMalformed={vi.fn()} />));
+    expect(container.textContent).toContain('9s remaining');
+    await flush();
+    expect(getConfigMock).toHaveBeenCalledTimes(1);
+    expect(onReady).toHaveBeenCalledWith('app');
+  });
+
+  it('a reload with a hung daemon fails at page origin + 10s, not at launch + 10s', async () => {
+    window.__PERMAGENT_LAUNCH_EPOCH_MS__ = Date.now() - 60_000;
+    const origin = Date.now();
+    setTimeOrigin(origin);
+    getConfigMock.mockReturnValue(new Promise(() => {}));
+    act(() => root.render(<BootScreen onReady={vi.fn()} onMalformed={vi.fn()} />));
+    await act(async () => { await vi.advanceTimersByTimeAsync(9999); });
+    expect(container.querySelector('button')).toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(container.querySelector('button')?.textContent).toContain('Retry');
+    expect(Date.now()).toBe(origin + 10_000);
+  });
+
+  it('a web page whose origin is 11s after a stale/absent epoch is origin-based', async () => {
+    delete window.__PERMAGENT_LAUNCH_EPOCH_MS__;
+    setTimeOrigin(Date.now() - 1500);
+    getConfigMock.mockResolvedValue({ config: { wizard_complete: true } });
+    const onReady = vi.fn();
+    act(() => root.render(<BootScreen onReady={onReady} onMalformed={vi.fn()} />));
+    expect(container.textContent).toContain('8.5s remaining');
+    await flush();
+    expect(onReady).toHaveBeenCalledWith('app');
+  });
+
   it('only an explicit Retry grants a fresh 10s window and permits successful recovery', async () => {
     window.__PERMAGENT_LAUNCH_EPOCH_MS__ = Date.now() - 11_000;
+    setTimeOrigin(window.__PERMAGENT_LAUNCH_EPOCH_MS__ + 3000);
     const onReady = vi.fn();
     const onMalformed = vi.fn();
     getConfigMock.mockReturnValue(new Promise(() => {}));
