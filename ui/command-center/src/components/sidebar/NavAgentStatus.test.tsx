@@ -27,7 +27,7 @@ function dashboard(state: 'idle' | 'thinking'): DashboardData {
   return {
     agent: { name: 'name-the-indicator-must-ignore', state, active_count: state === 'thinking' ? 1 : 0, summary: '' },
     stats: { sessions_today: 0, sessions_total: 0, memory_count: 0, memory_delta_today: 0 },
-    in_flight: [],
+    in_flight: state === 'thinking' ? [{ id: 's', title: 't', started_at: '', state: 'thinking', progress: 0 }] : [],
     recent: [],
   };
 }
@@ -58,6 +58,11 @@ describe('resolveNavAgentState', () => {
 
   it('is thinking only when reachable and the daemon says thinking', () => {
     expect(resolveNavAgentState('thinking', false)).toBe('thinking');
+  });
+
+  it('is not thinking when the payload shows no turn in flight', () => {
+    expect(resolveNavAgentState('thinking', false, 0)).toBe('online');
+    expect(resolveNavAgentState('thinking', false, 1)).toBe('thinking');
   });
 
   it('defaults to online for idle, or an unknown/undefined state, while reachable', () => {

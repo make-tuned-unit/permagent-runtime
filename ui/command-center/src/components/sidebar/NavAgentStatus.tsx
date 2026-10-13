@@ -43,9 +43,12 @@ const STATE_WORD: Record<NavAgentState, string> = {
  * left behind: a gray dot is honest, a green or pulsing one built on data the
  * daemon has stopped confirming is not.
  */
-export function resolveNavAgentState(rawState: string | undefined, unreachable: boolean): NavAgentState {
+export function resolveNavAgentState(rawState: string | undefined, unreachable: boolean, turnsInFlight?: number): NavAgentState {
   if (unreachable) return 'offline';
-  if (rawState === 'thinking') return 'thinking';
+  // "thinking" needs a turn actually in flight; a bare state string from an
+  // older daemon (which called any recently touched session "thinking") is not
+  // enough once the payload says nothing is running.
+  if (rawState === 'thinking' && (turnsInFlight === undefined || turnsInFlight > 0)) return 'thinking';
   return 'online';
 }
 
@@ -115,7 +118,7 @@ export function HeaderAgentStatus({ data, error }: {
   const name = configured
     ?? (storeName && storeName !== 'Agent' ? storeName : null)
     ?? 'Your agent';
-  const state = resolveNavAgentState(data?.agent.state, Boolean(error));
+  const state = resolveNavAgentState(data?.agent.state, Boolean(error), data?.in_flight?.length);
   const word = STATE_WORD[state];
   return (
     <span

@@ -19,7 +19,7 @@ import { CustomizeButton } from './CustomizeButton';
 import { MissingCard } from './MissingCard';
 import { Echo } from './Echo';
 import { LearnNext } from './LearnNext';
-import { isDefaultHomeLayout } from './homeFirstAction';
+import { isDefaultHomeLayout, isUntouchedHomeData } from './homeFirstAction';
 import { navigateToTool, useCommandCenter } from '../../lib/store';
 import { openChatModelSetup } from '../chat/ChatSetupCard';
 import { ViewHeader } from '../common/ViewHeader';
@@ -407,8 +407,7 @@ export function Dashboard() {
   };
 
   const untouched = !hasModel && chatRoute?.source === 'unconfigured' && !providersError && !failing
-    && data.stats.sessions_total === 0 && data.stats.memory_count === 0
-    && data.recent.length === 0 && data.in_flight.length === 0 && activeCount === 0 && dueTodos.todos.length === 0;
+    && isUntouchedHomeData(data) && activeCount === 0 && dueTodos.todos.length === 0;
   const firstAction = untouched && layoutLoaded && !isEditMode;
   const visibleCards = firstAction && isDefaultHomeLayout(layout) ? [] : layout.cards.filter(c => c.visible);
   // Where each card is DRAWN. The stored x/y were a shelf packing that left
