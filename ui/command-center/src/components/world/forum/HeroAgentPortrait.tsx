@@ -6,6 +6,7 @@ import { textSize } from '../../../styles/tokens';
 import { useForumReducedMotion } from './useForumReducedMotion';
 import { GardenAssetBoundary } from './GardenAssetBoundary';
 import { extendForumLoader } from './forumGltf';
+import { useForumRetryGeneration } from './forumAssetRetry';
 import { disposeHeroRobot, buildHeroRobot, HERO_KIT_URL, heroProportions } from './heroRobot';
 
 type PortraitSize = 'desk' | 'dock' | 'profile';
@@ -71,8 +72,11 @@ export function HeroAgentPortrait({ id, size, label }: { id: string; size: Portr
   const [visited, setVisited] = useState(false);
   useEffect(() => { if (active) setVisited(true); }, [active]);
   const reducedMotion = useForumReducedMotion();
-  const [failedId, setFailedId] = useState<string | null>(null);
-  const failed = failedId === id;
+  // A failure is latched per agent and per Retry World attempt: the boundary
+  // below sits outside the stage Canvas, so only the retry generation resets it.
+  const attemptKey = `${id}:${useForumRetryGeneration()}`;
+  const [failedKey, setFailedKey] = useState<string | null>(null);
+  const failed = failedKey === attemptKey;
   const dimension = size === 'dock' ? 28 : size === 'profile' ? 112 : 220;
   return <div
     className={`hero-agent-portrait hero-agent-portrait-${size}`}
@@ -81,7 +85,7 @@ export function HeroAgentPortrait({ id, size, label }: { id: string; size: Portr
     role={label ? 'img' : undefined}
     aria-hidden={label ? undefined : true}
   >
-    {(visited || active) && <GardenAssetBoundary key={id} onFailure={() => setFailedId(id)} fallback={<div className="agent-portrait-fallback" style={{ width: dimension, height: size === 'dock' ? 28 : size === 'profile' ? 136 : 260, display: 'grid', placeContent: 'center', textAlign: 'center', fontSize: textSize.micro, color: 'var(--forum-muted)' }}><span aria-hidden="true">◇</span>{size !== 'dock' && <span>Portrait unavailable</span>}</div>}><Canvas
+    {(visited || active) && <GardenAssetBoundary key={attemptKey} onFailure={() => setFailedKey(attemptKey)} fallback={<div className="agent-portrait-fallback" style={{ width: dimension, height: size === 'dock' ? 28 : size === 'profile' ? 136 : 260, display: 'grid', placeContent: 'center', textAlign: 'center', fontSize: textSize.micro, color: 'var(--forum-muted)' }}><span aria-hidden="true">◇</span>{size !== 'dock' && <span>Portrait unavailable</span>}</div>}><Canvas
       frameloop={active ? 'demand' : 'never'}
       dpr={[1, 1.5]}
       camera={{ position: [0, .88, 3.2], fov: 31, near: .1, far: 20 }}

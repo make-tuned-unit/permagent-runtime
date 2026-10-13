@@ -1,3 +1,4 @@
+import { useSyncExternalStore } from 'react';
 import { useLoader } from '@react-three/fiber';
 
 /**
@@ -17,8 +18,25 @@ export function noteForumAssetRequest(key: string, urls: string[], clear: () => 
 }
 export function noteForumAssetLoaded(url: string) { loaded.add(url); }
 
-/** Clears unsettled cache entries; returns how many were dropped. */
+/**
+ * Retry generation. Components that latch an asset failure outside the forum
+ * Canvas (the agent portraits keep their own Canvas and failure boundary, so
+ * remounting the stage does not reach them) key that latch by this value, so
+ * Retry World gives them a fresh attempt too.
+ */
+let retryGeneration = 0;
+const retryListeners = new Set<() => void>();
+const subscribeForumRetry = (listener: () => void) => { retryListeners.add(listener); return () => { retryListeners.delete(listener); }; };
+const readForumRetry = () => retryGeneration;
+export function useForumRetryGeneration(): number {
+  return useSyncExternalStore(subscribeForumRetry, readForumRetry, readForumRetry);
+}
+
+/** Retry World: clears unsettled cache entries and starts a new retry
+ * generation; returns how many entries were dropped. */
 export function clearUnsettledForumAssets(): number {
+  retryGeneration++;
+  retryListeners.forEach(listener => listener());
   let cleared = 0;
   for (const [key, entry] of entries) {
     if (entry.urls.every(url => loaded.has(url))) continue;
