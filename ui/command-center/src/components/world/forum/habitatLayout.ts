@@ -16,10 +16,17 @@ export type Point3 = [number, number, number];
 /** Human-scale arrival: clear of every station/body and solid, with the host,
  * table, and water route sharing the eye-level frame. */
 export const HABITAT_ARRIVAL = {position: [0, 1.60, 6.0] as Point3, target: [-1.1, 1.30, -1.5] as Point3, fov: 72};
-/** The overview keeps the full compact footprint in frame at both supported
- * 16:10 review sizes. Its lower target gives the connected terraces room to
- * read without returning to the rejected elevated surveillance stare. */
-export const HABITAT_OVERVIEW = {position: [40, 43, 37] as Point3, target: [0, -3, -12] as Point3, fov: 48};
+/** L3 / W6 camera contract: southeast, outside the arrival arbor, looking
+ * along the connected terraces and north bridge. The lower elevation exposes
+ * the inhabited pavilion fronts instead of filling the view with their roofs.
+ * Metres, Y up; vertical FOV in degrees. Fit by distance, never by cropping. */
+export const HABITAT_OVERVIEW = {position: [30, 26, 42] as Point3, target: [-3, -4, -16] as Point3, fov: 50};
+export const HABITAT_OVERVIEW_ASPECT = 1.6;
+export function habitatOverviewCamera(aspect = HABITAT_OVERVIEW_ASPECT) {
+  const distanceScale = Math.max(1, HABITAT_OVERVIEW_ASPECT / Math.max(.25, aspect));
+  return { ...HABITAT_OVERVIEW, position: HABITAT_OVERVIEW.position.map((value, i) =>
+    HABITAT_OVERVIEW.target[i] + (value - HABITAT_OVERVIEW.target[i]) * distanceScale) as Point3 };
+}
 /** Reverse arrival composition used by the authored rear planting/arbor
  * contract. Orbiting around the arrival should reveal a second lived-in
  * foreground, not an empty service side of the set. */

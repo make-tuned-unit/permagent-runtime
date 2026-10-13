@@ -85,13 +85,15 @@ it('keeps seating explicit and hides sovereign identity/seating for a specialist
   expect(askFromForum).not.toHaveBeenCalled(); expect(sendMessage).not.toHaveBeenCalled();
 });
 
-it('keeps work, tool knowledge and world settings available in closed disclosures', () => {
+it('keeps work, tool knowledge and attribution in disclosures with lighting in the HUD', () => {
   const disclosures = [...host.querySelectorAll('.agent-desk-support details')];
-  expect(disclosures.map(details => details.querySelector('summary')?.textContent)).toEqual(['Work in flight Feed pending', 'Tools & skills', 'World settings']);
+  expect(disclosures.map(details => details.querySelector('summary')?.textContent)).toEqual(['Work in flight Feed pending', 'Tools & skills', 'World details & attribution']);
   expect(disclosures.every(details => !(details as HTMLDetailsElement).open)).toBe(true);
   expect(host.textContent).toContain('Waiting for the job feed. No activity is inferred.');
   expect(host.textContent).toContain('Existing tools and skills');
   expect(host.querySelector('[aria-label="World lighting"]')).not.toBeNull();
+  expect(host.querySelector('[aria-label="World lighting"]')?.closest('.forum-world')).not.toBeNull();
+  expect(host.querySelector('.agent-desk [aria-label="World lighting"]')).toBeNull();
 });
 
 it('returns keyboard focus to the desk trigger before hiding the focused close control', () => {

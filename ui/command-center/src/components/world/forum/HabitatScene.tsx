@@ -4,14 +4,15 @@ import { useFrame, useThree, type ThreeEvent } from '@react-three/fiber';
 import { Mesh, MeshStandardMaterial, Object3D, PerspectiveCamera, Vector3 } from 'three';
 import { HabitatArchitecture } from './HabitatArchitecture';
 import { HabitatPlanting } from './HabitatPlanting';
-import { HABITAT_ARRIVAL, HABITAT_OVERVIEW, TABLE_CONVERSATION_CAMERA, habitatCollisionSource, habitatElevation, terrainGeometry, type Point3 } from './habitatLayout';
+import { HABITAT_ARRIVAL, habitatOverviewCamera, TABLE_CONVERSATION_CAMERA, habitatCollisionSource, habitatElevation, terrainGeometry, type Point3 } from './habitatLayout';
 import { registerForumCollision } from './walkCollision';
 import { getForumMotion } from './ForumInhabitants';
 import { commandHabitatAgent } from './habitatMotion';
 import { HabitatSky } from './HabitatSky';
 import { HabitatWater } from './HabitatWater';
 import type { ForumDistrict } from './districts';
-import { getReduceMotion } from '../../../styles/tokens';
+import { useForumReducedMotion } from './useForumReducedMotion';
+import { useForumActivity } from './ForumActivity';
 import { HABITAT_SUN_DIR } from './habitatVista';
 
 export function HabitatScene({directing,onDirected}:{directing:string|null;onDirected:(point:Point3,ok:boolean)=>void}){
@@ -46,6 +47,15 @@ export function HabitatLighting({appearance,skyAttempt=0}:{appearance:'day'|'nig
 </>;}
 export function HabitatNavigation({district,focusAgent,overview,follow,conversation=false}:{district:ForumDistrict;focusAgent:{id:string;revision:number}|null;overview:boolean;follow:string|null;conversation?:boolean}){
   const camera=useThree(s=>s.camera),controls=useRef<React.ComponentRef<typeof OrbitControls>>(null),last=useRef<Vector3|null>(null);
+  const size=useThree(s=>s.size),reducedMotion=useForumReducedMotion();
+  const active=useForumActivity();
+  const keyboardInput=useRef(false);
+  useEffect(()=>{
+    if(!active)return;
+    const key=()=>{keyboardInput.current=true;},pointer=()=>{keyboardInput.current=false;};
+    document.addEventListener('keydown',key,true);document.addEventListener('pointerdown',pointer,true);
+    return()=>{document.removeEventListener('keydown',key,true);document.removeEventListener('pointerdown',pointer,true);};
+  },[active]);
   const initialized=useRef(false);
   const transition=useRef<{elapsed:number;from:Vector3;to:Vector3;lookFrom:Vector3;lookTo:Vector3;fovFrom:number;fovTo:number}|null>(null);
   useEffect(()=>{
@@ -53,17 +63,19 @@ export function HabitatNavigation({district,focusAgent,overview,follow,conversat
     // Approach the archive through its central bay. The generic side view puts
     // its near column directly between the camera and the furnished room.
     const archive=district.id==='gallery'&&!p;
-    const to=new Vector3(...(conversation?TABLE_CONVERSATION_CAMERA.position:overview?HABITAT_OVERVIEW.position:arrival?HABITAT_ARRIVAL.position:archive?[-10,5.7,-12.5]:[at[0]+2.9,at[1]+2.05,at[2]+4.1]) as Point3);
-    const lookTo=new Vector3(...(conversation?TABLE_CONVERSATION_CAMERA.target:overview?HABITAT_OVERVIEW.target:arrival?HABITAT_ARRIVAL.target:archive?[-10,4.65,-20.7]:[at[0],at[1]+1.0,at[2]]) as Point3);
-    const fovTo=conversation?34:overview?48:58;
-    if(initialized.current&&!getReduceMotion()){
+    const framing=habitatOverviewCamera(size.width/Math.max(1,size.height));
+    const to=new Vector3(...(conversation?TABLE_CONVERSATION_CAMERA.position:overview?framing.position:arrival?HABITAT_ARRIVAL.position:archive?[-10,5.7,-12.5]:[at[0]+2.9,at[1]+2.05,at[2]+4.1]) as Point3);
+    const lookTo=new Vector3(...(conversation?TABLE_CONVERSATION_CAMERA.target:overview?framing.target:arrival?HABITAT_ARRIVAL.target:archive?[-10,4.65,-20.7]:[at[0],at[1]+1.0,at[2]]) as Point3);
+    const fovTo=conversation?34:overview?framing.fov:arrival?HABITAT_ARRIVAL.fov:58;
+    if(initialized.current&&!reducedMotion&&!keyboardInput.current){
       transition.current={elapsed:0,from:camera.position.clone(),to,lookFrom:controls.current?.target.clone()??lookTo.clone(),lookTo,fovFrom:camera instanceof PerspectiveCamera?camera.fov:fovTo,fovTo};
     }else{
+      transition.current=null;
       camera.position.copy(to);controls.current?.target.copy(lookTo);
       if(camera instanceof PerspectiveCamera){camera.fov=fovTo;camera.updateProjectionMatrix();}controls.current?.update();
     }
     initialized.current=true;last.current=null;
-  },[camera,district,focusAgent,overview,conversation]);
+  },[camera,district,focusAgent,overview,conversation,size.width,size.height,reducedMotion]);
   useEffect(()=>{last.current=null;},[follow]);
   useFrame((_,dt)=>{
     const travel=transition.current;
@@ -75,5 +87,5 @@ export function HabitatNavigation({district,focusAgent,overview,follow,conversat
     }
     if(conversation||!follow||!controls.current)return;const p=getForumMotion(follow);if(!p)return;const next=new Vector3(p.x,p.y+1,p.z);if(last.current){const delta=next.clone().sub(last.current);camera.position.add(delta);controls.current.target.add(delta);}last.current=next;controls.current.update();
   });
-  return <OrbitControls ref={controls} makeDefault enabled={!conversation} onStart={()=>{transition.current=null;}} minDistance={1} maxDistance={110} maxPolarAngle={Math.PI*.51}/>;
+  return <OrbitControls ref={controls} makeDefault enabled={!conversation} onStart={()=>{transition.current=null;}} minDistance={1} maxDistance={Math.max(110,110*1.6/Math.max(.25,size.width/Math.max(1,size.height)))} maxPolarAngle={Math.PI*.51}/>;
 }

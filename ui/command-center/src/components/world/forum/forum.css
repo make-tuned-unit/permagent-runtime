@@ -890,3 +890,21 @@
   .habitat-view-tools > .pa-btn:last-child { margin-left:0; }
   .habitat-view-tools .pa-btn { min-height:28px; --pa-btn-pad:5px 10px; white-space:nowrap; }
 }
+
+/* L3: controls own a row; appearance never hides in the desk's scroll. */
+.forum-shell .habitat-view-tools {
+  left:var(--forum-space-xl); right:var(--forum-space-xl); top:var(--forum-space-xl);
+  flex-wrap:wrap; justify-content:flex-end; gap:var(--forum-space-xl);
+}
+.forum-shell[data-habitat=true] .forum-lane-left { top:calc(var(--forum-space-huge) * 3); }
+.forum-appearance-control { position:relative; pointer-events:auto; }
+.forum-appearance-panel { position:absolute; right:0; top:100%; width:280px; max-width:100%; min-width:220px; max-height:45vh; overflow-y:auto; z-index:5; }
+.forum-appearance-panel[hidden] { display:none; }
+.forum-shell[data-habitat=false] .forum-appearance-panel { top:auto; bottom:100%; }
+.forum-shell .agent-desk-header .pa-btn { font-size:inherit; }
+@container forum-stage (max-width:520px) {
+  .forum-shell .habitat-view-tools { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:var(--forum-space-xl); }
+  .habitat-view-tools > .pa-btn:last-child { margin-left:0; }
+  .habitat-view-tools .forum-play .pa-btn,.habitat-view-tools .forum-appearance-control > .pa-btn { width:100%; }
+  .forum-shell[data-habitat=true] .forum-lane-left { top:calc(var(--forum-space-huge) * 4 + var(--forum-space-xl)); }
+}

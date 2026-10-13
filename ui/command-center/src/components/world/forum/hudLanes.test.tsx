@@ -97,12 +97,13 @@ describe('the forum HUD lays each corner out as one column', () => {
     }
   });
 
-  it('keeps the skiff and Walk in one right-hand lane', () => {
+  it('keeps appearance, the skiff and Walk in one right-hand lane', () => {
     const lane = laneOf('.forum-fly');
     expect(lane?.classList.contains('forum-lane-right')).toBe(true);
     expect(laneOf('.forum-play')).toBe(lane);
+    expect(laneOf('.forum-appearance-control')).toBe(lane);
     const order = [...lane!.children].map(c => c.className.split(' ')[0]);
-    expect(order).toEqual(['forum-fly', 'forum-play']);
+    expect(order).toEqual(['forum-appearance-control', 'forum-fly', 'forum-play']);
   });
 
   it('shows the passport only in the open Meet detail for the orchestrator', () => {
