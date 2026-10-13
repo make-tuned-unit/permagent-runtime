@@ -27,6 +27,14 @@
       "what": "hand close-up at rest (articulated fingers, wrist coupling)"
     },
     {
+      "file": "review/robot-hand-closeup-v2.jpg",
+      "what": "round 2 hands, front three-quarter, LOD0: left = relaxed rest pose (per-digit pivots at identity); right = the manifest \"point\" pose applied to the digit pivots (index extended, others folded, thumb tucked) - per-finger articulation"
+    },
+    {
+      "file": "review/robot-face-closeup-v2.jpg",
+      "what": "round 2 face close-up at eye distance: smooth-shaded 40-segment eye domes against the visor lens and bezel"
+    },
+    {
       "file": "review/robot-feet-closeup.jpg",
       "what": "feet: sole, toe cap, heel support, ground contact"
     },
@@ -40,7 +48,11 @@
     },
     {
       "file": "review/robot-lod0-vs-lod1.jpg",
-      "what": "LOD0 left (20524 tris) vs LOD1 right (6060 tris)"
+      "what": "LOD0 left (21104 tris) vs LOD1 right (6396 tris)"
+    },
+    {
+      "file": "review/robot-lod0-vs-lod1-vs-lod2.jpg",
+      "what": "robot LOD0 / LOD1 / LOD2 (21104 / 6396 / 2900 tris), chair LOD0 / LOD2 (4716 / 480), table LOD2 (960); orthographic, same scale"
     },
     {
       "file": "review/portrait-parity.png",
@@ -61,6 +73,10 @@
     {
       "file": "review/seated-face-hands-table.jpg",
       "what": "matched view: seated guest eye height looking at host face, hands and table"
+    },
+    {
+      "file": "review/seated-face-hands-table-v2.jpg",
+      "what": "round 2 matched view, closer: host face, per-digit hands resting palm-down (relaxed pose; fingertips meet the walnut v2 top), seat weave behind"
     },
     {
       "file": "review/contact-closeup.jpg",

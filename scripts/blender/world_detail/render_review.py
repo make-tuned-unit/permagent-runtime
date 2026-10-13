@@ -163,6 +163,37 @@ def write_png(path, arr):
     bpy.data.images.remove(img)
 
 
+def write_jpg(path, arr, quality=90):
+    h, w = arr.shape[:2]
+    img = bpy.data.images.new('compose_jpg', w, h, alpha=False)
+    img.pixels.foreach_set(np.clip(arr, 0, 1).astype(np.float32).ravel())
+    img.filepath_raw = str(path)
+    img.file_format = 'JPEG'
+    bpy.context.scene.render.image_settings.quality = quality
+    try:
+        img.save(quality=quality)
+    except TypeError:
+        img.save()
+    bpy.data.images.remove(img)
+
+
+def panels(rv, name, renders, desc, shots):
+    """Render each (setup_fn) at half width and join side by side (960x540)."""
+    sc = bpy.context.scene
+    sc.render.resolution_x = W // len(renders)
+    tiles = []
+    for i, setup in enumerate(renders):
+        setup()
+        tmp = rv / f'_panel_{i}.png'
+        render(tmp)
+        tiles.append(read_png(tmp))
+        tmp.unlink()
+    sc.render.resolution_x = W
+    write_jpg(rv / f'{name}.jpg', np.concatenate(tiles, 1))
+    shots.append({'file': f'review/{name}.jpg', 'what': desc})
+    print('[W3 render]', name, flush=True)
+
+
 def resize_nearest(a, w, h):
     ys = (np.arange(h) * a.shape[0] / h).astype(int)
     xs = (np.arange(w) * a.shape[1] / w).astype(int)
@@ -209,6 +240,34 @@ def main():
     camera((0.78, -0.62, 0.66), (0.37, -0.11, 0.55), lens=85)
     shot('robot-hand-closeup', 'hand close-up at rest (articulated fingers, wrist coupling)')
     bpy.data.objects.remove(bpy.context.scene.camera)
+    digits = man['rig_contract']['digits']['poses']
+
+    def hand_pose(name):
+        def setup():
+            for cam_o in [x for x in bpy.data.objects if x.type == 'CAMERA']:
+                bpy.data.objects.remove(cam_o)
+            for dg, c in digits[name]['curl'].items():
+                for sd in ('L', 'R'):
+                    n = nodes.get(f'{dg}.{sd}')
+                    if n is not None:
+                        n.rotation_mode = 'XYZ'
+                        n.rotation_euler.x = c
+            camera((0.50, -0.78, 0.60), (0.345, -0.11, 0.535), lens=100)
+        return setup
+    panels(rv, 'robot-hand-closeup-v2', [hand_pose('relaxed'), hand_pose('point')],
+           'round 2 hands, front three-quarter, LOD0: left = relaxed rest pose (per-digit pivots at identity); '
+           'right = the manifest "point" pose applied to the digit pivots (index extended, others folded, thumb '
+           'tucked) - per-finger articulation', shots)
+    hand_pose('relaxed')()
+    for cam_o in [x for x in bpy.data.objects if x.type == 'CAMERA']:
+        bpy.data.objects.remove(cam_o)
+    root.rotation_euler = (0, 0, -math.pi / 9)
+    camera((0.16, -0.95, 1.52), (0.02, -0.25, 1.48), lens=85)
+    shot('robot-face-closeup-v2', 'round 2 face close-up at eye distance: smooth-shaded 40-segment eye domes '
+                                  'against the visor lens and bezel')
+    bpy.data.objects.remove(bpy.context.scene.camera)
+    root.rotation_euler = (0, 0, 0)
+    camera((0.78, -0.62, 0.66), (0.37, -0.11, 0.55), lens=85)
     camera((0.5, -0.8, 0.25), (0.12, -0.05, 0.1), lens=70)
     shot('robot-feet-closeup', 'feet: sole, toe cap, heel support, ground contact')
 
@@ -237,6 +296,22 @@ def main():
     camera((0, -6, 0.9), (0, 0, 0.9), ortho=3.5)
     shot('robot-lod0-vs-lod1', f"LOD0 left ({assets['hero-robot']['lods']['lod0']['triangles']} tris) vs "
                                f"LOD1 right ({assets['hero-robot']['lods']['lod1']['triangles']} tris)")
+    reset(); floor(); neutral_rig((0, 0, 0.7), 5)
+    lods = assets['hero-robot']['lods']
+    for i, (n, x) in enumerate((('hero-robot.lod0', -1.6), ('hero-robot.lod1', -0.55), ('hero-robot.lod2', 0.5))):
+        r, _, _ = import_glb(out / f'{n}.glb')
+        place(r, (x, 0, 0))
+    for n, x in (('arrival-chair.lod0', 1.35), ('arrival-chair.lod2', 2.05)):
+        r, _, _ = import_glb(out / f'{n}.glb')
+        place(r, (x, 0, 0))
+    r, _, _ = import_glb(out / 'arrival-table.lod2.glb')
+    place(r, (3.55, 0, 0))
+    camera((0.95, -9, 1.6), (0.95, 0, 0.75), ortho=6.2)
+    ch, tb = assets['arrival-chair']['lods'], assets['arrival-table']['lods']
+    shot('robot-lod0-vs-lod1-vs-lod2',
+         f"robot LOD0 / LOD1 / LOD2 ({lods['lod0']['triangles']} / {lods['lod1']['triangles']} / "
+         f"{lods['lod2']['triangles']} tris), chair LOD0 / LOD2 ({ch['lod0']['triangles']} / {ch['lod2']['triangles']}), "
+         f"table LOD2 ({tb['lod2']['triangles']}); orthographic, same scale")
 
     # ---------------------------------------------------------------- portrait parity
     reset(); neutral_rig((0, 0, 1.3), 3)
@@ -328,6 +403,14 @@ def main():
     hf = gl2b(anchors['anchor_eye_host']['gltf_position_in_root'])
     camera(tuple(g + (g - hf).normalized() * 0.35 + Vector((0, 0, 0.05))), tuple(hf + Vector((0, 0, -0.35))), lens=40)
     shot('seated-face-hands-table', 'matched view: seated guest eye height looking at host face, hands and table')
+    bpy.data.objects.remove(bpy.context.scene.camera)
+    hc = gl2b(anchors['anchor_hand_host_L']['gltf_position_in_root'])
+    hr_ = gl2b(anchors['anchor_hand_host_R']['gltf_position_in_root'])
+    mid = (hc + hr_) / 2
+    toward = (g - hf).normalized()
+    camera(tuple(mid + toward * 1.75 + Vector((0, 0, 0.50))), tuple(mid + (hf - mid) * 0.45), lens=42)
+    shot('seated-face-hands-table-v2', 'round 2 matched view, closer: host face, per-digit hands resting palm-down '
+                                       '(relaxed pose; fingertips meet the walnut v2 top), seat weave behind')
     bpy.data.objects.remove(bpy.context.scene.camera)
     hl = gl2b(anchors['anchor_hand_host_R']['gltf_position_in_root'])
     camera((hl.x + 0.65, hl.y - 0.55, 0.85), (hl.x - 0.05, hl.y + 0.05, 0.62), lens=60)

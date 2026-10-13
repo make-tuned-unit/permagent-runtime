@@ -256,6 +256,16 @@ def census_entry(rec, spec):
     }
 
 
+def _review_set(out):
+    rj = out / 'review' / 'review.json'
+    if not rj.exists():
+        return None
+    r = json.loads(rj.read_text())
+    return {'file': 'review/review.json', 'renderer': r.get('renderer'),
+            'note': 'diagnostic renders of the exported GLBs (render_review.py); they can reject, not accept',
+            'shots': [x['file'] for x in r.get('shots', [])]}
+
+
 def main():
     argv = sys.argv[sys.argv.index('--') + 1:] if '--' in sys.argv else []
     out = REPO / 'assets/world/detail-v4/hero'
@@ -343,6 +353,8 @@ def main():
                                    'with ORCHESTRATOR_TABLE_SEAT 1.9 m from its centre and a standing-height seated '
                                    'body. This ensemble is lower and tighter so the robot really sits: W6 must move '
                                    'the seat to 1.25 m and use r 1.0 / h 0.60 colliders when adopting it.'},
+        'revision': 'W3 round 2 (W3b): per-digit hands, smooth eyes, W5 weave + walnut v2, LOD2 by decimation',
+        'review_set': _review_set(out),
         'assets': ordered,
     }
     man_path.write_text(json.dumps(manifest, indent=2) + '\n')
