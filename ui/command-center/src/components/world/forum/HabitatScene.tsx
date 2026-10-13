@@ -58,7 +58,7 @@ export function HabitatLighting({appearance,skyAttempt=0}:{appearance:'day'|'nig
   <pointLight position={[-10,5.6,-19]} color="#ffcf97" intensity={day?4.5:20} distance={11} decay={2}/>
   <pointLight position={[10,5.7,-19]} color="#ffd4a1" intensity={day?2.8:20} distance={10} decay={2}/>
 </>;}
-export function HabitatNavigation({district,focusAgent,overview,follow,conversation=false}:{district:ForumDistrict;focusAgent:{id:string;revision:number}|null;overview:boolean;follow:string|null;conversation?:boolean}){
+export function HabitatNavigation({district,focusAgent,overview,overviewRevision=0,follow,conversation=false}:{district:ForumDistrict;focusAgent:{id:string;revision:number}|null;overview:boolean;overviewRevision?:number;follow:string|null;conversation?:boolean}){
   const camera=useThree(s=>s.camera),controls=useRef<React.ComponentRef<typeof OrbitControls>>(null),last=useRef<Vector3|null>(null);
   const size=useThree(s=>s.size),reducedMotion=useForumReducedMotion();
   const active=useForumActivity();
@@ -70,16 +70,28 @@ export function HabitatNavigation({district,focusAgent,overview,follow,conversat
     return()=>{document.removeEventListener('keydown',key,true);document.removeEventListener('pointerdown',pointer,true);};
   },[active]);
   const initialized=useRef(false);
+  const previousView=useRef<{district:ForumDistrict;focusAgent:typeof focusAgent;overview:boolean;overviewRevision:number;conversation:boolean;aspect:number}|null>(null);
+  const manuallyFramed=useRef(false);
   const transition=useRef<{elapsed:number;from:Vector3;to:Vector3;lookFrom:Vector3;lookTo:Vector3;fovFrom:number;fovTo:number}|null>(null);
   useEffect(()=>{
+    // Hidden canvases can report 0x0 on workspace leave. Neither that resize nor
+    // returning to the workspace is a new camera command. Keep manual framing;
+    // only the automatic Overview fit responds to a real aspect change.
+    if(!active||size.width<=1||size.height<=1)return;
+    const aspect=size.width/size.height,previous=previousView.current;
+    const changed=!previous||previous.district!==district||previous.focusAgent!==focusAgent||previous.overview!==overview||previous.overviewRevision!==overviewRevision||previous.conversation!==conversation;
+    const finishTravel=reducedMotion&&transition.current!==null;
+    if(!changed&&!finishTravel&&(!overview||manuallyFramed.current||previous.aspect===aspect))return;
+    previousView.current={district,focusAgent,overview,overviewRevision,conversation,aspect};
+    if(changed)manuallyFramed.current=false;
     const p=focusAgent&&getForumMotion(focusAgent.id),at=p?[p.x,p.y,p.z]:district.position,arrival=district.id==='commons'&&!p;
     // Approach the archive through its central bay. The generic side view puts
     // its near column directly between the camera and the furnished room.
     const archive=district.id==='gallery'&&!p;
-    const framing=habitatOverviewCamera(size.width/Math.max(1,size.height));
+    const framing=habitatOverviewCamera(aspect);
     const to=new Vector3(...(conversation?TABLE_CONVERSATION_CAMERA.position:overview?framing.position:arrival?HABITAT_ARRIVAL.position:archive?[-10,5.7,-12.5]:[at[0]+2.9,at[1]+2.05,at[2]+4.1]) as Point3);
     const lookTo=new Vector3(...(conversation?TABLE_CONVERSATION_CAMERA.target:overview?framing.target:arrival?HABITAT_ARRIVAL.target:archive?[-10,4.65,-20.7]:[at[0],at[1]+1.0,at[2]]) as Point3);
-    const fovTo=conversation?34:overview?framing.fov:arrival?HABITAT_ARRIVAL.fov:58;
+    const fovTo=conversation?TABLE_CONVERSATION_CAMERA.fov:overview?framing.fov:arrival?HABITAT_ARRIVAL.fov:58;
     if(initialized.current&&!reducedMotion&&!keyboardInput.current){
       transition.current={elapsed:0,from:camera.position.clone(),to,lookFrom:controls.current?.target.clone()??lookTo.clone(),lookTo,fovFrom:camera instanceof PerspectiveCamera?camera.fov:fovTo,fovTo};
     }else{
@@ -88,9 +100,10 @@ export function HabitatNavigation({district,focusAgent,overview,follow,conversat
       if(camera instanceof PerspectiveCamera){camera.fov=fovTo;camera.updateProjectionMatrix();}controls.current?.update();
     }
     initialized.current=true;last.current=null;
-  },[camera,district,focusAgent,overview,conversation,size.width,size.height,reducedMotion]);
+  },[camera,district,focusAgent,overview,overviewRevision,conversation,size.width,size.height,reducedMotion,active]);
   useEffect(()=>{last.current=null;},[follow]);
   useFrame((_,dt)=>{
+    if(!active)return;
     const travel=transition.current;
     if(travel){
       travel.elapsed+=Math.min(dt,.05);const t=Math.min(1,travel.elapsed/.85),ease=t*t*(3-2*t);
@@ -100,5 +113,7 @@ export function HabitatNavigation({district,focusAgent,overview,follow,conversat
     }
     if(conversation||!follow||!controls.current)return;const p=getForumMotion(follow);if(!p)return;const next=new Vector3(p.x,p.y+1,p.z);if(last.current){const delta=next.clone().sub(last.current);camera.position.add(delta);controls.current.target.add(delta);}last.current=next;controls.current.update();
   });
-  return <OrbitControls ref={controls} makeDefault enabled={!conversation} onStart={()=>{transition.current=null;}} minDistance={1} maxDistance={Math.max(110,110*1.6/Math.max(.25,size.width/Math.max(1,size.height)))} maxPolarAngle={Math.PI*.51}/>;
+  // ForumCanvasActivity owns hidden-control suspension and restores the prior
+  // enabled value. Keep conversation ownership separate from that lifecycle.
+  return <OrbitControls ref={controls} makeDefault enabled={!conversation} onStart={()=>{transition.current=null;manuallyFramed.current=true;}} minDistance={1} maxDistance={Math.max(110,110*1.6/Math.max(.25,size.width/Math.max(1,size.height)))} maxPolarAngle={Math.PI*.51}/>;
 }

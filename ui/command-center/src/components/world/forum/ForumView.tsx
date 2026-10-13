@@ -10,7 +10,7 @@ import { commandHabitatAgent } from './habitatMotion';
 import { WorldAppearance } from './WorldAppearance';
 import { HabitatAgentDock } from './HabitatAgentDock';
 import { HabitatOrrery } from './HabitatOrrery';
-import { HABITAT_OVERVIEW, HABITAT_PLACES, HABITAT_START, ORCHESTRATOR_TABLE_SEAT } from './habitatLayout';
+import { HABITAT_ARRIVAL, HABITAT_PLACES, HABITAT_START, ORCHESTRATOR_TABLE_SEAT } from './habitatLayout';
 import { nextAgentFocus } from './agentFocus';
 import { GardenAssetBoundary } from './GardenAssetBoundary';
 import { HeroGardenDecor, HeroGardenAgents } from './HeroGardenKit';
@@ -262,7 +262,8 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
   const light = useForumLightingReadiness(requestedAppearance);
   const appearance = light.appearance;
   const [compact, setCompact] = useState(() => new URLSearchParams(window.location.search).get('campus') !== '1');
-  const [overview, setOverview] = useState(true);
+  const [overview, setOverview] = useState(false);
+  const [overviewRevision, setOverviewRevision] = useState(0);
   const [directing,setDirecting]=useState<string|null>(null);
   const [follow,setFollow]=useState<string|null>(null);
   const [conversation,setConversation]=useState(false);
@@ -338,12 +339,17 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
     setFocusAgent(null); setOverview(false); setDistrictId('commons');
   };
 
-  // Leaving the panel ends walk mode, which unmounts ForumWalk — that removes
-  // its window keydown/mousemove listeners and releases pointer lock, so a
-  // hidden World cannot keep eating WASD from the workspace you switched to.
-  useEffect(() => { if (!active) { setWalking(false); setFlying(false); setConversation(false); } }, [active]);
+  // Keep the mounted walk and table camera across workspace returns. ForumWalk
+  // releases its listeners/lock while inactive; the table's DOM controls below
+  // unmount while hidden. Campus flight retains its existing exit behaviour.
+  useEffect(() => { if (!active) setFlying(false); }, [active]);
   const [focusAgent, setFocusAgent] = useState<{id:string;revision:number}|null>(null);
   const exitWalk = useCallback(()=>{setWalking(false);setOverview(true);setFocusAgent(null);setFollow(null);},[]);
+  const showOverview = useCallback(() => {
+    setWalking(false); setFlying(false); setFollow(null); setDirecting(null); setFocusAgent(null); setOverview(true);
+    // Repeating the action also restores the fitted view after a manual orbit.
+    setOverviewRevision(revision => revision + 1);
+  }, []);
   const inspectAgent = useCallback((id:string)=>{setSelected(id);setDeskOpen(true);setTab('meet');},[]);
   const [districtId, setDistrictId] = useState('commons');
   const district = places.find(d => d.id === districtId) ?? places[0];
@@ -372,9 +378,8 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
     window.addEventListener('keydown',key);
     return ()=>window.removeEventListener('keydown',key);
   },[active,agoraOpen,walking,leaveMesh]);
-  // Leaving the panel closes the Agora with it, so returning to World never
-  // lands in a room the user did not ask for.
-  useEffect(()=>{ if(!active) setAgoraOpen(false); },[active]);
+  // The user's selected Agora remains part of this mounted session. Its Escape
+  // listener above, like the walk controller, only owns input while active.
   const style = { '--forum-bg': colors.bg, '--forum-panel': colors.surface, '--forum-inset': colors.inputBg,
     '--forum-text': colors.text, '--forum-muted': colors.textMuted, '--forum-border': colors.border,
     '--forum-accent': colors.cyan, '--forum-accent-soft': colors.cyanSoft, '--forum-ink': colors.textOnCyan,
@@ -459,9 +464,11 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
   const [walkStartOverride, setWalkStartOverride] = useState<[number, number, number] | null>(null);
   const [deskOpen, setDeskOpen] = useState(() => {
     try {
-      const saved=localStorage.getItem(FORUM_DESK_KEY); return saved ? saved!=='closed' : !compact;
+      // Only an explicit saved preference opens the desk at launch. Automatic
+      // inspection/brief actions stay in this mounted session and never write it.
+      return localStorage.getItem(FORUM_DESK_KEY) === 'open';
     } catch {
-      return !compact;
+      return false;
     }
   });
   const pendingWorldAgent = useCommandCenter(s => s.pendingWorldAgent);
@@ -541,7 +548,7 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
           portal into this host with z-index up to 16777271 by default; with
           no context around them they out-ranked the HUD lanes and QA saw
           "Automate" drawn over the Places rail and "Build" over the job feed. */}
-      <ForumStageBoundary key={stageAttempt} onFailure={stageFailed}>{(startupStage >= 1) && <Canvas className="forum-canvas" frameloop={onPanel && pageVisible ? 'always' : 'never'} shadows={{ type: PCFShadowMap }} dpr={[1, 1.5]} camera={{ position: [...(compact ? HABITAT_OVERVIEW.position : FORUM_VISTA.position)] as [number,number,number], fov: compact ? HABITAT_OVERVIEW.fov : FORUM_VISTA.fov, near: FORUM_CAMERA_NEAR, far: FORUM_CAMERA_FAR }} gl={{ antialias: true, toneMapping: AgXToneMapping, toneMappingExposure: FORUM_EXPOSURE }}>
+      <ForumStageBoundary key={stageAttempt} onFailure={stageFailed}>{(startupStage >= 1) && <Canvas className="forum-canvas" frameloop={onPanel && pageVisible ? 'always' : 'never'} shadows={{ type: PCFShadowMap }} dpr={[1, 1.5]} camera={{ position: [...(compact ? HABITAT_ARRIVAL.position : FORUM_VISTA.position)] as [number,number,number], fov: compact ? HABITAT_ARRIVAL.fov : FORUM_VISTA.fov, near: FORUM_CAMERA_NEAR, far: FORUM_CAMERA_FAR }} gl={{ antialias: true, toneMapping: AgXToneMapping, toneMappingExposure: FORUM_EXPOSURE }}>
         {startupStage >= 2 && onPanel && pageVisible && <ForumLightingPreparation key={`${requestedAppearance}:${compact}:${light.attempt}`} appearance={requestedAppearance} compact={compact} attempt={light.attempt} onPrepared={light.prepared} onFailure={light.failed} />}
         <ForumCanvasActivity active={active} />
         <ForumStageReady active={active && startupStage >= 4 && (!compact || habitatReady)} onReady={stageReady} onFailure={stageFailed} />
@@ -553,7 +560,7 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
         {startupStage >= 2 && <group visible={!agoraOpen}>
           {compact ? <><HabitatScene onReady={habitatPrepared} directing={directing} onDirected={(_,ok)=>{if(ok)setDirecting(null);}} />{startupStage >= 3 && kitReady && <GardenAssetBoundary onFailure={kitFailure}><Suspense fallback={null}><HeroGardenDecor /></Suspense></GardenAssetBoundary>}</> : <VaultBoundary fallback={<Fallback />}><Suspense fallback={<Fallback />}><ForumAsset /></Suspense></VaultBoundary>}
           <ForumEnvironment appearance={appearance} active={onPanel && pageVisible} attempt={light.attempt} request={requestedAppearance} onApplied={light.didApply} onFailure={light.failed} />
-          {compact && <HabitatOrrery conversation={conversation} onOverview={()=>{setWalking(false);setFlying(false);setFocusAgent(null);setOverview(true);setFollow(null);setDirecting(null);}} />}
+          {compact && <HabitatOrrery conversation={conversation} onOverview={showOverview} />}
           {!compact && <ForumWater />}
           {!compact && <Suspense fallback={null}><ForumShips /></Suspense>}
           {startupStage >= 3 && <Suspense fallback={null}>{compact && kitReady ? <GardenAssetBoundary onFailure={kitFailure}><HeroGardenAgents conversation={conversation} following={follow} directing={directing} socialActive={onPanel && pageVisible} selected={selected} hovered={hovered} orchestratorName={configuredName||'Your orchestrator'} onHover={setHovered} onSelect={selectAndFocusAgent} /></GardenAssetBoundary> : <ForumAgents compact={compact} hoveredAgent={hovered} onHoverAgent={setHovered} onSelectAgent={id => selectAndFocusAgent(id, { markUnsaved: true })} />}</Suspense>}
@@ -569,9 +576,9 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
                 setWalking(true);
               }}
             /></Suspense>
-          : active && walking
-          ? <ForumWalk start={walkStartOverride ?? walkStart} onExit={exitWalk} onInspect={inspectAgent} inMesh={agoraOpen} onEnterMesh={enterMesh} onExitMesh={leaveMesh} onMeshPrompt={setMeshPrompt} onInteractionPrompt={setInteractionPrompt} onEvidence={compact ? ()=>{setInteractionPrompt(null);setWalking(false);setDeskOpen(true);setTab('evidence');} : undefined} />
-          : !agoraOpen && (compact ? <HabitatNavigation conversation={conversation} district={district} focusAgent={focusAgent} overview={overview} follow={follow} /> : <ForumNavigation district={district} focusAgent={focusAgent} />)}
+          : walking
+          ? <ForumWalk active={active} start={walkStartOverride ?? walkStart} onExit={exitWalk} onInspect={inspectAgent} inMesh={agoraOpen} onEnterMesh={enterMesh} onExitMesh={leaveMesh} onMeshPrompt={setMeshPrompt} onInteractionPrompt={setInteractionPrompt} onEvidence={compact ? ()=>{setInteractionPrompt(null);setWalking(false);setDeskOpen(true);setTab('evidence');} : undefined} />
+          : !agoraOpen && (compact ? <HabitatNavigation conversation={conversation} district={district} focusAgent={focusAgent} overview={overview} overviewRevision={overviewRevision} follow={follow} /> : <ForumNavigation district={district} focusAgent={focusAgent} />)}
         {startupStage >= 4 && <ForumPostProcessing appearance={appearance} gentle={compact} />}
         <PerfSampler />
       </Canvas>}</ForumStageBoundary>
@@ -646,11 +653,11 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
           the pill currently measures (null while it is hidden). */}
       <div className={`forum-lane forum-lane-right ${compact ? 'habitat-view-tools' : ''}`} role={compact ? 'group' : undefined} aria-label={compact ? 'Explore World' : undefined} style={compact ? undefined : { bottom: forumRightLaneBottom(chatLauncherSize) }}>
       {agoraOpen && <div className="forum-agora-return"><Button colors={colors} variant="primary" flashSuccess={false} onClick={leaveMesh}>Return to the Forum</Button></div>}
-      {compact && <Button colors={colors} variant={overview && !walking ? 'ghostOn' : 'bare'} flashSuccess={false} aria-pressed={overview && !walking} onClick={()=>{setWalking(false);setFlying(false);setFollow(null);setDirecting(null);setFocusAgent(null);setOverview(true);}}>Overview</Button>}
+      {compact && <Button colors={colors} variant={overview && !walking ? 'ghostOn' : 'bare'} flashSuccess={false} aria-pressed={overview && !walking} onClick={showOverview}>Overview</Button>}
       <WorldAppearance lighting={lighting} onLighting={setLighting} compact={compact} pending={light.pending} failed={Boolean(light.error)}
         status={light.error ? `Could not apply ${requestedAppearance} lighting. Previous lighting retained.` : light.pending ? `Preparing ${requestedAppearance} lighting…${light.applied ? ` ${light.applied === 'day' ? 'Day' : 'Night'} is still applied.` : ''}` : `${light.applied === 'day' ? 'Day' : 'Night'} lighting applied.`}
         onRetry={() => { clearForumLightingPreparation(requestedAppearance); light.retry(); }}
-        onLayout={()=>{setWalking(false);setFlying(false);setAgoraOpen(false);setWalkFrom(null);setWalkStartOverride(null);setDistrictId('commons');setFocusAgent(null);setOverview(true);setCompact(v=>!v);}} />
+        onLayout={()=>{setWalking(false);setFlying(false);setAgoraOpen(false);setWalkFrom(null);setWalkStartOverride(null);setDistrictId('commons');setFocusAgent(null);setOverview(false);setCompact(v=>!v);}} />
       {!compact && <div className="forum-fly"><Button colors={colors} variant={flying?'ghostOn':'ghost'} flashSuccess={false} style={SCENE_BUTTON} onClick={()=>{
         if (flying) { setFlying(false); return; }
         setWalking(false);

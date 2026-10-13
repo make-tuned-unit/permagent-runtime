@@ -108,6 +108,38 @@ function GaiaSurveyFallback() {
   </mesh>;
 }
 
+/** A continuous lower hemisphere, including the steep downward overview rays.
+ * Keep the authored sky above it; no silhouettes, cards or implied destinations.
+ * Static in both motion modes and driven only by the applied lighting state. */
+export const HABITAT_ATMOSPHERE_RADIUS = 4300;
+export const HABITAT_ATMOSPHERE = {
+  day: { horizon: '#c7bdb0', lower: '#8295a3' },
+  night: { horizon: '#304354', lower: '#182638' },
+} as const;
+export const habitatAtmosphereFragment = `
+uniform vec3 uHorizon; uniform vec3 uLower;
+varying vec3 direction;
+void main(){
+  float y=normalize(direction).y;
+  vec3 color=mix(uLower,uHorizon,smoothstep(-1.,.08,y));
+  float coverage=1.-smoothstep(-.22,.12,y);
+  gl_FragColor=vec4(color,coverage);
+  #include <colorspace_fragment>
+}`;
+
+export function HabitatAtmosphere({ appearance }: { appearance: 'day' | 'night' }) {
+  const uniforms = useMemo(() => ({
+    uHorizon: { value: new Color(HABITAT_ATMOSPHERE[appearance].horizon) },
+    uLower: { value: new Color(HABITAT_ATMOSPHERE[appearance].lower) },
+  }), [appearance]);
+  return <mesh renderOrder={SKY_RENDER_ORDER.dome + 1}>
+    <sphereGeometry args={[HABITAT_ATMOSPHERE_RADIUS, 48, 32]}/>
+    <shaderMaterial side={BackSide} transparent depthWrite={false} toneMapped={false} fog={false} uniforms={uniforms}
+      vertexShader={`varying vec3 direction;void main(){direction=position;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}`}
+      fragmentShader={habitatAtmosphereFragment}/>
+  </mesh>;
+}
+
 function GaiaSurveyBackdrop({ appearance }: { appearance: 'day' | 'night' }) {
   const map = useTexture(`${import.meta.env.BASE_URL}world/astronomy/gaia-edr3-milky-way.webp`);
   const strength = appearance === 'night' ? .13 : .09;
@@ -218,6 +250,7 @@ export function HabitatSky({ appearance }: { appearance: 'day' | 'night' }) {
   const [seen, setSeen] = useState({ day: appearance === 'day', night: appearance === 'night' });
   useEffect(() => { setSeen(previous => previous[appearance] ? previous : { ...previous, [appearance]: true }); }, [appearance]);
   return <>
+    <HabitatAtmosphere appearance={appearance}/>
     {(seen.day || appearance === 'day') && <group visible={appearance === 'day'}>
       <PanoramaWithFallback/>
       {HABITAT_HORIZON_CARDS.map(card => <HorizonCard key={card.id} card={card}/>)}

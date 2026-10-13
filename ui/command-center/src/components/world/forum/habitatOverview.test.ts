@@ -1,6 +1,11 @@
 import { expect, it } from 'vitest';
 import { PerspectiveCamera, Vector3 } from 'three';
-import { HABITAT_OVERVIEW, HABITAT_PLACES, HABITAT_STATIONS, habitatOverviewCamera } from './habitatLayout';
+import { HABITAT_ARRIVAL, HABITAT_OVERVIEW, HABITAT_PLACES, HABITAT_STATIONS, TABLE_CONVERSATION_CAMERA, habitatOverviewCamera } from './habitatLayout';
+it('freezes separate arrival, explicit overview and table conversation contracts', () => {
+  expect(HABITAT_ARRIVAL).toEqual({ position: [0, 1.6, 6], target: [-1.1, 1.3, -1.5], fov: 72 });
+  expect(HABITAT_OVERVIEW).toEqual({ position: [30, 26, 42], target: [-3, -4, -16], fov: 50 });
+  expect(TABLE_CONVERSATION_CAMERA).toEqual({ position: [-3, 1.5, 4.8], target: [-3, 1.28, 1.1], fov: 34 });
+});
 function camera(aspect: number) {
   const framing = habitatOverviewCamera(aspect);
   const view = new PerspectiveCamera(framing.fov, aspect, .25, 6000);

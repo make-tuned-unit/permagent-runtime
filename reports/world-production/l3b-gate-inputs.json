@@ -1,0 +1,21 @@
+{
+  "base": "4b3fde3f",
+  "head": "c9734f6c8fec55b82001c508a3c5d8a6a92ad706",
+  "files": {
+    "ui/command-center/src/components/world/forum/ForumView.conversation.test.tsx": "9ec71299e382c4430e4606c6e2b8f13ba9672b35553576a048a16b64f07565e8",
+    "ui/command-center/src/components/world/forum/ForumView.hierarchy.test.tsx": "05ca9995790921bebae92ad5a78f0cab8bdfcd73de3f101a8721f26342ff4b4f",
+    "ui/command-center/src/components/world/forum/ForumView.test.tsx": "c638bbc54e1e7de5eaf797fa64abc2e7d9639744519cbb9c13402ef5dc93c4c1",
+    "ui/command-center/src/components/world/forum/ForumView.tsx": "c28793e07c23bf43dcb3c79af1d943d5ec7700070c70d6773a5b499ae6d14c35",
+    "ui/command-center/src/components/world/forum/ForumWalk.tsx": "6ba6481cd90ec68a2d1bbfcbd56b4b8dfd9a8fe8b68d7d8ac0c576c76f8a79c3",
+    "ui/command-center/src/components/world/forum/ForumWalk.visibility.test.tsx": "c70551aba49866085aa5967a19e867ff4245a3d3be489c2cbd1fd7454b52d3fa",
+    "ui/command-center/src/components/world/forum/HabitatNavigation.framing.test.tsx": "d1c589ec25702fc4daf7c86e29bee0e465b78d4f5c98b047320d46e8d66ad74e",
+    "ui/command-center/src/components/world/forum/HabitatScene.tsx": "49f0455bfc064d92da1ad46b78d3daa970a8e5ae866d354d4cab0c87f9396aa5",
+    "ui/command-center/src/components/world/forum/HabitatSky.backdrop.test.tsx": "5ec9f51e4f5c5d52e51fac155dfa31eef41d392fb519e3004c457f4fc4f155f0",
+    "ui/command-center/src/components/world/forum/HabitatSky.coverage.test.ts": "fd0a539c831dc16e66967becc2faf9e2cc856958f39f1894b1fe51111ec374a6",
+    "ui/command-center/src/components/world/forum/HabitatSky.tsx": "3d76934ec52d820dfdf8797a680754c7a80cc530d76c1847ad5cbd5d34fc2101",
+    "ui/command-center/src/components/world/forum/__snapshots__/ForumView.hierarchy.test.tsx.snap": "cd8aff2650f2aa76c23416d7b578c3686e8ae8ca7cb444d3d756475f3e6adf92",
+    "ui/command-center/src/components/world/forum/habitatLayout.ts": "13b60dd70046b7ee4010a32f4d42ac7386bd89c1479b3e6d0a551f7513b0d9b9",
+    "ui/command-center/src/components/world/forum/habitatOverview.test.ts": "4c32a28da563652f591a638684d394e7b0d5050487036010831c5241034b16ea",
+    "ui/command-center/src/components/world/forum/hudLanes.test.tsx": "ab8072bb70b4d4472b6b2f7f2a7cf66496a6e5853f26dbc51588b56404b9dc71"
+  }
+}

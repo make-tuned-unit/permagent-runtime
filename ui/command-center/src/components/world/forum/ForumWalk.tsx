@@ -8,7 +8,9 @@ import { crossedGatePlane, inExedra } from './meshPortal';
 import { getForumMotion } from './ForumInhabitants';
 import { FORUM_WALK_FOV } from './vistaCamera';
 
-export function ForumWalk({ onInspect, onExit, start, onEnterMesh, onExitMesh, onMeshPrompt, onInteractionPrompt, inMesh = false, onEvidence }: {
+export function ForumWalk({ onInspect, onExit, start, onEnterMesh, onExitMesh, onMeshPrompt, onInteractionPrompt, inMesh = false, onEvidence, active = true }: {
+  /** Suspend input and motion without losing this mounted walk's feet/look. */
+  active?: boolean;
   onEvidence?: () => void;
   onInteractionPrompt?: (prompt: string | null) => void;
   start:[number,number,number];
@@ -42,14 +44,14 @@ export function ForumWalk({ onInspect, onExit, start, onEnterMesh, onExitMesh, o
     feet.current.set(...start);
     previous.current.set(...start);
     nearGate.current = false;
-    // Walking has its own field. The overview camera now carries the vista's
-    // 72 degrees (`vistaCamera.ts`), which is a landscape lens, not a pair of
-    // eyes; restore the field walk mode has always been framed for.
+    // Walking keeps its established first-person lens independently of the
+    // arrival, overview and conversation camera contracts.
     if (camera instanceof PerspectiveCamera && camera.fov !== FORUM_WALK_FOV) { camera.fov = FORUM_WALK_FOV; camera.updateProjectionMatrix(); }
     camera.position.set(start[0],start[1]+1.7,start[2]);camera.lookAt(start[0],start[1]+1.7,start[2]-10);
     angles.current.setFromQuaternion(camera.quaternion,'YXZ');
   },[camera,start]);
   useEffect(()=>{
+    if (!active) { keys.current.clear(); drag.current = false; releasing.current = false; return; }
     const enterMesh = () => { releasing.current = true; document.exitPointerLock?.(); onEnterMesh?.(); };
     const editable = (target: EventTarget|null) => target instanceof HTMLElement && (target.isContentEditable || ['INPUT','TEXTAREA','SELECT','BUTTON'].includes(target.tagName));
     // The forum is a panel in a shared window, and walk keys have to be
@@ -118,8 +120,9 @@ export function ForumWalk({ onInspect, onExit, start, onEnterMesh, onExitMesh, o
       document.removeEventListener('pointerlockchange',locked);gl.domElement.removeEventListener('mousedown',startDrag);
       if(document.pointerLockElement===gl.domElement)document.exitPointerLock?.();
     };
-  },[camera,gl,onExit,onInspect,onEnterMesh,onExitMesh,inMesh,onEvidence]);
+  },[camera,gl,onExit,onInspect,onEnterMesh,onExitMesh,inMesh,onEvidence,active]);
   useFrame((_,rawDt)=>{
+    if (!active) return;
     const k=keys.current, dt=Math.min(rawDt,.05);
     if(k.has('ArrowLeft'))angles.current.y+=dt*1.6;
     if(k.has('ArrowRight'))angles.current.y-=dt*1.6;

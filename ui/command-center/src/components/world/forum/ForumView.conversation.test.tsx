@@ -32,7 +32,14 @@ it('hands active voice controls back to chat when the World is hidden', () => {
   click('Sit with Ada'); act(() => root.render(<ForumView visible={false} />));
   expect(useCommandCenter.getState().worldConversationActive).toBe(false);
   expect(useCommandCenter.getState().chatDockOpen).toBe(true);
+  expect(host.querySelector('[aria-label="One on one with Ada"]')).toBeNull();
+  const escape = new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true, cancelable: true });
+  act(() => document.body.dispatchEvent(escape));
+  expect(escape.defaultPrevented).toBe(false);
   expect(end).not.toHaveBeenCalled();
+  act(() => root.render(<ForumView />));
+  expect(useCommandCenter.getState().worldConversationActive).toBe(true);
+  expect(host.querySelector('[aria-label="One on one with Ada"]')).toBeTruthy();
 });
 it('explicitly leaving the table ends voice and restores garden controls', () => {
   click('Sit with Ada'); click('Leave table');

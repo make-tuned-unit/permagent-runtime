@@ -14,7 +14,8 @@ import { GARDEN_PLACES, PLANT_BASE_Y, type GardenDecorPlacement } from './garden
 
 export type Point3 = [number, number, number];
 /** Human-scale arrival: clear of every station/body and solid, with the host,
- * table, and water route sharing the eye-level frame. */
+ * table, and water route sharing the eye-level frame. Default World entry when
+ * this mounted session has no camera state; Overview is an explicit action. */
 export const HABITAT_ARRIVAL = {position: [0, 1.60, 6.0] as Point3, target: [-1.1, 1.30, -1.5] as Point3, fov: 72};
 /** L3 / W6 camera contract: southeast, outside the arrival arbor, looking
  * along the connected terraces and north bridge. The lower elevation exposes
@@ -32,7 +33,7 @@ export function habitatOverviewCamera(aspect = HABITAT_OVERVIEW_ASPECT) {
  * foreground, not an empty service side of the set. */
 export const HABITAT_ARRIVAL_REVERSE = {position: [-1.5, 1.60, 4.5] as Point3, target: [-1.5, 2.0, 10.0] as Point3, fov: 80};
 export const ORCHESTRATOR_TABLE_SEAT: Point3 = [-3,0,1.1];
-export const TABLE_CONVERSATION_CAMERA = {position:[-3,1.50,4.80] as Point3,target:[-3,1.28,1.1] as Point3};
+export const TABLE_CONVERSATION_CAMERA = {position:[-3,1.50,4.80] as Point3,target:[-3,1.28,1.1] as Point3,fov:34};
 // Both the crafted table and its original fallback meet this usable surface.
 export const COMMONS_SURFACE_Y=.989;
 export const HABITAT_START: Point3 = [1.8, 0, 8.6];

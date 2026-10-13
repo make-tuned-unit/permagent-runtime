@@ -110,6 +110,8 @@ describe('the forum HUD lays each corner out as one column', () => {
     const passport = () => host.querySelector('.forum-passport');
     const panel = host.querySelector('.forum-panel')!;
     expect(host.querySelector('.forum-world .forum-passport')).toBeNull();
+    expect(passport()).toBeNull(); // Arrival leaves the desk closed by default.
+    act(() => (host.querySelector('.forum-desk-toggle button') as HTMLButtonElement).click());
     expect(passport()?.closest('.forum-panel')).toBe(panel);
 
     act(() => (host.querySelector('.forum-desk-toggle button') as HTMLButtonElement).click());
