@@ -288,7 +288,20 @@ def main():
         'rig_contract': {
             'skinning': 'none; rigid nested pivots, no animation clips',
             'legacy_nodes_preserved': ['robot', 'Head', 'Arm.L', 'Arm.R', 'Leg.L', 'Leg.R'],
-            'additive_pivots': ['Forearm.L', 'Forearm.R', 'Hand.L', 'Hand.R', 'Shin.L', 'Shin.R', 'Foot.L', 'Foot.R'],
+            'additive_pivots': ['Forearm.L', 'Forearm.R', 'Hand.L', 'Hand.R', 'Shin.L', 'Shin.R', 'Foot.L', 'Foot.R'] +
+                               [f"{dg['name']}.{sd}" for sd in ('L', 'R') for dg in R.DIGITS],
+            'digits': {
+                'pivots': 'one rigid pivot per digit at the knuckle (Thumb = CMC, fingers = MCP), child of Hand.L/R; '
+                          'rest pose = identity = relaxed curl built into the phalanges',
+                'axes': 'curl = rotation.x (positive closes towards the palm); spread = rotation.z (positive tilts '
+                        'the tip towards glTF +X)',
+                'limits_rad': R.DIGIT_LIMITS,
+                'anchors': 'anchor_tip_<digit>_<L|R> under each digit pivot; anchor_fingertips_<L|R> (legacy name) '
+                           'is now under Middle.<L|R>',
+                'lod': 'LOD0: one ceramic primitive per digit (posable); LOD1/LOD2: digits fused into the Hand mesh, '
+                       'pivots and anchors kept so poses never reference a missing node',
+                'poses': {n: p for n, p in R.HAND_POSES.items()},
+            },
             'material_prefixes': {'Ceramic': 'per-agent tint + shadow caster', 'Faceplate': 'forced dark glass',
                                   'Eyes': 'emissive agent colour; blink by mesh scale.y (origin on eye centre line)'},
             'mouth': 'Head-local glTF (0,-0.085,0.307) is free for the runtime voice mouth; '

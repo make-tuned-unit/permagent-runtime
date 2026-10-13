@@ -20,7 +20,8 @@ Additive (backwards compatible, rest pose = identity):
   * named anchors (gaze, mouth, palms, fingertips, soles, seat contact).
 """
 import math
-from mathutils import Vector
+from mathutils import Vector, Matrix
+from hero_lib import HeroKit
 from detail_lib import (Kit, Palette, pbr, rbox, ellipsoid, lathe, tube, torus, shell_patch, shell_frame,
                         shell_oval_patch, superquadric,
                         transform, seg, TAU)
@@ -59,18 +60,101 @@ def add(p, a):
     return tuple(x + y for x, y in zip(p, a))
 
 
+# ---------------------------------------------------------------------- digits
+# Per-digit rigid pivots (round 2). Index is the digit nearest the thumb; the
+# thumb sits on the medial (body-centre) side, which is anatomically right for
+# both the pronated rest pose and the palm-down seated pose. Segment tuples are
+# (length, width, depth, built-in relaxed curl in rad). Lengths run knuckle to
+# knuckle; a ~2 mm crease is left between phalanges.
+FINGER_PITCH = 0.0235
+DIGITS = [
+    dict(name='Index', i=0, segs=[(0.037, 0.0175, 0.0195, 0.10), (0.027, 0.0165, 0.018, 0.30), (0.022, 0.0155, 0.0165, 0.22)]),
+    dict(name='Middle', i=1, segs=[(0.040, 0.0180, 0.0200, 0.12), (0.029, 0.0170, 0.0185, 0.33), (0.023, 0.0158, 0.0168, 0.24)]),
+    dict(name='Ring', i=2, segs=[(0.038, 0.0172, 0.0193, 0.14), (0.027, 0.0162, 0.0178, 0.36), (0.022, 0.0152, 0.0162, 0.26)]),
+    dict(name='Little', i=3, segs=[(0.031, 0.0160, 0.0180, 0.16), (0.022, 0.0150, 0.0165, 0.40), (0.019, 0.0140, 0.0150, 0.28)]),
+    dict(name='Thumb', i=None, segs=[(0.032, 0.0215, 0.0215, 0.0), (0.028, 0.0190, 0.0190, 0.25), (0.023, 0.0170, 0.0170, 0.25)]),
+]
+HAND_POSES = {
+    'relaxed': {'curl': {'Thumb': 0.0, 'Index': 0.0, 'Middle': 0.0, 'Ring': 0.0, 'Little': 0.0},
+                'note': 'rest pose (identity); also the seated palms-on-table pose (fingertips meet the table plane)'},
+    'flat': {'curl': {'Thumb': -0.10, 'Index': -0.12, 'Middle': -0.12, 'Ring': -0.12, 'Little': -0.12},
+             'note': 'fingers opened slightly for a flat-hand gesture'},
+    'point': {'curl': {'Thumb': 0.45, 'Index': -0.10, 'Middle': 1.15, 'Ring': 1.20, 'Little': 1.25},
+              'note': 'index extended, others folded; point at the instrument / a guest'},
+    'grip': {'curl': {'Thumb': 0.45, 'Index': 0.95, 'Middle': 1.0, 'Ring': 1.05, 'Little': 1.1},
+             'note': 'closed around anchor_grip (cup handle, folio edge)'},
+}
+DIGIT_LIMITS = {'curl_rotation_x': [-0.25, 1.40], 'spread_rotation_z': [-0.20, 0.20]}
+
+
+def digit_frame(side, dg):
+    """(base point, base rotation matrix) of a digit's knuckle pivot, Blender space."""
+    s = sx(side)
+    if dg['name'] == 'Thumb':
+        base = Vector((s * 0.36 - s * 0.050, -0.097, 0.574))
+        rot = Matrix.Rotation(s * 0.62, 3, 'Y') @ Matrix.Rotation(0.30, 3, 'X')
+    else:
+        i = dg['i']
+        base = Vector((s * 0.36 - s * (1.5 - i) * FINGER_PITCH, -0.106, 0.549))
+        rot = Matrix.Rotation(s * (1.3 - i) * 0.05, 3, 'Y')
+    return base, rot
+
+
+def build_digit(k, side, dg, hand_node, ceramic, hi):
+    """Adds the digit pivot, its phalanges and its fingertip anchor. LOD0 gives
+    each digit its own mesh (one ceramic primitive per digit); lower LODs fuse
+    the digit into the Hand mesh but keep the pivot and anchor, so a pose never
+    references a missing node."""
+    s = sx(side)
+    pname = f"{dg['name']}.{side}"
+    base, rot = digit_frame(side, dg)
+    k.pivot(pname, hand_node, tuple(base))
+    node = pname if hi else hand_node
+    segs = dg['segs']
+    if not hi:   # two cheap segments: proximal, then middle+distal fused at the mean curl
+        (l0, w0, d0, c0), (l1, w1, d1, c1), (l2, w2, d2, c2) = segs
+        segs = [(l0, w0, d0, c0), (l1 + l2, w1, d1, c1 + c2 * 0.5)]
+    u, v = (10, 6) if hi else (6, 4)
+    p = base.copy()
+    cum = 0.0
+    last = len(segs) - 1
+    for j, (ln, w, dp, curl) in enumerate(segs):
+        cum += curl
+        m = rot @ Matrix.Rotation(cum, 3, 'X')
+        direction = m @ Vector((0, 0, -1))
+        body = ln - 0.0018
+        tip = j == last
+        part = superquadric((0, 0, 0), (w / 2, dp / 2, body / 2), 0.62, 0.66 if tip else 0.5, u, v)
+        # taper towards the distal end (the knuckle end stays broad)
+        for vert in part.verts:
+            t = 0.5 - vert.co.z / body          # 0 proximal (+z) .. 1 distal (-z)
+            sc = 1.0 - 0.07 * t
+            vert.co.x *= sc
+            vert.co.y *= sc
+        centre = p + direction * (ln / 2)
+        transform(part, tuple(centre), m.to_euler('XYZ'))
+        k.add(node, ceramic, part, smooth=180)
+        p = p + direction * ln
+    tip_pt = p - direction * 0.004
+    k.anchor(f"anchor_tip_{dg['name'].lower()}_{side}", pname, tuple(tip_pt), kind='contact',
+             note=f"{dg['name'].lower()} fingertip pad; follows the {pname} pivot")
+    if dg['name'] == 'Middle':
+        k.anchor(f'anchor_fingertips_{side}', pname, tuple(tip_pt), kind='contact',
+                 note='middle fingertip pad (legacy name, now parented to the Middle pivot); touch / point / page-turn')
+
+
 def build_robot(detail=1.0):
     """detail 1.0 = LOD0 (close-up), ~0.45 = LOD1."""
     d = detail
     hi = d >= 0.8
-    k = Kit('robot', d)
+    k = HeroKit('robot', d)
     k.palette = Palette('Trim • graphite and brass', PALETTE_CELLS)
     ceramic, face, eyes = materials()
     P = 'pal:'
 
     # ------------------------------------------------------------------ torso (root)
     T = (0.0, 0.0, 0.90)
-    k.add('robot', P + 'graphite', ellipsoid(T, (0.235, 0.173, 0.292), seg(18, d, 10), seg(10, d, 6)))
+    k.add('robot', P + 'graphite', ellipsoid(T, (0.235, 0.173, 0.292), seg(14, d, 10), seg(8, d, 6)))
     rows, cols = seg(6, d, 3), seg(7, d, 3)
     tr = (0.255, 0.19, 0.303)
     gap = 0.035
@@ -111,7 +195,7 @@ def build_robot(detail=1.0):
     # ------------------------------------------------------------------ head
     k.pivot('Head', 'robot', HEAD)
     H = (0.0, 0.0, 1.47)
-    k.add('Head', P + 'graphite', ellipsoid(H, (0.305, 0.262, 0.286), seg(22, d, 12), seg(12, d, 7)))
+    k.add('Head', P + 'graphite', ellipsoid(H, (0.305, 0.262, 0.286), seg(16, d, 12), seg(9, d, 7)))
     hr = (0.315, 0.27, 0.295)
     hg = 0.024
     bands = [(0.03, 0.80), (0.80 + hg, 2.20), (2.20 + hg, math.pi - 0.06)]
@@ -180,7 +264,7 @@ def build_robot(detail=1.0):
         k.pivot(f'Forearm.{side}', A, E)
         k.pivot(f'Hand.{side}', f'Forearm.{side}', W)
         F, Hn = f'Forearm.{side}', f'Hand.{side}'
-        k.add(A, P + 'graphite', ellipsoid((s * 0.282, 0, 1.07), (0.088, 0.087, 0.09), seg(20, d, 10), seg(10, d, 6)))
+        k.add(A, P + 'graphite', ellipsoid((s * 0.282, 0, 1.07), (0.088, 0.087, 0.09), seg(14, d, 10), seg(8, d, 6)))
         # pauldron: thick ceramic cap over the shoulder bearing
         k.add(A, ceramic, shell_patch((s * 0.30, 0, 1.075), (0.112, 0.108, 0.105), 0.0, 1.55,
                                       0, TAU, seg(5, d, 3), seg(16, d, 8), 0.012, exp=0.95))
@@ -191,39 +275,16 @@ def build_robot(detail=1.0):
         k.add(F, P + 'graphite', ellipsoid(E, (0.052, 0.058, 0.058), seg(16, d, 8), seg(8, d, 5)))
         k.add(F, ceramic, rbox((s * 0.36, -0.07, 0.715), (0.128, 0.132, 0.19), 0.05, seg(3, d, 1)))
         k.add(F, P + 'brass', torus((s * 0.36, -0.088, 0.618), 0.044, 0.009, seg(16, d, 10), 4))
-        # hand (wrist pivot): palm, dorsal plate, three-segment fingers, two-segment thumb
+        # hand (wrist pivot): palm block and dorsal plate. Each digit is its own
+        # pivot at the knuckle (MCP / thumb CMC) so W7 can curl and spread digits
+        # individually; phalanges are tapered rounded capsules separated by a
+        # small crease, so knuckles read as joints instead of a bar.
         k.add(Hn, P + 'graphite', rbox((s * 0.36, -0.10, 0.583), (0.104, 0.062, 0.078), 0.022, seg(2, d, 1)))
         k.add(Hn, ceramic, rbox((s * 0.36, -0.133, 0.594), (0.09, 0.022, 0.06), 0.01, seg(2, d, 1)))
-        fseg = 2 if hi else 1
-        for f in range(4):
-            x = s * 0.36 + (f - 1.5) * 0.027
-            length = (0.038, 0.042, 0.042, 0.036)[f]
-            base = Vector((x, -0.104, 0.545))
-            ang = 0.0
-            for g in range(fseg):
-                ln = length if hi else length * 2.0
-                ang += 0.22 if hi else 0.25      # gentle relaxed curl towards the palm (+Y)
-                part = rbox((0, 0, -ln * 0.5), (0.021, 0.028, ln), 0.0085, 2 if hi and g == fseg - 1 else 1)
-                transform(part, tuple(base), (ang, 0, 0))
-                k.add(Hn, ceramic, part)
-                if hi and g < fseg - 1:
-                    joint = tube((-0.012, 0, -ln), (0.012, 0, -ln), 0.0105, 8)
-                    transform(joint, tuple(base), (ang, 0, 0))
-                    k.add(Hn, P + 'graphite', joint)
-                # advance along the rotated segment
-                base = base + Vector((0, math.sin(ang) * ln, -math.cos(ang) * ln))
-        tbase = Vector((s * 0.41, -0.115, 0.588))
-        tang = 0.0
-        for g in range(2 if hi else 1):
-            ln = 0.03 if hi else 0.055
-            part = rbox((0, 0, -ln * 0.5), (0.027, 0.03, ln), 0.0095, 2 if hi else 1)
-            transform(part, tuple(tbase), (-0.35, s * 0.45, 0))
-            k.add(Hn, ceramic, part)
-            tbase = tbase + Vector((s * 0.012, -0.010, -ln))
+        for dg in DIGITS:
+            build_digit(k, side, dg, Hn, ceramic, hi)
         k.anchor(f'anchor_palm_{side}', Hn, (s * 0.36, -0.068, 0.583), kind='contact',
                  note='palm surface centre; flat-hand table contact (palm faces the body at rest)')
-        k.anchor(f'anchor_fingertips_{side}', Hn, (s * 0.36, -0.118, 0.462), kind='contact',
-                 note='middle fingertip pad; touch / point / page-turn contact')
         k.anchor(f'anchor_grip_{side}', Hn, (s * 0.36, -0.125, 0.53), kind='attachment',
                  note='held-object attachment (folio, cup) between fingers and thumb')
 
@@ -239,7 +300,7 @@ def build_robot(detail=1.0):
         k.pivot(f'Foot.{side}', f'Shin.{side}', An)
         Sh, Ft = f'Shin.{side}', f'Foot.{side}'
         x = s * 0.125
-        k.add(L, P + 'graphite', ellipsoid((x, 0, 0.64), (0.087, 0.085, 0.08), seg(20, d, 10), seg(10, d, 6)))
+        k.add(L, P + 'graphite', ellipsoid((x, 0, 0.64), (0.087, 0.085, 0.08), seg(16, d, 10), seg(8, d, 6)))
         k.add(L, ceramic, rbox((x, 0, 0.49), (0.164, 0.164, 0.25), 0.062, seg(3, d, 1)))
         k.add(L, P + 'graphite', tube((x, 0, 0.37), (x, -0.009, 0.335), 0.06, seg(14, d, 8)))
         # shin (knee pivot)
@@ -250,7 +311,7 @@ def build_robot(detail=1.0):
         k.add(Sh, ceramic, rbox((x, -0.005, 0.215), (0.15, 0.152, 0.215), 0.054, seg(3, d, 1)))
         # foot (ankle pivot)
         k.add(Ft, P + 'graphite', ellipsoid((x, -0.03, 0.10), (0.052, 0.055, 0.04), seg(14, d, 8), seg(8, d, 5)))
-        k.add(Ft, P + 'tread', rbox((x, -0.051, 0.0175), (0.185, 0.284, 0.035), 0.014, seg(2, d, 1)))
+        k.add(Ft, P + 'tread', rbox((x, -0.051, 0.0175), (0.185, 0.284, 0.035), 0.014, 1))
         k.add(Ft, P + 'brass', rbox((x, 0.03, 0.062), (0.162, 0.115, 0.07), 0.024, seg(2, d, 1)))
         # one moulded shoe shell (toe + instep) instead of two intersecting blocks
         k.add(Ft, ceramic, superquadric((x, -0.072, 0.072), (0.088, 0.128, 0.058), 0.45, 0.55,

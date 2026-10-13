@@ -2,7 +2,7 @@
   "schema": "permagent.world.detail-v4.hero.v1",
   "lane": "W3 (Astra ruling 2026-10-12)",
   "status": "candidate \u2014 not published; W6 integrates and publishes",
-  "generated": "2026-10-13T01:19:13Z",
+  "generated": "2026-10-13T02:09:42Z",
   "blender": "5.2.1 LTS",
   "metersPerUnit": 1,
   "runtimeUp": "Y",
@@ -10,9 +10,20 @@
   "forward": "glTF +Z (Blender -Y)",
   "source_scripts": {
     "scripts/blender/world_detail/arrival_furniture.py": "2d8ed27943c00991f93389e9a50991e2943cc6479921938f8375c2421a8922b1",
-    "scripts/blender/world_detail/build_hero.py": "9c37685869ac932702650f1ad7cc4c9a33f62bcbe0c8213a8852caf21ec1481a",
+    "scripts/blender/world_detail/botany_lib.py": "7a801a35d700a6289660e7a64dd7829430069f47fd762a83d39139b6d0b0093b",
+    "scripts/blender/world_detail/botany_scatter.py": "041aecbda68302755b45d73c813ba161588b0018d83f3c51cddb5fd1b98451b9",
+    "scripts/blender/world_detail/botany_species.py": "4ef526bb02037ce58dda08df7bb1677af611128d8f7a586d2ec1d952988779db",
+    "scripts/blender/world_detail/build_botany.py": "a514ef6ca243658789b0888ad4cf27cd1b4d56f2b3ae79d7c2242f1a14ff41ce",
+    "scripts/blender/world_detail/build_hero.py": "32539735194047bca5e7bf390b69ab4ec1a25c55320a6d574bffa4f7ebf0dfd1",
+    "scripts/blender/world_detail/build_places.py": "afa933d230e566efb27fb533240ab47acc0ced885cf8925493603201267855f6",
     "scripts/blender/world_detail/detail_lib.py": "cfe3a2e52bfce5931940080aa41607b8b2903a9f35c96f2e63ec559e4e95b780",
-    "scripts/blender/world_detail/hero_robot.py": "11de98eedc3046d0e23f50fb39805f527bb2c896c48f2532722b9b3e016bc021",
+    "scripts/blender/world_detail/hero_lib.py": "754bd97b2ffde73f0bc6184dbf5a37a49aa88bf8c927097257f0714d125c3030",
+    "scripts/blender/world_detail/hero_robot.py": "991a7a2b400401afaac6df48fa0512ddf22fd292e115ba044042acbced13952a",
+    "scripts/blender/world_detail/places_assets.py": "811aeece7c30126795bbbdde8da370a59c92b44f2980e2caffb628726a9256a9",
+    "scripts/blender/world_detail/places_export.py": "f0eff0f026a9134e300b2c9111e52410e00e0f3589e1df0df034ed37990c5a60",
+    "scripts/blender/world_detail/places_lib.py": "c789454627bf11bd8fb8a936f5228baed6086a50c3d349ed2edc4d5a9285dcba",
+    "scripts/blender/world_detail/places_review.py": "13e2603adc1328214a90caac6001d921f4d457c771e7700dec06d2c75e7d3faa",
+    "scripts/blender/world_detail/places_review_scenes.py": "eff02da744418e5bd22376f6403ec85ae3a7c954deaec96adf93ac7751a6648f",
     "scripts/blender/world_detail/render_review.py": "79efc4b33c8f612953253d611a524707e42178a3615f6f66f8ab15ea5b0f14e5"
   },
   "provenance": {
@@ -39,8 +50,76 @@
       "Shin.L",
       "Shin.R",
       "Foot.L",
-      "Foot.R"
+      "Foot.R",
+      "Index.L",
+      "Middle.L",
+      "Ring.L",
+      "Little.L",
+      "Thumb.L",
+      "Index.R",
+      "Middle.R",
+      "Ring.R",
+      "Little.R",
+      "Thumb.R"
     ],
+    "digits": {
+      "pivots": "one rigid pivot per digit at the knuckle (Thumb = CMC, fingers = MCP), child of Hand.L/R; rest pose = identity = relaxed curl built into the phalanges",
+      "axes": "curl = rotation.x (positive closes towards the palm); spread = rotation.z (positive tilts the tip towards glTF +X)",
+      "limits_rad": {
+        "curl_rotation_x": [
+          -0.25,
+          1.4
+        ],
+        "spread_rotation_z": [
+          -0.2,
+          0.2
+        ]
+      },
+      "anchors": "anchor_tip_<digit>_<L|R> under each digit pivot; anchor_fingertips_<L|R> (legacy name) is now under Middle.<L|R>",
+      "lod": "LOD0: one ceramic primitive per digit (posable); LOD1/LOD2: digits fused into the Hand mesh, pivots and anchors kept so poses never reference a missing node",
+      "poses": {
+        "relaxed": {
+          "curl": {
+            "Thumb": 0.0,
+            "Index": 0.0,
+            "Middle": 0.0,
+            "Ring": 0.0,
+            "Little": 0.0
+          },
+          "note": "rest pose (identity); also the seated palms-on-table pose (fingertips meet the table plane)"
+        },
+        "flat": {
+          "curl": {
+            "Thumb": -0.1,
+            "Index": -0.12,
+            "Middle": -0.12,
+            "Ring": -0.12,
+            "Little": -0.12
+          },
+          "note": "fingers opened slightly for a flat-hand gesture"
+        },
+        "point": {
+          "curl": {
+            "Thumb": 0.45,
+            "Index": -0.1,
+            "Middle": 1.15,
+            "Ring": 1.2,
+            "Little": 1.25
+          },
+          "note": "index extended, others folded; point at the instrument / a guest"
+        },
+        "grip": {
+          "curl": {
+            "Thumb": 0.45,
+            "Index": 0.95,
+            "Middle": 1.0,
+            "Ring": 1.05,
+            "Little": 1.1
+          },
+          "note": "closed around anchor_grip (cup handle, folio edge)"
+        }
+      }
+    },
     "material_prefixes": {
       "Ceramic": "per-agent tint + shadow caster",
       "Faceplate": "forced dark glass",
@@ -96,12 +175,12 @@
       "root_node": "robot",
       "lods": {
         "lod0": {
-          "bytes": 641160,
-          "sha256": "1dce5e90af966803c4001b034a98eadd2300f353775749acf31bb870f8969672",
-          "triangles": 20524,
-          "primitives_draw_calls": 31,
-          "meshes": 31,
-          "nodes": 58,
+          "bytes": 605840,
+          "sha256": "3bad034f0155ad1178823453b5d348b9faf82871f11a242441911a4443c9cee0",
+          "triangles": 20536,
+          "primitives_draw_calls": 41,
+          "meshes": 41,
+          "nodes": 88,
           "materials": [
             "Ceramic \u2022 warm ivory",
             "Trim \u2022 graphite and brass",
@@ -139,11 +218,26 @@
             "Arm.L_Trim \u2022 graphite and brass",
             "Forearm.L_Ceramic \u2022 warm ivory",
             "Forearm.L_Trim \u2022 graphite and brass",
-            "anchor_fingertips_L",
             "anchor_grip_L",
             "anchor_palm_L",
             "Hand.L_Ceramic \u2022 warm ivory",
             "Hand.L_Trim \u2022 graphite and brass",
+            "anchor_tip_index_L",
+            "Index.L_Ceramic \u2022 warm ivory",
+            "Index.L",
+            "anchor_tip_little_L",
+            "Little.L_Ceramic \u2022 warm ivory",
+            "Little.L",
+            "anchor_fingertips_L",
+            "anchor_tip_middle_L",
+            "Middle.L_Ceramic \u2022 warm ivory",
+            "Middle.L",
+            "anchor_tip_ring_L",
+            "Ring.L_Ceramic \u2022 warm ivory",
+            "Ring.L",
+            "anchor_tip_thumb_L",
+            "Thumb.L_Ceramic \u2022 warm ivory",
+            "Thumb.L",
             "Hand.L",
             "Forearm.L",
             "Arm.L",
@@ -151,11 +245,26 @@
             "Arm.R_Trim \u2022 graphite and brass",
             "Forearm.R_Ceramic \u2022 warm ivory",
             "Forearm.R_Trim \u2022 graphite and brass",
-            "anchor_fingertips_R",
             "anchor_grip_R",
             "anchor_palm_R",
             "Hand.R_Ceramic \u2022 warm ivory",
             "Hand.R_Trim \u2022 graphite and brass",
+            "anchor_tip_index_R",
+            "Index.R_Ceramic \u2022 warm ivory",
+            "Index.R",
+            "anchor_tip_little_R",
+            "Little.R_Ceramic \u2022 warm ivory",
+            "Little.R",
+            "anchor_fingertips_R",
+            "anchor_tip_middle_R",
+            "Middle.R_Ceramic \u2022 warm ivory",
+            "Middle.R",
+            "anchor_tip_ring_R",
+            "Ring.R_Ceramic \u2022 warm ivory",
+            "Ring.R",
+            "anchor_tip_thumb_R",
+            "Thumb.R_Ceramic \u2022 warm ivory",
+            "Thumb.R",
             "Hand.R",
             "Forearm.R",
             "Arm.R",
@@ -194,15 +303,15 @@
           ],
           "file": "hero-robot.lod0.glb",
           "detail": 1.0,
-          "blender_triangles": 20524
+          "blender_triangles": 20536
         },
         "lod1": {
-          "bytes": 251016,
-          "sha256": "6454154aecbb25d4149c81a386585ca547791056251c7dbb28081b70e6cf78c9",
-          "triangles": 6060,
+          "bytes": 249320,
+          "sha256": "6a7a145ca266aec9f7712c262371214109da40ddc4b5aa26634a19a54cce94af",
+          "triangles": 6340,
           "primitives_draw_calls": 31,
           "meshes": 31,
-          "nodes": 58,
+          "nodes": 78,
           "materials": [
             "Ceramic \u2022 warm ivory",
             "Trim \u2022 graphite and brass",
@@ -240,11 +349,21 @@
             "Arm.L_Trim \u2022 graphite and brass",
             "Forearm.L_Ceramic \u2022 warm ivory",
             "Forearm.L_Trim \u2022 graphite and brass",
-            "anchor_fingertips_L",
             "anchor_grip_L",
             "anchor_palm_L",
             "Hand.L_Ceramic \u2022 warm ivory",
             "Hand.L_Trim \u2022 graphite and brass",
+            "anchor_tip_index_L",
+            "Index.L",
+            "anchor_tip_little_L",
+            "Little.L",
+            "anchor_fingertips_L",
+            "anchor_tip_middle_L",
+            "Middle.L",
+            "anchor_tip_ring_L",
+            "Ring.L",
+            "anchor_tip_thumb_L",
+            "Thumb.L",
             "Hand.L",
             "Forearm.L",
             "Arm.L",
@@ -252,11 +371,21 @@
             "Arm.R_Trim \u2022 graphite and brass",
             "Forearm.R_Ceramic \u2022 warm ivory",
             "Forearm.R_Trim \u2022 graphite and brass",
-            "anchor_fingertips_R",
             "anchor_grip_R",
             "anchor_palm_R",
             "Hand.R_Ceramic \u2022 warm ivory",
             "Hand.R_Trim \u2022 graphite and brass",
+            "anchor_tip_index_R",
+            "Index.R",
+            "anchor_tip_little_R",
+            "Little.R",
+            "anchor_fingertips_R",
+            "anchor_tip_middle_R",
+            "Middle.R",
+            "anchor_tip_ring_R",
+            "Ring.R",
+            "anchor_tip_thumb_R",
+            "Thumb.R",
             "Hand.R",
             "Forearm.R",
             "Arm.R",
@@ -295,7 +424,7 @@
           ],
           "file": "hero-robot.lod1.glb",
           "detail": 0.45,
-          "blender_triangles": 6060
+          "blender_triangles": 6340
         }
       },
       "budget": {
@@ -307,17 +436,17 @@
       },
       "bounds": {
         "min": [
-          -0.4313,
+          -0.424,
           0.0,
           -0.2695
         ],
         "max": [
-          0.4313,
+          0.424,
           1.774,
           0.3247
         ],
         "size": [
-          0.8626,
+          0.848,
           1.774,
           0.5942
         ]
@@ -412,6 +541,116 @@
           ]
         },
         {
+          "name": "Index.L",
+          "kind": "pivot",
+          "parent": "Hand.L",
+          "gltf_position_in_root": [
+            -0.3248,
+            0.549,
+            0.106
+          ]
+        },
+        {
+          "name": "anchor_tip_index_L",
+          "kind": "anchor",
+          "parent": "Index.L",
+          "gltf_position_in_root": [
+            -0.3198,
+            0.4728,
+            0.0813
+          ]
+        },
+        {
+          "name": "Middle.L",
+          "kind": "pivot",
+          "parent": "Hand.L",
+          "gltf_position_in_root": [
+            -0.3483,
+            0.549,
+            0.106
+          ]
+        },
+        {
+          "name": "anchor_tip_middle_L",
+          "kind": "anchor",
+          "parent": "Middle.L",
+          "gltf_position_in_root": [
+            -0.347,
+            0.4685,
+            0.0765
+          ]
+        },
+        {
+          "name": "anchor_fingertips_L",
+          "kind": "anchor",
+          "parent": "Middle.L",
+          "gltf_position_in_root": [
+            -0.347,
+            0.4685,
+            0.0765
+          ]
+        },
+        {
+          "name": "Ring.L",
+          "kind": "pivot",
+          "parent": "Hand.L",
+          "gltf_position_in_root": [
+            -0.3717,
+            0.549,
+            0.106
+          ]
+        },
+        {
+          "name": "anchor_tip_ring_L",
+          "kind": "anchor",
+          "parent": "Ring.L",
+          "gltf_position_in_root": [
+            -0.3744,
+            0.4747,
+            0.0754
+          ]
+        },
+        {
+          "name": "Little.L",
+          "kind": "pivot",
+          "parent": "Hand.L",
+          "gltf_position_in_root": [
+            -0.3952,
+            0.549,
+            0.106
+          ]
+        },
+        {
+          "name": "anchor_tip_little_L",
+          "kind": "anchor",
+          "parent": "Little.L",
+          "gltf_position_in_root": [
+            -0.4003,
+            0.49,
+            0.0782
+          ]
+        },
+        {
+          "name": "Thumb.L",
+          "kind": "pivot",
+          "parent": "Hand.L",
+          "gltf_position_in_root": [
+            -0.31,
+            0.574,
+            0.097
+          ]
+        },
+        {
+          "name": "anchor_tip_thumb_L",
+          "kind": "anchor",
+          "parent": "Thumb.L",
+          "gltf_position_in_root": [
+            -0.2707,
+            0.5189,
+            0.0593
+          ]
+        },
+        {
           "name": "anchor_palm_L",
           "kind": "anchor",
           "parent": "Hand.L",
@@ -419,16 +658,6 @@
             -0.36,
             0.583,
             0.068
-          ]
-        },
-        {
-          "name": "anchor_fingertips_L",
-          "kind": "anchor",
-          "parent": "Hand.L",
-          "gltf_position_in_root": [
-            -0.36,
-            0.462,
-            0.118
           ]
         },
         {
@@ -472,6 +701,116 @@
           ]
         },
         {
+          "name": "Index.R",
+          "kind": "pivot",
+          "parent": "Hand.R",
+          "gltf_position_in_root": [
+            0.3248,
+            0.549,
+            0.106
+          ]
+        },
+        {
+          "name": "anchor_tip_index_R",
+          "kind": "anchor",
+          "parent": "Index.R",
+          "gltf_position_in_root": [
+            0.3198,
+            0.4728,
+            0.0813
+          ]
+        },
+        {
+          "name": "Middle.R",
+          "kind": "pivot",
+          "parent": "Hand.R",
+          "gltf_position_in_root": [
+            0.3483,
+            0.549,
+            0.106
+          ]
+        },
+        {
+          "name": "anchor_tip_middle_R",
+          "kind": "anchor",
+          "parent": "Middle.R",
+          "gltf_position_in_root": [
+            0.347,
+            0.4685,
+            0.0765
+          ]
+        },
+        {
+          "name": "anchor_fingertips_R",
+          "kind": "anchor",
+          "parent": "Middle.R",
+          "gltf_position_in_root": [
+            0.347,
+            0.4685,
+            0.0765
+          ]
+        },
+        {
+          "name": "Ring.R",
+          "kind": "pivot",
+          "parent": "Hand.R",
+          "gltf_position_in_root": [
+            0.3717,
+            0.549,
+            0.106
+          ]
+        },
+        {
+          "name": "anchor_tip_ring_R",
+          "kind": "anchor",
+          "parent": "Ring.R",
+          "gltf_position_in_root": [
+            0.3744,
+            0.4747,
+            0.0754
+          ]
+        },
+        {
+          "name": "Little.R",
+          "kind": "pivot",
+          "parent": "Hand.R",
+          "gltf_position_in_root": [
+            0.3952,
+            0.549,
+            0.106
+          ]
+        },
+        {
+          "name": "anchor_tip_little_R",
+          "kind": "anchor",
+          "parent": "Little.R",
+          "gltf_position_in_root": [
+            0.4003,
+            0.49,
+            0.0782
+          ]
+        },
+        {
+          "name": "Thumb.R",
+          "kind": "pivot",
+          "parent": "Hand.R",
+          "gltf_position_in_root": [
+            0.31,
+            0.574,
+            0.097
+          ]
+        },
+        {
+          "name": "anchor_tip_thumb_R",
+          "kind": "anchor",
+          "parent": "Thumb.R",
+          "gltf_position_in_root": [
+            0.2707,
+            0.5189,
+            0.0593
+          ]
+        },
+        {
           "name": "anchor_palm_R",
           "kind": "anchor",
           "parent": "Hand.R",
@@ -479,16 +818,6 @@
             0.36,
             0.583,
             0.068
-          ]
-        },
-        {
-          "name": "anchor_fingertips_R",
-          "kind": "anchor",
-          "parent": "Hand.R",
-          "gltf_position_in_root": [
-            0.36,
-            0.462,
-            0.118
           ]
         },
         {
@@ -640,6 +969,78 @@
           "note": "crown; wardrobe headwear origin"
         },
         {
+          "name": "anchor_tip_index_L",
+          "kind": "contact",
+          "parent": "Index.L",
+          "gltf_position_in_root": [
+            -0.3198,
+            0.4728,
+            0.0813
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "index fingertip pad; follows the Index.L pivot"
+        },
+        {
+          "name": "anchor_tip_middle_L",
+          "kind": "contact",
+          "parent": "Middle.L",
+          "gltf_position_in_root": [
+            -0.347,
+            0.4685,
+            0.0765
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "middle fingertip pad; follows the Middle.L pivot"
+        },
+        {
+          "name": "anchor_fingertips_L",
+          "kind": "contact",
+          "parent": "Middle.L",
+          "gltf_position_in_root": [
+            -0.347,
+            0.4685,
+            0.0765
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "middle fingertip pad (legacy name, now parented to the Middle pivot); touch / point / page-turn"
+        },
+        {
+          "name": "anchor_tip_ring_L",
+          "kind": "contact",
+          "parent": "Ring.L",
+          "gltf_position_in_root": [
+            -0.3744,
+            0.4747,
+            0.0754
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "ring fingertip pad; follows the Ring.L pivot"
+        },
+        {
+          "name": "anchor_tip_little_L",
+          "kind": "contact",
+          "parent": "Little.L",
+          "gltf_position_in_root": [
+            -0.4003,
+            0.49,
+            0.0782
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "little fingertip pad; follows the Little.L pivot"
+        },
+        {
+          "name": "anchor_tip_thumb_L",
+          "kind": "contact",
+          "parent": "Thumb.L",
+          "gltf_position_in_root": [
+            -0.2707,
+            0.5189,
+            0.0593
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "thumb fingertip pad; follows the Thumb.L pivot"
+        },
+        {
           "name": "anchor_palm_L",
           "kind": "contact",
           "parent": "Hand.L",
@@ -650,18 +1051,6 @@
           ],
           "gltf_yaw_rad": 0.0,
           "note": "palm surface centre; flat-hand table contact (palm faces the body at rest)"
-        },
-        {
-          "name": "anchor_fingertips_L",
-          "kind": "contact",
-          "parent": "Hand.L",
-          "gltf_position_in_root": [
-            -0.36,
-            0.462,
-            0.118
-          ],
-          "gltf_yaw_rad": 0.0,
-          "note": "middle fingertip pad; touch / point / page-turn contact"
         },
         {
           "name": "anchor_grip_L",
@@ -676,6 +1065,78 @@
           "note": "held-object attachment (folio, cup) between fingers and thumb"
         },
         {
+          "name": "anchor_tip_index_R",
+          "kind": "contact",
+          "parent": "Index.R",
+          "gltf_position_in_root": [
+            0.3198,
+            0.4728,
+            0.0813
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "index fingertip pad; follows the Index.R pivot"
+        },
+        {
+          "name": "anchor_tip_middle_R",
+          "kind": "contact",
+          "parent": "Middle.R",
+          "gltf_position_in_root": [
+            0.347,
+            0.4685,
+            0.0765
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "middle fingertip pad; follows the Middle.R pivot"
+        },
+        {
+          "name": "anchor_fingertips_R",
+          "kind": "contact",
+          "parent": "Middle.R",
+          "gltf_position_in_root": [
+            0.347,
+            0.4685,
+            0.0765
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "middle fingertip pad (legacy name, now parented to the Middle pivot); touch / point / page-turn"
+        },
+        {
+          "name": "anchor_tip_ring_R",
+          "kind": "contact",
+          "parent": "Ring.R",
+          "gltf_position_in_root": [
+            0.3744,
+            0.4747,
+            0.0754
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "ring fingertip pad; follows the Ring.R pivot"
+        },
+        {
+          "name": "anchor_tip_little_R",
+          "kind": "contact",
+          "parent": "Little.R",
+          "gltf_position_in_root": [
+            0.4003,
+            0.49,
+            0.0782
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "little fingertip pad; follows the Little.R pivot"
+        },
+        {
+          "name": "anchor_tip_thumb_R",
+          "kind": "contact",
+          "parent": "Thumb.R",
+          "gltf_position_in_root": [
+            0.2707,
+            0.5189,
+            0.0593
+          ],
+          "gltf_yaw_rad": 0.0,
+          "note": "thumb fingertip pad; follows the Thumb.R pivot"
+        },
+        {
           "name": "anchor_palm_R",
           "kind": "contact",
           "parent": "Hand.R",
@@ -686,18 +1147,6 @@
           ],
           "gltf_yaw_rad": 0.0,
           "note": "palm surface centre; flat-hand table contact (palm faces the body at rest)"
-        },
-        {
-          "name": "anchor_fingertips_R",
-          "kind": "contact",
-          "parent": "Hand.R",
-          "gltf_position_in_root": [
-            0.36,
-            0.462,
-            0.118
-          ],
-          "gltf_yaw_rad": 0.0,
-          "note": "middle fingertip pad; touch / point / page-turn contact"
         },
         {
           "name": "anchor_grip_R",
@@ -778,8 +1227,8 @@
       },
       "source_blend": {
         "file": "hero-robot.blend",
-        "sha256": "a9a273a8a75a0c5c2c2a6de701cea813ee2efd505b6bac2a3e38c79986bafdf4",
-        "bytes": 338240,
+        "sha256": "439f14f39f0c2ef27a2aee08b7a86c4c4d01c2f77d068dc664d847c57a84954e",
+        "bytes": 332171,
         "contains": "LOD0 + collision proxy; LOD1 is regenerated by the script"
       },
       "texture_sources": [

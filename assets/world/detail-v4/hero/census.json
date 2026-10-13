@@ -1,6 +1,6 @@
 {
   "schema": "permagent.world.detail-v4.hero.census.v1",
-  "generated": "2026-10-13T01:19:13Z",
+  "generated": "2026-10-13T02:09:42Z",
   "budgets_reference": "/Users/j/Documents/dev/permagent-worktrees/wq-reports/astra/ruling-world-production-20261012.md section 2 Budgets",
   "assets": [
     {
@@ -9,9 +9,9 @@
       "budget_note": "ceiling includes runtime wardrobe (agentWardrobe.ts, <= ~2.5k tris)",
       "lod0": {
         "file": "hero-robot.lod0.glb",
-        "triangles": 20524,
-        "primitives_draw_calls": 31,
-        "bytes": 641160,
+        "triangles": 20536,
+        "primitives_draw_calls": 41,
+        "bytes": 605840,
         "materials": [
           "Ceramic \u2022 warm ivory",
           "Trim \u2022 graphite and brass",
@@ -22,9 +22,9 @@
       },
       "lod1": {
         "file": "hero-robot.lod1.glb",
-        "triangles": 6060,
+        "triangles": 6340,
         "primitives_draw_calls": 31,
-        "bytes": 251016,
+        "bytes": 249320,
         "materials": [
           "Ceramic \u2022 warm ivory",
           "Trim \u2022 graphite and brass",
@@ -53,13 +53,13 @@
       ],
       "checks": {
         "lod0_triangles": {
-          "value": 20524,
-          "with_wardrobe_allowance": 23024,
+          "value": 20536,
+          "with_wardrobe_allowance": 23036,
           "ceiling": 24000,
           "pass": true
         },
         "lod1_triangles": {
-          "value": 6060,
+          "value": 6340,
           "ceiling": 10000,
           "pass": true
         },
@@ -69,7 +69,7 @@
           "pass": true
         },
         "lod0_bytes": {
-          "value": 641160,
+          "value": 605840,
           "ceiling": 1500000,
           "pass": true
         },
@@ -78,7 +78,7 @@
           "pass": true
         },
         "anchors_present": {
-          "value": 13,
+          "value": 23,
           "pass": true
         }
       },
@@ -616,9 +616,9 @@
     }
   ],
   "totals": {
-    "lod0_bytes": 1763604,
-    "lod1_bytes": 862484,
-    "lod0_triangles_one_of_each": 37230,
+    "lod0_bytes": 1728284,
+    "lod1_bytes": 860788,
+    "lod0_triangles_one_of_each": 37242,
     "lod0_texture_decoded_bytes": 19879246,
     "all_pass": true
   }
