@@ -4,10 +4,11 @@ import WatchConnectivity
 @MainActor
 final class WatchRelay: NSObject, ObservableObject, WCSessionDelegate {
     static let shared = WatchRelay()
+    private static let agentNameKey = "watchRelay.agentName.v1"
 
     @Published var paired = false
     @Published var phoneReachable = false
-    @Published var agentName = "your agent"
+    @Published var agentName = UserDefaults.standard.string(forKey: WatchRelay.agentNameKey) ?? "your agent"
     @Published var notice: String?
 
     @Published var chatText = ""
@@ -228,7 +229,10 @@ final class WatchRelay: NSObject, ObservableObject, WCSessionDelegate {
 
     private func apply(_ data: Data) {
         guard let reply = try? JSONDecoder().decode(WatchResponse.self, from: data) else { return }
-        if let name = reply.agentName, !name.isEmpty { agentName = name }
+        if let name = reply.agentName, !name.isEmpty {
+            agentName = name
+            UserDefaults.standard.set(name, forKey: Self.agentNameKey)
+        }
         if let paired = reply.paired { self.paired = paired }
         if let reachable = reply.reachable { phoneReachable = reachable }
 

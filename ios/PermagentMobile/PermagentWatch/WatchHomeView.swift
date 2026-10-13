@@ -132,51 +132,52 @@ struct WatchChatView: View {
     var body: some View {
         ZStack {
             ChatSurface.bg.ignoresSafeArea()
-            VStack(spacing: 6) {
-                WatchOrbButton(
-                    level: orbLevel,
-                    speaking: false,
-                    thinking: relay.chatThinking || (relay.chatBusy && !recorder.isRecording),
-                    listening: recorder.isRecording,
-                    enabled: recorder.isRecording
-                ) { if recorder.isRecording { recorder.stop() } }
+            ScrollView {
+                VStack(spacing: 6) {
+                    WatchOrbButton(
+                        level: orbLevel,
+                        speaking: false,
+                        thinking: relay.chatThinking || (relay.chatBusy && !recorder.isRecording),
+                        listening: recorder.isRecording,
+                        enabled: recorder.isRecording,
+                        size: relay.chatText.isEmpty ? 64 : 36
+                    ) { if recorder.isRecording { recorder.stop() } }
 
-                Text(statusLine)
-                    .font(.brandCaption)
-                    .foregroundStyle(ChatSurface.muted)
-                    .multilineTextAlignment(.center)
-
-                if !relay.chatUserText.isEmpty {
-                    Text("You: \(relay.chatUserText)")
+                    Text(statusLine)
                         .font(.brandCaption)
                         .foregroundStyle(ChatSurface.muted)
                         .multilineTextAlignment(.center)
-                        .lineLimit(2)
+
+                    if !relay.chatUserText.isEmpty {
+                        Text("You: \(relay.chatUserText)")
+                            .font(.brandCaption)
+                            .foregroundStyle(ChatSurface.muted)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    if !relay.chatText.isEmpty {
+                        Text(markdownAttributed(relay.chatText))
+                            .font(.brandCaption)
+                            .foregroundStyle(ChatSurface.text)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    } else if denied {
+                        Text("Microphone access is off in Settings.")
+                            .font(.brandCaption)
+                            .foregroundStyle(Brand.danger)
+                            .multilineTextAlignment(.center)
+                    } else if let listenError {
+                        Text(listenError)
+                            .font(.brandCaption)
+                            .foregroundStyle(Brand.warning)
+                            .multilineTextAlignment(.center)
+                    } else if let notice = relay.notice {
+                        Text(notice)
+                            .font(.brandCaption)
+                            .foregroundStyle(Brand.warning)
+                            .multilineTextAlignment(.center)
+                    }
                 }
-                if !relay.chatText.isEmpty {
-                    Text(markdownAttributed(relay.chatText))
-                        .font(.brandCaption)
-                        .foregroundStyle(ChatSurface.text)
-                        .multilineTextAlignment(.center)
-                        .lineLimit(6)
-                } else if denied {
-                    Text("Microphone access is off in Settings.")
-                        .font(.brandCaption)
-                        .foregroundStyle(Brand.danger)
-                        .multilineTextAlignment(.center)
-                } else if let listenError {
-                    Text(listenError)
-                        .font(.brandCaption)
-                        .foregroundStyle(Brand.warning)
-                        .multilineTextAlignment(.center)
-                } else if let notice = relay.notice {
-                    Text(notice)
-                        .font(.brandCaption)
-                        .foregroundStyle(Brand.warning)
-                        .multilineTextAlignment(.center)
-                }
+                .padding(.horizontal, 6)
             }
-            .padding(.horizontal, 6)
         }
         .navigationTitle(relay.agentName)
         .onAppear {
@@ -405,12 +406,13 @@ private struct WatchOrbButton: View {
     var thinking: Bool
     var listening: Bool = false
     var enabled: Bool
+    var size: CGFloat = 96
     var action: () -> Void
 
     var body: some View {
         Button(action: action) {
             VoiceOrbView(level: level, speaking: speaking, thinking: thinking, listening: listening)
-                .frame(width: 96, height: 96)
+                .frame(width: size, height: size)
         }
         .buttonStyle(.plain)
         .disabled(!enabled)
