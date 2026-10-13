@@ -5,6 +5,7 @@ import {
   clearAmbientHabitatTravel,
   commandHabitatAgent,
   findHabitatPath,
+  findHabitatPathSteps,
   getHabitatTravel,
   hasHabitatUserHold,
 } from './habitatMotion';
@@ -75,6 +76,26 @@ let planIdle = false;
 const agents = new Map<string, AgentSocial>();
 let reservation: MeetingReservation | null = null;
 let ready = false;
+/** Set once a mounted World asks for background planning: from then on the
+ *  route proving runs in bounded slices instead of inside a frame or effect. */
+let sliced = false;
+/** The one background planning job (initial plan or the next cycle). */
+let job: { steps: Generator<void, void, void>; timer: ReturnType<typeof setTimeout> | null } | null = null;
+/** Main-thread budget per background slice. Native WebKit ran the whole
+ *  initial plan (~0.4-1.6 s) as one task right after World mounted, which is
+ *  what blocked the first click out of the World (r34 exit stall). */
+export const HABITAT_SOCIAL_SLICE_MS = 6;
+
+type Steps<T> = Generator<void, T, void>;
+function drain<T>(steps: Steps<T>): T {
+  for (;;) {
+    const next = steps.next();
+    if (next.done) return next.value;
+  }
+}
+function now(): number {
+  return typeof performance !== 'undefined' ? performance.now() : Date.now();
+}
 
 function hashUnit(id: string, salt: number): number {
   let h = salt | 0;
@@ -98,6 +119,11 @@ export function isAmbientSafePoint(x: number, z: number): boolean {
 export function proveAmbientRoute(from: Point3, to: Point3, occupied: readonly Point3[] = []): Point3[] | null {
   if (!isAmbientSafePoint(to[0], to[2])) return null;
   return findHabitatPath(from, to, occupied);
+}
+
+function* proveAmbientRouteSteps(from: Point3, to: Point3): Steps<Point3[] | null> {
+  if (!isAmbientSafePoint(to[0], to[2])) return null;
+  return yield* findHabitatPathSteps(from, to);
 }
 
 function rawCandidatePool(): Point3[] {
@@ -138,6 +164,10 @@ function uniquePoints(points: Point3[]): Point3[] {
 
 /** Build a bounded set of path-proven ambient destinations. */
 export function buildAmbientCandidates(): Point3[] {
+  return drain(ambientCandidateSteps());
+}
+
+function* ambientCandidateSteps(): Steps<Point3[]> {
   const pool = uniquePoints(rawCandidatePool());
   const proven: Point3[] = [];
   const probes = [stationFor('picker'), stationFor('steward'), stationFor('henry'), stationFor('council')];
@@ -145,7 +175,7 @@ export function buildAmbientCandidates(): Point3[] {
     if (proven.length >= MAX_CANDIDATES) break;
     let reaches = 0;
     for (const station of probes) {
-      if (proveAmbientRoute(station.position, point)) reaches++;
+      if (yield* proveAmbientRouteSteps(station.position, point)) reaches++;
       if (reaches >= 2) break;
     }
     if (reaches >= 2) proven.push(point);
@@ -173,6 +203,10 @@ export function meetingStands(slot: Point3): [Point3, Point3] | null {
 }
 
 function appendCycle(points: Point3[], index: number): Planned[] {
+  return drain(appendCycleSteps(points, index));
+}
+
+function* appendCycleSteps(points: Point3[], index: number): Steps<Planned[]> {
   if (points.length === 0) return [];
   const base = index * CYCLE_SEC;
   const events: Planned[] = [];
@@ -180,7 +214,7 @@ function appendCycle(points: Point3[], index: number): Planned[] {
     const id = STROLLERS[i];
     const at = base + 8 + i * 18 + hashUnit(id, 11 + index) * 4;
     const point = points[Math.floor(hashUnit(id, 29 + index) * points.length) % points.length];
-    if (!proveAmbientRoute(stationFor(id).position, point)) continue;
+    if (!(yield* proveAmbientRouteSteps(stationFor(id).position, point))) continue;
     events.push({ kind: 'stroll', agent: id, at, point });
   }
   let meet: PlannedMeet | null = null;
@@ -188,8 +222,8 @@ function appendCycle(points: Point3[], index: number): Planned[] {
     const stands = meetingStands(point);
     if (!stands) continue;
     const [sa, sb] = stands;
-    if (!proveAmbientRoute(stationFor(MEET_PAIR[0]).position, sa)) continue;
-    if (!proveAmbientRoute(stationFor(MEET_PAIR[1]).position, sb)) continue;
+    if (!(yield* proveAmbientRouteSteps(stationFor(MEET_PAIR[0]).position, sa))) continue;
+    if (!(yield* proveAmbientRouteSteps(stationFor(MEET_PAIR[1]).position, sb))) continue;
     meet = {
       kind: 'meet',
       agents: MEET_PAIR,
@@ -202,7 +236,7 @@ function appendCycle(points: Point3[], index: number): Planned[] {
   }
   if (meet) events.push(meet);
   const henryPoint = points[Math.floor(hashUnit('henry', 41 + index) * points.length) % points.length];
-  if (proveAmbientRoute(stationFor('henry').position, henryPoint)) {
+  if (yield* proveAmbientRouteSteps(stationFor('henry').position, henryPoint)) {
     events.push({ kind: 'stroll', agent: 'henry', at: base + 100, point: henryPoint });
   }
   return events.sort((a, b) => a.at - b.at);
@@ -224,18 +258,72 @@ function ensureAgents() {
   }
 }
 
-/** One-time candidate/plan prep — call from mount, not from every getter. */
-export function prepareHabitatSocial(): number {
-  if (ready) return planningMs;
-  const started = typeof performance !== 'undefined' ? performance.now() : Date.now();
-  ensureAgents();
-  candidates = buildAmbientCandidates();
-  plan = appendCycle(candidates, 0);
+function* initialPlanSteps(): Steps<void> {
+  const nextCandidates = yield* ambientCandidateSteps();
+  const nextPlan = yield* appendCycleSteps(nextCandidates, 0);
+  candidates = nextCandidates;
+  plan = nextPlan;
   planCursor = 0;
   cycleIndex = 1;
   planIdle = candidates.length === 0;
   ready = true;
-  planningMs = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - started;
+}
+
+function cancelPlanningJob() {
+  if (job?.timer != null) clearTimeout(job.timer);
+  job = null;
+}
+
+/** Run `steps` in bounded slices on later tasks, so no single task holds the
+ *  main thread for more than about one slice plus one A* node expansion. */
+function startPlanningJob(steps: Steps<void>, measure: boolean) {
+  const current: NonNullable<typeof job> = { steps, timer: null };
+  const run = () => {
+    if (job !== current) return;
+    current.timer = null;
+    const sliceStart = now();
+    for (;;) {
+      if (current.steps.next().done) {
+        if (measure) planningMs += now() - sliceStart;
+        job = null;
+        return;
+      }
+      if (now() - sliceStart >= HABITAT_SOCIAL_SLICE_MS) break;
+    }
+    if (measure) planningMs += now() - sliceStart;
+    current.timer = setTimeout(run, 0);
+  };
+  job = current;
+  current.timer = setTimeout(run, 0);
+}
+
+/**
+ * Mount-time entry point for a rendered World. Agents exist immediately (idle
+ * at their stations); the route-proven ambient plan is built in the background
+ * and ambient life starts once it is ready. Never blocks the calling task.
+ */
+export function scheduleHabitatSocialPreparation(): void {
+  sliced = true;
+  ensureAgents();
+  if (ready || job) return;
+  planningMs = 0;
+  startPlanningJob(initialPlanSteps(), true);
+}
+
+/** True while background planning has work queued (test/diagnostic seam). */
+export function isHabitatSocialPlanning(): boolean {
+  return job !== null;
+}
+
+/** Synchronous candidate/plan prep for getters, tests and headless callers.
+ *  A rendered World uses scheduleHabitatSocialPreparation instead. */
+export function prepareHabitatSocial(): number {
+  if (ready) return planningMs;
+  cancelPlanningJob();
+  const started = now();
+  ensureAgents();
+  drain(initialPlanSteps());
+  planningMs = now() - started;
   return planningMs;
 }
 
@@ -256,6 +344,19 @@ function ensurePlanAhead() {
   }
   const horizon = clock + CYCLE_SEC * 0.5;
   if (plan.length > 0 && plan[plan.length - 1].at >= horizon) return;
+  if (sliced) {
+    // A rendered World proves the next cycle's routes in the background too;
+    // the horizon leaves half a cycle of already-planned events meanwhile.
+    if (job) return;
+    const index = cycleIndex++;
+    startPlanningJob((function* () {
+      const next = yield* appendCycleSteps(candidates, index);
+      if (next.length === 0) return;
+      plan.push(...next);
+      plan.sort((a, b) => a.at - b.at);
+    })(), false);
+    return;
+  }
   const next = appendCycle(candidates, cycleIndex++);
   if (next.length === 0) {
     // No valid events this cycle — idle rather than retrying forever in one frame.
@@ -588,7 +689,15 @@ function cancelAllAmbientForReducedMotion(input: SocialInput, working: Set<strin
 }
 
 export function advanceHabitatSocial(input: SocialInput): void {
-  if (!ready) prepareHabitatSocial();
+  if (!ready) {
+    // A rendered World never proves routes inside a frame: agents stay idle at
+    // their stations until the background plan lands.
+    if (sliced) {
+      scheduleHabitatSocialPreparation();
+      return;
+    }
+    prepareHabitatSocial();
+  }
   // Hidden or reduced-motion: freeze schedule clock (no burst catchup on resume).
   if (!input.active || input.reducedMotion) {
     const working = workingSet(input);
@@ -614,6 +723,8 @@ export function advanceHabitatSocial(input: SocialInput): void {
 }
 
 export function resetHabitatSocial(): void {
+  cancelPlanningJob();
+  sliced = false;
   for (const social of agents.values()) {
     stopAmbientTravelOnly(social.id);
     resetAgent(social);
@@ -676,6 +787,7 @@ export function isHabitatSocialPlanIdle(): boolean {
 
 /** Test helper: install candidates/plan without rebuild (zero-candidate / blocked plan). */
 export function debugInstallAmbientCandidates(points: Point3[]): void {
+  cancelPlanningJob();
   ensureAgents();
   candidates = points;
   plan = points.length ? appendCycle(points, 0) : [];

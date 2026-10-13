@@ -18,7 +18,7 @@ import { HabitatNameplate } from './HabitatNameplate';
 import { getReduceMotion } from '../../../styles/tokens';
 import { speechOpening, smoothSpeech } from './agentSpeech';
 import { advanceHabitatAgent, canHabitatWorkReturn, commandHabitatAgent, getHabitatTravel, initializeHabitatAgent } from './habitatMotion';
-import { advanceHabitatSocial, prepareHabitatSocial, resetHabitatSocial } from './habitatSocial';
+import { advanceHabitatSocial, resetHabitatSocial, scheduleHabitatSocialPreparation } from './habitatSocial';
 import { buildHeroRobot, disposeHeroRobot, HERO_KIT_URL, heroProportions, setHeroEyeMaterial } from './heroRobot';
 
 // Retain the bounded foreground flower population and all authored foliage.
@@ -127,7 +127,10 @@ export function HeroGardenAgents({onSelect,onHover,selected='',hovered='',orches
   const bodies=useMemo(()=>{const geometry=new CylinderGeometry(.33,.33,1.85,16),material=new MeshStandardMaterial();return {geometry,material,meshes:ROSTER.map(a=>{const body=new Mesh(geometry,material);body.name=`${a.id} moving body`;return body;})};},[]);
   useEffect(()=>{
     resetHabitatSocial();
-    prepareHabitatSocial();
+    // Route proving for ambient strolls costs 0.4-1.6 s of main thread in the
+    // native WebView. Run it in background slices: synchronously here it landed
+    // right after World mounted and blocked the first click out (r34 exit stall).
+    scheduleHabitatSocialPreparation();
     const release=registerForumActorCollisions(bodies.meshes);
     return()=>{release();resetHabitatSocial();bodies.geometry.dispose();bodies.material.dispose();};
   },[bodies]);

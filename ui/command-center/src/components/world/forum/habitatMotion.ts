@@ -21,6 +21,13 @@ export function clearHabitatSegment(a:Point3,b:Point3,occupied:readonly Point3[]
 }
 /** A* over the authored solid footprints, with swept-segment shortcutting. */
 export function findHabitatPath(from:Point3,to:Point3,occupied:readonly Point3[]=[]):Point3[] | null {
+  const steps=findHabitatPathSteps(from,to,occupied);
+  for(;;){const next=steps.next();if(next.done)return next.value;}
+}
+/** The same search, yielding after every node expansion so background
+ *  planners can spread it across tasks (one search can cost tens of ms in a
+ *  native WebView). Live user commands use the synchronous wrapper above. */
+export function* findHabitatPathSteps(from:Point3,to:Point3,occupied:readonly Point3[]=[]):Generator<void,Point3[] | null,void> {
   if(!habitatWalkable(...[to[0],to[2]] as [number,number]))return null;
   if(occupied.some(p=>Math.hypot(p[0]-to[0],p[2]-to[2])<.84))return null;
   const clear=(a:Point3,b:Point3)=>clearHabitatSegment(a,b,occupied);
@@ -53,6 +60,7 @@ export function findHabitatPath(from:Point3,to:Point3,occupied:readonly Point3[]
       if(!clear([n.x*STEP,0,n.z*STEP],[x*STEP,0,z*STEP]))continue;
       best.set(nk,g);open.push({x,z,g,f:g+Math.hypot(x-end.x,z-end.z),parent:n});
     }
+    yield;
   }
   return null;
 }
