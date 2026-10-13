@@ -1,0 +1,2500 @@
+{
+  "release": "20261013",
+  "tip": null,
+  "artefacts": {
+    "staged-permagentd": {
+      "step": "1",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/desktop/src-tauri/binaries/permagentd-aarch64-apple-darwin",
+      "sha256": "37b05b42a3382dedd2e3d24c6712f65081d4ef1326d0edab614fc712afd5c046",
+      "bytes": 366065952,
+      "recorded": "2026-10-13T14:11:51-0300"
+    },
+    "staged-permagent-cli": {
+      "step": "1",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/desktop/src-tauri/binaries/permagent-aarch64-apple-darwin",
+      "sha256": "03f77cc7b99b79a5c816bbe1ec35118cc4500d573518b26fbc975e7843ab63ff",
+      "bytes": 277488144,
+      "recorded": "2026-10-13T14:11:51-0300"
+    },
+    "staged-libsherpa": {
+      "step": "1",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/desktop/src-tauri/binaries/libsherpa-onnx-c-api.dylib",
+      "sha256": "93b82888169eaf7cfa4c8b667710fde15eb2e9000a5f5afc7c719646e2919b99",
+      "bytes": 4102752,
+      "recorded": "2026-10-13T14:11:52-0300"
+    },
+    "staged-libonnxruntime": {
+      "step": "1",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/desktop/src-tauri/binaries/libonnxruntime.dylib",
+      "sha256": "4dbca77e4f94ba77745e9ce1872496d1e30fcf0b8f941161919123530a3c37f4",
+      "bytes": 28025616,
+      "recorded": "2026-10-13T14:11:52-0300"
+    },
+    "staged-mcp-node": {
+      "step": "1",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/desktop/src-tauri/resources/mcp-runtime/node",
+      "sha256": "245e0321af97d3c21dd4e7104457334dfe3c3ba7982d0db75363e354565f8cbb",
+      "bytes": 112972416,
+      "recorded": "2026-10-13T14:11:52-0300"
+    },
+    "staged-whisper": {
+      "step": "1",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/desktop/src-tauri/resources/whisper/whisper-base-q8_0.gguf",
+      "sha256": "7073e51db7ab02b38cc4fceeac39adc2d7a19beb98badf66aa708f4f0ac71aa9",
+      "bytes": 78067328,
+      "recorded": "2026-10-13T14:11:52-0300"
+    },
+    "staged-audiocap": {
+      "step": "1",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/desktop/src-tauri/audiocap/permagent-audiocap",
+      "sha256": "03ffdfa5acd042b9d78488d04dd0d3f40d216195088e817ca7be6fdd1a32ceaf",
+      "bytes": 191296,
+      "recorded": "2026-10-13T14:11:52-0300"
+    },
+    "built-permagentd": {
+      "step": "1",
+      "path": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/release/permagentd",
+      "sha256": "f8e57e2d1705f04864fb7556c074a63acdbc62170333911e118890bb8b5af955",
+      "bytes": 368188416,
+      "recorded": "2026-10-13T14:11:53-0300"
+    },
+    "built-permagent-cli": {
+      "step": "1",
+      "path": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/release/permagent",
+      "sha256": "03f77cc7b99b79a5c816bbe1ec35118cc4500d573518b26fbc975e7843ab63ff",
+      "bytes": 277488144,
+      "recorded": "2026-10-13T14:11:53-0300"
+    },
+    "dist-world-vista-manifest": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/world/vista/manifest.json",
+      "sha256": "f8edb9fad88958a63c7707c27415d47649321813f1be2a4705d4a376fe430c2a",
+      "bytes": 2110,
+      "recorded": "2026-10-13T14:12:15-0300"
+    },
+    "dist-assets/abap-BdImnpbu.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/abap-BdImnpbu.js",
+      "sha256": "d0a7972c37e141f01cc3aaf9aabbbb3e87c4778b9fdd3ccb575d1e1ff279c0fc",
+      "bytes": 15852,
+      "recorded": "2026-10-13T14:12:15-0300"
+    },
+    "dist-assets/actionscript-3-CoDkCxhg.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/actionscript-3-CoDkCxhg.js",
+      "sha256": "cc3e3792f3b16d9244f17680e20712184eac64175649df8add097ca3be123c84",
+      "bytes": 15205,
+      "recorded": "2026-10-13T14:12:15-0300"
+    },
+    "dist-assets/ada-bCR0ucgS.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/ada-bCR0ucgS.js",
+      "sha256": "fc5d05054dc584a01ec795083de1774ef07f3a29fc6cfbc1902c208a09862313",
+      "bytes": 48082,
+      "recorded": "2026-10-13T14:12:15-0300"
+    },
+    "dist-assets/andromeeda-C4gqWexZ.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/andromeeda-C4gqWexZ.js",
+      "sha256": "7fcfeda6c4e4d7cc1ce1c72aaca6d802bc7e107858bf0d34eca95ff4223669bd",
+      "bytes": 9015,
+      "recorded": "2026-10-13T14:12:15-0300"
+    },
+    "dist-assets/angular-html-DA-rfuFy.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/angular-html-DA-rfuFy.js",
+      "sha256": "20c25efd0ad9b3afd86114f4ec9bf568ef3fd651ae9db9701bcf6f5e4e1c514f",
+      "bytes": 24287,
+      "recorded": "2026-10-13T14:12:15-0300"
+    },
+    "dist-assets/angular-ts-BrjP3tb8.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/angular-ts-BrjP3tb8.js",
+      "sha256": "d37531488d4cb2bcfd58c536f953ed9ad37b08de5250c49565bc59aedb8a30f6",
+      "bytes": 183820,
+      "recorded": "2026-10-13T14:12:15-0300"
+    },
+    "dist-assets/apache-Pmp26Uib.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/apache-Pmp26Uib.js",
+      "sha256": "35abb1e73308f0f43a4f76af3a4c1157bf524cbfb2908581305f6fb1cf743b24",
+      "bytes": 12456,
+      "recorded": "2026-10-13T14:12:15-0300"
+    },
+    "dist-assets/apex-D8_7TLub.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/apex-D8_7TLub.js",
+      "sha256": "9dfc38d42bc443b42f6bb4ddc6fa16c6634977292fd5e9d1e5e0b74fcd480f80",
+      "bytes": 46985,
+      "recorded": "2026-10-13T14:12:15-0300"
+    },
+    "dist-assets/apl-CORt7UWP.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/apl-CORt7UWP.js",
+      "sha256": "39ecaee60e716b567b1728ed9c5192f1a188c02764af88c441bb29120b1d883c",
+      "bytes": 24039,
+      "recorded": "2026-10-13T14:12:15-0300"
+    },
+    "dist-assets/app-BzYpoU58.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/app-BzYpoU58.js",
+      "sha256": "f9045ef8465eebbfa01dde93f4f09240e967d339e317296018e6e8e948e23f6a",
+      "bytes": 1350,
+      "recorded": "2026-10-13T14:12:15-0300"
+    },
+    "dist-assets/App-C1Pk1x-X.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/App-C1Pk1x-X.js",
+      "sha256": "9e2d5e40cc56d7f0a70ba2028b9c8a6ca148da7450b91f5527c176261558dbd7",
+      "bytes": 2545449,
+      "recorded": "2026-10-13T14:12:16-0300"
+    },
+    "dist-assets/applescript-Co6uUVPk.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/applescript-Co6uUVPk.js",
+      "sha256": "e681551fbe1ac7d862ad06eae5833e6a32871de76532de01b27c5004c71c79df",
+      "bytes": 29571,
+      "recorded": "2026-10-13T14:12:16-0300"
+    },
+    "dist-assets/ara-BRHolxvo.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/ara-BRHolxvo.js",
+      "sha256": "f3c7f066af4d1907c2249c7089ae8b763d88ad2f25e88f867f20e3dbb256cffb",
+      "bytes": 6362,
+      "recorded": "2026-10-13T14:12:16-0300"
+    },
+    "dist-assets/asciidoc-Ve4PFQV2.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/asciidoc-Ve4PFQV2.js",
+      "sha256": "31a90af692b01a0eb491b19725d0abe705a13cf6baf2cef9de85467aab4b2b0c",
+      "bytes": 131527,
+      "recorded": "2026-10-13T14:12:16-0300"
+    },
+    "dist-assets/asm-D_Q5rh1f.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/asm-D_Q5rh1f.js",
+      "sha256": "a43218a06da8dd93a8dd3c2b458479674d973079fe18922fe556dafa17be50a9",
+      "bytes": 40717,
+      "recorded": "2026-10-13T14:12:16-0300"
+    },
+    "dist-assets/astro-HNnZUWAn.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/astro-HNnZUWAn.js",
+      "sha256": "90149402df9427dfa75f428dac8873baa92b54d8043a6d15f3e3d4db717b5b0a",
+      "bytes": 24008,
+      "recorded": "2026-10-13T14:12:16-0300"
+    },
+    "dist-assets/aurora-x-D-2ljcwZ.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/aurora-x-D-2ljcwZ.js",
+      "sha256": "e47c699d4515a3e898860e171aa49e276c80d475e49d57ec002afdccdd760781",
+      "bytes": 13659,
+      "recorded": "2026-10-13T14:12:16-0300"
+    },
+    "dist-assets/awk-DMzUqQB5.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/awk-DMzUqQB5.js",
+      "sha256": "ff7d9aed38679838b5bbaae495275ae2e8fc5215811062e4eef19f6f786089cb",
+      "bytes": 5461,
+      "recorded": "2026-10-13T14:12:16-0300"
+    },
+    "dist-assets/ayu-dark-DYE7WIF3.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/ayu-dark-DYE7WIF3.js",
+      "sha256": "7a9244f8489f4c2f8d98500f3b9d33bf84d934cde79120ddd1de6078b8c9dbc1",
+      "bytes": 20081,
+      "recorded": "2026-10-13T14:12:16-0300"
+    },
+    "dist-assets/ayu-light-BA47KaF1.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/ayu-light-BA47KaF1.js",
+      "sha256": "3bfa9a52cf22931b3f65091b27f150d07deba32f82ec02488e36a4a24fe8ae31",
+      "bytes": 20152,
+      "recorded": "2026-10-13T14:12:16-0300"
+    },
+    "dist-assets/ayu-mirage-32ctXXKs.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/ayu-mirage-32ctXXKs.js",
+      "sha256": "93f93dd14750e6e3453f99e549701050a9ca11ead2186befb232bb7bc6a173d1",
+      "bytes": 20085,
+      "recorded": "2026-10-13T14:12:16-0300"
+    },
+    "dist-assets/ballerina-BFfxhgS-.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/ballerina-BFfxhgS-.js",
+      "sha256": "148a30bb0b51d5e1f00536337facfc90f70e659b3310d5875fc6d8db62c98f0c",
+      "bytes": 58693,
+      "recorded": "2026-10-13T14:12:16-0300"
+    },
+    "dist-assets/bat-BkioyH1T.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/bat-BkioyH1T.js",
+      "sha256": "132a59df54049c90dfab94c0a95eae938352a227a86ad53d37bcabc8be4b13ef",
+      "bytes": 12888,
+      "recorded": "2026-10-13T14:12:16-0300"
+    },
+    "dist-assets/beancount-k_qm7-4y.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/beancount-k_qm7-4y.js",
+      "sha256": "62cf81ef2432aa71aba4a8559e5c5970ce13576b19db0d75c421de19f0a662c6",
+      "bytes": 10373,
+      "recorded": "2026-10-13T14:12:16-0300"
+    },
+    "dist-assets/berry-uYugtg8r.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/berry-uYugtg8r.js",
+      "sha256": "6f2394fb74b945c92dea425f90c70222f319b72a6dd9c093a7e32ebfdf60d026",
+      "bytes": 3005,
+      "recorded": "2026-10-13T14:12:16-0300"
+    },
+    "dist-assets/bibtex-CHM0blh-.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/bibtex-CHM0blh-.js",
+      "sha256": "0a3dd8093d3aa1baaad2d1d98ecbf09c7f093517baee20e4d8e7de768c8dca37",
+      "bytes": 4795,
+      "recorded": "2026-10-13T14:12:16-0300"
+    },
+    "dist-assets/bicep-Bmn6On1c.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/bicep-Bmn6On1c.js",
+      "sha256": "77925b291b8d048086f7fd14d23fa4ab0a4831551b1e9512c035948cfab402ee",
+      "bytes": 5382,
+      "recorded": "2026-10-13T14:12:16-0300"
+    },
+    "dist-assets/bird2-BIv1doCn.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/bird2-BIv1doCn.js",
+      "sha256": "8b4a7de6ca32ab6399f035d46fb9c6485f06606821fa5937210a9f250af5d140",
+      "bytes": 22943,
+      "recorded": "2026-10-13T14:12:16-0300"
+    },
+    "dist-assets/blade-BjGOyj-B.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/blade-BjGOyj-B.js",
+      "sha256": "f023c1ef6226c52d0e12c146aef96f72aea3e06e39aa17fd472f2995cf960a16",
+      "bytes": 104981,
+      "recorded": "2026-10-13T14:12:16-0300"
+    },
+    "dist-assets/bsl-BO_Y6i37.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/bsl-BO_Y6i37.js",
+      "sha256": "b9f7294b744652f494389fbdff06c427ea8a239a891647186c4ffe76779993a8",
+      "bytes": 33867,
+      "recorded": "2026-10-13T14:12:16-0300"
+    },
+    "dist-assets/c-BIGW1oBm.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/c-BIGW1oBm.js",
+      "sha256": "d6cf83167ef5e3f3ce64b34b57082b5ad6824eba4970eae9a278ab9285c9f3d8",
+      "bytes": 72113,
+      "recorded": "2026-10-13T14:12:16-0300"
+    },
+    "dist-assets/c3-eo99z4R2.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/c3-eo99z4R2.js",
+      "sha256": "d9cb0a3eb6e94d7f49445602ee073bf051042e6913129fb61a19f781ce952e80",
+      "bytes": 25631,
+      "recorded": "2026-10-13T14:12:16-0300"
+    },
+    "dist-assets/cadence-Bv_4Rxtq.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/cadence-Bv_4Rxtq.js",
+      "sha256": "eb6ab19c5a35cd1da0a04c8a01c5be50284f5655462475a7f8656a32075de3df",
+      "bytes": 23669,
+      "recorded": "2026-10-13T14:12:17-0300"
+    },
+    "dist-assets/cairo-KRGpt6FW.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/cairo-KRGpt6FW.js",
+      "sha256": "cb3ef520248905e08410aa414b326b0a1ad308ef13c23dc9741340ba5d1ba610",
+      "bytes": 2936,
+      "recorded": "2026-10-13T14:12:17-0300"
+    },
+    "dist-assets/catppuccin-frappe-DFWUc33u.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/catppuccin-frappe-DFWUc33u.js",
+      "sha256": "af29d7afc5c6014349681c54ab1e9ef49c368d7ed84cff5e864caff0a233d085",
+      "bytes": 47258,
+      "recorded": "2026-10-13T14:12:17-0300"
+    },
+    "dist-assets/catppuccin-latte-C9dUb6Cb.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/catppuccin-latte-C9dUb6Cb.js",
+      "sha256": "621f81dbc7293ff13fd2b0085dc3a84d5d0dbc3bfca4c1414c9e59b4ac43b3e8",
+      "bytes": 47256,
+      "recorded": "2026-10-13T14:12:17-0300"
+    },
+    "dist-assets/catppuccin-macchiato-DQyhUUbL.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/catppuccin-macchiato-DQyhUUbL.js",
+      "sha256": "4b0c204a8d4775c3b97c90fd9ebdf8734bd8fb4d270f4eda4398997a75e72505",
+      "bytes": 47263,
+      "recorded": "2026-10-13T14:12:17-0300"
+    },
+    "dist-assets/catppuccin-mocha-D87Tk5Gz.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/catppuccin-mocha-D87Tk5Gz.js",
+      "sha256": "b10b92891fde2ac93b551d568f8ca2ce7deb12701a0cdab40d13ad1bc7cd6872",
+      "bytes": 47255,
+      "recorded": "2026-10-13T14:12:17-0300"
+    },
+    "dist-assets/ccip-Dk-yhM-_.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/ccip-Dk-yhM-_.js",
+      "sha256": "079cbdb71cdbd29c70ce9dbe4830a5032da85966063a1fbe24857b0fefd9e1c2",
+      "bytes": 3186,
+      "recorded": "2026-10-13T14:12:17-0300"
+    },
+    "dist-assets/ChatApp-G6NJqrwV.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/ChatApp-G6NJqrwV.js",
+      "sha256": "fa267936ac18d419eecbac5d58de7aa0d8a71e03eec4eb1585461c133f8b7c4f",
+      "bytes": 19836,
+      "recorded": "2026-10-13T14:12:17-0300"
+    },
+    "dist-assets/chatSetupState-mBQrCUb1.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/chatSetupState-mBQrCUb1.js",
+      "sha256": "56ccec570f0567e930d24ee57ef4664935c52d1d9619c30ca167fed7d5cdbaa3",
+      "bytes": 272023,
+      "recorded": "2026-10-13T14:12:17-0300"
+    },
+    "dist-assets/clarity-D53aC0YG.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/clarity-D53aC0YG.js",
+      "sha256": "fb9051f589b58016a4aa61d4a5e54fd1495cc6ef104ea387971ce67df8ac8bcb",
+      "bytes": 14275,
+      "recorded": "2026-10-13T14:12:17-0300"
+    },
+    "dist-assets/clojure-P80f7IUj.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/clojure-P80f7IUj.js",
+      "sha256": "d84e3798038c4ac8cc2748cd8a7b606de826d38cda40fcd1af0157a2c205fad3",
+      "bytes": 6413,
+      "recorded": "2026-10-13T14:12:17-0300"
+    },
+    "dist-assets/cmake-D1j8_8rp.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/cmake-D1j8_8rp.js",
+      "sha256": "20de18825679753afc48318521d760d4daea701c95137a58b7343f6ad6bed4f9",
+      "bytes": 9855,
+      "recorded": "2026-10-13T14:12:17-0300"
+    },
+    "dist-assets/cobol-nBiQ_Alo.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/cobol-nBiQ_Alo.js",
+      "sha256": "dffe8f987f388eb80126a75094ecf4fabb516e711d09f482d8b465ecd57b524a",
+      "bytes": 39129,
+      "recorded": "2026-10-13T14:12:17-0300"
+    },
+    "dist-assets/codeowners-Bp6g37R7.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/codeowners-Bp6g37R7.js",
+      "sha256": "748b547cc141abd1b350d2f2e3b0562606ffaf23e88bb89c8b4e7f7df3c425f7",
+      "bytes": 547,
+      "recorded": "2026-10-13T14:12:17-0300"
+    },
+    "dist-assets/codeql-DsOJ9woJ.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/codeql-DsOJ9woJ.js",
+      "sha256": "d06a0d7ec54beba6ac8aac8db0675b696bda5a7756273663bf7b5cdab0d3285e",
+      "bytes": 26883,
+      "recorded": "2026-10-13T14:12:17-0300"
+    },
+    "dist-assets/coffee-Ch7k5sss.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/coffee-Ch7k5sss.js",
+      "sha256": "2cf05264d5ada366f643b56fa1145af2af574ed8bcd8ce653ffff95b24d8ab89",
+      "bytes": 27422,
+      "recorded": "2026-10-13T14:12:17-0300"
+    },
+    "dist-assets/common-lisp-Cg-RD9OK.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/common-lisp-Cg-RD9OK.js",
+      "sha256": "2fc697c25d367e1f9f950e7bae36f1a739b500bb1e646396484edb3c7e23a96b",
+      "bytes": 22581,
+      "recorded": "2026-10-13T14:12:17-0300"
+    },
+    "dist-assets/coq-DkFqJrB1.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/coq-DkFqJrB1.js",
+      "sha256": "142db296843c6d3167305b3c9da4abee5ac6bf9c901947299e0853fce02216f3",
+      "bytes": 5526,
+      "recorded": "2026-10-13T14:12:17-0300"
+    },
+    "dist-assets/cpp-CofmeUqb.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/cpp-CofmeUqb.js",
+      "sha256": "dc4aa50510e3eebba4fde0eb3f11c2f4ca51da37953fb2518553272497b316d4",
+      "bytes": 626081,
+      "recorded": "2026-10-13T14:12:17-0300"
+    },
+    "dist-assets/crystal-DNxU26gB.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/crystal-DNxU26gB.js",
+      "sha256": "a64b00c7402eb625ce0b30292e94dcc3e5fd1743ada9694a4d97bb2cb06c38e5",
+      "bytes": 29388,
+      "recorded": "2026-10-13T14:12:17-0300"
+    },
+    "dist-assets/csharp-COcwbKMJ.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/csharp-COcwbKMJ.js",
+      "sha256": "cf21c0244a3f8883cb070f404dcf629acfc640079e3edf473d91cb0960237ecb",
+      "bytes": 89687,
+      "recorded": "2026-10-13T14:12:17-0300"
+    },
+    "dist-assets/css-CLj8gQPS.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/css-CLj8gQPS.js",
+      "sha256": "2848016b846e4595ae4798cb70305f259eb0e8d297b0cc9fa4ac5b0b612a3166",
+      "bytes": 49041,
+      "recorded": "2026-10-13T14:12:17-0300"
+    },
+    "dist-assets/csv-fuZLfV_i.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/csv-fuZLfV_i.js",
+      "sha256": "e78e725cd6790c0062e5e941943b776280c971046b16144a117a28f248156091",
+      "bytes": 1143,
+      "recorded": "2026-10-13T14:12:18-0300"
+    },
+    "dist-assets/cue-D82EKSYY.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/cue-D82EKSYY.js",
+      "sha256": "d462534c02551b41f1b3198ef6faa32fdfda6bc5aa14e441e6df367fb0485ea7",
+      "bytes": 16204,
+      "recorded": "2026-10-13T14:12:18-0300"
+    },
+    "dist-assets/cypher-COkxafJQ.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/cypher-COkxafJQ.js",
+      "sha256": "6953f20dbca19c201dd4a7845f0fb4f3f52a82ad0a0ec6e4a418e49dd7f50666",
+      "bytes": 5956,
+      "recorded": "2026-10-13T14:12:18-0300"
+    },
+    "dist-assets/d-85-TOEBH.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/d-85-TOEBH.js",
+      "sha256": "bc9e087cec1757269bb3e28c1df26140f6fc454de2ec7e453385d27ed3b39c18",
+      "bytes": 43795,
+      "recorded": "2026-10-13T14:12:18-0300"
+    },
+    "dist-assets/dark-plus-C3mMm8J8.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/dark-plus-C3mMm8J8.js",
+      "sha256": "b8b869d6edc688a6855924a0fcbb663d8c22897e84f94f8273f53cb432be2d3a",
+      "bytes": 9097,
+      "recorded": "2026-10-13T14:12:18-0300"
+    },
+    "dist-assets/dart-bE4Kk8sk.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/dart-bE4Kk8sk.js",
+      "sha256": "2cdb81143af7036eaaee976385babd4e4610838e94e72c95eea43825a6d8260d",
+      "bytes": 8623,
+      "recorded": "2026-10-13T14:12:18-0300"
+    },
+    "dist-assets/dax-CEL-wOlO.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/dax-CEL-wOlO.js",
+      "sha256": "e112cfc4f22edb11cf16e6cc9c6f30c1bc44d399442a826e1c2fa68be217f4b1",
+      "bytes": 5365,
+      "recorded": "2026-10-13T14:12:18-0300"
+    },
+    "dist-assets/desktop-BmXAJ9_W.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/desktop-BmXAJ9_W.js",
+      "sha256": "fbbe32cc99e0e74b11e742aaae97dfaf0a7b553719ec179638313cc8a8039cbe",
+      "bytes": 1833,
+      "recorded": "2026-10-13T14:12:18-0300"
+    },
+    "dist-assets/diff-D97Zzqfu.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/diff-D97Zzqfu.js",
+      "sha256": "071f6c7f36d51227bb0701147c7508f96a0f342ba5df808ed83a820ee486c17b",
+      "bytes": 2569,
+      "recorded": "2026-10-13T14:12:18-0300"
+    },
+    "dist-assets/docker-BcOcwvcX.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/docker-BcOcwvcX.js",
+      "sha256": "0995ae194f7a702d1572e90b064fd0b1ee0a8da03b8f587c12261c00306eb145",
+      "bytes": 1741,
+      "recorded": "2026-10-13T14:12:18-0300"
+    },
+    "dist-assets/dotenv-Da5cRb03.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/dotenv-Da5cRb03.js",
+      "sha256": "551287cfbe5723329a252cc084780c0511bcf7e9fc6370c241cc458fe2b7dc62",
+      "bytes": 1422,
+      "recorded": "2026-10-13T14:12:18-0300"
+    },
+    "dist-assets/dracula-BzJJZx-M.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/dracula-BzJJZx-M.js",
+      "sha256": "6349dc749f3cf65b72d22a359e6dff84401fee8b3fccb62812bd8463e9e838c9",
+      "bytes": 21066,
+      "recorded": "2026-10-13T14:12:18-0300"
+    },
+    "dist-assets/dracula-soft-BXkSAIEj.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/dracula-soft-BXkSAIEj.js",
+      "sha256": "77ad2cd2bdedc3fb6c78edb3fc9bacf6838ffcad1ec6927f3a7bb6e75e1cd8b7",
+      "bytes": 21076,
+      "recorded": "2026-10-13T14:12:18-0300"
+    },
+    "dist-assets/dream-maker-BtqSS_iP.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/dream-maker-BtqSS_iP.js",
+      "sha256": "44d40108b2579475555c0727913f37bf2f696a0ed48a68fd264cb601fde06cb6",
+      "bytes": 10469,
+      "recorded": "2026-10-13T14:12:18-0300"
+    },
+    "dist-assets/edge-FbVlp4U3.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/edge-FbVlp4U3.js",
+      "sha256": "ecc6b23827ccf76a05692cdc28127c80ab118eb59d2db10eadd04a2147458ceb",
+      "bytes": 2363,
+      "recorded": "2026-10-13T14:12:18-0300"
+    },
+    "dist-assets/elixir-CkH2-t6x.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/elixir-CkH2-t6x.js",
+      "sha256": "128234a685dd73c5f396a5b979409814f0e92ae83c8a5675f630e811f03042a0",
+      "bytes": 16321,
+      "recorded": "2026-10-13T14:12:18-0300"
+    },
+    "dist-assets/elm-DbKCFpqz.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/elm-DbKCFpqz.js",
+      "sha256": "7deaadb185bfb1298a8ac5fed1a531457c7fdc5745a583ad0f783e16b8bcc1d6",
+      "bytes": 10968,
+      "recorded": "2026-10-13T14:12:18-0300"
+    },
+    "dist-assets/emacs-lisp-CXvaQtF9.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/emacs-lisp-CXvaQtF9.js",
+      "sha256": "4c5000e77da0eb746e8a8824e392360377c605fc549e93858d421bdb78941815",
+      "bytes": 779880,
+      "recorded": "2026-10-13T14:12:18-0300"
+    },
+    "dist-assets/erb-BYCe7drp.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/erb-BYCe7drp.js",
+      "sha256": "7eee6ad575fa6c2de971ba14769d07ea9de4f0f9e5a26cdca3de2b7eb9674de1",
+      "bytes": 2607,
+      "recorded": "2026-10-13T14:12:18-0300"
+    },
+    "dist-assets/erlang-DsQrWhSR.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/erlang-DsQrWhSR.js",
+      "sha256": "5dea30124e59e6a84f9519a5da5944d3470182989e62d9aa65bb9b068df90c13",
+      "bytes": 37480,
+      "recorded": "2026-10-13T14:12:18-0300"
+    },
+    "dist-assets/everforest-dark-BgDCqdQA.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/everforest-dark-BgDCqdQA.js",
+      "sha256": "826c6890db7a065c9d4ac75850fbadde410ca10872705c74bb6c1f543f051676",
+      "bytes": 53745,
+      "recorded": "2026-10-13T14:12:18-0300"
+    },
+    "dist-assets/everforest-light-C8M2exoo.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/everforest-light-C8M2exoo.js",
+      "sha256": "2ac34042eb335675bd7c5035f2c81ccd503e6a60fe8b047396ab6486fa4f20f3",
+      "bytes": 53748,
+      "recorded": "2026-10-13T14:12:18-0300"
+    },
+    "dist-assets/fennel-BYunw83y.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/fennel-BYunw83y.js",
+      "sha256": "0bb4581df6bc62ce293fd6715c42bfe54b77ffb18ce9761d0262eee728079c6e",
+      "bytes": 4768,
+      "recorded": "2026-10-13T14:12:18-0300"
+    },
+    "dist-assets/fish-BvzEVeQv.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/fish-BvzEVeQv.js",
+      "sha256": "31e609691f04394f54edcf86890e0f7a66aa8fed436d63da5480381875b1a3e5",
+      "bytes": 13038,
+      "recorded": "2026-10-13T14:12:19-0300"
+    },
+    "dist-assets/fluent-C4IJs8-o.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/fluent-C4IJs8-o.js",
+      "sha256": "2929a3bca0b053d7bf7abbe02db3da7d65692836a281dc04510baaa635514cb0",
+      "bytes": 3610,
+      "recorded": "2026-10-13T14:12:19-0300"
+    },
+    "dist-assets/fortran-fixed-form-CkoXwp7k.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/fortran-fixed-form-CkoXwp7k.js",
+      "sha256": "5368f7fe5dc74f0601978b78fea6617eaf5c03090f9f8600d67bd126729f9283",
+      "bytes": 1665,
+      "recorded": "2026-10-13T14:12:19-0300"
+    },
+    "dist-assets/fortran-free-form-BxgE0vQu.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/fortran-free-form-BxgE0vQu.js",
+      "sha256": "9aa28f072525e1fd2c4963431f29d5d0918c6bd422142c98e6182e4b998370dc",
+      "bytes": 88969,
+      "recorded": "2026-10-13T14:12:19-0300"
+    },
+    "dist-assets/ForumAppView-mC7Bcr5U.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/ForumAppView-mC7Bcr5U.js",
+      "sha256": "e9173e83583cc49fd5f3770b806a5d0028a146a3d43eb3451b704c60ae8ed4ff",
+      "bytes": 217765,
+      "recorded": "2026-10-13T14:12:19-0300"
+    },
+    "dist-assets/ForumBuildScope-BNLyrY1G.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/ForumBuildScope-BNLyrY1G.js",
+      "sha256": "8a3248a16c309042460c73b00919ea69a1c8ec8fd5c48fa6b540c6b865254848",
+      "bytes": 373,
+      "recorded": "2026-10-13T14:12:19-0300"
+    },
+    "dist-assets/forumMeshopt.worker-BCrd0Sng.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/forumMeshopt.worker-BCrd0Sng.js",
+      "sha256": "ea00d4dc35d649ff4d05b353959fc458b239f66cbe2cce103a3fea8186ecddec",
+      "bytes": 26684,
+      "recorded": "2026-10-13T14:12:19-0300"
+    },
+    "dist-assets/fsharp-CXgrBDvD.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/fsharp-CXgrBDvD.js",
+      "sha256": "2c0618c951b62650650d0c44950072534f0cfe3b4fcd58573a0024a64e53c52a",
+      "bytes": 25305,
+      "recorded": "2026-10-13T14:12:19-0300"
+    },
+    "dist-assets/gdresource-BOOCDP_w.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/gdresource-BOOCDP_w.js",
+      "sha256": "b62c5b30cb3163053b3315e0c340475e6584a76363c80c553641fbeb9d243b9e",
+      "bytes": 5285,
+      "recorded": "2026-10-13T14:12:19-0300"
+    },
+    "dist-assets/gdscript-C5YyOfLZ.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/gdscript-C5YyOfLZ.js",
+      "sha256": "05e593d1c80b8f314bd99795db1ebd519c2389ce3850674c1affc5e0472b630d",
+      "bytes": 18992,
+      "recorded": "2026-10-13T14:12:19-0300"
+    },
+    "dist-assets/gdshader-DkwncUOv.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/gdshader-DkwncUOv.js",
+      "sha256": "73f353c2c614fec2d8cfae89fb40ee57d4c406bc00b8aeafe4f7a0aa3395f603",
+      "bytes": 6326,
+      "recorded": "2026-10-13T14:12:19-0300"
+    },
+    "dist-assets/genie-D0YGMca9.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/genie-D0YGMca9.js",
+      "sha256": "1ae6367d77ad7ef0abbac818ca67a213ee812abb47d1aefc5427120b1a6fd13c",
+      "bytes": 3356,
+      "recorded": "2026-10-13T14:12:19-0300"
+    },
+    "dist-assets/gherkin-DyxjwDmM.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/gherkin-DyxjwDmM.js",
+      "sha256": "c7bd366597ab12a5977d62813a92022bfbce506f2a3c70d0b3819aa39344c7ae",
+      "bytes": 11946,
+      "recorded": "2026-10-13T14:12:19-0300"
+    },
+    "dist-assets/git-commit-F4YmCXRG.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/git-commit-F4YmCXRG.js",
+      "sha256": "783b8cb9af4cb9b869335cd5cca6a2125bb97719b21ef21b004c0974181bcae6",
+      "bytes": 1230,
+      "recorded": "2026-10-13T14:12:19-0300"
+    },
+    "dist-assets/git-rebase-r7XF79zn.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/git-rebase-r7XF79zn.js",
+      "sha256": "88402cafff4897e7d7931bdb17acfcad0916e1f54353e578e876b21055ccbef9",
+      "bytes": 983,
+      "recorded": "2026-10-13T14:12:19-0300"
+    },
+    "dist-assets/github-dark-default-Cuk6v7N8.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/github-dark-default-Cuk6v7N8.js",
+      "sha256": "c748b560af550be6ed802ebe5433b0688f617925feafdd98d8e3d43470c24a1b",
+      "bytes": 14435,
+      "recorded": "2026-10-13T14:12:19-0300"
+    },
+    "dist-assets/github-dark-DHJKELXO.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/github-dark-DHJKELXO.js",
+      "sha256": "8f7ccd8274e8950ef099d389c70d379782cf17f39424090949ba45833eeee022",
+      "bytes": 11405,
+      "recorded": "2026-10-13T14:12:19-0300"
+    },
+    "dist-assets/github-dark-dimmed-DH5Ifo-i.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/github-dark-dimmed-DH5Ifo-i.js",
+      "sha256": "8bb97e7c16cb22f8acf952c9e0af4d9bc1e13cc7ad44fadd98b5df37bf3ba5f4",
+      "bytes": 14433,
+      "recorded": "2026-10-13T14:12:19-0300"
+    },
+    "dist-assets/github-dark-high-contrast-E3gJ1_iC.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/github-dark-high-contrast-E3gJ1_iC.js",
+      "sha256": "18f1a70b963db803f141be93c79c80a0dc38f78cd47fea1ff8b05cec409b7fe9",
+      "bytes": 14595,
+      "recorded": "2026-10-13T14:12:19-0300"
+    },
+    "dist-assets/github-light-DAi9KRSo.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/github-light-DAi9KRSo.js",
+      "sha256": "9ad9f268476dc0edc85cdb9a9ae940ee7d0ad267d5de82810fef40d2f13462ab",
+      "bytes": 11184,
+      "recorded": "2026-10-13T14:12:19-0300"
+    },
+    "dist-assets/github-light-default-D7oLnXFd.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/github-light-default-D7oLnXFd.js",
+      "sha256": "212b28c6987d30991d6bc3f812cf69d93694a557235bd9e1e4460855edb2e4f4",
+      "bytes": 14156,
+      "recorded": "2026-10-13T14:12:19-0300"
+    },
+    "dist-assets/github-light-high-contrast-BfjtVDDH.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/github-light-high-contrast-BfjtVDDH.js",
+      "sha256": "1b1d4ff8b3fccaa0e7cfcf8688e7fb75b086e8b879c62353f6c580f8cd260e54",
+      "bytes": 14275,
+      "recorded": "2026-10-13T14:12:19-0300"
+    },
+    "dist-assets/gleam-BspZqrRM.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/gleam-BspZqrRM.js",
+      "sha256": "96ee8ab10150415113386ffb698a6e578947cf099f72daf24984f09da77c2118",
+      "bytes": 2577,
+      "recorded": "2026-10-13T14:12:19-0300"
+    },
+    "dist-assets/glimmer-js-ByusRIyA.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/glimmer-js-ByusRIyA.js",
+      "sha256": "7813a14696d5f5971e16e5b1f8d9eaa38089532d1f240878bb41636006087a45",
+      "bytes": 20071,
+      "recorded": "2026-10-13T14:12:20-0300"
+    },
+    "dist-assets/glimmer-ts-BfAWNZQY.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/glimmer-ts-BfAWNZQY.js",
+      "sha256": "bbbfafb1ad45ae091bde6d2e499eed635b073cfda9146c664d9ca6102b3f73ba",
+      "bytes": 20071,
+      "recorded": "2026-10-13T14:12:20-0300"
+    },
+    "dist-assets/glsl-DplSGwfg.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/glsl-DplSGwfg.js",
+      "sha256": "d73db15d8c26ce44204eccdc3f250039018f34902874d55920b51f171d75a737",
+      "bytes": 3634,
+      "recorded": "2026-10-13T14:12:20-0300"
+    },
+    "dist-assets/GLTFLoader-ZY9EHYji.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/GLTFLoader-ZY9EHYji.js",
+      "sha256": "cabe1f54d7d1171a718a1f3e1f1e1fff9de825dacded648a6c1f22b1f08278f1",
+      "bytes": 48574,
+      "recorded": "2026-10-13T14:12:20-0300"
+    },
+    "dist-assets/gn-n2N0HUVH.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/gn-n2N0HUVH.js",
+      "sha256": "8ebd06d1b7db73d2b6a50f2072c23af6b2164783b8268fa8c8d643d4d3e72ae0",
+      "bytes": 4002,
+      "recorded": "2026-10-13T14:12:20-0300"
+    },
+    "dist-assets/gnuplot-DdkO51Og.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/gnuplot-DdkO51Og.js",
+      "sha256": "44e79156d6f1fda5d964731ffbf67170dfc593edd18e9ad76f2e984d5e90a17c",
+      "bytes": 14783,
+      "recorded": "2026-10-13T14:12:20-0300"
+    },
+    "dist-assets/go-C27-OAKa.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/go-C27-OAKa.js",
+      "sha256": "46ec75c1455e917fb6e0b1b4aa0f0b15686386aba0c8e3ca3615984ae9be696e",
+      "bytes": 46818,
+      "recorded": "2026-10-13T14:12:20-0300"
+    },
+    "dist-assets/graphql-ChdNCCLP.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/graphql-ChdNCCLP.js",
+      "sha256": "ce3367ffe23232e3d6d2ce940d1bb233839c0ebf02b9f12b151108c8bc2d4b58",
+      "bytes": 18002,
+      "recorded": "2026-10-13T14:12:20-0300"
+    },
+    "dist-assets/groovy-gcz8RCvz.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/groovy-gcz8RCvz.js",
+      "sha256": "a03245cec1dc1cbbf9d68a083dcc04b77cbf748ad95bdd0291bf7ae3555bc1b2",
+      "bytes": 19179,
+      "recorded": "2026-10-13T14:12:20-0300"
+    },
+    "dist-assets/gruvbox-dark-hard-CFHQjOhq.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/gruvbox-dark-hard-CFHQjOhq.js",
+      "sha256": "d298e64968c577792359edbd2bee987149cd3b6252b82836f28dbd96cb521d3f",
+      "bytes": 22633,
+      "recorded": "2026-10-13T14:12:20-0300"
+    },
+    "dist-assets/gruvbox-dark-medium-GsRaNv29.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/gruvbox-dark-medium-GsRaNv29.js",
+      "sha256": "cd2d75705169e923822a9f8bc1141e8f5e7c0a5af0b5ded469dc76e5d03ada21",
+      "bytes": 22637,
+      "recorded": "2026-10-13T14:12:20-0300"
+    },
+    "dist-assets/gruvbox-dark-soft-CVdnzihN.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/gruvbox-dark-soft-CVdnzihN.js",
+      "sha256": "fdbd1d78ed6a4fce75feefb8797570a4568edce8ded59af0d99f83e20f3307dc",
+      "bytes": 22633,
+      "recorded": "2026-10-13T14:12:20-0300"
+    },
+    "dist-assets/gruvbox-light-hard-CH1njM8p.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/gruvbox-light-hard-CH1njM8p.js",
+      "sha256": "7b2fa3d574f3ef80a213d88fddb684431e94bdb472d523d8f0caad96d5d376f8",
+      "bytes": 22636,
+      "recorded": "2026-10-13T14:12:20-0300"
+    },
+    "dist-assets/gruvbox-light-medium-DRw_LuNl.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/gruvbox-light-medium-DRw_LuNl.js",
+      "sha256": "62a938850d5e4fc934e44213eff465fb3618456b0490adc4887d4a83bd0d9e29",
+      "bytes": 22640,
+      "recorded": "2026-10-13T14:12:20-0300"
+    },
+    "dist-assets/gruvbox-light-soft-hJgmCMqR.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/gruvbox-light-soft-hJgmCMqR.js",
+      "sha256": "090f38c249b8bccd7b283926da32fa0095e8c27b5dd88ae2746863f7b7bc4ccd",
+      "bytes": 22636,
+      "recorded": "2026-10-13T14:12:20-0300"
+    },
+    "dist-assets/HabitatArchitecture-CVU8b8y7.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/HabitatArchitecture-CVU8b8y7.js",
+      "sha256": "c2fb42e259f80edd1620753645e0793595e0bd817a968bfb240ced4d48a472c6",
+      "bytes": 19852,
+      "recorded": "2026-10-13T14:12:20-0300"
+    },
+    "dist-assets/HabitatPlanting-DW0SE-Dj.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/HabitatPlanting-DW0SE-Dj.js",
+      "sha256": "558981578f59f723eed3ce5e43aa0f9b57558dff04f3eca8d8f2e32ad843fbe6",
+      "bytes": 5090,
+      "recorded": "2026-10-13T14:12:20-0300"
+    },
+    "dist-assets/hack-i7_Ulhet.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/hack-i7_Ulhet.js",
+      "sha256": "3cbb074b1e03445ab7d9099fda12908fe9cccc97cc0dc501ccfb33aa859920f0",
+      "bytes": 80241,
+      "recorded": "2026-10-13T14:12:20-0300"
+    },
+    "dist-assets/haml-D5jkg6IW.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/haml-D5jkg6IW.js",
+      "sha256": "f09ee1a955cd9932c1d7cec12bcde382dd619a67be150e78cf3d3c804a2cd898",
+      "bytes": 8263,
+      "recorded": "2026-10-13T14:12:20-0300"
+    },
+    "dist-assets/handlebars-BpdQsYii.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/handlebars-BpdQsYii.js",
+      "sha256": "59889a7191fa6a95d04786d70f83b38bcf8d73cb73e0da3b48e06c2b0bfc399d",
+      "bytes": 12150,
+      "recorded": "2026-10-13T14:12:20-0300"
+    },
+    "dist-assets/haskell-Df6bDoY_.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/haskell-Df6bDoY_.js",
+      "sha256": "164e3b023115e70432602c2da71d1c0ac7184ea91deea1dc70cf17ef74b84fa6",
+      "bytes": 41490,
+      "recorded": "2026-10-13T14:12:20-0300"
+    },
+    "dist-assets/haxe-CzTSHFRz.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/haxe-CzTSHFRz.js",
+      "sha256": "9758d15765769f46874c4bc90d672c3a465b8ce0a1b2db6ffed3a116e6d5a7b8",
+      "bytes": 35164,
+      "recorded": "2026-10-13T14:12:20-0300"
+    },
+    "dist-assets/hcl-BWvSN4gD.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/hcl-BWvSN4gD.js",
+      "sha256": "2d11254542388410861c6a6a3c0f57deb9c218fdc2c1c5ffac901bdb876fe80a",
+      "bytes": 10053,
+      "recorded": "2026-10-13T14:12:20-0300"
+    },
+    "dist-assets/heroRobot-C7wMTIwL.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/heroRobot-C7wMTIwL.js",
+      "sha256": "53d54adcec4b4698eaebc8b0ae94e199196a4ce32a3030f51571a08121afd2b8",
+      "bytes": 59988,
+      "recorded": "2026-10-13T14:12:21-0300"
+    },
+    "dist-assets/hjson-D5-asLiD.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/hjson-D5-asLiD.js",
+      "sha256": "6a7e74cb9d734dfd58aeeae9224a7b4b69a86edcc6b73d0e3e36e98dacb3300b",
+      "bytes": 12053,
+      "recorded": "2026-10-13T14:12:21-0300"
+    },
+    "dist-assets/hlsl-D3lLCCz7.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/hlsl-D3lLCCz7.js",
+      "sha256": "f5bff090211e17e314660363157f351c5a0b8e707db3ef26cdd78c8522c7d133",
+      "bytes": 7264,
+      "recorded": "2026-10-13T14:12:21-0300"
+    },
+    "dist-assets/horizon-bright-CUuTKBJd.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/horizon-bright-CUuTKBJd.js",
+      "sha256": "d0979e7f67f06dcbce9465dc5e78779ff667236e9cffdaa91d1078e6706b6047",
+      "bytes": 8787,
+      "recorded": "2026-10-13T14:12:21-0300"
+    },
+    "dist-assets/horizon-BUw7H-hv.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/horizon-BUw7H-hv.js",
+      "sha256": "d43f28552f920fd99607f754ce527ee0be5654097c479c446d86df933c911b72",
+      "bytes": 8780,
+      "recorded": "2026-10-13T14:12:21-0300"
+    },
+    "dist-assets/houston-DnULxvSX.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/houston-DnULxvSX.js",
+      "sha256": "91c981557306d7a18f7ff39d9060dd2b582604a75aff38ae79edc647e4d9ff93",
+      "bytes": 35422,
+      "recorded": "2026-10-13T14:12:21-0300"
+    },
+    "dist-assets/html-derivative-DlHx6ybY.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/html-derivative-DlHx6ybY.js",
+      "sha256": "f94d90985d277a19bac83bcb3c913186fe83cb3388b4a21542b3f979fa48e20c",
+      "bytes": 900,
+      "recorded": "2026-10-13T14:12:21-0300"
+    },
+    "dist-assets/html-pp8916En.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/html-pp8916En.js",
+      "sha256": "ebe4cd4e01fd2bea09e62bc3e6117f98e0c50876ecc95aa142a3660f12a0bc53",
+      "bytes": 57247,
+      "recorded": "2026-10-13T14:12:21-0300"
+    },
+    "dist-assets/http-jrhK8wxY.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/http-jrhK8wxY.js",
+      "sha256": "5bb8464898add03e8c22970d9eb4cc467b40ae2888e4d5623c9fde4209dd4d29",
+      "bytes": 4549,
+      "recorded": "2026-10-13T14:12:21-0300"
+    },
+    "dist-assets/hurl-irOxFIW8.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/hurl-irOxFIW8.js",
+      "sha256": "f87e3fbbc06d52e9d69c1a8cb0a3d64e430ccb85faddeb7a5f87aa12ed6d01a2",
+      "bytes": 3652,
+      "recorded": "2026-10-13T14:12:21-0300"
+    },
+    "dist-assets/hxml-Bvhsp5Yf.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/hxml-Bvhsp5Yf.js",
+      "sha256": "59530b894cd868887490a330da6b8366214246b8eef502a261bc99ca7ccf63af",
+      "bytes": 1743,
+      "recorded": "2026-10-13T14:12:21-0300"
+    },
+    "dist-assets/hy-DFXneXwc.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/hy-DFXneXwc.js",
+      "sha256": "22df29d8b5c5119f1bd25e998bf7b359a29dc5b826e50597cee67731679cca68",
+      "bytes": 2648,
+      "recorded": "2026-10-13T14:12:21-0300"
+    },
+    "dist-assets/IdentityUnlinked-DSOwzzaY.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/IdentityUnlinked-DSOwzzaY.js",
+      "sha256": "a950cf7e32753149a10ccf149b837e8020dbc5258c5570c23172d0aed8923f84",
+      "bytes": 216573,
+      "recorded": "2026-10-13T14:12:21-0300"
+    },
+    "dist-assets/imba-DGztddWO.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/imba-DGztddWO.js",
+      "sha256": "73402caea94e54100c970c652577abf4995f79310e7528744b46a37227057e35",
+      "bytes": 49930,
+      "recorded": "2026-10-13T14:12:21-0300"
+    },
+    "dist-assets/index-B-Eg-wTC.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/index-B-Eg-wTC.js",
+      "sha256": "c78c3039199097d4a0555c00eefcccce7d8d5cbe241d089975fa2148b1cc8585",
+      "bytes": 195744,
+      "recorded": "2026-10-13T14:12:21-0300"
+    },
+    "dist-assets/index-C-_nrQOH.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/index-C-_nrQOH.js",
+      "sha256": "3f290dab3a4bdda0a4c11c36c74c20b0f1f680ac9af6163b1b1d315f4976b362",
+      "bytes": 144511,
+      "recorded": "2026-10-13T14:12:21-0300"
+    },
+    "dist-assets/index-D2Mcqms-.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/index-D2Mcqms-.js",
+      "sha256": "6099d90db8f286264133973f0cd7668818c593e25e6204b2b8d7b839f0b3fb80",
+      "bytes": 2234,
+      "recorded": "2026-10-13T14:12:21-0300"
+    },
+    "dist-assets/ini-BEwlwnbL.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/ini-BEwlwnbL.js",
+      "sha256": "7830e62a2a96e22c418b5a1e52ba15545ece3c5684346dd50fc174a60b3c225f",
+      "bytes": 1525,
+      "recorded": "2026-10-13T14:12:21-0300"
+    },
+    "dist-assets/java-CylS5w8V.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/java-CylS5w8V.js",
+      "sha256": "2bec4be5ba0dea3d8258669df1e6957e1ba2590a1ad56c6e103ea8c00baeba7e",
+      "bytes": 27219,
+      "recorded": "2026-10-13T14:12:21-0300"
+    },
+    "dist-assets/javascript-wDzz0qaB.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/javascript-wDzz0qaB.js",
+      "sha256": "a4a56cc72c7d0f1ecbbeb1ba6bf5f532193c8d13fc3de19910f8d64c70aec4e9",
+      "bytes": 174827,
+      "recorded": "2026-10-13T14:12:21-0300"
+    },
+    "dist-assets/jinja-f2NsQr07.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/jinja-f2NsQr07.js",
+      "sha256": "16c44c1b5b54df5d7178ef7bd3486beac4e99d96e39338476eca7501ad720575",
+      "bytes": 5685,
+      "recorded": "2026-10-13T14:12:21-0300"
+    },
+    "dist-assets/jison-wvAkD_A8.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/jison-wvAkD_A8.js",
+      "sha256": "3d09bd59c47dffe52f1eee5bd2371ecc2c8340daac0400872472affdf0c95392",
+      "bytes": 9690,
+      "recorded": "2026-10-13T14:12:21-0300"
+    },
+    "dist-assets/json-Cp-IABpG.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/json-Cp-IABpG.js",
+      "sha256": "ca32840cab9c2eb61da2afd6581e7a22c9937229f6b1a47115eea432794e7740",
+      "bytes": 2824,
+      "recorded": "2026-10-13T14:12:21-0300"
+    },
+    "dist-assets/json5-C9tS-k6U.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/json5-C9tS-k6U.js",
+      "sha256": "84985fb6e4953e5eccc4d704e4db9eb5c0045b74a11d3edd3a9b4c0bd3d5c2e4",
+      "bytes": 3254,
+      "recorded": "2026-10-13T14:12:22-0300"
+    },
+    "dist-assets/jsonc-Des-eS-w.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/jsonc-Des-eS-w.js",
+      "sha256": "1a23e00b91a35d38fba019125c68139ed9c6b9a0bdb953e9b21a709875f41125",
+      "bytes": 3109,
+      "recorded": "2026-10-13T14:12:22-0300"
+    },
+    "dist-assets/jsonl-DcaNXYhu.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/jsonl-DcaNXYhu.js",
+      "sha256": "10ebbfda6fda38f977a98ef80441310d350b084c6c27c811296ddcf2d84ba3ea",
+      "bytes": 3011,
+      "recorded": "2026-10-13T14:12:22-0300"
+    },
+    "dist-assets/jsonnet-DFQXde-d.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/jsonnet-DFQXde-d.js",
+      "sha256": "198a5e9985d5d96fae3f00e0d707841393882f4b9e2bf60ab5145af13c88b513",
+      "bytes": 3618,
+      "recorded": "2026-10-13T14:12:22-0300"
+    },
+    "dist-assets/jssm-C2t-YnRu.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/jssm-C2t-YnRu.js",
+      "sha256": "5b09940400c8fb823c95c198c9363791948e6a9229da2873bdf27b806452b831",
+      "bytes": 2238,
+      "recorded": "2026-10-13T14:12:22-0300"
+    },
+    "dist-assets/jsx-g9-lgVsj.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/jsx-g9-lgVsj.js",
+      "sha256": "abb8a7007d9a1f743c33283c233a509dc702eb618d1447d128b1330b73851bf2",
+      "bytes": 177792,
+      "recorded": "2026-10-13T14:12:22-0300"
+    },
+    "dist-assets/julia-CxzCAyBv.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/julia-CxzCAyBv.js",
+      "sha256": "44816ad3fcafca4b4b97959c2bec42e38f18bbb02d7a7ed8f4f6ef8a884697a9",
+      "bytes": 31066,
+      "recorded": "2026-10-13T14:12:22-0300"
+    },
+    "dist-assets/just-VxiPbLrw.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/just-VxiPbLrw.js",
+      "sha256": "4be1d0ba14d25fdfec960c9537e3bb9e4a60527016d57c92a70bf3fa4764873b",
+      "bytes": 11162,
+      "recorded": "2026-10-13T14:12:22-0300"
+    },
+    "dist-assets/kanagawa-dragon-CkXjmgJE.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/kanagawa-dragon-CkXjmgJE.js",
+      "sha256": "d45808ad5de1205ef39b8a53037311667253a7a4b13ed40e4ebd70faf55e4089",
+      "bytes": 17127,
+      "recorded": "2026-10-13T14:12:22-0300"
+    },
+    "dist-assets/kanagawa-lotus-CfQXZHmo.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/kanagawa-lotus-CfQXZHmo.js",
+      "sha256": "4a9b14832c6f978395fb8fc63107094b3d51ef6aa92003b38bc21e00b769fb54",
+      "bytes": 17126,
+      "recorded": "2026-10-13T14:12:22-0300"
+    },
+    "dist-assets/kanagawa-wave-DWedfzmr.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/kanagawa-wave-DWedfzmr.js",
+      "sha256": "25c129a062f9ac87decb56e2299d4a6aa652d1b20f3488c4e30f80eb9f8aa78d",
+      "bytes": 17123,
+      "recorded": "2026-10-13T14:12:22-0300"
+    },
+    "dist-assets/kdl-DV7GczEv.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/kdl-DV7GczEv.js",
+      "sha256": "24eccbf01c8c213cb407ee8b0294e0fe4d362c2a6c173a9516d41bf76e8cd387",
+      "bytes": 3629,
+      "recorded": "2026-10-13T14:12:22-0300"
+    },
+    "dist-assets/kotlin-BdnUsdx6.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/kotlin-BdnUsdx6.js",
+      "sha256": "2a95758b9ec1532516fb3fa38cdd82fed5534d944ca791f327e624ec94e829ac",
+      "bytes": 8785,
+      "recorded": "2026-10-13T14:12:22-0300"
+    },
+    "dist-assets/kusto-wEQ09or8.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/kusto-wEQ09or8.js",
+      "sha256": "255f5391b61f30323769884f680e235da9cfe6d696f2dd9200543911c361f88c",
+      "bytes": 15173,
+      "recorded": "2026-10-13T14:12:22-0300"
+    },
+    "dist-assets/laserwave-DUszq2jm.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/laserwave-DUszq2jm.js",
+      "sha256": "d56a0486f8b143d6d31a0b0230ccc5914ffbb751543a7dc97d697cbc1152da69",
+      "bytes": 11499,
+      "recorded": "2026-10-13T14:12:22-0300"
+    },
+    "dist-assets/latex-CWtU0Tv5.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/latex-CWtU0Tv5.js",
+      "sha256": "a544f1361ee85779a47677047f3b2f002820d522f10ee48bc98bb045ab06d2af",
+      "bytes": 72644,
+      "recorded": "2026-10-13T14:12:22-0300"
+    },
+    "dist-assets/lean-BZvkOJ9d.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/lean-BZvkOJ9d.js",
+      "sha256": "b34bf987976167f4de82af23930eaa4471b06320f236a5d00e3e9098fc704301",
+      "bytes": 5784,
+      "recorded": "2026-10-13T14:12:22-0300"
+    },
+    "dist-assets/less-B1dDrJ26.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/less-B1dDrJ26.js",
+      "sha256": "ed3ea44927fda1db6ba56ae932f08ce7f82f8d8a06d2b3d63e3b29db54ec5c65",
+      "bytes": 97633,
+      "recorded": "2026-10-13T14:12:22-0300"
+    },
+    "dist-assets/light-plus-B7mTdjB0.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/light-plus-B7mTdjB0.js",
+      "sha256": "44ec2993b3cc158ca691da352114658cacc0812ba4678faec2a6370262415979",
+      "bytes": 9941,
+      "recorded": "2026-10-13T14:12:22-0300"
+    },
+    "dist-assets/liquid-C0sCDyMI.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/liquid-C0sCDyMI.js",
+      "sha256": "f44f6ac66721b61b4608a581bd973540d0326a8a5db6d7601259061b56d0666a",
+      "bytes": 18089,
+      "recorded": "2026-10-13T14:12:22-0300"
+    },
+    "dist-assets/llvm-DjAJT7YJ.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/llvm-DjAJT7YJ.js",
+      "sha256": "4937d05e28115e0d9161616a786aecdcce209dfbe4c8ef070150937a58befab4",
+      "bytes": 5050,
+      "recorded": "2026-10-13T14:12:22-0300"
+    },
+    "dist-assets/log-2UxHyX5q.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/log-2UxHyX5q.js",
+      "sha256": "784500daa4b6a6ac32f95c19dc166914133189decc3ed10faf43578fe522a786",
+      "bytes": 2852,
+      "recorded": "2026-10-13T14:12:22-0300"
+    },
+    "dist-assets/logo-BtOb2qkB.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/logo-BtOb2qkB.js",
+      "sha256": "0ded9d4454ae3e08017b17f93c117c3e451698f42109e15d69380ec089406060",
+      "bytes": 3127,
+      "recorded": "2026-10-13T14:12:22-0300"
+    },
+    "dist-assets/lua-BaeVxFsk.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/lua-BaeVxFsk.js",
+      "sha256": "890724e2d1bc79e6f6498ce6cedd5a4bed0d9489121621c1946ef05e209f5623",
+      "bytes": 15535,
+      "recorded": "2026-10-13T14:12:23-0300"
+    },
+    "dist-assets/luau-C-HG3fhB.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/luau-C-HG3fhB.js",
+      "sha256": "b969611adf3271fd488730a32acb9dbbab5c0377231c610ed0bee0bf4719ffa3",
+      "bytes": 13964,
+      "recorded": "2026-10-13T14:12:23-0300"
+    },
+    "dist-assets/make-CHLpvVh8.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/make-CHLpvVh8.js",
+      "sha256": "50df72a259773a4ca73a97534238010cdef78d632729871d880b58fcc6d3112f",
+      "bytes": 8961,
+      "recorded": "2026-10-13T14:12:23-0300"
+    },
+    "dist-assets/markdown-Cvjx9yec.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/markdown-Cvjx9yec.js",
+      "sha256": "ce6a8b1a6ed9b803b1847231214ba37621c2fa51611ec3037d38b561b360c278",
+      "bytes": 59335,
+      "recorded": "2026-10-13T14:12:23-0300"
+    },
+    "dist-assets/marko-DjSrsDqO.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/marko-DjSrsDqO.js",
+      "sha256": "48e64452df45eac2cb4e3b01aa799b084c1eab8bed09cb8d4e48a8b0039a4b64",
+      "bytes": 25479,
+      "recorded": "2026-10-13T14:12:23-0300"
+    },
+    "dist-assets/material-theme-D5KoaKCx.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/material-theme-D5KoaKCx.js",
+      "sha256": "d0950f3965aecb678089843c133f238db6b308f218e98bdee1412de56b0af425",
+      "bytes": 18615,
+      "recorded": "2026-10-13T14:12:23-0300"
+    },
+    "dist-assets/material-theme-darker-BfHTSMKl.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/material-theme-darker-BfHTSMKl.js",
+      "sha256": "ec892813b7a31e9e2d83f54a05450f9a406de273628838b016e828db7ed72572",
+      "bytes": 18629,
+      "recorded": "2026-10-13T14:12:23-0300"
+    },
+    "dist-assets/material-theme-lighter-B0m2ddpp.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/material-theme-lighter-B0m2ddpp.js",
+      "sha256": "4547e1325624259cb17dfa811e29b0d3e3f9a07c9f37b4cb8d4b4f945d9f2f5b",
+      "bytes": 18634,
+      "recorded": "2026-10-13T14:12:23-0300"
+    },
+    "dist-assets/material-theme-ocean-CyktbL80.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/material-theme-ocean-CyktbL80.js",
+      "sha256": "f80d8209f2d352d0aea9f47759017fa0f994e71e79db1e722be9d82a974692a4",
+      "bytes": 18629,
+      "recorded": "2026-10-13T14:12:23-0300"
+    },
+    "dist-assets/material-theme-palenight-Csfq5Kiy.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/material-theme-palenight-Csfq5Kiy.js",
+      "sha256": "6261dfa64833f4e0c0316a1d41efc5ba6fc43a376bca6f936b4f3b76a6396af7",
+      "bytes": 18635,
+      "recorded": "2026-10-13T14:12:23-0300"
+    },
+    "dist-assets/matlab-D7o27uSR.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/matlab-D7o27uSR.js",
+      "sha256": "463b698b6acd5b08065007f5376b060dda4fe19f9e27259da52d40a30bc2bc66",
+      "bytes": 16086,
+      "recorded": "2026-10-13T14:12:23-0300"
+    },
+    "dist-assets/mdc-DTYItulj.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/mdc-DTYItulj.js",
+      "sha256": "410389d2d410e59bb0ad34918cfe1abb79856e3c6a181777491d379290302ddf",
+      "bytes": 19632,
+      "recorded": "2026-10-13T14:12:23-0300"
+    },
+    "dist-assets/mdx-Cmh6b_Ma.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/mdx-Cmh6b_Ma.js",
+      "sha256": "c2c652334464f6085341dd1c46e32717e22556890fbc0d2651d9200f372069bb",
+      "bytes": 136114,
+      "recorded": "2026-10-13T14:12:23-0300"
+    },
+    "dist-assets/mermaid-mWjccvbQ.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/mermaid-mWjccvbQ.js",
+      "sha256": "6802dd4aaed6afb26068d1b0acc945071cd5360809baec6b102fc2ac23d8a322",
+      "bytes": 29511,
+      "recorded": "2026-10-13T14:12:23-0300"
+    },
+    "dist-assets/min-dark-CafNBF8u.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/min-dark-CafNBF8u.js",
+      "sha256": "4c0956f147c2dd5aef71894b78d7e95b7a766deeb20712ad94e5897bed620792",
+      "bytes": 6291,
+      "recorded": "2026-10-13T14:12:23-0300"
+    },
+    "dist-assets/min-light-CTRr51gU.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/min-light-CTRr51gU.js",
+      "sha256": "27e91e09c261ea328ed371e734655f83543da150143a49d5ae39598dad6cd844",
+      "bytes": 6969,
+      "recorded": "2026-10-13T14:12:23-0300"
+    },
+    "dist-assets/mipsasm-CKIfxQSi.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/mipsasm-CKIfxQSi.js",
+      "sha256": "c2cdb4e8e7172f68f5bb6e0615696c2a023a2b8bfe008f424c8bbae1e120dd2b",
+      "bytes": 3259,
+      "recorded": "2026-10-13T14:12:23-0300"
+    },
+    "dist-assets/mojo-rZm6bMo-.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/mojo-rZm6bMo-.js",
+      "sha256": "9e70dea75c07fa27e22d7f5bce1afe758f65ecfcaa4c48682e67a83f00d17dc5",
+      "bytes": 69799,
+      "recorded": "2026-10-13T14:12:23-0300"
+    },
+    "dist-assets/monokai-D4h5O-jR.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/monokai-D4h5O-jR.js",
+      "sha256": "cff833ee8a81cd91ccfa57ee0d5924577aa1406e209a80087bb9675ad2ea8d0f",
+      "bytes": 7884,
+      "recorded": "2026-10-13T14:12:23-0300"
+    },
+    "dist-assets/moonbit-_H4v1dQx.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/moonbit-_H4v1dQx.js",
+      "sha256": "ce085206edfae15f55e78824eac04480d7169ea96755d6fc4e57642c5641c0a4",
+      "bytes": 5900,
+      "recorded": "2026-10-13T14:12:23-0300"
+    },
+    "dist-assets/move-IF9eRakj.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/move-IF9eRakj.js",
+      "sha256": "e90046ae9e34086d261731f85a1399439ece1b8cd11635066a2fb910eb3f73f5",
+      "bytes": 17505,
+      "recorded": "2026-10-13T14:12:23-0300"
+    },
+    "dist-assets/narrat-DRg8JJMk.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/narrat-DRg8JJMk.js",
+      "sha256": "37b1a4a08e1a0d4cf06e1ca8adddf1c51b9600b695f017b911799099ac5d8671",
+      "bytes": 3672,
+      "recorded": "2026-10-13T14:12:23-0300"
+    },
+    "dist-assets/nextflow-C-mBbutL.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/nextflow-C-mBbutL.js",
+      "sha256": "7c78f3d862753953afee76d5ae146df0b7dd4febb549893199ada62ae433b4b9",
+      "bytes": 4510,
+      "recorded": "2026-10-13T14:12:24-0300"
+    },
+    "dist-assets/nextflow-groovy-vE_lwT2v.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/nextflow-groovy-vE_lwT2v.js",
+      "sha256": "b5e6334e56f5db6b389035922e884a0adb984b420b231d71be73d6716b337815",
+      "bytes": 10438,
+      "recorded": "2026-10-13T14:12:24-0300"
+    },
+    "dist-assets/nginx-BpAMiNFr.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/nginx-BpAMiNFr.js",
+      "sha256": "25b53af8ecce64bdefc084c8b7af5f27537ef7022618e8d90e4b20fd1ebe485f",
+      "bytes": 35374,
+      "recorded": "2026-10-13T14:12:24-0300"
+    },
+    "dist-assets/night-owl-C39BiMTA.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/night-owl-C39BiMTA.js",
+      "sha256": "2b8554d4a01b6e062bb929507c741070c04d4f194b424942c5f208891afa1360",
+      "bytes": 28913,
+      "recorded": "2026-10-13T14:12:24-0300"
+    },
+    "dist-assets/night-owl-light-CMTm3GFP.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/night-owl-light-CMTm3GFP.js",
+      "sha256": "68b5b21d900e1409b772220982c7837bd77003f084069160edc37f9eccd46758",
+      "bytes": 25902,
+      "recorded": "2026-10-13T14:12:24-0300"
+    },
+    "dist-assets/nim-BIad80T-.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/nim-BIad80T-.js",
+      "sha256": "ec12b2bd40df8b6bd6f9fed275a730551db132b69a8a420ddab621702c3bd5b8",
+      "bytes": 22460,
+      "recorded": "2026-10-13T14:12:24-0300"
+    },
+    "dist-assets/nix-CwoSXNpI.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/nix-CwoSXNpI.js",
+      "sha256": "1d064eb88b18c48846c1ad0e438c869aa25813361efba72de9725932c0310449",
+      "bytes": 15511,
+      "recorded": "2026-10-13T14:12:24-0300"
+    },
+    "dist-assets/nord-Ddv68eIx.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/nord-Ddv68eIx.js",
+      "sha256": "243a9dfea9c93c40586d279de5ea4cd8f3de380c2e3c0ea7ba58e93ef12cbcf5",
+      "bytes": 26723,
+      "recorded": "2026-10-13T14:12:24-0300"
+    },
+    "dist-assets/nushell-Cz2AlsmD.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/nushell-Cz2AlsmD.js",
+      "sha256": "14a523801c0d9238c1c62d5f5055c80cffc460564875f4b3e020f7e4d27a72c6",
+      "bytes": 20413,
+      "recorded": "2026-10-13T14:12:24-0300"
+    },
+    "dist-assets/objective-c-DXmwc3jG.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/objective-c-DXmwc3jG.js",
+      "sha256": "aa3b80179150c0bf74649497bbeb60a36f025631ea64ca23c9e2aca64ec71c44",
+      "bytes": 105413,
+      "recorded": "2026-10-13T14:12:24-0300"
+    },
+    "dist-assets/objective-cpp-CLxacb5B.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/objective-cpp-CLxacb5B.js",
+      "sha256": "9841e552a948f571c39f594fc27661f1262e589c9f53898c8ac2de469b1d85f3",
+      "bytes": 171972,
+      "recorded": "2026-10-13T14:12:24-0300"
+    },
+    "dist-assets/ocaml-C0hk2d4L.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/ocaml-C0hk2d4L.js",
+      "sha256": "eb5a88927867a33e866a8fea38c91799b28739c6038264e5a3560519951d1dc3",
+      "bytes": 62449,
+      "recorded": "2026-10-13T14:12:24-0300"
+    },
+    "dist-assets/odin-BBf5iR-q.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/odin-BBf5iR-q.js",
+      "sha256": "886d9212bdf48ee8eb6ba85adb1a07ca6519e5c60e4e73b5323c1cb4d8969939",
+      "bytes": 16513,
+      "recorded": "2026-10-13T14:12:24-0300"
+    },
+    "dist-assets/one-dark-pro-DVMEJ2y_.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/one-dark-pro-DVMEJ2y_.js",
+      "sha256": "7c55d00426abb85391f3432fd1282150e0bd7d54a8e5de7553a1d65c31459eb2",
+      "bytes": 33787,
+      "recorded": "2026-10-13T14:12:24-0300"
+    },
+    "dist-assets/one-light-C3Wv6jpd.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/one-light-C3Wv6jpd.js",
+      "sha256": "8f9b7f248dd34ae2acccfb35c8c095f0b581ea4e0d3351c7fe25721b914ae177",
+      "bytes": 25300,
+      "recorded": "2026-10-13T14:12:24-0300"
+    },
+    "dist-assets/openscad-C4EeE6gA.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/openscad-C4EeE6gA.js",
+      "sha256": "36bb06e21f4dae2e8f47a92050501a4c989273bafde4096e151f591635fbed55",
+      "bytes": 2824,
+      "recorded": "2026-10-13T14:12:24-0300"
+    },
+    "dist-assets/PaneWindowApp-eKRSR4SE.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/PaneWindowApp-eKRSR4SE.js",
+      "sha256": "efe7473e9b02efbee02a4d66940fe6bb60b8ce0fa242eee28d3de6fb4b0d9bae",
+      "bytes": 2161,
+      "recorded": "2026-10-13T14:12:24-0300"
+    },
+    "dist-assets/paneWindows-Cex4QF0T.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/paneWindows-Cex4QF0T.js",
+      "sha256": "0eb2eabebc86c36451c0102390252232a74544eeb9458adfa5d8c7565b12c1d1",
+      "bytes": 1478,
+      "recorded": "2026-10-13T14:12:24-0300"
+    },
+    "dist-assets/pascal-D93ZcfNL.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/pascal-D93ZcfNL.js",
+      "sha256": "65c2b6be568561feb139eb54e384137c54c3d53b49be7be851e28aa0fc2f8c22",
+      "bytes": 4150,
+      "recorded": "2026-10-13T14:12:24-0300"
+    },
+    "dist-assets/path-BX-Fzz8V.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/path-BX-Fzz8V.js",
+      "sha256": "4d683c53ff3953dca39688ebdc9d7574f814cda129a8bd663dbecd8314668370",
+      "bytes": 3791,
+      "recorded": "2026-10-13T14:12:24-0300"
+    },
+    "dist-assets/perl-NvoQZIq0.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/perl-NvoQZIq0.js",
+      "sha256": "398d1e2ebbe76ed8108137e3e083c23b9f60263e5600a89ddc17ead6737c853a",
+      "bytes": 43156,
+      "recorded": "2026-10-13T14:12:24-0300"
+    },
+    "dist-assets/php-R6g_5hLQ.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/php-R6g_5hLQ.js",
+      "sha256": "063a824ba7d31595abc14e2e8b2b705487788c69e16991d0b228012e19128ed4",
+      "bytes": 111319,
+      "recorded": "2026-10-13T14:12:25-0300"
+    },
+    "dist-assets/pkl-u5AG7uiY.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/pkl-u5AG7uiY.js",
+      "sha256": "1acafc1de9c65cd06c2b6a3b0bfb928a92fd13fa5182fbc4df0f03f41ca79c24",
+      "bytes": 10372,
+      "recorded": "2026-10-13T14:12:25-0300"
+    },
+    "dist-assets/plastic-3e1v2bzS.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/plastic-3e1v2bzS.js",
+      "sha256": "f507b7e3105e92c0d7de6346751da2f369d9d10a9237539fb2f41ca22f3f674d",
+      "bytes": 9295,
+      "recorded": "2026-10-13T14:12:25-0300"
+    },
+    "dist-assets/plsql-ChMvpjG-.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/plsql-ChMvpjG-.js",
+      "sha256": "5b08ff2f2caca88ca87a1e02c740ec32d06d8b96d70e210abcc2729858cd9a2e",
+      "bytes": 8512,
+      "recorded": "2026-10-13T14:12:25-0300"
+    },
+    "dist-assets/po-BTJTHyun.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/po-BTJTHyun.js",
+      "sha256": "c6925708c8b9b9a2793d10218ab601e30f79eab0c2892985fd6b3f8382377b32",
+      "bytes": 3239,
+      "recorded": "2026-10-13T14:12:25-0300"
+    },
+    "dist-assets/poimandres-CS3Unz2-.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/poimandres-CS3Unz2-.js",
+      "sha256": "f3a6399c5ae3fe8b7ce02c29c7278199a4ca3ff9b39be1b455a9124c17227de3",
+      "bytes": 33494,
+      "recorded": "2026-10-13T14:12:25-0300"
+    },
+    "dist-assets/polar-C0HS_06l.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/polar-C0HS_06l.js",
+      "sha256": "b6205f4f60671b327a436f3a5c02197826ed563c0c23d22d8231095515274c6d",
+      "bytes": 4671,
+      "recorded": "2026-10-13T14:12:25-0300"
+    },
+    "dist-assets/postcss-CXtECtnM.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/postcss-CXtECtnM.js",
+      "sha256": "748810304adf9da83f71983e99219a242fac24424483e68c0145e0edb6610136",
+      "bytes": 6417,
+      "recorded": "2026-10-13T14:12:25-0300"
+    },
+    "dist-assets/powerquery-CEu0bR-o.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/powerquery-CEu0bR-o.js",
+      "sha256": "2560bd4cef47cf5dee7b8c2204ae8008ce73f85f41764683afa1d0988f4d1d7e",
+      "bytes": 5903,
+      "recorded": "2026-10-13T14:12:25-0300"
+    },
+    "dist-assets/powershell-Dpen1YoG.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/powershell-Dpen1YoG.js",
+      "sha256": "97259eb4370f2ded7fb394e103aec42e12ff7c2ba37c846a43506410672cb473",
+      "bytes": 20151,
+      "recorded": "2026-10-13T14:12:25-0300"
+    },
+    "dist-assets/prisma-Dd19v3D-.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/prisma-Dd19v3D-.js",
+      "sha256": "82e0167743a332958b14c0e40875bf207de8def0521189323b3ae3066e715615",
+      "bytes": 6330,
+      "recorded": "2026-10-13T14:12:25-0300"
+    },
+    "dist-assets/prolog-CbFg5uaA.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/prolog-CbFg5uaA.js",
+      "sha256": "3cbc885011b27249f5a0b7660b6f7c87ac5ab4f44487107cc1e92d0c19ebb3cd",
+      "bytes": 11356,
+      "recorded": "2026-10-13T14:12:25-0300"
+    },
+    "dist-assets/proto-C7zT0LnQ.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/proto-C7zT0LnQ.js",
+      "sha256": "2f6893062281306a31a73dcc50949a332ade86a11565f7b78d66e28ed2aaa627",
+      "bytes": 6548,
+      "recorded": "2026-10-13T14:12:25-0300"
+    },
+    "dist-assets/pug-DKIMFp6K.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/pug-DKIMFp6K.js",
+      "sha256": "c483d3e6e2d9a710ab36dba068fb4efbb1810cc2fbe7387b023bf6d2f53ade88",
+      "bytes": 13842,
+      "recorded": "2026-10-13T14:12:25-0300"
+    },
+    "dist-assets/puppet-BMWR74SV.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/puppet-BMWR74SV.js",
+      "sha256": "a7a22bdeccfe37f60d59da8851019f47f08eef8250f9a1e2f25560c12a021467",
+      "bytes": 11437,
+      "recorded": "2026-10-13T14:12:25-0300"
+    },
+    "dist-assets/purescript-CklMAg4u.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/purescript-CklMAg4u.js",
+      "sha256": "8fd484a61ea9faa0ef7e299f9188cb74dabea59625c822f537f7ae850d18daac",
+      "bytes": 24686,
+      "recorded": "2026-10-13T14:12:25-0300"
+    },
+    "dist-assets/python-B6aJPvgy.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/python-B6aJPvgy.js",
+      "sha256": "7652ab863f920a5959c4aa52d6decb8c11d23fd590773977ce8aa0fbb3c555c4",
+      "bytes": 69952,
+      "recorded": "2026-10-13T14:12:25-0300"
+    },
+    "dist-assets/qml-3beO22l8.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/qml-3beO22l8.js",
+      "sha256": "5c58408fde8b3b813f2519a720d074dc688eaff4cc4b6db2fb1b6215dd4aff65",
+      "bytes": 5336,
+      "recorded": "2026-10-13T14:12:25-0300"
+    },
+    "dist-assets/qmldir-C8lEn-DE.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/qmldir-C8lEn-DE.js",
+      "sha256": "ad76c02c2bb338b0314af1cb1514f1fbbd31a1a78d5d931632e313fb9b374480",
+      "bytes": 1002,
+      "recorded": "2026-10-13T14:12:25-0300"
+    },
+    "dist-assets/qss-IeuSbFQv.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/qss-IeuSbFQv.js",
+      "sha256": "24a87ea2b74ac3f815e14d173752f42380cd4ad6faabba3b0737c66c83d7e8c3",
+      "bytes": 7472,
+      "recorded": "2026-10-13T14:12:25-0300"
+    },
+    "dist-assets/r-Dspwwk_N.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/r-Dspwwk_N.js",
+      "sha256": "a535cd6fea8b2a66a5f5433a367db740066053ae8ad3a531d8ed351b5fadf5a1",
+      "bytes": 6541,
+      "recorded": "2026-10-13T14:12:25-0300"
+    },
+    "dist-assets/racket-BqYA7rlc.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/racket-BqYA7rlc.js",
+      "sha256": "34061595fb5ce70cda2139f9d82f5a980821fd92ea3ad48c6bbdde5ce887ff01",
+      "bytes": 92389,
+      "recorded": "2026-10-13T14:12:25-0300"
+    },
+    "dist-assets/raku-DXvB9xmW.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/raku-DXvB9xmW.js",
+      "sha256": "5fcd9c398ef0361d59c9d8122e3f949d13316c2f9dd673a3385c951b768ca711",
+      "bytes": 10472,
+      "recorded": "2026-10-13T14:12:26-0300"
+    },
+    "dist-assets/razor-BDqjjVU7.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/razor-BDqjjVU7.js",
+      "sha256": "2203acd7f389ebe03d6cd1f712cfff24d9b5f9bf84014e382d08325684655812",
+      "bytes": 27510,
+      "recorded": "2026-10-13T14:12:26-0300"
+    },
+    "dist-assets/red-bN70gL4F.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/red-bN70gL4F.js",
+      "sha256": "e16c7107408cb6110f4ef29bac94c1769e589df38f271160e6f52b1a4d27b6df",
+      "bytes": 6262,
+      "recorded": "2026-10-13T14:12:26-0300"
+    },
+    "dist-assets/reg-C-SQnVFl.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/reg-C-SQnVFl.js",
+      "sha256": "c944196b442e75be8722bce04f9aa6ef7698200cfe314e998cd29b70faa75fff",
+      "bytes": 2345,
+      "recorded": "2026-10-13T14:12:26-0300"
+    },
+    "dist-assets/regexp-CDVJQ6XC.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/regexp-CDVJQ6XC.js",
+      "sha256": "4f4da7e45d7bac4acaf584b492337cc0fcfc0b2453073026b7f2d2878935ed7a",
+      "bytes": 7988,
+      "recorded": "2026-10-13T14:12:26-0300"
+    },
+    "dist-assets/rel-C3B-1QV4.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/rel-C3B-1QV4.js",
+      "sha256": "5e46343461aedbfdd92b75bcc78bf3f40b0383490f4e139874221766c4c73158",
+      "bytes": 3368,
+      "recorded": "2026-10-13T14:12:26-0300"
+    },
+    "dist-assets/riscv-BM1_JUlF.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/riscv-BM1_JUlF.js",
+      "sha256": "287e2bda433a92ccd15dbd75b8b95e2ee9ca016d3501387d1b923660fa69a52c",
+      "bytes": 6914,
+      "recorded": "2026-10-13T14:12:26-0300"
+    },
+    "dist-assets/ron-D8l8udqQ.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/ron-D8l8udqQ.js",
+      "sha256": "c91a2f5aabc02f69e8844c66e8abbb5e2d6997c5868b974679b0dca8e68a6746",
+      "bytes": 3914,
+      "recorded": "2026-10-13T14:12:26-0300"
+    },
+    "dist-assets/rose-pine-dawn-DHQR4-dF.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/rose-pine-dawn-DHQR4-dF.js",
+      "sha256": "28569d6dc3cdbec1638a55294d4703993fffc7de3c4f96f9a9e7e0ee58271b45",
+      "bytes": 21754,
+      "recorded": "2026-10-13T14:12:26-0300"
+    },
+    "dist-assets/rose-pine-moon-D4_iv3hh.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/rose-pine-moon-D4_iv3hh.js",
+      "sha256": "54f8cee6d3bb36072d095cf6f3c42304149f984bb8ac005b4329502e469e4f58",
+      "bytes": 21753,
+      "recorded": "2026-10-13T14:12:26-0300"
+    },
+    "dist-assets/rose-pine-qdsjHGoJ.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/rose-pine-qdsjHGoJ.js",
+      "sha256": "bd1f7abe9b7645a7d2ea4769311d5b60b694a0577005cf76f13a76ef5c07034b",
+      "bytes": 21743,
+      "recorded": "2026-10-13T14:12:26-0300"
+    },
+    "dist-assets/rosmsg-BJDFO7_C.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/rosmsg-BJDFO7_C.js",
+      "sha256": "895c74a701284063ecd96cff31b08b9e7d913b68d069907bd562b6db4f2a078d",
+      "bytes": 4523,
+      "recorded": "2026-10-13T14:12:26-0300"
+    },
+    "dist-assets/rst-CRjBmOyv.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/rst-CRjBmOyv.js",
+      "sha256": "927568e03a045cba35d81c8dfada7712004e14e3c3ee4329535101269746744b",
+      "bytes": 10673,
+      "recorded": "2026-10-13T14:12:26-0300"
+    },
+    "dist-assets/ruby-Wjq7vjNf.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/ruby-Wjq7vjNf.js",
+      "sha256": "028305671b41f90f90f07755e8f0fbfb23ec07e56cc385af14d9f8ccd7eea806",
+      "bytes": 46719,
+      "recorded": "2026-10-13T14:12:26-0300"
+    },
+    "dist-assets/rust-B1yitclQ.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/rust-B1yitclQ.js",
+      "sha256": "c48161f6b21740ac415d982a627f24bb81081225f7405632784f667cf915d985",
+      "bytes": 15069,
+      "recorded": "2026-10-13T14:12:26-0300"
+    },
+    "dist-assets/sas-cz2c8ADy.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/sas-cz2c8ADy.js",
+      "sha256": "0605b0f0b9c6e33e0db7008a1ae9ee5d8bfed82f5db17d1124905ab226e320bc",
+      "bytes": 9062,
+      "recorded": "2026-10-13T14:12:26-0300"
+    },
+    "dist-assets/sass-Cj5Yp3dK.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/sass-Cj5Yp3dK.js",
+      "sha256": "d3d1152bdf9e9582f0d94521982944d7dacd0e8ece70a6a51dc621b146f90c05",
+      "bytes": 9289,
+      "recorded": "2026-10-13T14:12:26-0300"
+    },
+    "dist-assets/scala-C151Ov-r.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/scala-C151Ov-r.js",
+      "sha256": "f4811c36dc6a16b2500146c2450c441e8ea673f57505a20c2a03c8b965248c65",
+      "bytes": 28884,
+      "recorded": "2026-10-13T14:12:26-0300"
+    },
+    "dist-assets/scheme-C98Dy4si.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/scheme-C98Dy4si.js",
+      "sha256": "743503a0223f9e794eaa6e2ec9b1a4b9e23870ea92f8a91c608bd5632159a820",
+      "bytes": 7169,
+      "recorded": "2026-10-13T14:12:26-0300"
+    },
+    "dist-assets/scss-D5BDwBP9.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/scss-D5BDwBP9.js",
+      "sha256": "82424791b215254726f7754b2b7ac79cf90ec58a31c023cc959957e832fa0326",
+      "bytes": 27204,
+      "recorded": "2026-10-13T14:12:26-0300"
+    },
+    "dist-assets/sdbl-DVxCFoDh.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/sdbl-DVxCFoDh.js",
+      "sha256": "09bba6eb98cb1660429de423a032b8ecc9e943af9b2ae4dc798fe665b2f4de19",
+      "bytes": 4702,
+      "recorded": "2026-10-13T14:12:26-0300"
+    },
+    "dist-assets/shaderlab-Dg9Lc6iA.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/shaderlab-Dg9Lc6iA.js",
+      "sha256": "0f15272ff852b3807636b594b3f7ee05de4f01acf6cd35622e94c14eed99353f",
+      "bytes": 5922,
+      "recorded": "2026-10-13T14:12:26-0300"
+    },
+    "dist-assets/shellscript-Yzrsuije.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/shellscript-Yzrsuije.js",
+      "sha256": "6a7311ff85af4098e170435bf140299e6be66e458e51d97ff91b2cea51300438",
+      "bytes": 41479,
+      "recorded": "2026-10-13T14:12:26-0300"
+    },
+    "dist-assets/shellsession-BADoaaVG.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/shellsession-BADoaaVG.js",
+      "sha256": "8bb2a6459a5dbbe5364b504567be9b0eec02b9271d893c6377a1bb64d3f13c25",
+      "bytes": 711,
+      "recorded": "2026-10-13T14:12:27-0300"
+    },
+    "dist-assets/slack-dark-BthQWCQV.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/slack-dark-BthQWCQV.js",
+      "sha256": "f9254bd3bd7981950384332249c3bd31ff108fc659edd24b49ee6716bc23fac0",
+      "bytes": 9117,
+      "recorded": "2026-10-13T14:12:27-0300"
+    },
+    "dist-assets/slack-ochin-DqwNpetd.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/slack-ochin-DqwNpetd.js",
+      "sha256": "1ede16ae081bae361e415891901a4aa6dc20de301aef52403863933d74b76783",
+      "bytes": 9431,
+      "recorded": "2026-10-13T14:12:27-0300"
+    },
+    "dist-assets/smalltalk-BERRCDM3.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/smalltalk-BERRCDM3.js",
+      "sha256": "0920bbda736cbf5dc1c5acdeb961dedcdaf98dec24e153fb473c540f21347d6e",
+      "bytes": 6587,
+      "recorded": "2026-10-13T14:12:27-0300"
+    },
+    "dist-assets/snazzy-light-Bw305WKR.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/snazzy-light-Bw305WKR.js",
+      "sha256": "7721708cf2d4a690c8c599de620236acddccbbfedacf09ab0c6cc463f60ebe00",
+      "bytes": 20773,
+      "recorded": "2026-10-13T14:12:27-0300"
+    },
+    "dist-assets/solarized-dark-DXbdFlpD.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/solarized-dark-DXbdFlpD.js",
+      "sha256": "2b283375c0600da201944caca3a2620bb9890d6bc28d69f4b989cca5ec11cb7b",
+      "bytes": 6846,
+      "recorded": "2026-10-13T14:12:27-0300"
+    },
+    "dist-assets/solarized-light-L9t79GZl.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/solarized-light-L9t79GZl.js",
+      "sha256": "873638320dde0e3d4261407d298960260305fd39179da30458271ffc0d6fae56",
+      "bytes": 6480,
+      "recorded": "2026-10-13T14:12:27-0300"
+    },
+    "dist-assets/solidity-rGO070M0.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/solidity-rGO070M0.js",
+      "sha256": "6c8c7573726b8dec0ce1e54415c33e590f4551b15f97dbb34c2eb4426d21543e",
+      "bytes": 16074,
+      "recorded": "2026-10-13T14:12:27-0300"
+    },
+    "dist-assets/soy-8wufbnw4.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/soy-8wufbnw4.js",
+      "sha256": "e7c89ef03550bca1688783434d8247b5fcd3af09699450f82d14e3e3e3a32ec3",
+      "bytes": 6981,
+      "recorded": "2026-10-13T14:12:27-0300"
+    },
+    "dist-assets/sparql-rVzFXLq3.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/sparql-rVzFXLq3.js",
+      "sha256": "7ad999b9fba56728f2297fbee2250f845093f2b57eacd1fcb045d6f5a32d7de2",
+      "bytes": 1480,
+      "recorded": "2026-10-13T14:12:27-0300"
+    },
+    "dist-assets/splunk-BtCnVYZw.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/splunk-BtCnVYZw.js",
+      "sha256": "64ebc92eebd3550e91fbfc5fcbd72bfdec37d3e1d299660140ca28c2cd30cc1f",
+      "bytes": 3436,
+      "recorded": "2026-10-13T14:12:27-0300"
+    },
+    "dist-assets/sql-BLtJtn59.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/sql-BLtJtn59.js",
+      "sha256": "e2621cd8e6d6bc3aad625e5da5afd16b8f1c64a40c77649ac6948a4b306174e5",
+      "bytes": 23407,
+      "recorded": "2026-10-13T14:12:27-0300"
+    },
+    "dist-assets/ssh-config-_ykCGR6B.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/ssh-config-_ykCGR6B.js",
+      "sha256": "59773508bec4b474f7a01df0c9a1d67d9cc6a5e90cd8be3355e7a51d45a48718",
+      "bytes": 3617,
+      "recorded": "2026-10-13T14:12:27-0300"
+    },
+    "dist-assets/stata-BH5u7GGu.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/stata-BH5u7GGu.js",
+      "sha256": "11bb422f2421e05ce75bcfb2c8c8c0795309ac0462249ddc6a8f82cccd985ac9",
+      "bytes": 56991,
+      "recorded": "2026-10-13T14:12:27-0300"
+    },
+    "dist-assets/stylus-BEDo0Tqx.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/stylus-BEDo0Tqx.js",
+      "sha256": "7f4744cdde011a08696b25091cb57a8af8762c48fe52bda2f929376600a17f23",
+      "bytes": 31074,
+      "recorded": "2026-10-13T14:12:27-0300"
+    },
+    "dist-assets/surrealql-Bq5Q-fJD.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/surrealql-Bq5Q-fJD.js",
+      "sha256": "3ca44462a4b2e800e70e918dc6a861fcfb303df674f0109c9373fdac8dfcc130",
+      "bytes": 22583,
+      "recorded": "2026-10-13T14:12:27-0300"
+    },
+    "dist-assets/svelte-Cy7k_4gC.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/svelte-Cy7k_4gC.js",
+      "sha256": "8a74566ff0fda9c8b1f2954b7426257c3fe25d9a9624bcc844686aa175eb73f0",
+      "bytes": 18242,
+      "recorded": "2026-10-13T14:12:27-0300"
+    },
+    "dist-assets/swift-D82vCrfD.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/swift-D82vCrfD.js",
+      "sha256": "8b87fd88e98da6fee33e181d3a03ad5e7fdec59008fa592c28a9ab28e28d8fbe",
+      "bytes": 86687,
+      "recorded": "2026-10-13T14:12:27-0300"
+    },
+    "dist-assets/synthwave-84-CbfX1IO0.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/synthwave-84-CbfX1IO0.js",
+      "sha256": "345be8ec59dedde8193a830c5119b99ab1a263d8a0b8d0d98580b21e5b53856f",
+      "bytes": 14036,
+      "recorded": "2026-10-13T14:12:27-0300"
+    },
+    "dist-assets/system-verilog-CnnmHF94.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/system-verilog-CnnmHF94.js",
+      "sha256": "911a3857f3ec086298e981939056da2893098881fe5c100ec44132ba87f011ba",
+      "bytes": 26203,
+      "recorded": "2026-10-13T14:12:27-0300"
+    },
+    "dist-assets/systemd-4A_iFExJ.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/systemd-4A_iFExJ.js",
+      "sha256": "7ee808ec3ed0bd4d87a6c0b5f034ce21b5522664b1a956381a3c287c674c0ffa",
+      "bytes": 7869,
+      "recorded": "2026-10-13T14:12:27-0300"
+    },
+    "dist-assets/talonscript-CkByrt1z.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/talonscript-CkByrt1z.js",
+      "sha256": "df10bc43abea3666beac95f07c8082bbd953cfcce01b384cac1e5bb783e3d656",
+      "bytes": 6757,
+      "recorded": "2026-10-13T14:12:27-0300"
+    },
+    "dist-assets/tasl-QIJgUcNo.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/tasl-QIJgUcNo.js",
+      "sha256": "f8ad184dcd423a710bfe0a7c84487334383318e2e1b7b98ef0371be9f3e6c130",
+      "bytes": 3288,
+      "recorded": "2026-10-13T14:12:27-0300"
+    },
+    "dist-assets/tcl-dwOrl1Do.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/tcl-dwOrl1Do.js",
+      "sha256": "a1a8b949384eb718737fa7f088b806e0ab6736264dbd3135ca01eaee68295f12",
+      "bytes": 4429,
+      "recorded": "2026-10-13T14:12:28-0300"
+    },
+    "dist-assets/templ-DhtptRzy.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/templ-DhtptRzy.js",
+      "sha256": "0243b01689951261ad4280046d38c9292c7dde9cbc3c8e58611d58ba1b57520d",
+      "bytes": 24064,
+      "recorded": "2026-10-13T14:12:28-0300"
+    },
+    "dist-assets/TerminalManager-C7YXse5Z.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/TerminalManager-C7YXse5Z.js",
+      "sha256": "4f78f1323dbf1fc7c32b06a77092da74562720207524282cc76dbc4b924b5ea6",
+      "bytes": 440405,
+      "recorded": "2026-10-13T14:12:28-0300"
+    },
+    "dist-assets/terraform-BETggiCN.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/terraform-BETggiCN.js",
+      "sha256": "845d38e761505099172e28bb36870b326f66ab907aaa625fcc9c4d0fee4eca49",
+      "bytes": 11389,
+      "recorded": "2026-10-13T14:12:28-0300"
+    },
+    "dist-assets/tex-idrVyKtj.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/tex-idrVyKtj.js",
+      "sha256": "0fb7d18ae0984bfed6a46009afb2a3c59e1b8d2fabd2c9088f66de457306a25a",
+      "bytes": 9669,
+      "recorded": "2026-10-13T14:12:28-0300"
+    },
+    "dist-assets/thumbnailCache-DuGqzHgn.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/thumbnailCache-DuGqzHgn.js",
+      "sha256": "373c8f524eb8e3c1af4ce5d5e78fa7310e019f4777e4f0a6f44c3764643b3b76",
+      "bytes": 1477,
+      "recorded": "2026-10-13T14:12:28-0300"
+    },
+    "dist-assets/tokyo-night-hegEt444.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/tokyo-night-hegEt444.js",
+      "sha256": "e00a860ce7f328571e523246063124ac104fd16c7c4a1939985c04e2912dc8dc",
+      "bytes": 35665,
+      "recorded": "2026-10-13T14:12:28-0300"
+    },
+    "dist-assets/toml-vGWfd6FD.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/toml-vGWfd6FD.js",
+      "sha256": "13957c3e75de850523d59c55223a274de54f38319159b54c11a41e1e909965de",
+      "bytes": 6426,
+      "recorded": "2026-10-13T14:12:28-0300"
+    },
+    "dist-assets/ts-tags-DQrlYJgV.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/ts-tags-DQrlYJgV.js",
+      "sha256": "5231be6640623180b34d8690637a20b166a662acafb5294a1e8dbfe605c19a68",
+      "bytes": 16571,
+      "recorded": "2026-10-13T14:12:28-0300"
+    },
+    "dist-assets/tsv-B_m7g4N7.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/tsv-B_m7g4N7.js",
+      "sha256": "1a04ec966e09f3783309f7536dae8e824d4f8ec6ec0b6e1880c1b95a3d17762b",
+      "bytes": 739,
+      "recorded": "2026-10-13T14:12:28-0300"
+    },
+    "dist-assets/tsx-COt5Ahok.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/tsx-COt5Ahok.js",
+      "sha256": "6f65bdaf80285d2241cf747f58b0c2bdd7485e25bbfbc0144840ed8e13f31a4d",
+      "bytes": 175536,
+      "recorded": "2026-10-13T14:12:28-0300"
+    },
+    "dist-assets/turtle-BsS91CYL.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/turtle-BsS91CYL.js",
+      "sha256": "b39750a94e32101604c09b24cbc2b03cfec7089ea6b3af27863d2889003046bd",
+      "bytes": 3700,
+      "recorded": "2026-10-13T14:12:28-0300"
+    },
+    "dist-assets/twig-xg9kU7Mw.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/twig-xg9kU7Mw.js",
+      "sha256": "6f1c2dce3cd1d2cf06f3cc4b31e10be24047b9564390d9096ee313ffd1767c3f",
+      "bytes": 21364,
+      "recorded": "2026-10-13T14:12:28-0300"
+    },
+    "dist-assets/typescript-BPQ3VLAy.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/typescript-BPQ3VLAy.js",
+      "sha256": "fcdcca54a7ccb637627d4dba50774a3dc7a5bae93a9f0a43c7748114b1d1d75f",
+      "bytes": 181080,
+      "recorded": "2026-10-13T14:12:28-0300"
+    },
+    "dist-assets/typespec-CAFt9gP4.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/typespec-CAFt9gP4.js",
+      "sha256": "e1c6fefd6eda7001eeff766e90748b59a26bef3d5cbb7e35c3ed02d6b27fad3a",
+      "bytes": 25045,
+      "recorded": "2026-10-13T14:12:28-0300"
+    },
+    "dist-assets/typst-DHCkPAjA.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/typst-DHCkPAjA.js",
+      "sha256": "ff1b2bfc233e39112abd22f9ac638a833f1a2504929034f4559c9d88a1ecbcb2",
+      "bytes": 8387,
+      "recorded": "2026-10-13T14:12:28-0300"
+    },
+    "dist-assets/v-BcVCzyr7.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/v-BcVCzyr7.js",
+      "sha256": "3580b3a6f9b7d1b570299b26518f866efd3d264369f1569395ddee1c39918af6",
+      "bytes": 13214,
+      "recorded": "2026-10-13T14:12:28-0300"
+    },
+    "dist-assets/vala-CsfeWuGM.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/vala-CsfeWuGM.js",
+      "sha256": "9ca40f96a2c5ea6c15a4aa070af170b6a4fb19dce1aea0162639c456e88c1ee6",
+      "bytes": 3370,
+      "recorded": "2026-10-13T14:12:28-0300"
+    },
+    "dist-assets/vb-D17OF-Vu.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/vb-D17OF-Vu.js",
+      "sha256": "c07bc7f87b29209a696181ee1952faa6855fc8424975a04514315972d652da0a",
+      "bytes": 6093,
+      "recorded": "2026-10-13T14:12:28-0300"
+    },
+    "dist-assets/verilog-BQ8w6xss.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/verilog-BQ8w6xss.js",
+      "sha256": "d4e90d3476e4c94e05271d13254bb7ce735ba6fd8ed49292337d9356368a9eaa",
+      "bytes": 5931,
+      "recorded": "2026-10-13T14:12:28-0300"
+    },
+    "dist-assets/vesper-DU1UobuO.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/vesper-DU1UobuO.js",
+      "sha256": "ad07a972a70962a9f68b1028c90126dc75057cf9dd98f079d050a1bd11e6e19e",
+      "bytes": 12692,
+      "recorded": "2026-10-13T14:12:28-0300"
+    },
+    "dist-assets/vhdl-CeAyd5Ju.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/vhdl-CeAyd5Ju.js",
+      "sha256": "4aa59b0e56b6ade915050f27c9359de4b33c7435f1e715b1027f6c44ff08d05f",
+      "bytes": 24264,
+      "recorded": "2026-10-13T14:12:28-0300"
+    },
+    "dist-assets/viml-CJc9bBzg.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/viml-CJc9bBzg.js",
+      "sha256": "255a5fbaf5961b394d403c022e2b57baf6855132db6ab4e8b3f8b6ccffdc5fc6",
+      "bytes": 20365,
+      "recorded": "2026-10-13T14:12:28-0300"
+    },
+    "dist-assets/vitesse-black-Bkuqu6BP.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/vitesse-black-Bkuqu6BP.js",
+      "sha256": "f25530f6e39e64d7dcc0464821c2fff73bf5aab1e311d61645cd740e886a2160",
+      "bytes": 13677,
+      "recorded": "2026-10-13T14:12:29-0300"
+    },
+    "dist-assets/vitesse-dark-D0r3Knsf.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/vitesse-dark-D0r3Knsf.js",
+      "sha256": "f3a4064c8e89ebd2349cf3dbf3e211d73b05d11cbd9bbc00feefa1820d74990b",
+      "bytes": 13759,
+      "recorded": "2026-10-13T14:12:29-0300"
+    },
+    "dist-assets/vitesse-light-CVO1_9PV.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/vitesse-light-CVO1_9PV.js",
+      "sha256": "272401bf8f7fa77313d7d3dbdc609a59bde479c8d69763047b5aa508e16ead9d",
+      "bytes": 13616,
+      "recorded": "2026-10-13T14:12:29-0300"
+    },
+    "dist-assets/vue-D2xRrEX4.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/vue-D2xRrEX4.js",
+      "sha256": "5db9f693fc2acf838cd6a210246135754fc3f82e8688b99558deab5441979ea9",
+      "bytes": 24484,
+      "recorded": "2026-10-13T14:12:29-0300"
+    },
+    "dist-assets/vue-html-AaS7Mt5G.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/vue-html-AaS7Mt5G.js",
+      "sha256": "a9066b052de965759c4456bed9e3e412c25f1050f3585a2dc6714747bbec1c0e",
+      "bytes": 8472,
+      "recorded": "2026-10-13T14:12:29-0300"
+    },
+    "dist-assets/vue-vine-BoDAl6tE.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/vue-vine-BoDAl6tE.js",
+      "sha256": "afa7f4368fcaa78d83c5a184c2905effd031a31b5ef776352e62e219414a6496",
+      "bytes": 190051,
+      "recorded": "2026-10-13T14:12:29-0300"
+    },
+    "dist-assets/vyper-CDx5xZoG.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/vyper-CDx5xZoG.js",
+      "sha256": "ff66f70ed9d0a15a77389cfc35cef85ff1f4932bef9e508f9a19b1c87d7f46e9",
+      "bytes": 74648,
+      "recorded": "2026-10-13T14:12:29-0300"
+    },
+    "dist-assets/wasm-CG6Dc4jp.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/wasm-CG6Dc4jp.js",
+      "sha256": "8deb47b0d7b203f733275b554ccf654df3b76026bd14cab89130ae2a61abd719",
+      "bytes": 622336,
+      "recorded": "2026-10-13T14:12:29-0300"
+    },
+    "dist-assets/wasm-MzD3tlZU.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/wasm-MzD3tlZU.js",
+      "sha256": "ecac025bef526964873260d057a8af935fe8b86da2b9845051051266b019c8da",
+      "bytes": 12007,
+      "recorded": "2026-10-13T14:12:29-0300"
+    },
+    "dist-assets/webviewWindow-DlJWJZIi.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/webviewWindow-DlJWJZIi.js",
+      "sha256": "54fe98b54ba9de7e9319b186b2ec4265655bfc2abc4c45c5b00384efce393df7",
+      "bytes": 4838,
+      "recorded": "2026-10-13T14:12:29-0300"
+    },
+    "dist-assets/wenyan-BV7otONQ.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/wenyan-BV7otONQ.js",
+      "sha256": "40ed524c0cfce810853c17a6e99f8c357dc1ea9d5df901dcf60a2b7a45e63f7f",
+      "bytes": 2157,
+      "recorded": "2026-10-13T14:12:29-0300"
+    },
+    "dist-assets/wgsl-Dx-B1_4e.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/wgsl-Dx-B1_4e.js",
+      "sha256": "97dee41e3f719e15ac2c06cbf36677252c7654e254f178128113744841a4806e",
+      "bytes": 5144,
+      "recorded": "2026-10-13T14:12:29-0300"
+    },
+    "dist-assets/wikitext-BhOHFoWU.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/wikitext-BhOHFoWU.js",
+      "sha256": "22c8b6a379a9a1aa4df1fa90a85d054b78c5414e772c062611997d98de2cdb64",
+      "bytes": 55885,
+      "recorded": "2026-10-13T14:12:29-0300"
+    },
+    "dist-assets/window-K8xIpJvV.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/window-K8xIpJvV.js",
+      "sha256": "6ba36ddcbf4d92ba6116e96873790ed0dc2fba32622422b20786c0eddbe16fc2",
+      "bytes": 158773,
+      "recorded": "2026-10-13T14:12:29-0300"
+    },
+    "dist-assets/wit-5i3qLPDT.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/wit-5i3qLPDT.js",
+      "sha256": "2b2cfcdfceebf61cad332a1b126a7bce2afe89b0b5c6bf8791067154e8229bb9",
+      "bytes": 21467,
+      "recorded": "2026-10-13T14:12:29-0300"
+    },
+    "dist-assets/wolfram-lXgVvXCa.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/wolfram-lXgVvXCa.js",
+      "sha256": "5077bf9f804422eafafce9c7bc5bfd04f094ae624f0136c9a33daeac942fe75d",
+      "bytes": 262391,
+      "recorded": "2026-10-13T14:12:29-0300"
+    },
+    "dist-assets/worldRoute-C8jOUwCw.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/worldRoute-C8jOUwCw.js",
+      "sha256": "1bcc7bbf0cb65cf255c907d4cbf5709c739b69bed87d0120a8021a19281b3792",
+      "bytes": 197,
+      "recorded": "2026-10-13T14:12:29-0300"
+    },
+    "dist-assets/WorldView-n1dTWgZT.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/WorldView-n1dTWgZT.js",
+      "sha256": "4cb676958de93cfbacd87da0f517e8bf8ca04480423ddc6dea71e6b6e419e787",
+      "bytes": 136584,
+      "recorded": "2026-10-13T14:12:29-0300"
+    },
+    "dist-assets/xml-sdJ4AIDG.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/xml-sdJ4AIDG.js",
+      "sha256": "50f00554f7503986c098ada8706f8e6a8fdad39e5158c7626d31532a883a51e8",
+      "bytes": 5384,
+      "recorded": "2026-10-13T14:12:29-0300"
+    },
+    "dist-assets/xsl-CtQFsRM5.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/xsl-CtQFsRM5.js",
+      "sha256": "b47bbb39b319947a57525dc114ec30eb2e697bf451be75f0b79850866f6811be",
+      "bytes": 1385,
+      "recorded": "2026-10-13T14:12:29-0300"
+    },
+    "dist-assets/yaml-Buea-lGh.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/yaml-Buea-lGh.js",
+      "sha256": "a7a8b4fc14fa7ba338598f61185a3a13e49d7450830af367407ae61b9634bede",
+      "bytes": 10506,
+      "recorded": "2026-10-13T14:12:29-0300"
+    },
+    "dist-assets/zenscript-DVFEvuxE.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/zenscript-DVFEvuxE.js",
+      "sha256": "58a812eb8d71121ee3bd6e513b8a20555bec44f968f7c378bd7ecbfde05866a7",
+      "bytes": 3912,
+      "recorded": "2026-10-13T14:12:29-0300"
+    },
+    "dist-assets/zig-VOosw3JB.js": {
+      "step": "2",
+      "path": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/ui/command-center/dist/assets/zig-VOosw3JB.js",
+      "sha256": "7c369292579d89b781e91b76a4df1bfba604287c7a5e2c426925935ef08c0841",
+      "bytes": 5340,
+      "recorded": "2026-10-13T14:12:30-0300"
+    },
+    "bundle-main-exe": {
+      "step": "3",
+      "path": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/release/bundle/macos/Permagent.app/Contents/MacOS/permagent-app",
+      "sha256": "aa5e0e110d9a4c2a992402ab6cc7d0aaf259310cef0bb076fc56a9b28b225787",
+      "bytes": 89574832,
+      "recorded": "2026-10-13T14:26:05-0300"
+    },
+    "bundle-permagentd": {
+      "step": "4",
+      "path": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/release/bundle/macos/Permagent.app/Contents/MacOS/permagentd",
+      "sha256": "203f1dea2d41bda76761662312d9ff7f2e95d50971acf192dd2ef165f0d4b1fe",
+      "bytes": 366068496,
+      "recorded": "2026-10-13T14:27:35-0300"
+    },
+    "bundle-permagent": {
+      "step": "4",
+      "path": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/release/bundle/macos/Permagent.app/Contents/MacOS/permagent",
+      "sha256": "4634e9a19989c1ca048577f96540060fb7996c7942206e13bcb45a05f391d6be",
+      "bytes": 275895552,
+      "recorded": "2026-10-13T14:27:36-0300"
+    },
+    "bundle-permagent-app": {
+      "step": "4",
+      "path": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/release/bundle/macos/Permagent.app/Contents/MacOS/permagent-app",
+      "sha256": "aa5e0e110d9a4c2a992402ab6cc7d0aaf259310cef0bb076fc56a9b28b225787",
+      "bytes": 89574832,
+      "recorded": "2026-10-13T14:27:37-0300"
+    },
+    "bundle-audiocap": {
+      "step": "4",
+      "path": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/release/bundle/macos/Permagent.app/Contents/Resources/permagent-audiocap",
+      "sha256": "9a5318d4b09cd3011987baf5e5abe1d7b99a783364e745f15350e50d8a72cdd4",
+      "bytes": 193872,
+      "recorded": "2026-10-13T14:27:37-0300"
+    },
+    "bundle-libonnxruntime.dylib": {
+      "step": "4",
+      "path": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/release/bundle/macos/Permagent.app/Contents/Frameworks/libonnxruntime.dylib",
+      "sha256": "bae70d236183c779433f42e5c5ee00d45e5c76bf40c15abde6fcd5f9ddeee952",
+      "bytes": 28025744,
+      "recorded": "2026-10-13T14:27:38-0300"
+    },
+    "bundle-libsherpa-onnx-c-api.dylib": {
+      "step": "4",
+      "path": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/release/bundle/macos/Permagent.app/Contents/Frameworks/libsherpa-onnx-c-api.dylib",
+      "sha256": "90a71273a2d707026136b88bda9cf6390498ac736e346269877a004cf9cf13ef",
+      "bytes": 4102896,
+      "recorded": "2026-10-13T14:27:38-0300"
+    },
+    "installed-permagentd": {
+      "step": "5",
+      "path": "/Applications/Permagent.app/Contents/MacOS/permagentd",
+      "sha256": "203f1dea2d41bda76761662312d9ff7f2e95d50971acf192dd2ef165f0d4b1fe",
+      "bytes": 366068496,
+      "recorded": "2026-10-13T14:29:42-0300"
+    },
+    "installed-permagent-app": {
+      "step": "5",
+      "path": "/Applications/Permagent.app/Contents/MacOS/permagent-app",
+      "sha256": "aa5e0e110d9a4c2a992402ab6cc7d0aaf259310cef0bb076fc56a9b28b225787",
+      "bytes": 89574832,
+      "recorded": "2026-10-13T14:29:43-0300"
+    }
+  },
+  "facts": {
+    "baseline.shell_sha256": "a82a306a27434132a0c7e656f61a292003455c627fb64fd2e4f488400bb5653e",
+    "baseline.daemon_sha256": "ab6342c12960ba447ccf89f2f4eddc512807df463da6c9a04f788715b9415f14",
+    "baseline.api_git_sha": "f233d3145",
+    "baseline.daemon_pid": "65189",
+    "baseline.device_count": "5",
+    "baseline.device_mtime": "1791851676",
+    "baseline.tailscale_serve_status": "http://jesses-mac-mini-1 (tailnet only)\nhttp://jesses-mac-mini-1.tail4429f1.ts.net (tailnet only)\n|-- / proxy http://127.0.0.1:3001",
+    "head_sha9": "39ea442bf",
+    "daemon_artefact": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/release/deps/permagentd-14660532804f8fda",
+    "cli_artefact": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/release/deps/permagent-30145bd359e22f8c",
+    "cli_sha256": "03f77cc7b99b79a5c816bbe1ec35118cc4500d573518b26fbc975e7843ab63ff",
+    "audiocap_sha256": "03ffdfa5acd042b9d78488d04dd0d3f40d216195088e817ca7be6fdd1a32ceaf",
+    "daemon_sha256": "f8e57e2d1705f04864fb7556c074a63acdbc62170333911e118890bb8b5af955",
+    "git_sha9": "97b4fad13",
+    "rollback_path": "/Applications/Permagent.app.before-release-20261013-142902"
+  },
+  "fact_steps": {
+    "baseline.shell_sha256": {
+      "step": "0",
+      "recorded": "2026-10-13T12:40:44-0300"
+    },
+    "baseline.daemon_sha256": {
+      "step": "0",
+      "recorded": "2026-10-13T12:40:44-0300"
+    },
+    "baseline.api_git_sha": {
+      "step": "0",
+      "recorded": "2026-10-13T12:40:44-0300"
+    },
+    "baseline.daemon_pid": {
+      "step": "0",
+      "recorded": "2026-10-13T12:40:44-0300"
+    },
+    "baseline.device_count": {
+      "step": "0",
+      "recorded": "2026-10-13T12:40:44-0300"
+    },
+    "baseline.device_mtime": {
+      "step": "0",
+      "recorded": "2026-10-13T12:40:44-0300"
+    },
+    "baseline.tailscale_serve_status": {
+      "step": "0",
+      "recorded": "2026-10-13T12:40:44-0300"
+    },
+    "head_sha9": {
+      "step": "1",
+      "recorded": "2026-10-13T14:11:25-0300"
+    },
+    "daemon_artefact": {
+      "step": "1",
+      "recorded": "2026-10-13T14:11:45-0300"
+    },
+    "cli_artefact": {
+      "step": "1",
+      "recorded": "2026-10-13T14:11:45-0300"
+    },
+    "cli_sha256": {
+      "step": "1",
+      "recorded": "2026-10-13T14:11:45-0300"
+    },
+    "audiocap_sha256": {
+      "step": "1",
+      "recorded": "2026-10-13T14:11:45-0300"
+    },
+    "daemon_sha256": {
+      "step": "1",
+      "recorded": "2026-10-13T14:11:45-0300"
+    },
+    "git_sha9": {
+      "step": "1",
+      "recorded": "2026-10-13T14:11:45-0300"
+    },
+    "rollback_path": {
+      "step": "5",
+      "recorded": "2026-10-13T14:29:35-0300"
+    }
+  }
+}
