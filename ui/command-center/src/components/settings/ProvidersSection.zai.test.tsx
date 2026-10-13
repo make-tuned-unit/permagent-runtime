@@ -224,3 +224,56 @@ describe('tab counts agree with badges', () => {
     expect(container.textContent).not.toContain('OpenAI');
   });
 });
+
+const optionalSecretLocal = (name: string, display: string) => ({
+  name,
+  is_configured: true,
+  is_default: false,
+  provider_type: 'Builtin',
+  metadata: {
+    display_name: display,
+    description: 'Local OpenAI-compatible runtime',
+    default_model: 'local',
+    known_models: [{ name: 'local' }],
+    config_keys: [
+      { name: `${name.toUpperCase()}_HOST`, required: false, secret: false },
+      { name: 'OPENAI_CUSTOM_HEADERS', required: false, secret: true },
+    ],
+  },
+});
+
+describe('G15: optional secrets do not make a provider Connected', () => {
+  it('blank profile: Llama Swap, LM Studio and the Qwen split are Ready to use, none Connected', async () => {
+    allowed.getProviders.mockResolvedValue([
+      optionalSecretLocal('llamaswap', 'Llama Swap'),
+      optionalSecretLocal('lmstudio', 'LM Studio'),
+      optionalSecretLocal('qwen38split', 'Qwen3.8-27B (split)'),
+    ] as never);
+    await render();
+    const tab = (id: string) => container.querySelector(`[data-testid="providers-tab-${id}"]`) as HTMLButtonElement;
+    expect(tab('connected').textContent).toBe('Connected (0)');
+    expect(tab('ready').textContent).toBe('Ready to use (3)');
+    await act(async () => { tab('ready').dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+    for (const n of ['llamaswap', 'lmstudio', 'qwen38split']) {
+      expect(container.querySelector(`[data-testid="provider-status-${n}"]`)!.textContent).toBe('No key needed');
+    }
+    expect(container.textContent).not.toContain('Connected (3)');
+  });
+
+  it('a required secret that resolves is still Connected', async () => {
+    allowed.getProviders.mockResolvedValue([OPENAI_CONNECTED, optionalSecretLocal('lmstudio', 'LM Studio')] as never);
+    await render();
+    const tab = (id: string) => container.querySelector(`[data-testid="providers-tab-${id}"]`) as HTMLButtonElement;
+    expect(tab('connected').textContent).toBe('Connected (1)');
+    expect(container.querySelector('[data-testid="provider-status-openai"]')!.textContent).toContain('Connected');
+  });
+
+  it('a required key on an unconfirmed password-manager source shows "Key saved?"', async () => {
+    allowed.getProviders.mockResolvedValue([OPENAI_CONNECTED] as never);
+    allowed.getSecretSources.mockResolvedValue({
+      keys: [{ key: 'OPENAI_API_KEY', kind: 'onepassword', label: '1Password', reference: 'op://x/y/z', resolves: null }],
+    } as never);
+    await render();
+    expect(container.querySelector('[data-testid="provider-status-openai"]')!.textContent).toBe('Key saved?');
+  });
+});

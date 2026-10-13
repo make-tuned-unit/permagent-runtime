@@ -13,6 +13,9 @@ import { ConfigureProviderModal } from './ConfigureProviderModal';
 import {
   initialProviderTab,
   partitionProviders,
+  isKeyless,
+  requiredSecretKeyName,
+  credentialState,
   type ProviderTab,
 } from './providersList';
 import { findKeySource, keyStatusMessage } from './secretSource';
@@ -102,7 +105,7 @@ export function ProvidersSection() {
     setConfiguring(null);
     void Promise.resolve(loadProviders()).then(() => {
       const next = useCommandCenter.getState().providers.find(p => p.name === provider.name);
-      if (next?.isConfigured && !wasConfigured) setTab(next.configKeys.some(k => k.secret) ? 'connected' : 'ready');
+      if (next?.isConfigured && !wasConfigured) setTab(!isKeyless(next) ? 'connected' : 'ready');
     });
     loadSecretSources();
   }, [loadProviders, loadSecretSources]);
@@ -229,11 +232,12 @@ export function ProvidersSection() {
         // The badge names the SOURCE only when it is not the keychain — the
         // default needs no label, and labelling it would bury the one case
         // worth noticing.
-        const keyName = p.configKeys.find(k => k.secret)?.name ?? '';
+        const keyName = requiredSecretKeyName(p) || (p.configKeys.find(k => k.secret)?.name ?? '');
         // No secret to store (a local runtime): "Connected" would claim a
         // handshake nobody made, so the badge says what is true.
-        const keyless = !p.configKeys.some(k => k.secret);
+        const keyless = isKeyless(p);
         const sourceEntry = findKeySource(secretSources?.keys, keyName);
+        const credentialUnknown = !keyless && credentialState(p, sourceEntry) === 'unknown';
         const sourceProblem = keyStatusMessage(sourceEntry);
         return (
         <div
@@ -267,6 +271,14 @@ export function ProvidersSection() {
                     style={{ backgroundColor: `${colors.textMuted}26`, color: colors.textMuted }}
                   >
                     No key needed
+                  </span>
+                ) : credentialUnknown ? (
+                  <span
+                    data-testid={`provider-status-${p.name}`}
+                    className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded"
+                    style={{ backgroundColor: `${colors.textMuted}26`, color: colors.textMuted }}
+                  >
+                    Key saved?
                   </span>
                 ) : (
                   <span

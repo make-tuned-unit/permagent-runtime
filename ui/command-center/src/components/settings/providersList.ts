@@ -7,10 +7,32 @@ type ListedProvider = Pick<
   'name' | 'displayName' | 'isConfigured' | 'isDefault'
 > & Partial<Pick<ProviderInfo, 'configKeys'>>;
 
-/** A provider with nothing secret to store (a local runtime). Unknown key
- *  metadata is treated as keyed: never claim "no key needed" without knowing. */
+/** A provider with no REQUIRED secret to store (a local runtime). An optional
+ *  secret (e.g. OPENAI_CUSTOM_HEADERS on Llama Swap / LM Studio) does not make
+ *  a provider keyed: it reports configured from defaults alone, so counting it
+ *  as Connected would claim a credential nobody saved. Unknown key metadata is
+ *  treated as keyed: never claim "no key needed" without knowing. */
 export function isKeyless(provider: ListedProvider): boolean {
-  return !!provider.configKeys && !provider.configKeys.some(k => k.secret);
+  return !!provider.configKeys && !provider.configKeys.some(k => k.secret && k.required);
+}
+
+/** The secret key whose presence decides "Connected": the first required one. */
+export function requiredSecretKeyName(provider: ListedProvider): string {
+  return provider.configKeys?.find(k => k.secret && k.required)?.name ?? '';
+}
+
+/** Whether the credential behind a keyed, configured provider is known to be
+ *  saved. The daemon reports a keyed provider configured only once its required
+ *  secret resolves, so that is the presence signal; a key pointed at a password
+ *  manager whose read has not been confirmed is 'unknown', shown as "Key saved?"
+ *  rather than Connected. */
+export function credentialState(
+  provider: ListedProvider,
+  source?: { kind: string; resolves?: boolean | null },
+): 'present' | 'unknown' {
+  if (!provider.isConfigured || isKeyless(provider)) return 'unknown';
+  if (source && source.kind !== 'keychain' && source.kind !== 'file' && source.resolves !== true) return 'unknown';
+  return 'present';
 }
 
 function byDisplayName(a: ListedProvider, b: ListedProvider): number {
