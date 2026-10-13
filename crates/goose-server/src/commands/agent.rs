@@ -194,7 +194,7 @@ pub async fn run(host: Option<String>, port: Option<u16>) -> Result<()> {
     // daemon is really bound to, so a non-default port (staging) is not
     // mistaken for the default one. Set before any agent is constructed.
     std::env::set_var(
-        goose::agents::platform_extensions::browser::CONTROL_PLANE_PORT_ENV,
+        permagent::agents::platform_extensions::browser::CONTROL_PLANE_PORT_ENV,
         addr.port().to_string(),
     );
 
