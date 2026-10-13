@@ -2919,6 +2919,15 @@ impl SessionStorage {
                     // already stamped at the current schema version would never
                     // enter a numbered migration and otherwise fail their first
                     // paid invocation with `no such table`.
+                    // The per-call ledger's additive columns get the same
+                    // treatment. Numbered migrations cannot be relied on to add
+                    // them: a DB stamped by a daemon from another branch (whose
+                    // version numbers collide with ours) skips every step that
+                    // would add e.g. `goal_attempt_id`, and every ledger INSERT
+                    // then fails with `no column named ...` ("Provider usage
+                    // was received, but durable accounting failed"). Idempotent
+                    // and PRAGMA-guarded; logs one INFO line per column added.
+                    spectral_schema::apply_cost_ledger_schema(&self.pool).await?;
                     spectral_schema::apply_cost_reservations_schema(&self.pool).await?;
 
                     // Version-independent: the Brain feed outbox + per-source
@@ -5584,6 +5593,94 @@ mod tests {
             .to_string()
             .contains("another session"));
         run_registry::remove_harness_run("restart-run");
+    }
+
+    async fn cost_ledger_has_column(pool: &Pool<Sqlite>, col: &str) -> bool {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM pragma_table_info('cost_ledger') WHERE name = ?",
+        )
+        .bind(col)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+            > 0
+    }
+
+    const LEDGER_INSERT_WITH_ATTEMPT: &str = "INSERT INTO cost_ledger \
+        (call_id, ts, session_id, goal_attempt_id) VALUES ('c1', '2026-10-13T00:00:00Z', 's1', 'attempt-1')";
+
+    /// A DB stamped at the latest schema by a daemon from another branch can
+    /// lack a ledger column the numbered migrations would have added. Opening
+    /// the store must add it regardless of the recorded version.
+    #[tokio::test]
+    async fn open_adds_missing_cost_ledger_column_without_migration() {
+        let temp_dir = TempDir::new().unwrap();
+        // A fresh install stamps the base version; the next open runs the
+        // numbered chain up to the latest. Open twice to reach the latest.
+        drop(
+            SessionManager::new(temp_dir.path().to_path_buf())
+                .pool_clone()
+                .await
+                .unwrap(),
+        );
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let pool = sm.pool_clone().await.unwrap();
+        assert!(cost_ledger_has_column(&pool, "goal_attempt_id").await);
+        let version_before: i64 = sqlx::query_scalar("SELECT MAX(version) FROM schema_version")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+        sqlx::query("ALTER TABLE cost_ledger DROP COLUMN goal_attempt_id")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(!cost_ledger_has_column(&pool, "goal_attempt_id").await);
+        assert!(sqlx::query(LEDGER_INSERT_WITH_ATTEMPT)
+            .execute(&pool)
+            .await
+            .is_err());
+        drop(pool);
+        drop(sm);
+
+        let reopened = SessionManager::new(temp_dir.path().to_path_buf());
+        let pool = reopened.pool_clone().await.unwrap();
+        let version_after: i64 = sqlx::query_scalar("SELECT MAX(version) FROM schema_version")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            version_before, version_after,
+            "no migration should have run"
+        );
+        assert!(cost_ledger_has_column(&pool, "goal_attempt_id").await);
+        sqlx::query(LEDGER_INSERT_WITH_ATTEMPT)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    /// Fresh installs still get the column from `init_spectral_db`, and a
+    /// second open is a no-op.
+    #[tokio::test]
+    async fn fresh_install_has_cost_ledger_goal_attempt_id_and_reopen_is_idempotent() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let pool = sm.pool_clone().await.unwrap();
+        assert!(cost_ledger_has_column(&pool, "goal_attempt_id").await);
+        sqlx::query(LEDGER_INSERT_WITH_ATTEMPT)
+            .execute(&pool)
+            .await
+            .unwrap();
+        drop(pool);
+        drop(sm);
+        let reopened = SessionManager::new(temp_dir.path().to_path_buf());
+        let pool = reopened.pool_clone().await.unwrap();
+        let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM cost_ledger")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(rows, 1);
     }
 
     #[tokio::test]

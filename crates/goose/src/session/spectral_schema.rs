@@ -3182,6 +3182,7 @@ pub async fn apply_cost_ledger_schema(pool: &Pool<Sqlite>) -> Result<()> {
                 .await?;
         if has_column == 0 {
             sqlx::query(ddl).execute(&mut *tx).await?;
+            info!("sessions: added missing column {col}");
         }
     }
 
@@ -3255,6 +3256,7 @@ pub async fn apply_cost_ledger_schema(pool: &Pool<Sqlite>) -> Result<()> {
         .await?;
         if has_column == 0 {
             sqlx::query(ddl).execute(&mut *tx).await?;
+            info!("cost_ledger: added missing column {col}");
         }
     }
 
