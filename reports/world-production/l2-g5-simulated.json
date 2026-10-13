@@ -1,0 +1,6 @@
+{
+  "scope": "deterministic 12 ms work units, real startup scheduler",
+  "slices": 101,
+  "maxMs": 12,
+  "clickAtMs": 120
+}

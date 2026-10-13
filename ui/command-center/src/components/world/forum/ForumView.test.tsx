@@ -1,3 +1,4 @@
+import { settleStartup } from './forumStartupTestUtils';
 /** @vitest-environment jsdom */
 import { beforeEach, afterEach, expect, describe, it, vi } from 'vitest';
 import { createRoot, Root } from 'react-dom/client';
@@ -17,7 +18,7 @@ import { PCFShadowMap, PCFSoftShadowMap } from 'three';
 import { ForumView } from './ForumView';
 let root: Root, host: HTMLDivElement;
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
-beforeEach(() => { window.history.replaceState({}, '', '/?campus=1'); host = document.createElement('div'); document.body.append(host); root = createRoot(host); act(() => root.render(<ForumView />)); });
+beforeEach(async () => { window.history.replaceState({}, '', '/?campus=1'); host = document.createElement('div'); document.body.append(host); root = createRoot(host); act(() => root.render(<ForumView />)); await settleStartup(); });
 afterEach(() => { window.history.replaceState({}, '', '/'); act(() => root.unmount()); host.remove(); canvas.props = null; canvas.portraitProps.length = 0; vi.restoreAllMocks(); });
 function click(label: string) { const b = [...host.querySelectorAll('button')].find(b => b.textContent?.includes(label)); expect(b).toBeTruthy(); act(() => b!.click()); }
 it('turns a lesson into an editable draft without claiming dispatch', () => {
@@ -133,7 +134,7 @@ it('Escape closes the Agent desk first, and only the next Escape collapses the p
 
 describe('Escape belongs to the screen that is showing', () => {
   // The desk's open/closed choice is remembered; start each case from a fresh one.
-  beforeEach(() => { localStorage.clear(); act(() => root.unmount()); root = createRoot(host); act(() => root.render(<ForumView />)); });
+  beforeEach(async () => { localStorage.clear(); act(() => root.unmount()); root = createRoot(host); act(() => root.render(<ForumView />)); await settleStartup(); });
   const shell = () => host.querySelector('main.forum-shell')!;
   const esc = (target: EventTarget) => act(() => { target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true, cancelable: true })); });
 

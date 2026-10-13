@@ -13,15 +13,32 @@ export class DetailBuilder {
   cylinder(at:Point3,r:number,h:number,m:Material,top=r,rotate:Point3=[0,0,0]){this.add(new CylinderGeometry(top,r,h,24),at,[1,1,1],m,rotate);}
   ring(at:Point3,r:number,t:number,m:Material,rotate:Point3=[Math.PI/2,0,0]){this.add(new TorusGeometry(r,t,6,40),at,[1,1,1],m,rotate);}
   tube(points:Point3[],r:number,m:Material){this.add(new TubeGeometry(new CatmullRomCurve3(points.map(p=>new Vector3(...p))),Math.max(12,points.length*3),r,6,false),[0,0,0],[1,1,1],m);}
+  dispose(){for(const parts of this.parts.values())parts.forEach(g=>g.dispose());this.parts.clear();}
   finish(name:string){
-    const group=new Group();group.name=name;
-    for(const [material,parts] of this.parts){
-      // Normalize attributes before merging primitive families.
-      for(const p of parts){if(!p.getAttribute('uv'))continue;for(const key of Object.keys(p.attributes))if(!['position','normal','uv'].includes(key))p.deleteAttribute(key);}
-      const geometry=mergeGeometries(parts,false);parts.forEach(g=>g.dispose());if(!geometry)continue;
-      const mesh=new Mesh(geometry,material);mesh.castShadow=true;mesh.receiveShadow=true;group.add(mesh);
-    }
-    this.parts.clear();return group;
+    const steps=this.finishSteps(name);let next=steps.next();
+    while(!next.done)next=steps.next();return next.value;
+  }
+  *finishSteps(name:string):Generator<void,Group>{
+    const group=new Group();group.name=name;let completed=false;
+    try {
+      for(const [material,parts] of this.parts){
+        // Bound merge/upload buffers as well as construction. A material with
+        // thousands of stems used to make a single enormous blocking merge.
+        let batch:BufferGeometry[]=[],vertices=0;
+        const merge=()=>{
+          if(!batch.length)return;
+          const geometry=mergeGeometries(batch,false);batch.forEach(g=>g.dispose());batch=[];vertices=0;
+          if(geometry){const mesh=new Mesh(geometry,material);mesh.castShadow=true;mesh.receiveShadow=true;group.add(mesh);}
+        };
+        for(const p of parts){
+          for(const key of Object.keys(p.attributes))if(!['position','normal','uv'].includes(key))p.deleteAttribute(key);
+          batch.push(p);vertices+=p.getAttribute('position').count;
+          if(vertices>=32768){merge();yield;}
+        }
+        merge();yield;
+      }
+      this.parts.clear();completed=true;return group;
+    } finally {if(!completed){this.dispose();finishDetails(group);}}
   }
 }
 export const finishDetails=(group:Group)=>{group.traverse(o=>{if(o instanceof Mesh){o.geometry.dispose();if(o instanceof InstancedMesh)o.dispose();}});};

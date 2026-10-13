@@ -1,3 +1,4 @@
+import { settleStartup } from './components/world/forum/forumStartupTestUtils';
 /** @vitest-environment jsdom */
 // Real App -> WorkspaceRenderer -> ForumView -> HabitatScene. Native/GPU and
 // artwork doubles cannot measure WebKit compositor or GPU frame duration.
@@ -103,6 +104,7 @@ it('traces twenty mixed switches and immediate follow-up actions across the real
     for (let n = 0; n < 30 && !host.querySelector('.forum-shell'); n++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)); });
     expect(host.querySelector('.forum-shell')).toBeTruthy();
     resize(900);
+    if(i===0)await settleStartup();
     const started = performance.now(); trace.mark('leave input');
     act(() => useCommandCenter.setState(i % 2 ? { activePanel: 'settings' } : { activeWorkspaceId: 'home' }));
     if (trace.frames === 'always') hiddenAlways++;

@@ -1,3 +1,4 @@
+import { setForumStartupActivity, releaseForumStartup } from './forumStartup';
 import { createContext, useContext, useLayoutEffect } from 'react';
 import { useThree } from '@react-three/fiber';
 
@@ -7,6 +8,9 @@ export const ForumActivity = createContext(true);
 export const useForumActivity = () => useContext(ForumActivity);
 
 export function ForumCanvasActivity({ active }: { active: boolean }) {
+  const renderer = useThree(state => state.gl);
+  useLayoutEffect(() => { setForumStartupActivity(renderer, active); }, [renderer, active]);
+  useLayoutEffect(() => () => releaseForumStartup(renderer), [renderer]);
   const setEvents = useThree(state => state.setEvents);
   const controls = useThree(state => state.controls) as { enabled?: boolean } | null;
   useLayoutEffect(() => { setEvents({ enabled: active }); }, [active, setEvents]);

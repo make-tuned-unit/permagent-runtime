@@ -1,5 +1,5 @@
 import { Suspense, useCallback, useEffect, useRef } from 'react';
-import { useTexture } from '@react-three/drei';
+import { useForumTexture as useTexture } from './useForumTexture';
 import { GardenAssetBoundary } from './GardenAssetBoundary';
 import { HABITAT_DAY_PANORAMA_URLS } from './habitatVista';
 import type { Appearance } from './bakedEnvironment';
@@ -9,7 +9,7 @@ function Prepared({ appearance, onPrepared }: { appearance: Appearance; onPrepar
   return null;
 }
 function TextureReady({ url, ...props }: { url: string; appearance: Appearance; onPrepared: (appearance: Appearance) => void }) {
-  useTexture(url); // Same drei resource cache as the real sky: no second download.
+  useTexture(url, props.appearance === 'day' ? 'panorama' : 'color'); // Same decoded/uploaded resource as the real sky.
   return <Prepared {...props} />;
 }
 export function clearForumLightingPreparation(appearance: Appearance) {

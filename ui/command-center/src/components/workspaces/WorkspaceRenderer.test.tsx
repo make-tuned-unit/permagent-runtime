@@ -57,7 +57,7 @@ async function renderWorldPanel() {
   // The route is a chain of dynamic imports (worldRoute, then the chosen
   // World), so Suspense needs more than one flush before it commits.
   for (let i = 0; i < 10 && !host.querySelector('[data-testid]'); i++) {
-    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
   }
   return host;
 }

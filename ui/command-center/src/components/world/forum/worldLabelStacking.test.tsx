@@ -1,3 +1,4 @@
+import { settleStartup } from './forumStartupTestUtils';
 /** @vitest-environment jsdom */
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -61,12 +62,13 @@ function zIndexOf(selector: string): number | null {
 let root: Root;
 let host: HTMLDivElement;
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
-beforeEach(() => {
+beforeEach(async () => {
   try { localStorage.clear(); } catch { /* no storage */ }
   host = document.createElement('div');
   document.body.append(host);
   root = createRoot(host);
   act(() => root.render(<ForumView />));
+  await settleStartup();
 });
 afterEach(() => { act(() => root.unmount()); host.remove(); });
 

@@ -1,3 +1,4 @@
+import { settleStartup } from './forumStartupTestUtils';
 /** @vitest-environment jsdom */
 // Actual World HUD, portrait idle scheduler, walk/fly controllers and visibility
 // effects. GPU/context allocations are counted proxies, not native VRAM evidence.
@@ -18,7 +19,7 @@ vi.mock('@react-three/fiber', async () => {
       gpu.loops.set(canvas, frameloop);
       const pick = (nodes: any): any => React.Children.map(nodes, (child: any) => {
         if (!React.isValidElement<any>(child)) return null;
-        if (typeof child.type === 'function' && ['ForumWalk', 'ForumFlight', 'ForumStageReady', 'ForumCanvasActivity'].includes(child.type.name)) return child;
+        if (typeof child.type === 'function' && ['ForumWalk', 'ForumFlight', 'ForumStageReady', 'ForumCanvasActivity', 'HabitatScene'].includes(child.type.name)) return child;
         return pick(child.props.children);
       });
       return <Context.Provider value={state}><div ref={host} data-canvas={className ?? 'portrait'}>{className === 'forum-canvas' ? pick(children) : children}</div></Context.Provider>;
@@ -32,6 +33,7 @@ vi.mock('./heroRobot', async original => { const { Group } = await import('three
 vi.mock('./ForumConversation', () => ({ ForumConversation: () => null }));
 vi.mock('./ForumCapabilities', () => ({ ForumCapabilities: () => null }));
 vi.mock('../agents/goalActivity', () => ({ useActiveGoals: () => ({ goals: [], loaded: true }) }));
+vi.mock('./HabitatScene', () => ({ HabitatScene: ({onReady}:any) => { const React=require('react'); React.useEffect(()=>{onReady?.();},[onReady]); return null; }, HabitatLighting:()=>null, HabitatNavigation:()=>null }));
 import { ForumView } from './ForumView';
 import { setReduceMotion } from '../../../styles/tokens';
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
@@ -41,7 +43,7 @@ const tracked = new Set(['keydown', 'keyup', 'mousemove', 'mouseup', 'mousedown'
 function countListeners(inputOnly = false) { let count = 0; for (const [target, byType] of listeners) for (const [type, set] of byType) if (!inputOnly || ((target === window || target === document) && ['keydown', 'keyup', 'mousemove', 'mouseup'].includes(type))) count += set.size; return count; }
 function snapshot() { return { canvases: host.querySelectorAll('canvas').length, contexts: gpu.live, listeners: countListeners(), inputListeners: countListeners(true), timers: vi.getTimerCount() }; }
 function tick() { act(() => { for (const [canvas, callbacks] of gpu.frames) if (gpu.loops.get(canvas) !== 'never') callbacks.forEach(callback => callback()); }); }
-function show(visible: boolean) { act(() => root.render(<ForumView visible={visible} />)); tick(); }
+function show(visible: boolean) { act(() => root.render(<ForumView visible={visible} />)); if(visible)settleStartup(); tick(); }
 function hidePage(value: boolean) { hidden = value; act(() => document.dispatchEvent(new Event('visibilitychange'))); tick(); }
 function click(text: string) { const button = [...host.querySelectorAll('button')].find(b => b.textContent?.includes(text)); expect(button).toBeTruthy(); act(() => button!.click()); }
 beforeEach(() => {

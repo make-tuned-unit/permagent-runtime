@@ -1,11 +1,13 @@
-import { Suspense, useEffect, useMemo, useRef } from 'react';
+import { useForumBuild } from './useForumBuild';
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { OrbitControls } from '@react-three/drei';
 import { useFrame, useThree, type ThreeEvent } from '@react-three/fiber';
 import { Mesh, MeshStandardMaterial, Object3D, PerspectiveCamera, Vector3 } from 'three';
-import { HabitatArchitecture } from './HabitatArchitecture';
-import { HabitatPlanting } from './HabitatPlanting';
+import { loadForumModule, measureForumStartup } from './forumStartup';
+const HabitatArchitecture=lazy(()=>loadForumModule('architecture module',async()=>({default:(await import('./HabitatArchitecture')).HabitatArchitecture})));
+const HabitatPlanting=lazy(()=>loadForumModule('planting module',async()=>({default:(await import('./HabitatPlanting')).HabitatPlanting})));
 import { HABITAT_ARRIVAL, habitatOverviewCamera, TABLE_CONVERSATION_CAMERA, habitatCollisionSource, habitatElevation, terrainGeometry, type Point3 } from './habitatLayout';
-import { registerForumCollision } from './walkCollision';
+import { prepareForumCollision } from './walkCollision';
 import { getForumMotion } from './ForumInhabitants';
 import { commandHabitatAgent } from './habitatMotion';
 import { HabitatSky } from './HabitatSky';
@@ -15,14 +17,25 @@ import { useForumReducedMotion } from './useForumReducedMotion';
 import { useForumActivity } from './ForumActivity';
 import { HABITAT_SUN_DIR } from './habitatVista';
 
-export function HabitatScene({directing,onDirected}:{directing:string|null;onDirected:(point:Point3,ok:boolean)=>void}){
-  const ground=useMemo(()=>terrainGeometry(),[]);
-  useEffect(()=>()=>ground.dispose(),[ground]);
-  useEffect(()=>{const source=habitatCollisionSource(),cleanup=registerForumCollision(source),materials=new Set<MeshStandardMaterial>();source.traverse(o=>{if(o instanceof Mesh){o.geometry.dispose();for(const m of Array.isArray(o.material)?o.material:[o.material])materials.add(m as MeshStandardMaterial);}});materials.forEach(m=>m.dispose());return cleanup;},[]);
+function* prepareHabitat(){
+  const ground=measureForumStartup('terrain',terrainGeometry);let cleanup:(()=>void)|undefined,completed=false;
+  try {
+    yield;
+    const source=measureForumStartup('collision source',habitatCollisionSource);
+    try {yield;cleanup=yield* prepareForumCollision(source);}
+    finally {const materials=new Set<MeshStandardMaterial>();source.traverse(o=>{if(o instanceof Mesh){o.geometry.dispose();for(const m of Array.isArray(o.material)?o.material:[o.material])materials.add(m as MeshStandardMaterial);}});materials.forEach(m=>m.dispose());}
+    completed=true;return{ground,dispose(){ground.dispose();cleanup?.();}};
+  }finally{if(!completed){ground.dispose();cleanup?.();}}
+}
+export function HabitatScene({directing,onDirected,onReady}:{directing:string|null;onDirected:(point:Point3,ok:boolean)=>void;onReady?:()=>void}){
+  const built=useForumBuild('HabitatScene terrain / collision',prepareHabitat,[],value=>value.dispose());
+  const [architecture,setArchitecture]=useState(false),[planting,setPlanting]=useState(false);
+  const architectureReady=useCallback(()=>setArchitecture(true),[]),plantingReady=useCallback(()=>setPlanting(true),[]);
+  useEffect(()=>{if(built&&architecture&&planting)onReady?.();},[built,architecture,planting,onReady]);
   const direct=(e:ThreeEvent<MouseEvent>)=>{if(!directing)return;e.stopPropagation();const p:Point3=[e.point.x,habitatElevation(e.point.x,e.point.z),e.point.z];onDirected(p,commandHabitatAgent(directing,p));};
   return <group onClick={direct}>
-    <mesh geometry={ground} position={[0,-.06,0]} receiveShadow><meshStandardMaterial color="#ac9f87" roughness={1}/></mesh>
-    <Suspense fallback={null}><HabitatArchitecture/></Suspense><HabitatPlanting/><HabitatWater/>
+    {built&&<mesh geometry={built.ground} position={[0,-.06,0]} receiveShadow><meshStandardMaterial color="#ac9f87" roughness={1}/></mesh>}
+    <Suspense fallback={null}><HabitatArchitecture onReady={architectureReady}/></Suspense><Suspense fallback={null}><HabitatPlanting onReady={plantingReady}/></Suspense><HabitatWater/>
   </group>;
 }
 export function HabitatLighting({appearance,skyAttempt=0}:{appearance:'day'|'night';skyAttempt?:number}){

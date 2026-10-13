@@ -1,3 +1,4 @@
+import { loadForumModule } from '../world/forum/forumStartup';
 import { useCallback, lazy, Suspense, createContext, useContext, useEffect, useState } from 'react';
 import { Panel, Group, Separator } from 'react-resizable-panels';
 import { useCommandCenter } from '../../lib/store';
@@ -14,13 +15,13 @@ import { Browser } from '../browser';
 // `WorldView` (see world/forum/worldRoute.ts). Both branches stay behind the
 // same `lazy()` so neither Three.js bundle is fetched until a World panel is
 // actually rendered; the flag is read once, at that first render.
-const LazyWorldRoute = lazy(async () => {
+const LazyWorldRoute = lazy(() => loadForumModule('World lazy module', async () => {
   const { shouldUseLegacyWorld } = await import('../world/forum/worldRoute');
   if (shouldUseLegacyWorld()) {
     return { default: (await import('../world/WorldView')).WorldView };
   }
   return { default: (await import('../world/forum/ForumAppView')).ForumAppView };
-});
+}));
 import { ExecutionTrace } from '../trace/ExecutionTrace';
 import { BrainView } from '../brain/BrainView';
 import { ErrorBoundary } from '../common/ErrorBoundary';
@@ -41,7 +42,7 @@ function WorldPanel() {
   const visible = useContext(WorkspaceVisible);
   const [visited, setVisited] = useState(false);
   useEffect(() => { if (visible) setVisited(true); }, [visible]);
-  return visible || visited ? <LazyWorldRoute visible={visible} /> : null;
+  return visible || visited ? <Suspense fallback={<div role="status" aria-live="polite">Loading World…</div>}><LazyWorldRoute visible={visible} /></Suspense> : null;
 }
 
 const TOOL_COMPONENTS: Record<ToolType, React.ComponentType> = {

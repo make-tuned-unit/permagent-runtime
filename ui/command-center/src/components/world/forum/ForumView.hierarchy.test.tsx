@@ -1,3 +1,4 @@
+import { settleStartup } from './forumStartupTestUtils';
 /** @vitest-environment jsdom */
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -34,6 +35,7 @@ beforeEach(() => {
 afterEach(() => { act(() => root.unmount()); host.remove(); vi.restoreAllMocks(); vi.unstubAllGlobals(); act(() => setTheme('dark')); });
 async function render() {
   await act(async () => root.render(<ForumView />));
+  await settleStartup();
   act(() => {
     const children = gpu.props!.children;
     children.find((c: any) => c?.type === ForumStageReady).props.onReady();

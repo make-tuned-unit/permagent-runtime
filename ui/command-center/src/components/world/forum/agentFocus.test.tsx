@@ -1,3 +1,4 @@
+import { settleStartup } from './forumStartupTestUtils';
 /** @vitest-environment jsdom */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
@@ -129,6 +130,7 @@ describe('ForumView agent select→focus wiring', () => {
       await Promise.resolve();
       await Promise.resolve();
     });
+    if(visible)await settleStartup();
   }
 
   it('frames from the hero-kit onSelect callback and bumps revision on repeat', async () => {
@@ -211,6 +213,7 @@ describe('ForumView agent select→focus wiring', () => {
     expect(canvasChildren).toBeNull();
 
     await act(async () => { root.render(<ForumView visible />); });
+    await settleStartup();
     expect(useCommandCenter.getState().pendingWorldAgent).toBeNull();
     expect(navigationFocus()).toEqual({ id: 'council', revision: 1 });
 

@@ -1,0 +1,9 @@
+{
+  "scope": "supplementary unchanged shipped GLB parser; geometry real, GLTF materials omitted; Sharp image decode surrogate",
+  "bytes": 5889960,
+  "jsonParseSyncMs": 0.22425000000001205,
+  "parseDispatchSyncMs": 1.1460410000000252,
+  "parseAsyncWallMs": 4.9595410000000015,
+  "sharpImageDecodeAsyncMs": 12.683000000000021,
+  "meshoptCompressed": false
+}

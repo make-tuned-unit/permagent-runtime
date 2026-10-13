@@ -1,3 +1,4 @@
+import { measureForumStartup } from './forumStartup';
 import { MeshBVH, acceleratedRaycast } from 'three-mesh-bvh';
 import { Mesh, Object3D, Raycaster, Vector3, Matrix3 } from 'three';
 
@@ -10,22 +11,28 @@ export function registerForumActorCollisions(meshes:Mesh[]){actorColliders=meshe
 export const getForumStaticColliders=()=>colliders;
 /** CPU-only meshes share authored geometry; they add no draw calls. */
 export function registerForumCollision(scene: Object3D) {
-  scene.updateMatrixWorld(true);
-  const owned: Mesh[] = [];
-  scene.traverse(o => {
-    if (!(o instanceof Mesh)) return;
-    const geometry = o.geometry.clone();
-    geometry.boundsTree = new MeshBVH(geometry);
-    const collider = new Mesh(geometry, o.material);
-    collider.name = o.name;
-    collider.raycast = acceleratedRaycast;
-    collider.applyMatrix4(o.matrixWorld);
-    collider.updateMatrixWorld(true);
-    owned.push(collider);
-  });
-  colliders = owned; refreshColliders();
-  return () => { if (colliders === owned) { colliders = []; refreshColliders(); } owned.forEach(m=>m.geometry.dispose()); };
+  const steps=prepareForumCollision(scene);let next=steps.next();while(!next.done)next=steps.next();return next.value;
 }
+/** Publish atomically only after all BVHs are ready; paused initialization must
+ * never replace the live world's collision set with a partial one. */
+export function* prepareForumCollision(scene:Object3D):Generator<void,()=>void>{
+  scene.updateMatrixWorld(true);
+  const owned:Mesh[]=[],sources:Mesh[]=[];let completed=false;
+  scene.traverse(o=>{if(o instanceof Mesh)sources.push(o);});
+  try {
+    for(const o of sources){
+      const geometry=o.geometry.clone();
+      const collider=new Mesh(geometry,o.material);owned.push(collider);
+      geometry.boundsTree=measureForumStartup('collision BVH',()=>new MeshBVH(geometry));
+      collider.name=o.name;collider.raycast=acceleratedRaycast;
+      collider.applyMatrix4(o.matrixWorld);collider.updateMatrixWorld(true);
+      yield;
+    }
+    colliders=owned;refreshColliders();completed=true;
+    return()=>{if(colliders===owned){colliders=[];refreshColliders();}owned.forEach(m=>m.geometry.dispose());};
+  } finally {if(!completed)owned.forEach(m=>m.geometry.dispose());}
+}
+
 export const getForumColliders = () => combinedColliders;
 const ray = new Raycaster();
 ray.firstHitOnly = true;

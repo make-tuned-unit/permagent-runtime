@@ -1,3 +1,4 @@
+import { useForumStartupStage } from './useForumStartupStage';
 import { ForumActivity, ForumCanvasActivity } from './ForumActivity';
 import { ForumLightingPreparation, clearForumLightingPreparation } from './ForumLightingPreparation';
 import { useForumLightingReadiness } from './useForumLightingReadiness';
@@ -306,14 +307,15 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
   const [stageAttempt, setStageAttempt] = useState(0);
   const stageReady = useCallback(() => setStageState(state => state === 'failed' ? state : 'ready'), []);
   const stageFailed = useCallback(() => setStageState('failed'), []);
-  const retryStage = useCallback(() => { setStageState('loading'); setStageAttempt(n => n + 1); }, []);
+  const retryStage = useCallback(() => { setStageState('loading'); setHabitatReady(false); setStageAttempt(n => n + 1); }, []);
   useEffect(() => {
     if (!onPanel || !pageVisible || stageState !== 'loading') return;
     const timer = window.setTimeout(() => setStageState('slow'), WORLD_READY_BUDGET_MS);
     return () => window.clearTimeout(timer);
   }, [onPanel, pageVisible, stageState, stageAttempt]);
-  const [sceneStarted, setSceneStarted] = useState(false);
-  useEffect(() => { if (onPanel && pageVisible) setSceneStarted(true); }, [onPanel, pageVisible]);
+  const startupStage = useForumStartupStage(active, 4);
+  const [habitatReady, setHabitatReady] = useState(false);
+  const habitatPrepared = useCallback(() => setHabitatReady(true), []);
   useEffect(() => {
     const store = useCommandCenter.getState();
     store.setWorldConversationActive(conversation && active);
@@ -539,23 +541,23 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
           portal into this host with z-index up to 16777271 by default; with
           no context around them they out-ranked the HUD lanes and QA saw
           "Automate" drawn over the Places rail and "Build" over the job feed. */}
-      <ForumStageBoundary key={stageAttempt} onFailure={stageFailed}>{(sceneStarted || (onPanel && pageVisible)) && <Canvas className="forum-canvas" frameloop={onPanel && pageVisible ? 'always' : 'never'} shadows={{ type: PCFShadowMap }} dpr={[1, 1.5]} camera={{ position: [...(compact ? HABITAT_OVERVIEW.position : FORUM_VISTA.position)] as [number,number,number], fov: compact ? HABITAT_OVERVIEW.fov : FORUM_VISTA.fov, near: FORUM_CAMERA_NEAR, far: FORUM_CAMERA_FAR }} gl={{ antialias: true, toneMapping: AgXToneMapping, toneMappingExposure: FORUM_EXPOSURE }}>
-        {onPanel && pageVisible && <ForumLightingPreparation key={`${requestedAppearance}:${compact}:${light.attempt}`} appearance={requestedAppearance} compact={compact} attempt={light.attempt} onPrepared={light.prepared} onFailure={light.failed} />}
+      <ForumStageBoundary key={stageAttempt} onFailure={stageFailed}>{(startupStage >= 1) && <Canvas className="forum-canvas" frameloop={onPanel && pageVisible ? 'always' : 'never'} shadows={{ type: PCFShadowMap }} dpr={[1, 1.5]} camera={{ position: [...(compact ? HABITAT_OVERVIEW.position : FORUM_VISTA.position)] as [number,number,number], fov: compact ? HABITAT_OVERVIEW.fov : FORUM_VISTA.fov, near: FORUM_CAMERA_NEAR, far: FORUM_CAMERA_FAR }} gl={{ antialias: true, toneMapping: AgXToneMapping, toneMappingExposure: FORUM_EXPOSURE }}>
+        {startupStage >= 2 && onPanel && pageVisible && <ForumLightingPreparation key={`${requestedAppearance}:${compact}:${light.attempt}`} appearance={requestedAppearance} compact={compact} attempt={light.attempt} onPrepared={light.prepared} onFailure={light.failed} />}
         <ForumCanvasActivity active={active} />
-        <ForumStageReady active={onPanel && pageVisible} onReady={stageReady} onFailure={stageFailed} />
-        {agoraOpen ? <MeshAgora walking={walking} /> : compact ? <HabitatLighting appearance={appearance} skyAttempt={light.attempt} /> : <ForumLighting appearance={appearance} />}
+        <ForumStageReady active={active && startupStage >= 4 && (!compact || habitatReady)} onReady={stageReady} onFailure={stageFailed} />
+        {startupStage >= 2 && (agoraOpen ? <MeshAgora walking={walking} /> : compact ? <HabitatLighting appearance={appearance} skyAttempt={light.attempt} /> : <ForumLighting appearance={appearance} />)}
         {/* The forum is hidden rather than unmounted while the Agora is open:
             an invisible group costs no draw calls, and keeping it mounted means
             the GLB is never fetched twice and its collision BVH — which the
             walker is still standing on out at the gate — is never rebuilt. */}
-        <group visible={!agoraOpen}>
-          {compact ? <><HabitatScene directing={directing} onDirected={(_,ok)=>{if(ok)setDirecting(null);}} />{kitReady && <GardenAssetBoundary onFailure={kitFailure}><Suspense fallback={null}><HeroGardenDecor /></Suspense></GardenAssetBoundary>}</> : <VaultBoundary fallback={<Fallback />}><Suspense fallback={<Fallback />}><ForumAsset /></Suspense></VaultBoundary>}
+        {startupStage >= 2 && <group visible={!agoraOpen}>
+          {compact ? <><HabitatScene onReady={habitatPrepared} directing={directing} onDirected={(_,ok)=>{if(ok)setDirecting(null);}} />{startupStage >= 3 && kitReady && <GardenAssetBoundary onFailure={kitFailure}><Suspense fallback={null}><HeroGardenDecor /></Suspense></GardenAssetBoundary>}</> : <VaultBoundary fallback={<Fallback />}><Suspense fallback={<Fallback />}><ForumAsset /></Suspense></VaultBoundary>}
           <ForumEnvironment appearance={appearance} active={onPanel && pageVisible} attempt={light.attempt} request={requestedAppearance} onApplied={light.didApply} onFailure={light.failed} />
           {compact && <HabitatOrrery conversation={conversation} onOverview={()=>{setWalking(false);setFlying(false);setFocusAgent(null);setOverview(true);setFollow(null);setDirecting(null);}} />}
           {!compact && <ForumWater />}
           {!compact && <Suspense fallback={null}><ForumShips /></Suspense>}
-          <Suspense fallback={null}>{compact && kitReady ? <GardenAssetBoundary onFailure={kitFailure}><HeroGardenAgents conversation={conversation} following={follow} directing={directing} socialActive={onPanel && pageVisible} selected={selected} hovered={hovered} orchestratorName={configuredName||'Your orchestrator'} onHover={setHovered} onSelect={selectAndFocusAgent} /></GardenAssetBoundary> : <ForumAgents compact={compact} hoveredAgent={hovered} onHoverAgent={setHovered} onSelectAgent={id => selectAndFocusAgent(id, { markUnsaved: true })} />}</Suspense>
-        </group>
+          {startupStage >= 3 && <Suspense fallback={null}>{compact && kitReady ? <GardenAssetBoundary onFailure={kitFailure}><HeroGardenAgents conversation={conversation} following={follow} directing={directing} socialActive={onPanel && pageVisible} selected={selected} hovered={hovered} orchestratorName={configuredName||'Your orchestrator'} onHover={setHovered} onSelect={selectAndFocusAgent} /></GardenAssetBoundary> : <ForumAgents compact={compact} hoveredAgent={hovered} onHoverAgent={setHovered} onSelectAgent={id => selectAndFocusAgent(id, { markUnsaved: true })} />}</Suspense>}
+        </group>}
         {active && flying
           ? <Suspense fallback={null}><ForumFlight
               onExit={() => setFlying(false)}
@@ -570,7 +572,7 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
           : active && walking
           ? <ForumWalk start={walkStartOverride ?? walkStart} onExit={exitWalk} onInspect={inspectAgent} inMesh={agoraOpen} onEnterMesh={enterMesh} onExitMesh={leaveMesh} onMeshPrompt={setMeshPrompt} onInteractionPrompt={setInteractionPrompt} onEvidence={compact ? ()=>{setInteractionPrompt(null);setWalking(false);setDeskOpen(true);setTab('evidence');} : undefined} />
           : !agoraOpen && (compact ? <HabitatNavigation conversation={conversation} district={district} focusAgent={focusAgent} overview={overview} follow={follow} /> : <ForumNavigation district={district} focusAgent={focusAgent} />)}
-        <ForumPostProcessing appearance={appearance} gentle={compact} />
+        {startupStage >= 4 && <ForumPostProcessing appearance={appearance} gentle={compact} />}
         <PerfSampler />
       </Canvas>}</ForumStageBoundary>
       <ForumStageStatus state={stageState} onRetry={retryStage} />

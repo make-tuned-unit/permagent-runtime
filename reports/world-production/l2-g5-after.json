@@ -1,0 +1,1922 @@
+{
+  "scope": "real CPU geometry; WebGL and image decode doubled",
+  "importWallMs": 1178.131292,
+  "clickAtMs": 123.77637500000003,
+  "readyAtMs": 4964.804375,
+  "steps": [
+    {
+      "step": "World lazy module dispatch",
+      "slices": 1,
+      "totalMs": 0.049832999999978256,
+      "maxMs": 0.049832999999978256
+    },
+    {
+      "step": "ForumView React mount",
+      "slices": 1,
+      "totalMs": 25.066471999999976,
+      "maxMs": 25.066471999999976
+    },
+    {
+      "step": "ForumView stage 1",
+      "slices": 1,
+      "totalMs": 0.11474999999995816,
+      "maxMs": 0.11474999999995816
+    },
+    {
+      "step": "Canvas creation (DOM / GPU double)",
+      "slices": 1,
+      "totalMs": 0.057624999999916326,
+      "maxMs": 0.057624999999916326
+    },
+    {
+      "step": "ForumView React update",
+      "slices": 14,
+      "totalMs": 21.638740000010102,
+      "maxMs": 7.035948999998482
+    },
+    {
+      "step": "ForumView stage 2",
+      "slices": 1,
+      "totalMs": 0.016208000000005995,
+      "maxMs": 0.016208000000005995
+    },
+    {
+      "step": "architecture module dispatch",
+      "slices": 1,
+      "totalMs": 0.05533300000001873,
+      "maxMs": 0.05533300000001873
+    },
+    {
+      "step": "planting module dispatch",
+      "slices": 1,
+      "totalMs": 0.03700000000003456,
+      "maxMs": 0.03700000000003456
+    },
+    {
+      "step": "terrain",
+      "slices": 1,
+      "totalMs": 16.54333399999996,
+      "maxMs": 16.54333399999996
+    },
+    {
+      "step": "HabitatScene terrain / collision",
+      "slices": 4,
+      "totalMs": 40.94899899999973,
+      "maxMs": 16.58312499999988
+    },
+    {
+      "step": "ForumView stage 3",
+      "slices": 1,
+      "totalMs": 0.026999999999816282,
+      "maxMs": 0.026999999999816282
+    },
+    {
+      "step": "ForumEnvironment PMREM",
+      "slices": 2,
+      "totalMs": 0.1312910000001466,
+      "maxMs": 0.06733300000018971
+    },
+    {
+      "step": "buildHabitatArchitecture",
+      "slices": 16,
+      "totalMs": 135.88841700000057,
+      "maxMs": 14.299916999999823
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "slices": 104,
+      "totalMs": 1020.9107509999938,
+      "maxMs": 15.236084000000119
+    },
+    {
+      "step": "collision source",
+      "slices": 1,
+      "totalMs": 13.640625,
+      "maxMs": 13.640625
+    },
+    {
+      "step": "ForumView stage 4",
+      "slices": 1,
+      "totalMs": 0.026416000000153872,
+      "maxMs": 0.026416000000153872
+    },
+    {
+      "step": "collision BVH",
+      "slices": 211,
+      "totalMs": 5.869658999998592,
+      "maxMs": 3.6542500000000473
+    }
+  ],
+  "rows": [
+    {
+      "step": "World lazy module dispatch",
+      "start": 416.336792,
+      "ms": 0.049832999999978256
+    },
+    {
+      "step": "ForumView React mount",
+      "start": 1596.126375,
+      "ms": 25.066471999999976
+    },
+    {
+      "step": "ForumView stage 1",
+      "start": 1642.60425,
+      "ms": 0.11474999999995816
+    },
+    {
+      "step": "Canvas creation (DOM / GPU double)",
+      "start": 1650.045167,
+      "ms": 0.057624999999916326
+    },
+    {
+      "step": "ForumView React update",
+      "start": 1649.064042,
+      "ms": 2.9789150000035534
+    },
+    {
+      "step": "ForumView stage 2",
+      "start": 1671.155417,
+      "ms": 0.016208000000005995
+    },
+    {
+      "step": "ForumView React update",
+      "start": 1673.758542,
+      "ms": 7.035948999998482
+    },
+    {
+      "step": "ForumView React update",
+      "start": 1681.397167,
+      "ms": 0.020664999999780775
+    },
+    {
+      "step": "architecture module dispatch",
+      "start": 1693.923625,
+      "ms": 0.05533300000001873
+    },
+    {
+      "step": "planting module dispatch",
+      "start": 1711.259458,
+      "ms": 0.03700000000003456
+    },
+    {
+      "step": "ForumView React update",
+      "start": 1725.302042,
+      "ms": 0.2611669999996593
+    },
+    {
+      "step": "terrain",
+      "start": 1728.177708,
+      "ms": 16.54333399999996
+    },
+    {
+      "step": "HabitatScene terrain / collision",
+      "start": 1728.140875,
+      "ms": 16.58312499999988
+    },
+    {
+      "step": "ForumView stage 3",
+      "start": 1762.8175,
+      "ms": 0.026999999999816282
+    },
+    {
+      "step": "ForumView React update",
+      "start": 1769.1625,
+      "ms": 1.716758999998774
+    },
+    {
+      "step": "ForumEnvironment PMREM",
+      "start": 1782.705542,
+      "ms": 0.06733300000018971
+    },
+    {
+      "step": "buildHabitatArchitecture",
+      "start": 1800.17575,
+      "ms": 14.299916999999823
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 1832.310042,
+      "ms": 9.807749999999942
+    },
+    {
+      "step": "collision source",
+      "start": 1861.617375,
+      "ms": 13.640625
+    },
+    {
+      "step": "HabitatScene terrain / collision",
+      "start": 1861.589917,
+      "ms": 13.670082999999977
+    },
+    {
+      "step": "ForumView stage 4",
+      "start": 1894.976667,
+      "ms": 0.026416000000153872
+    },
+    {
+      "step": "ForumView React update",
+      "start": 1896.315792,
+      "ms": 1.7002760000011676
+    },
+    {
+      "step": "ForumEnvironment PMREM",
+      "start": 1914.1575,
+      "ms": 0.06395799999995688
+    },
+    {
+      "step": "ForumView React update",
+      "start": 1919.368167,
+      "ms": 1.4260869999975512
+    },
+    {
+      "step": "buildHabitatArchitecture",
+      "start": 1933.510042,
+      "ms": 8.014499999999998
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 1960.235083,
+      "ms": 8.393333999999868
+    },
+    {
+      "step": "collision BVH",
+      "start": 1987.664792,
+      "ms": 3.6542500000000473
+    },
+    {
+      "step": "collision BVH",
+      "start": 1991.506208,
+      "ms": 0.03012499999999818
+    },
+    {
+      "step": "collision BVH",
+      "start": 1991.608458,
+      "ms": 0.03899999999998727
+    },
+    {
+      "step": "collision BVH",
+      "start": 1991.695042,
+      "ms": 0.10829100000000835
+    },
+    {
+      "step": "collision BVH",
+      "start": 1991.876583,
+      "ms": 0.02412499999991269
+    },
+    {
+      "step": "collision BVH",
+      "start": 1991.935875,
+      "ms": 0.014833000000180618
+    },
+    {
+      "step": "collision BVH",
+      "start": 1991.975167,
+      "ms": 0.012582999999949607
+    },
+    {
+      "step": "collision BVH",
+      "start": 1992.012833,
+      "ms": 0.011792000000014013
+    },
+    {
+      "step": "collision BVH",
+      "start": 1992.04725,
+      "ms": 0.061958000000004176
+    },
+    {
+      "step": "collision BVH",
+      "start": 1992.224833,
+      "ms": 0.022208999999975276
+    },
+    {
+      "step": "collision BVH",
+      "start": 1992.287417,
+      "ms": 0.014541000000008353
+    },
+    {
+      "step": "collision BVH",
+      "start": 1992.323542,
+      "ms": 0.010708000000022366
+    },
+    {
+      "step": "collision BVH",
+      "start": 1992.352875,
+      "ms": 0.010375000000067303
+    },
+    {
+      "step": "collision BVH",
+      "start": 1992.383333,
+      "ms": 0.010375000000067303
+    },
+    {
+      "step": "collision BVH",
+      "start": 1992.411833,
+      "ms": 0.010250000000041837
+    },
+    {
+      "step": "collision BVH",
+      "start": 1992.439417,
+      "ms": 0.010166000000026543
+    },
+    {
+      "step": "collision BVH",
+      "start": 1992.469208,
+      "ms": 0.010291999999935797
+    },
+    {
+      "step": "collision BVH",
+      "start": 1992.497917,
+      "ms": 0.009958000000096945
+    },
+    {
+      "step": "collision BVH",
+      "start": 1992.528792,
+      "ms": 0.010332999999945969
+    },
+    {
+      "step": "collision BVH",
+      "start": 1992.561625,
+      "ms": 0.010166999999910331
+    },
+    {
+      "step": "collision BVH",
+      "start": 1992.591042,
+      "ms": 0.010500000000092768
+    },
+    {
+      "step": "collision BVH",
+      "start": 1992.618625,
+      "ms": 0.010166999999910331
+    },
+    {
+      "step": "collision BVH",
+      "start": 1992.645708,
+      "ms": 0.010416999999961263
+    },
+    {
+      "step": "collision BVH",
+      "start": 1992.673,
+      "ms": 0.010332999999945969
+    },
+    {
+      "step": "collision BVH",
+      "start": 1992.702083,
+      "ms": 0.010250000000041837
+    },
+    {
+      "step": "collision BVH",
+      "start": 1992.731333,
+      "ms": 0.010625000000118234
+    },
+    {
+      "step": "collision BVH",
+      "start": 1992.758542,
+      "ms": 0.015666000000010172
+    },
+    {
+      "step": "collision BVH",
+      "start": 1992.795625,
+      "ms": 0.0105829999999969
+    },
+    {
+      "step": "collision BVH",
+      "start": 1992.8245,
+      "ms": 0.01029200000016317
+    },
+    {
+      "step": "collision BVH",
+      "start": 1992.852625,
+      "ms": 0.010457999999971435
+    },
+    {
+      "step": "collision BVH",
+      "start": 1992.880333,
+      "ms": 0.010125000000016371
+    },
+    {
+      "step": "collision BVH",
+      "start": 1992.908083,
+      "ms": 0.010125000000016371
+    },
+    {
+      "step": "collision BVH",
+      "start": 1992.936583,
+      "ms": 0.012000000000170985
+    },
+    {
+      "step": "collision BVH",
+      "start": 1992.965833,
+      "ms": 0.010125000000016371
+    },
+    {
+      "step": "collision BVH",
+      "start": 1992.992917,
+      "ms": 0.010207999999920503
+    },
+    {
+      "step": "collision BVH",
+      "start": 1993.020208,
+      "ms": 0.010250000000041837
+    },
+    {
+      "step": "collision BVH",
+      "start": 1993.056208,
+      "ms": 0.014709000000038941
+    },
+    {
+      "step": "collision BVH",
+      "start": 1993.088208,
+      "ms": 0.011834000000135347
+    },
+    {
+      "step": "collision BVH",
+      "start": 1993.117083,
+      "ms": 0.010041999999884865
+    },
+    {
+      "step": "collision BVH",
+      "start": 1993.196208,
+      "ms": 0.009999999999990905
+    },
+    {
+      "step": "collision BVH",
+      "start": 1993.224292,
+      "ms": 0.00987499999996544
+    },
+    {
+      "step": "collision BVH",
+      "start": 1993.251875,
+      "ms": 0.009999999999990905
+    },
+    {
+      "step": "collision BVH",
+      "start": 1993.279042,
+      "ms": 0.009750000000167347
+    },
+    {
+      "step": "collision BVH",
+      "start": 1993.307167,
+      "ms": 0.009583000000020547
+    },
+    {
+      "step": "collision BVH",
+      "start": 1993.334917,
+      "ms": 0.010208000000147877
+    },
+    {
+      "step": "collision BVH",
+      "start": 1993.362083,
+      "ms": 0.009583999999904336
+    },
+    {
+      "step": "collision BVH",
+      "start": 1993.388625,
+      "ms": 0.009583000000020547
+    },
+    {
+      "step": "collision BVH",
+      "start": 1993.415833,
+      "ms": 0.009833999999955267
+    },
+    {
+      "step": "collision BVH",
+      "start": 1993.442292,
+      "ms": 0.011166000000002896
+    },
+    {
+      "step": "collision BVH",
+      "start": 1993.47025,
+      "ms": 0.009749999999939973
+    },
+    {
+      "step": "collision BVH",
+      "start": 1993.49625,
+      "ms": 0.009667000000035841
+    },
+    {
+      "step": "collision BVH",
+      "start": 1993.523333,
+      "ms": 0.009624999999914507
+    },
+    {
+      "step": "collision BVH",
+      "start": 1993.549792,
+      "ms": 0.009624999999914507
+    },
+    {
+      "step": "collision BVH",
+      "start": 1993.577125,
+      "ms": 0.009708000000046013
+    },
+    {
+      "step": "collision BVH",
+      "start": 1993.603125,
+      "ms": 0.0099169999998594
+    },
+    {
+      "step": "collision BVH",
+      "start": 1993.6295,
+      "ms": 0.010250000000041837
+    },
+    {
+      "step": "collision BVH",
+      "start": 1993.656458,
+      "ms": 0.0107500000001437
+    },
+    {
+      "step": "collision BVH",
+      "start": 1993.683625,
+      "ms": 0.009583000000020547
+    },
+    {
+      "step": "collision BVH",
+      "start": 1993.709625,
+      "ms": 0.00937500000009095
+    },
+    {
+      "step": "collision BVH",
+      "start": 1993.738125,
+      "ms": 0.01429199999984121
+    },
+    {
+      "step": "collision BVH",
+      "start": 1993.7715,
+      "ms": 0.013749999999845386
+    },
+    {
+      "step": "collision BVH",
+      "start": 1993.804417,
+      "ms": 0.00966599999992468
+    },
+    {
+      "step": "collision BVH",
+      "start": 1993.830458,
+      "ms": 0.009625000000141881
+    },
+    {
+      "step": "collision BVH",
+      "start": 1993.858042,
+      "ms": 0.009540999999899213
+    },
+    {
+      "step": "collision BVH",
+      "start": 1993.884,
+      "ms": 0.009542000000010376
+    },
+    {
+      "step": "collision BVH",
+      "start": 1993.910292,
+      "ms": 0.009499999999889042
+    },
+    {
+      "step": "collision BVH",
+      "start": 1993.935958,
+      "ms": 0.009624999999914507
+    },
+    {
+      "step": "collision BVH",
+      "start": 1993.961875,
+      "ms": 0.009457999999995081
+    },
+    {
+      "step": "collision BVH",
+      "start": 1993.987708,
+      "ms": 0.010041999999884865
+    },
+    {
+      "step": "collision BVH",
+      "start": 1994.014417,
+      "ms": 0.009290999999848282
+    },
+    {
+      "step": "collision BVH",
+      "start": 1994.044458,
+      "ms": 0.014666999999917607
+    },
+    {
+      "step": "collision BVH",
+      "start": 1994.078667,
+      "ms": 0.010082999999895037
+    },
+    {
+      "step": "collision BVH",
+      "start": 1994.105417,
+      "ms": 0.01008300000012241
+    },
+    {
+      "step": "collision BVH",
+      "start": 1994.132417,
+      "ms": 0.009915999999975611
+    },
+    {
+      "step": "collision BVH",
+      "start": 1994.158583,
+      "ms": 0.011500000000069122
+    },
+    {
+      "step": "collision BVH",
+      "start": 1994.186792,
+      "ms": 0.009457999999995081
+    },
+    {
+      "step": "collision BVH",
+      "start": 1994.212708,
+      "ms": 0.009542000000010376
+    },
+    {
+      "step": "collision BVH",
+      "start": 1994.238875,
+      "ms": 0.009499999999889042
+    },
+    {
+      "step": "collision BVH",
+      "start": 1994.266167,
+      "ms": 0.010500000000092768
+    },
+    {
+      "step": "collision BVH",
+      "start": 1994.293542,
+      "ms": 0.01008300000012241
+    },
+    {
+      "step": "collision BVH",
+      "start": 1994.319792,
+      "ms": 0.011332999999922322
+    },
+    {
+      "step": "collision BVH",
+      "start": 1994.348,
+      "ms": 0.009542000000010376
+    },
+    {
+      "step": "collision BVH",
+      "start": 1994.375042,
+      "ms": 0.009583000000020547
+    },
+    {
+      "step": "collision BVH",
+      "start": 1994.400958,
+      "ms": 0.009459000000106244
+    },
+    {
+      "step": "collision BVH",
+      "start": 1994.427125,
+      "ms": 0.009583000000020547
+    },
+    {
+      "step": "collision BVH",
+      "start": 1994.453167,
+      "ms": 0.009625000000141881
+    },
+    {
+      "step": "collision BVH",
+      "start": 1994.478958,
+      "ms": 0.027417000000014013
+    },
+    {
+      "step": "collision BVH",
+      "start": 1994.525083,
+      "ms": 0.009792000000061307
+    },
+    {
+      "step": "collision BVH",
+      "start": 1994.552,
+      "ms": 0.009708000000046013
+    },
+    {
+      "step": "collision BVH",
+      "start": 1994.582417,
+      "ms": 0.011833000000024185
+    },
+    {
+      "step": "collision BVH",
+      "start": 1994.61725,
+      "ms": 0.009708000000046013
+    },
+    {
+      "step": "collision BVH",
+      "start": 1994.643833,
+      "ms": 0.012708999999858861
+    },
+    {
+      "step": "collision BVH",
+      "start": 1994.673625,
+      "ms": 0.010541999999986729
+    },
+    {
+      "step": "collision BVH",
+      "start": 1994.700833,
+      "ms": 0.011666999999988548
+    },
+    {
+      "step": "collision BVH",
+      "start": 1994.733917,
+      "ms": 0.008290999999871929
+    },
+    {
+      "step": "collision BVH",
+      "start": 1994.761667,
+      "ms": 0.01008300000012241
+    },
+    {
+      "step": "collision BVH",
+      "start": 1994.789,
+      "ms": 0.009457999999995081
+    },
+    {
+      "step": "collision BVH",
+      "start": 1994.815167,
+      "ms": 0.008291000000099302
+    },
+    {
+      "step": "collision BVH",
+      "start": 1994.84,
+      "ms": 0.008458000000018728
+    },
+    {
+      "step": "collision BVH",
+      "start": 1994.867833,
+      "ms": 0.007875000000012733
+    },
+    {
+      "step": "collision BVH",
+      "start": 1994.892083,
+      "ms": 0.007875000000012733
+    },
+    {
+      "step": "collision BVH",
+      "start": 1994.915875,
+      "ms": 0.008042000000159533
+    },
+    {
+      "step": "collision BVH",
+      "start": 1994.941375,
+      "ms": 0.007999999999810825
+    },
+    {
+      "step": "collision BVH",
+      "start": 1994.965292,
+      "ms": 0.01362499999981992
+    },
+    {
+      "step": "collision BVH",
+      "start": 1994.998542,
+      "ms": 0.008874999999989086
+    },
+    {
+      "step": "collision BVH",
+      "start": 1995.024792,
+      "ms": 0.008332999999993262
+    },
+    {
+      "step": "collision BVH",
+      "start": 1995.0495,
+      "ms": 0.008124999999836291
+    },
+    {
+      "step": "collision BVH",
+      "start": 1995.073708,
+      "ms": 0.008209000000078959
+    },
+    {
+      "step": "collision BVH",
+      "start": 1995.098167,
+      "ms": 0.00854099999992286
+    },
+    {
+      "step": "collision BVH",
+      "start": 1995.122792,
+      "ms": 0.00804100000004837
+    },
+    {
+      "step": "collision BVH",
+      "start": 1995.146708,
+      "ms": 0.008334000000104425
+    },
+    {
+      "step": "collision BVH",
+      "start": 1995.171208,
+      "ms": 0.008125000000063665
+    },
+    {
+      "step": "collision BVH",
+      "start": 1995.196875,
+      "ms": 0.008207999999967797
+    },
+    {
+      "step": "collision BVH",
+      "start": 1995.2225,
+      "ms": 0.00879199999985758
+    },
+    {
+      "step": "collision BVH",
+      "start": 1995.247458,
+      "ms": 0.009708999999929802
+    },
+    {
+      "step": "collision BVH",
+      "start": 1995.273417,
+      "ms": 0.00808299999994233
+    },
+    {
+      "step": "collision BVH",
+      "start": 1995.297542,
+      "ms": 0.009041000000024724
+    },
+    {
+      "step": "HabitatScene terrain / collision",
+      "start": 1987.298042,
+      "ms": 8.010958000000073
+    },
+    {
+      "step": "buildHabitatArchitecture",
+      "start": 2015.108958,
+      "ms": 8.068583999999873
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 2041.842833,
+      "ms": 8.496041999999989
+    },
+    {
+      "step": "collision BVH",
+      "start": 2069.406667,
+      "ms": 0.03466600000001563
+    },
+    {
+      "step": "collision BVH",
+      "start": 2069.472667,
+      "ms": 0.012000000000170985
+    },
+    {
+      "step": "collision BVH",
+      "start": 2069.5045,
+      "ms": 0.009625000000141881
+    },
+    {
+      "step": "collision BVH",
+      "start": 2069.531625,
+      "ms": 0.009042000000135886
+    },
+    {
+      "step": "collision BVH",
+      "start": 2069.560167,
+      "ms": 0.00937500000009095
+    },
+    {
+      "step": "collision BVH",
+      "start": 2069.587125,
+      "ms": 0.009000000000014552
+    },
+    {
+      "step": "collision BVH",
+      "start": 2069.612833,
+      "ms": 0.009208999999827938
+    },
+    {
+      "step": "collision BVH",
+      "start": 2069.64275,
+      "ms": 0.00874999999996362
+    },
+    {
+      "step": "collision BVH",
+      "start": 2069.668625,
+      "ms": 0.008417000000008557
+    },
+    {
+      "step": "collision BVH",
+      "start": 2069.696125,
+      "ms": 0.00874999999996362
+    },
+    {
+      "step": "collision BVH",
+      "start": 2069.721333,
+      "ms": 0.008124999999836291
+    },
+    {
+      "step": "collision BVH",
+      "start": 2069.762292,
+      "ms": 0.009457999999995081
+    },
+    {
+      "step": "collision BVH",
+      "start": 2069.79025,
+      "ms": 0.012832999999773165
+    },
+    {
+      "step": "collision BVH",
+      "start": 2069.820125,
+      "ms": 0.008832999999867752
+    },
+    {
+      "step": "collision BVH",
+      "start": 2069.846208,
+      "ms": 0.008584000000155356
+    },
+    {
+      "step": "collision BVH",
+      "start": 2069.8715,
+      "ms": 0.008374999999887223
+    },
+    {
+      "step": "collision BVH",
+      "start": 2069.896333,
+      "ms": 0.008624999999938154
+    },
+    {
+      "step": "collision BVH",
+      "start": 2069.923208,
+      "ms": 0.008249999999861757
+    },
+    {
+      "step": "collision BVH",
+      "start": 2069.956167,
+      "ms": 0.009250000000065484
+    },
+    {
+      "step": "collision BVH",
+      "start": 2069.982417,
+      "ms": 0.014249999999719876
+    },
+    {
+      "step": "collision BVH",
+      "start": 2070.014667,
+      "ms": 0.008166000000073836
+    },
+    {
+      "step": "collision BVH",
+      "start": 2070.03925,
+      "ms": 0.008333000000220636
+    },
+    {
+      "step": "collision BVH",
+      "start": 2070.06425,
+      "ms": 0.009042000000135886
+    },
+    {
+      "step": "collision BVH",
+      "start": 2070.089375,
+      "ms": 0.008374999999887223
+    },
+    {
+      "step": "collision BVH",
+      "start": 2070.11475,
+      "ms": 0.008707999999842286
+    },
+    {
+      "step": "collision BVH",
+      "start": 2070.139667,
+      "ms": 0.007916000000022905
+    },
+    {
+      "step": "collision BVH",
+      "start": 2070.163375,
+      "ms": 0.008332999999765889
+    },
+    {
+      "step": "collision BVH",
+      "start": 2070.187708,
+      "ms": 0.00829199999998309
+    },
+    {
+      "step": "collision BVH",
+      "start": 2070.212583,
+      "ms": 0.007999999999810825
+    },
+    {
+      "step": "collision BVH",
+      "start": 2070.237042,
+      "ms": 0.008249999999861757
+    },
+    {
+      "step": "collision BVH",
+      "start": 2070.263958,
+      "ms": 0.008834000000206288
+    },
+    {
+      "step": "collision BVH",
+      "start": 2070.297542,
+      "ms": 0.00954100000035396
+    },
+    {
+      "step": "collision BVH",
+      "start": 2070.323958,
+      "ms": 0.008041999999932159
+    },
+    {
+      "step": "collision BVH",
+      "start": 2070.348542,
+      "ms": 0.0076249999997344275
+    },
+    {
+      "step": "collision BVH",
+      "start": 2070.372292,
+      "ms": 0.007583000000067841
+    },
+    {
+      "step": "collision BVH",
+      "start": 2070.398875,
+      "ms": 0.007833000000118773
+    },
+    {
+      "step": "collision BVH",
+      "start": 2070.42275,
+      "ms": 0.007374999999683496
+    },
+    {
+      "step": "collision BVH",
+      "start": 2070.446,
+      "ms": 0.007583000000067841
+    },
+    {
+      "step": "collision BVH",
+      "start": 2070.47325,
+      "ms": 0.007375000000138243
+    },
+    {
+      "step": "collision BVH",
+      "start": 2070.496792,
+      "ms": 0.009625000000141881
+    },
+    {
+      "step": "collision BVH",
+      "start": 2070.522,
+      "ms": 0.007625000000189175
+    },
+    {
+      "step": "collision BVH",
+      "start": 2070.545292,
+      "ms": 0.007625000000189175
+    },
+    {
+      "step": "collision BVH",
+      "start": 2070.570208,
+      "ms": 0.007916999999906693
+    },
+    {
+      "step": "collision BVH",
+      "start": 2070.594083,
+      "ms": 0.007959000000028027
+    },
+    {
+      "step": "collision BVH",
+      "start": 2070.617458,
+      "ms": 0.007666999999855761
+    },
+    {
+      "step": "collision BVH",
+      "start": 2070.64125,
+      "ms": 0.007749999999759893
+    },
+    {
+      "step": "collision BVH",
+      "start": 2070.664208,
+      "ms": 0.0075419999998302956
+    },
+    {
+      "step": "collision BVH",
+      "start": 2070.687583,
+      "ms": 0.007292000000234111
+    },
+    {
+      "step": "collision BVH",
+      "start": 2070.710375,
+      "ms": 0.0075419999998302956
+    },
+    {
+      "step": "collision BVH",
+      "start": 2070.734,
+      "ms": 0.007666999999855761
+    },
+    {
+      "step": "collision BVH",
+      "start": 2070.758583,
+      "ms": 0.008874999999989086
+    },
+    {
+      "step": "collision BVH",
+      "start": 2070.783458,
+      "ms": 0.007375000000138243
+    },
+    {
+      "step": "collision BVH",
+      "start": 2070.806292,
+      "ms": 0.007374999999683496
+    },
+    {
+      "step": "collision BVH",
+      "start": 2070.830375,
+      "ms": 0.007625000000189175
+    },
+    {
+      "step": "collision BVH",
+      "start": 2070.854417,
+      "ms": 0.007583000000067841
+    },
+    {
+      "step": "collision BVH",
+      "start": 2070.879208,
+      "ms": 0.007792000000335975
+    },
+    {
+      "step": "collision BVH",
+      "start": 2070.904042,
+      "ms": 0.007499999999708962
+    },
+    {
+      "step": "collision BVH",
+      "start": 2070.926833,
+      "ms": 0.007500000000163709
+    },
+    {
+      "step": "collision BVH",
+      "start": 2070.95,
+      "ms": 0.0072079999999914435
+    },
+    {
+      "step": "collision BVH",
+      "start": 2070.973,
+      "ms": 0.007333000000016909
+    },
+    {
+      "step": "collision BVH",
+      "start": 2070.996833,
+      "ms": 0.007374999999683496
+    },
+    {
+      "step": "collision BVH",
+      "start": 2071.021542,
+      "ms": 0.007458000000042375
+    },
+    {
+      "step": "collision BVH",
+      "start": 2071.0455,
+      "ms": 0.007582999999613094
+    },
+    {
+      "step": "collision BVH",
+      "start": 2071.069792,
+      "ms": 0.007875000000240107
+    },
+    {
+      "step": "collision BVH",
+      "start": 2071.09425,
+      "ms": 0.008207999999740423
+    },
+    {
+      "step": "collision BVH",
+      "start": 2071.120042,
+      "ms": 0.007999999999810825
+    },
+    {
+      "step": "collision BVH",
+      "start": 2071.143708,
+      "ms": 0.007791999999881227
+    },
+    {
+      "step": "collision BVH",
+      "start": 2071.167417,
+      "ms": 0.0072079999999914435
+    },
+    {
+      "step": "collision BVH",
+      "start": 2071.189958,
+      "ms": 0.007375000000138243
+    },
+    {
+      "step": "collision BVH",
+      "start": 2071.213167,
+      "ms": 0.007540999999946507
+    },
+    {
+      "step": "collision BVH",
+      "start": 2071.237083,
+      "ms": 0.007208999999875232
+    },
+    {
+      "step": "collision BVH",
+      "start": 2071.260083,
+      "ms": 0.007208999999875232
+    },
+    {
+      "step": "collision BVH",
+      "start": 2071.284167,
+      "ms": 0.007583000000067841
+    },
+    {
+      "step": "collision BVH",
+      "start": 2071.307708,
+      "ms": 0.008417000000008557
+    },
+    {
+      "step": "collision BVH",
+      "start": 2071.331833,
+      "ms": 0.00724999999965803
+    },
+    {
+      "step": "collision BVH",
+      "start": 2071.355042,
+      "ms": 0.007374999999683496
+    },
+    {
+      "step": "collision BVH",
+      "start": 2071.378375,
+      "ms": 0.00837500000034197
+    },
+    {
+      "step": "collision BVH",
+      "start": 2071.403875,
+      "ms": 0.007458000000042375
+    },
+    {
+      "step": "collision BVH",
+      "start": 2071.4285,
+      "ms": 0.00741699999980483
+    },
+    {
+      "step": "collision BVH",
+      "start": 2071.451542,
+      "ms": 0.007458000000042375
+    },
+    {
+      "step": "collision BVH",
+      "start": 2071.475458,
+      "ms": 0.007292000000234111
+    },
+    {
+      "step": "collision BVH",
+      "start": 2071.502208,
+      "ms": 0.007542000000285043
+    },
+    {
+      "step": "collision BVH",
+      "start": 2071.525667,
+      "ms": 0.008541000000150234
+    },
+    {
+      "step": "collision BVH",
+      "start": 2071.551167,
+      "ms": 0.0076249999997344275
+    },
+    {
+      "step": "collision BVH",
+      "start": 2071.573917,
+      "ms": 0.007582999999613094
+    },
+    {
+      "step": "collision BVH",
+      "start": 2071.597375,
+      "ms": 0.007375000000138243
+    },
+    {
+      "step": "collision BVH",
+      "start": 2071.61975,
+      "ms": 0.007667000000310509
+    },
+    {
+      "step": "collision BVH",
+      "start": 2071.642708,
+      "ms": 0.007375000000138243
+    },
+    {
+      "step": "collision BVH",
+      "start": 2071.665042,
+      "ms": 0.007583000000067841
+    },
+    {
+      "step": "collision BVH",
+      "start": 2071.690708,
+      "ms": 0.007291999999779364
+    },
+    {
+      "step": "collision BVH",
+      "start": 2071.714625,
+      "ms": 0.00829199999998309
+    },
+    {
+      "step": "collision BVH",
+      "start": 2071.738292,
+      "ms": 0.00858299999981682
+    },
+    {
+      "step": "collision BVH",
+      "start": 2071.762292,
+      "ms": 0.007375000000138243
+    },
+    {
+      "step": "collision BVH",
+      "start": 2071.784667,
+      "ms": 0.008916000000226632
+    },
+    {
+      "step": "HabitatScene terrain / collision",
+      "start": 2069.339292,
+      "ms": 2.6848329999997986
+    },
+    {
+      "step": "ForumView React update",
+      "start": 2073.364583,
+      "ms": 0.4846650000004047
+    },
+    {
+      "step": "buildHabitatArchitecture",
+      "start": 2089.616792,
+      "ms": 8.10733300000038
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 2116.467333,
+      "ms": 8.163291999999728
+    },
+    {
+      "step": "buildHabitatArchitecture",
+      "start": 2141.8735,
+      "ms": 8.04083300000002
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 2169.44825,
+      "ms": 9.775167000000238
+    },
+    {
+      "step": "buildHabitatArchitecture",
+      "start": 2199.055375,
+      "ms": 8.041917000000012
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 2226.575542,
+      "ms": 8.374957999999879
+    },
+    {
+      "step": "buildHabitatArchitecture",
+      "start": 2254.648042,
+      "ms": 8.003416000000016
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 2281.82325,
+      "ms": 9.55758300000025
+    },
+    {
+      "step": "buildHabitatArchitecture",
+      "start": 2308.356833,
+      "ms": 8.066625000000386
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 2335.654458,
+      "ms": 8.960333999999875
+    },
+    {
+      "step": "buildHabitatArchitecture",
+      "start": 2361.501917,
+      "ms": 8.074583000000075
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 2388.893333,
+      "ms": 10.303084000000126
+    },
+    {
+      "step": "buildHabitatArchitecture",
+      "start": 2418.903083,
+      "ms": 8.170916999999918
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 2446.794875,
+      "ms": 8.493082999999842
+    },
+    {
+      "step": "buildHabitatArchitecture",
+      "start": 2474.951583,
+      "ms": 8.011250000000018
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 2502.195625,
+      "ms": 9.370708000000377
+    },
+    {
+      "step": "buildHabitatArchitecture",
+      "start": 2530.267875,
+      "ms": 8.118124999999964
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 2557.562708,
+      "ms": 8.49670900000001
+    },
+    {
+      "step": "buildHabitatArchitecture",
+      "start": 2584.152792,
+      "ms": 8.6875
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 2612.545083,
+      "ms": 10.173792000000049
+    },
+    {
+      "step": "buildHabitatArchitecture",
+      "start": 2641.407458,
+      "ms": 10.960499999999683
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 2672.036458,
+      "ms": 8.511541999999736
+    },
+    {
+      "step": "buildHabitatArchitecture",
+      "start": 2699.113833,
+      "ms": 13.03083400000014
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 2731.883333,
+      "ms": 9.827499999999873
+    },
+    {
+      "step": "buildHabitatArchitecture",
+      "start": 2760.389667,
+      "ms": 0.1915830000002643
+    },
+    {
+      "step": "ForumView React update",
+      "start": 2764.390833,
+      "ms": 0.37629000000015367
+    },
+    {
+      "step": "ForumView React update",
+      "start": 2764.922333,
+      "ms": 0.1407970000000205
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 2778.876792,
+      "ms": 8.387249999999767
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 2806.92675,
+      "ms": 10.455207999999857
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 2835.82,
+      "ms": 8.310166999999637
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 2863.828208,
+      "ms": 10.904250000000047
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 2893.433292,
+      "ms": 8.315290999999888
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 2920.409542,
+      "ms": 8.168541000000005
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 2947.298,
+      "ms": 8.618667000000187
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 2974.524083,
+      "ms": 8.50379200000043
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 3002.416583,
+      "ms": 9.569375000000036
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 3031.62425,
+      "ms": 8.764083000000028
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 3060.0455,
+      "ms": 10.33087499999965
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 3090.013792,
+      "ms": 8.179749999999785
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 3117.844625,
+      "ms": 8.315499999999702
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 3145.790917,
+      "ms": 10.529375000000073
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 3175.976833,
+      "ms": 8.324916999999914
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 3203.922583,
+      "ms": 8.454791999999998
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 3232.08225,
+      "ms": 8.448542000000089
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 3259.319875,
+      "ms": 9.304707999999664
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 3287.436042,
+      "ms": 8.724500000000262
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 3316.068708,
+      "ms": 10.409834000000046
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 3346.023583,
+      "ms": 12.24533399999973
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 3377.852292,
+      "ms": 14.03012499999977
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 3411.866708,
+      "ms": 9.33199999999988
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 3440.88975,
+      "ms": 10.316167000000405
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 3470.209667,
+      "ms": 10.340208000000075
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 3499.482,
+      "ms": 12.055875000000015
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 3528.87275,
+      "ms": 11.730916999999863
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 3559.563792,
+      "ms": 11.71770800000013
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 3590.588,
+      "ms": 10.071541999999681
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 3617.985,
+      "ms": 8.822291999999834
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 3646.579625,
+      "ms": 10.04666700000007
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 3675.361417,
+      "ms": 11.243750000000091
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 3705.884958,
+      "ms": 10.228125000000091
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 3734.347833,
+      "ms": 10.744084000000385
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 3763.831292,
+      "ms": 10.692375000000084
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 3793.466875,
+      "ms": 12.39554199999975
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 3825.678292,
+      "ms": 10.94058300000006
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 3855.418125,
+      "ms": 10.667957999999999
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 3885.929167,
+      "ms": 8.17712500000016
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 3913.840792,
+      "ms": 9.34133299999985
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 3942.898542,
+      "ms": 8.287000000000262
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 3970.822667,
+      "ms": 9.2126659999999
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 3999.829125,
+      "ms": 8.474416999999903
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 4027.736542,
+      "ms": 8.899290999999721
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 4055.351208,
+      "ms": 11.046749999999975
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 4085.377833,
+      "ms": 6.8960839999999735
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 4111.343958,
+      "ms": 8.376124999999774
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 4138.761458,
+      "ms": 15.236084000000119
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 4173.293167,
+      "ms": 10.950458000000253
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 4203.56325,
+      "ms": 12.564457999999831
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 4235.332042,
+      "ms": 10.585332999999991
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 4265.327042,
+      "ms": 12.408166000000165
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 4295.763833,
+      "ms": 12.30829199999971
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 4326.487875,
+      "ms": 12.433125000000473
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 4358.908583,
+      "ms": 8.003458999999566
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 4386.675375,
+      "ms": 8.498458000000028
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 4414.85925,
+      "ms": 10.094457999999577
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 4444.677958,
+      "ms": 8.975749999999607
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 4472.361583,
+      "ms": 9.996167000000241
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 4502.085708,
+      "ms": 9.550750000000335
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 4527.826667,
+      "ms": 12.166957999999795
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 4558.888583,
+      "ms": 9.212000000000444
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 4587.788417,
+      "ms": 9.420165999999881
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 4616.871833,
+      "ms": 8.661833999999544
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 4642.8025,
+      "ms": 10.271625000000313
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 4672.742667,
+      "ms": 8.903290999999626
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 4700.271042,
+      "ms": 10.094957999999679
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 4729.993042,
+      "ms": 8.935040999999728
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 4758.544458,
+      "ms": 10.039084000000003
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 4786.635958,
+      "ms": 9.077209000000039
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 4814.388583,
+      "ms": 10.141333999999915
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 4843.214125,
+      "ms": 8.029332999999497
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 4870.954042,
+      "ms": 9.176665999999386
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 4899.8315,
+      "ms": 9.345124999999825
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 4928.68925,
+      "ms": 9.530832999999802
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 4957.906417,
+      "ms": 9.382332999999562
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 4986.932625,
+      "ms": 11.795791999999892
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 5017.396083,
+      "ms": 10.509375000000546
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 5047.584208,
+      "ms": 12.014541999999892
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 5078.248083,
+      "ms": 8.7393749999992
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 5106.608625,
+      "ms": 8.874582999999802
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 5133.834,
+      "ms": 10.182667000000038
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 5163.681542,
+      "ms": 8.826540999999452
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 5191.248167,
+      "ms": 11.859333000000333
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 5222.8755,
+      "ms": 11.360749999999825
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 5253.886542,
+      "ms": 11.235458000000108
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 5284.856,
+      "ms": 9.449416999999812
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 5314.029417,
+      "ms": 10.663790999999947
+    },
+    {
+      "step": "buildHabitatPlanting",
+      "start": 5343.387042,
+      "ms": 7.350040999999692
+    },
+    {
+      "step": "ForumView React update",
+      "start": 5350.844375,
+      "ms": 0.3151659999984986
+    },
+    {
+      "step": "ForumView React update",
+      "start": 5351.440875,
+      "ms": 0.5507950000019264
+    },
+    {
+      "step": "ForumView React update",
+      "start": 5352.18675,
+      "ms": 3.220757000008234
+    },
+    {
+      "step": "ForumView React update",
+      "start": 5355.763583,
+      "ms": 1.4104520000018965
+    }
+  ]
+}

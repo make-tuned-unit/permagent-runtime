@@ -1,3 +1,4 @@
+import { settleStartup } from './forumStartupTestUtils';
 /** @vitest-environment jsdom */
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -24,6 +25,7 @@ it('shows immediate stage feedback while suspended and keeps HUD and navigation 
   act(() => build.click());
   const action = [...host.querySelectorAll('button')].find(b => b.textContent?.includes('Open Build'))!;
   expect(action).toBeTruthy(); act(() => action.click()); expect(navigate).toHaveBeenCalledWith('build');
+  settleStartup();
   const ready = gpu.props!.children.find((child: any) => child?.type === ForumStageReady);
   act(() => ready.props.onReady());
   expect(host.textContent).not.toContain('Loading World…');
@@ -34,6 +36,7 @@ it('offers recovery at five seconds and can still finish a slow load', () => {
   act(() => vi.advanceTimersByTime(WORLD_READY_BUDGET_MS));
   expect(host.textContent).toContain('World is taking longer');
   expect([...host.querySelectorAll('button')].some(b => b.textContent === 'Retry World')).toBe(true);
+  settleStartup();
   const ready = gpu.props!.children.find((child: any) => child?.type === ForumStageReady);
   act(() => ready.props.onReady());
   expect(host.textContent).not.toContain('World is taking longer');
@@ -41,6 +44,7 @@ it('offers recovery at five seconds and can still finish a slow load', () => {
 it('keeps recovery outside a failed Canvas and retries only on request', () => {
   vi.spyOn(console, 'error').mockImplementation(() => {}); gpu.fail = true;
   act(() => root.render(<ForumView />));
+  settleStartup();
   expect(host.textContent).toContain('World could not start');
   expect(host.querySelector('[aria-label="World places"]')).toBeTruthy();
   gpu.fail = false;

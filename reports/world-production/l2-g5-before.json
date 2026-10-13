@@ -1,0 +1,52 @@
+[
+  {
+    "step": "lazy ForumView import",
+    "ms": 306.807292,
+    "scope": "async wall time incl Vite transforms, NOT synchronous evaluation"
+  },
+  {
+    "step": "terrain",
+    "ms": 17.274875000000065,
+    "scope": "synchronous CPU, real geometry"
+  },
+  {
+    "step": "collision source",
+    "ms": 16.145459000000074,
+    "scope": "synchronous CPU, real geometry"
+  },
+  {
+    "step": "collision BVHs",
+    "ms": 10.287249999999972,
+    "scope": "synchronous CPU, real geometry"
+  },
+  {
+    "step": "architecture",
+    "ms": 137.44708100000003,
+    "scope": "synchronous React render, real geometry; textures stubbed"
+  },
+  {
+    "step": "planting",
+    "ms": 788.6439580000001,
+    "scope": "synchronous React render, real geometry; textures stubbed"
+  },
+  {
+    "step": "water",
+    "ms": 2.1509169999997084,
+    "scope": "synchronous React render, real geometry; textures stubbed"
+  },
+  {
+    "step": "Canvas / WebGL context",
+    "ms": 0,
+    "scope": "unavailable in jsdom, not measured"
+  },
+  {
+    "step": "PMREM / GPU shaders",
+    "ms": 0,
+    "scope": "unavailable in jsdom, not measured"
+  },
+  {
+    "step": "GLB / browser texture decode",
+    "ms": 0,
+    "scope": "unavailable in jsdom, not measured"
+  }
+]

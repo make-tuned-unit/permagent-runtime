@@ -1,3 +1,4 @@
+import { settleStartup } from './forumStartupTestUtils';
 /** @vitest-environment jsdom */
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -13,7 +14,7 @@ import { ForumLightingPreparation } from './ForumLightingPreparation';
 import { ForumEnvironment } from './ForumEnvironment';
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 let root: Root, host: HTMLDivElement;
-beforeEach(() => { localStorage.clear(); localStorage.setItem('permagent.forum.lighting', 'day'); vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false }))); host = document.createElement('div'); document.body.append(host); root = createRoot(host); act(() => root.render(<ForumView />)); });
+beforeEach(async () => { localStorage.clear(); localStorage.setItem('permagent.forum.lighting', 'day'); vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false }))); host = document.createElement('div'); document.body.append(host); root = createRoot(host); act(() => root.render(<ForumView />)); await settleStartup(); });
 afterEach(() => { act(() => root.unmount()); host.remove(); vi.unstubAllGlobals(); });
 function preparation() { return gpu.props!.children.find((child: any) => child?.type === ForumLightingPreparation).props; }
 function environment() { return gpu.props!.children.find((child: any) => child?.type === 'group').props.children.find((child: any) => child?.type === ForumEnvironment).props; }

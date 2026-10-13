@@ -1,7 +1,7 @@
 import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
-import { useTexture } from '@react-three/drei';
+import { useForumTexture as useTexture } from './useForumTexture';
 import { useFrame, useThree } from '@react-three/fiber';
-import { BackSide, Color, DoubleSide, Group, LinearFilter, SRGBColorSpace, Vector3 } from 'three';
+import { BackSide, Color, DoubleSide, Group, Vector3 } from 'three';
 import { createCelestialBodies, SKY_RENDER_ORDER } from './ForumSky';
 import { GardenAssetBoundary } from './GardenAssetBoundary';
 import { getReduceMotion } from '../../../styles/tokens';
@@ -109,9 +109,7 @@ function GaiaSurveyFallback() {
 }
 
 function GaiaSurveyBackdrop({ appearance }: { appearance: 'day' | 'night' }) {
-  const source = useTexture(`${import.meta.env.BASE_URL}world/astronomy/gaia-edr3-milky-way.webp`);
-  const map = useMemo(() => { const t = source.clone(); t.colorSpace = SRGBColorSpace; t.needsUpdate = true; return t; }, [source]);
-  useEffect(() => () => map.dispose(), [map]);
+  const map = useTexture(`${import.meta.env.BASE_URL}world/astronomy/gaia-edr3-milky-way.webp`);
   const strength = appearance === 'night' ? .13 : .09;
   const tint = useMemo(() => new Color(strength, strength, strength), [strength]);
   return <mesh renderOrder={SKY_RENDER_ORDER.dome} rotation={[.22, 1.98, .18]}>
@@ -128,16 +126,7 @@ function GaiaSurveyBackdrop({ appearance }: { appearance: 'day' | 'night' }) {
 }
 
 function PanoramaDome({ url }: { url: string }) {
-  const source = useTexture(url);
-  const map = useMemo(() => {
-    const t = source.clone();
-    t.colorSpace = SRGBColorSpace;
-    t.generateMipmaps = false;
-    t.minFilter = t.magFilter = LinearFilter;
-    t.needsUpdate = true;
-    return t;
-  }, [source]);
-  useEffect(() => () => map.dispose(), [map]);
+  const map = useTexture(url, 'panorama');
   return <mesh renderOrder={SKY_RENDER_ORDER.dome} rotation={[0, HABITAT_PANORAMA_ROTATION_Y, 0]}>
     <sphereGeometry args={[4480, 64, 32]}/>
     <meshBasicMaterial map={map} side={BackSide} depthWrite={false} toneMapped={false} fog={false}/>
@@ -166,14 +155,7 @@ function PanoramaWithFallback() {
 
 function TexturedHorizonCard({ card }: { card: HabitatHorizonCard }) {
   const url = habitatVistaAssetUrl(HABITAT_VISTA_ASSETS.cards[card.kind]);
-  const texture = useTexture(url);
-  const map = useMemo(() => {
-    const t = texture.clone();
-    t.colorSpace = SRGBColorSpace;
-    t.needsUpdate = true;
-    return t;
-  }, [texture]);
-  useEffect(() => () => map.dispose(), [map]);
+  const map = useTexture(url);
   return <CardMesh card={card} map={map}/>;
 }
 
