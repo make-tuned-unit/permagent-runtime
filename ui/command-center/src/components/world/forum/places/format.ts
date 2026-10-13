@@ -85,17 +85,19 @@ export function goalPhaseLabel(phase: GoalPhase, raw: string): string {
 
 /**
  * Where a piece of work stands on the draft → sent → tracked → verified line.
- * A goal is "verified" only when it is complete AND a review decision is on
- * record; complete without one says so.
+ * A goal is "verified" only when it is complete AND the review record carries an
+ * explicit accepted/approved verdict; a bare review record is not acceptance.
  */
-export type WorkStage = 'draft' | 'sent' | 'tracked' | 'needs_review' | 'verified' | 'complete_unreviewed' | 'failed' | 'cancelled' | 'unknown';
+export type WorkStage = 'draft' | 'sent' | 'tracked' | 'needs_review' | 'verified' | 'complete_review_record' | 'complete_unreviewed' | 'failed' | 'cancelled' | 'unknown';
 
 export function goalStage(goal: Pick<GoalRecord, 'phase' | 'reviewDecisions'>): WorkStage {
   switch (goal.phase) {
     case 'triage': case 'ready': case 'executing': return 'tracked';
     case 'review': return 'needs_review';
     case 'complete':
-      return goal.reviewDecisions?.status === 'ok' && goal.reviewDecisions.count > 0 ? 'verified' : 'complete_unreviewed';
+      if (goal.reviewDecisions?.status !== 'ok' || goal.reviewDecisions.count <= 0) return 'complete_unreviewed';
+      // A review record is not an acceptance: "verified" needs an explicit verdict.
+      return goal.reviewDecisions.verdict ? 'verified' : 'complete_review_record';
     case 'failed': return 'failed';
     case 'cancelled': return 'cancelled';
     case 'unknown': return 'unknown';
@@ -107,7 +109,8 @@ export const STAGE_LABEL: Record<WorkStage, string> = {
   sent: 'Sent — acknowledged',
   tracked: 'Tracked goal',
   needs_review: 'Tracked — needs your review',
-  verified: 'Verified — complete with a review on record',
+  verified: 'Verified — review accepted',
+  complete_review_record: 'Complete; review record present',
   complete_unreviewed: 'Complete — no review on record',
   failed: 'Failed',
   cancelled: 'Cancelled',

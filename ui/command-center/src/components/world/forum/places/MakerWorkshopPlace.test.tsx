@@ -40,14 +40,15 @@ describe('Maker workshop', () => {
     expect(h.navigation.openGoalDetail).not.toHaveBeenCalled();
   });
 
-  it('verified result: on the shelf only because a completed goal with a review exists; spend names its scope', async () => {
+  it('review-record result: complete goal with a review record is not called Verified without an explicit verdict; spend names its scope', async () => {
     const { loader, now } = await fixtureLoader(fixtureById('completed_goal'), 'maker');
     const h = harness({ loader, now });
     mounted = await mount(<MakerWorkshopPlace {...h.props} />);
     const shelf = q('[data-slot="result_shelf"]')!;
     expect(shelf.getAttribute('data-results')).toBe('1');
-    expect(shelf.querySelector('[data-stage]')!.getAttribute('data-stage')).toBe('verified');
-    expect(shelf.textContent).toContain('Verified — complete with a review on record');
+    expect(shelf.querySelector('[data-stage]')!.getAttribute('data-stage')).toBe('complete_review_record');
+    expect(shelf.textContent).toContain('Complete; review record present');
+    expect(shelf.textContent).not.toContain('Verified');
     click(Array.from(shelf.querySelectorAll('button')).find((b) => b.textContent === 'Open the result and its evidence')!);
     expect(h.navigation.openGoalDetail).toHaveBeenCalledWith(FIXTURE_PROJECT, 'fixture-goal-5');
     const spend = q('[data-slot="steward_spend"]')!;

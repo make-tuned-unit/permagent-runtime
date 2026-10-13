@@ -130,7 +130,7 @@ export interface GoalRecord {
   updatedAt: string;
   assignedTo: string | null;
   /** Review decisions on this goal, when the source returned them. */
-  reviewDecisions: { status: 'ok'; count: number; truncated: boolean } | { status: 'unavailable'; reason: string } | null;
+  reviewDecisions: { status: 'ok'; count: number; truncated: boolean; /** Explicit acceptance: set only when the daemon names an accepted/approved verdict. */ verdict?: 'accepted' | 'approved' | null } | { status: 'unavailable'; reason: string } | null;
   link: WorldRecordLink;
   source: SourceRef;
 }
