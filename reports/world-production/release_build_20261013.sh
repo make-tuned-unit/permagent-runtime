@@ -2,33 +2,33 @@
 # Permagent release 2026-10-13 -- step-numbered, idempotent, run ONE step at a time:
 #   reports/world-production/release_build_20261013.sh <0|1|2|3a|3|4|5|6>
 # See reports/world-production/release-20261013-plan.md for what each step does.
-# Set RELEASE_DRY_RUN=1 to print only (no log file, no manifest, no baseline write).
+# Set RELEASE_DRY_RUN=1 to print only (no log file, no manifest write).
 # This script never stops the live daemon, never pushes, and never touches git state.
 set -euo pipefail
 
 STEP="${1:-}"
 LANE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-EXPECTED_TIP=43e487d1
 TARGET=/Volumes/PermagentBuilds/permagent/targets/world-production-20261006
 BUILDS=/Volumes/PermagentBuilds/permagent
 LOGDIR=$BUILDS/logs
 RUNBUILD=$BUILDS/run-build
 LOCKFILE=$BUILDS/world-production-20261006.lock
 MANIFEST=$LANE/reports/world-production/release-20261013-manifest.json
-BASELINE=$LOGDIR/release-20261013-baseline.json
 PROV=/Users/j/Documents/dev/permagent-worktrees/dagJ-reports/release/provenance-check.sh
 TAURI_DIR=$LANE/ui/desktop/src-tauri
 SCRIPTS=$LANE/ui/desktop/scripts
 DIST=$LANE/ui/command-center/dist
-DAEMON_SHA=a73a4ac48d294af8acf44f8fb6d6fcf459adeb5f5974ebce06b741b1fa217f58
-AUDIOCAP_SHA=03ffdfa5acd042b9d78488d04dd0d3f40d216195088e817ca7be6fdd1a32ceaf
-CLI_SHA_BUILT=f5173c846915b762ea57d47a436401259022c76d259f432798281ce5c751d61a
+# DAEMON_SHA / EXPECTED_GIT_SHA / LIVE_PID / ROLLBACK are NOT constants: they are computed at run time
+# (step 1 -> manifest facts daemon_sha256, daemon_artefact, git_sha9; step 5 -> rollback_path).
+AUDIOCAP_REL=ui/desktop/src-tauri/audiocap/permagent-audiocap
+# No build-specific sha/tip is encoded here: daemon/CLI shas, git_sha9 (= HEAD at step 1) and the
+# audiocap sha (blob at HEAD) are computed at run time and kept in the manifest facts.
 BUNDLE=$TARGET/release/bundle/macos/Permagent.app
 APP=/Applications/Permagent.app
-ROLLBACK=/Applications/Permagent.app.before-release-20261013
-LIVE_PID=1439
+LAUNCHD_LABEL=ai.permagent.daemon
 TS_BIN=/Applications/Tailscale.app/Contents/MacOS/Tailscale
 DEVICE_FILE=$HOME/.permagent/secrets/device_tokens.json
+TOKEN_FILE=$HOME/.permagent/secrets/daemon_token.json
 export CARGO_TARGET_DIR=$TARGET
 
 die()  { echo "FAIL: $*" >&2; exit 1; }
@@ -54,12 +54,96 @@ record() {
   /usr/bin/python3 - "$MANIFEST" "$STEP" "$label" "$path" "$h" "$(stat -f %z "$path")" <<'PY'
 import json, os, sys, time
 m, step, label, path, h, size = sys.argv[1:]
-d = json.load(open(m)) if os.path.exists(m) else {"release": "20261013", "tip": "43e487d1", "artefacts": {}}
+d = json.load(open(m)) if os.path.exists(m) else {"release": "20261013", "tip": None, "artefacts": {}}
+d.setdefault("facts", {})
 d["artefacts"][label] = {"step": step, "path": path, "sha256": h, "bytes": int(size),
                          "recorded": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
 json.dump(d, open(m, "w"), indent=2); open(m, "a").write("\n")
 PY
 }
+
+# Manifest facts: run-time computed values live in manifest["facts"], never as literals in this script.
+# mset KEY VALUE stores one (skipped in dry run); mget KEY prints it or DIES if it is missing/empty.
+mset() {
+  note "fact $1 = $2"
+  [ "${RELEASE_DRY_RUN:-0}" = 1 ] && return 0
+  /usr/bin/python3 - "$MANIFEST" "$STEP" "$1" "$2" <<'PY'
+import json, os, sys, time
+m, step, k, v = sys.argv[1:]
+d = json.load(open(m)) if os.path.exists(m) else {"release": "20261013", "tip": None, "artefacts": {}}
+d.setdefault("facts", {})[k] = v
+d.setdefault("fact_steps", {})[k] = {"step": step, "recorded": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
+json.dump(d, open(m, "w"), indent=2); open(m, "a").write("\n")
+PY
+}
+mget() {
+  [ -f "$MANIFEST" ] || die "manifest $MANIFEST missing: the step that records '$1' has not run for real"
+  local v
+  v=$(/usr/bin/python3 - "$MANIFEST" "$1" <<'PY'
+import json, sys
+v = json.load(open(sys.argv[1])).get("facts", {}).get(sys.argv[2])
+print("" if v is None else v)
+PY
+) || die "cannot read manifest"
+  [ -n "$v" ] || die "manifest fact '$1' missing or empty: run the step that records it (see this script's step list)"
+  printf '%s' "$v"
+}
+
+# A cargo artefact: release/deps/<name>-<16 hex>. Exactly one candidate or stop and list them.
+# (Tauri copies binaries/permagentd and binaries/permagent over target/release/ -- both are externalBin
+# in tauri.conf.json -- so those two paths are never trusted; only the deps artefacts are.)
+dep_artefact() {
+  local name=$1 c=() f b
+  for f in "$TARGET"/release/deps/"$name"-*; do
+    [ -f "$f" ] && [ -x "$f" ] || continue
+    b=${f##*/}; [[ "${b#"$name"-}" =~ ^[0-9a-f]{16}$ ]] || continue
+    c+=("$f")
+  done
+  if [ "${#c[@]}" -ne 1 ]; then
+    echo "FAIL: expected exactly one release/deps/$name-<hash> artefact, found ${#c[@]}:" >&2
+    [ "${#c[@]}" -gt 0 ] && ls -l -t "${c[@]}" >&2
+    exit 1
+  fi
+  printf '%s' "${c[0]}"
+}
+dep_daemon() { dep_artefact permagentd; }
+dep_cli()    { dep_artefact permagent; }
+
+# sha256 of the tracked audiocap helper AS COMMITTED at HEAD (a dirty working-tree copy cannot match it).
+audiocap_head_sha() { git -C "$LANE" show "HEAD:$AUDIOCAP_REL" | shasum -a 256 | awk '{print $1}'; }
+
+# pid of the installed daemon: the launchd agent first, the :3001 listener as fallback. Empty if none.
+live_daemon_pid() {
+  local p
+  p=$(launchctl print "gui/$(id -u)/$LAUNCHD_LABEL" 2>/dev/null | sed -n 's/^[[:space:]]*pid = \([0-9][0-9]*\)$/\1/p' | head -1 || true)
+  [ -n "$p" ] || p=$(lsof -nP -iTCP:3001 -sTCP:LISTEN -t 2>/dev/null | head -1 || true)
+  printf '%s' "$p"
+}
+
+# /api/version git_sha of whatever answers on :3001 (empty if nothing answers or no token).
+api_git_sha() {
+  local tok v
+  [ -f "$TOKEN_FILE" ] || return 0
+  tok=$(python3 -c "import json;d=json.load(open('$TOKEN_FILE'));print(d.get('token') or list(d.values())[0])" 2>/dev/null) || return 0
+  v=$(curl -s -m 5 -H "Authorization: Bearer $tok" http://127.0.0.1:3001/api/version || true)
+  printf '%s' "$v" | /usr/bin/python3 -c 'import sys,json
+try: print(json.load(sys.stdin).get("git_sha",""))
+except Exception: print("")'
+}
+
+# Number of registered devices (count only; nothing from the file is printed).
+device_count() {
+  /usr/bin/python3 - "$DEVICE_FILE" <<'PY'
+import json, os, sys
+f = sys.argv[1]
+if not os.path.exists(f): print(""); sys.exit(0)
+d = json.load(open(f))
+if isinstance(d, dict) and isinstance(d.get("devices"), (list, dict)): d = d["devices"]
+print(len(d))
+PY
+}
+dev_mtime() { stat -f %m "$DEVICE_FILE" 2>/dev/null || true; }
+ts_status() { "$TS_BIN" serve status 2>&1 || true; }
 
 # Provenance script has MAIN hard-coded to the primary checkout; run a copy pointed at this lane.
 prov() {
@@ -98,30 +182,21 @@ case "$STEP" in
 # ---------------------------------------------------------------------------------------------
 0) # PREFLIGHT (read-only except the baseline snapshot)
   cd "$LANE"
-  head=$(git rev-parse --short=8 HEAD)
-  if [ "$head" != "$EXPECTED_TIP" ]; then
-    git merge-base --is-ancestor "$EXPECTED_TIP" HEAD || die "HEAD $head does not contain tip $EXPECTED_TIP"
-    extra=$(git diff --name-only "$EXPECTED_TIP" HEAD | grep -v -E '^reports/world-production/(release_build_20261013\.sh|release-20261013-.*)$' || true)
-    [ -z "$extra" ] || die "commits after $EXPECTED_TIP touch more than the release script/plan: $extra"
-    note "HEAD $head = tip $EXPECTED_TIP + release-prep commit(s) only: OK"
-  else note "HEAD = $EXPECTED_TIP: OK"; fi
+  note "HEAD $(git rev-parse --short=9 HEAD) (recorded as git_sha9 in step 1; no tip literal to compare against)"
   # "Clean" = nothing that can ship differs: no tracked change or untracked file outside
-  # reports/ (evidence JSON churn there is not compiled/bundled), except the audiocap helper
-  # IF it already equals the reviewed binary (step 1 stages it over the tracked file).
+  # reports/ (evidence JSON churn there is not compiled/bundled). The audiocap helper is NOT excepted:
+  # a modified tracked helper must be caught here.
   dirty=$(git status --porcelain --untracked-files=all | grep -v -E '^.. reports/' || true)
-  ac=ui/desktop/src-tauri/audiocap/permagent-audiocap
-  if echo "$dirty" | grep -q "$ac" && [ "$(sha "$LANE/$ac")" = "$AUDIOCAP_SHA" ]; then
-    dirty=$(echo "$dirty" | grep -v "$ac" || true); note "audiocap helper already staged (reviewed sha): allowed"
-  fi
   [ -z "$dirty" ] || die "tree not clean outside reports/: $dirty"
   note "tree clean outside reports/ (reports/ changes: $(git status --porcelain | grep -c ' reports/' || true), non-shipping)"
   [ -d "$BUILDS" ] && mount | grep -q '/Volumes/PermagentBuilds ' || die "PermagentBuilds volume not mounted"
-  [ "$(sha "$TARGET/release/permagentd")" = "$DAEMON_SHA" ] || die "permagentd sha != $DAEMON_SHA"
-  note "permagentd sha OK"
-  [ "$(sha "$TARGET/release/permagent")" = "$CLI_SHA_BUILT" ] || die "CLI sha != $CLI_SHA_BUILT (rebuilt? update CLI_SHA_BUILT after review)"
-  note "permagent CLI sha OK"
-  [ "$(sha "$TARGET/review-audiocap/permagent-audiocap")" = "$AUDIOCAP_SHA" ] || die "audiocap helper sha != $AUDIOCAP_SHA"
-  note "audiocap helper sha OK"
+  DEP=$(dep_daemon)
+  note "cargo daemon artefact (single candidate): $DEP sha256 $(sha "$DEP") (recorded in step 1)"
+  CLI_DEP=$(dep_cli)
+  note "cargo CLI artefact (single candidate): $CLI_DEP sha256 $(sha "$CLI_DEP") (recorded in step 1)"
+  AUDIOCAP_SHA=$(audiocap_head_sha)
+  [ "$(sha "$LANE/$AUDIOCAP_REL")" = "$AUDIOCAP_SHA" ] || die "working-tree audiocap helper differs from HEAD's blob ($AUDIOCAP_SHA)"
+  note "audiocap helper == HEAD blob $AUDIOCAP_SHA"
   for f in libsherpa-onnx-c-api.dylib libonnxruntime.dylib; do [ -f "$TARGET/release/$f" ] || die "missing $f in release dir"; done
   ID=$(identity_name); [ -n "$ID" ] || die "no 'Developer ID Application' identity in keychain"
   note "signing identity present: $ID"
@@ -137,16 +212,24 @@ PY
   [ -f "$PROV" ] || die "provenance-check.sh missing"
   note "--- provenance-check pre (lane copy)"
   prov pre
-  # Baseline for step 6 (written once, by the first real preflight).
-  if [ "${RELEASE_DRY_RUN:-0}" != 1 ] && [ ! -f "$BASELINE" ]; then
-    /usr/bin/python3 - "$BASELINE" "$DEVICE_FILE" "$("$TS_BIN" serve status 2>&1 | /usr/bin/python3 -c 'import sys,json;print(json.dumps(sys.stdin.read()))')" <<'PY'
-import json, os, sys
-b, dev, ts = sys.argv[1:]
-st = os.stat(dev) if os.path.exists(dev) else None
-json.dump({"tailscale_serve_status": json.loads(ts),
-           "device_file": dev, "device_mtime": st.st_mtime if st else None, "device_size": st.st_size if st else None}, open(b, "w"), indent=2)
-PY
-    note "baseline written: $BASELINE"
+  # BASELINE of the CURRENTLY installed app, written into the manifest (facts baseline.*) for step 6.
+  # Never rewritten once an install has happened (it would then describe the new app).
+  [ -d "$APP" ] || die "no installed $APP to baseline"
+  if [ "${RELEASE_DRY_RUN:-0}" != 1 ] && [ -f "$MANIFEST" ] && /usr/bin/python3 -c 'import json,sys;sys.exit(0 if "rollback_path" in json.load(open(sys.argv[1])).get("facts",{}) else 1)' "$MANIFEST"; then
+    note "install already recorded in manifest: baseline NOT rewritten"
+  else
+    b_shell=$(sha "$APP/Contents/MacOS/permagent-app"); b_daemon=$(sha "$APP/Contents/MacOS/permagentd")
+    b_api=$(api_git_sha); b_pid=$(live_daemon_pid)
+    [ -n "$b_api" ] || die "baseline: no /api/version git_sha from the live daemon on :3001 (daemon down or no token): start it, then re-run step 0"
+    [ -n "$b_pid" ] || die "baseline: cannot identify the live daemon pid (launchctl print / lsof)"
+    mset baseline.shell_sha256 "$b_shell"
+    mset baseline.daemon_sha256 "$b_daemon"
+    mset baseline.api_git_sha "$b_api"
+    mset baseline.daemon_pid "$b_pid"
+    mset baseline.device_count "$(device_count)"
+    mset baseline.device_mtime "$(dev_mtime)"
+    mset baseline.tailscale_serve_status "$(ts_status)"
+    note "baseline of installed app written to manifest"
   fi
   note "PREFLIGHT OK"
   ;;
@@ -155,11 +238,28 @@ PY
   # The uplifted target/release/permagentd is NOT trustworthy: a Tauri build copies
   # ui/desktop/src-tauri/binaries/permagentd-aarch64-apple-darwin over it (2026-10-13: the Sep 29
   # daemon got packaged that way). Cargo's real artefact is release/deps/permagentd-<hash>.
-  DEP=$(ls -t "$TARGET"/release/deps/permagentd-* 2>/dev/null | grep -v '\.d$' | head -1)
-  [ -n "$DEP" ] || die "no cargo daemon artefact under release/deps"
-  [ "$(sha "$DEP")" = "$DAEMON_SHA" ] || die "cargo daemon artefact $(sha "$DEP") != reviewed $DAEMON_SHA"
-  cp "$DEP" "$TARGET/release/permagentd"; note "release/permagentd restored from cargo artefact $(basename "$DEP") ($DAEMON_SHA)"
+  # Exactly one candidate or dep_daemon stops and lists them; its sha is computed here, not remembered.
+  DEP=$(dep_daemon)
+  DAEMON_SHA=$(sha "$DEP")
   cd "$LANE"
+  # build.rs bakes `git rev-parse --short=9 HEAD` of this worktree; capture the same value for step 6.
+  GIT_SHA9=$(git rev-parse --short=9 HEAD)
+  cp "$DEP" "$TARGET/release/permagentd"; note "release/permagentd restored from cargo artefact $(basename "$DEP") ($DAEMON_SHA)"
+  [ "$(sha "$TARGET/release/permagentd")" = "$DAEMON_SHA" ] || die "restored release/permagentd != artefact"
+  # Same rule for the CLI: Tauri's externalBin copy overwrites target/release/permagent, and
+  # copy-cli.sh stages from it, so restore it from the deps artefact first.
+  CLI_DEP=$(dep_cli); CLI_SHA=$(sha "$CLI_DEP")
+  cp "$CLI_DEP" "$TARGET/release/permagent"
+  [ "$(sha "$TARGET/release/permagent")" = "$CLI_SHA" ] || die "restored release/permagent != artefact"
+  note "release/permagent restored from cargo artefact $(basename "$CLI_DEP") ($CLI_SHA)"
+  AUDIOCAP_SHA=$(audiocap_head_sha)
+  [ "$(sha "$TAURI_DIR/audiocap/permagent-audiocap")" = "$AUDIOCAP_SHA" ] || die "tracked audiocap helper in the working tree differs from HEAD's blob ($AUDIOCAP_SHA): restore it with git checkout"
+  mset daemon_artefact "$DEP"
+  mset cli_artefact "$CLI_DEP"
+  mset cli_sha256 "$CLI_SHA"
+  mset audiocap_sha256 "$AUDIOCAP_SHA"
+  mset daemon_sha256 "$DAEMON_SHA"
+  mset git_sha9 "$GIT_SHA9"
   "$SCRIPTS/copy-sidecar.sh"
   "$SCRIPTS/copy-cli.sh"
   # copy-sidecar swallows codesign errors (|| true): prove the re-signed staged copies are valid.
@@ -176,15 +276,9 @@ PY
     note "mcp-runtime already staged and pinned: reusing (RELEASE_REFRESH_MCP=1 to rebuild)"
   else "$SCRIPTS/copy-mcp-runtime.sh"; fi
   "$SCRIPTS/copy-whisper-model.sh"
-  # build-audiocap.sh WOULD COMPILE (swiftc -O main.swift, then ad hoc codesign) into the TRACKED
-  # file ui/desktop/src-tauri/audiocap/permagent-audiocap. That yields a new, unreviewed binary, so
-  # it is deliberately NOT run. Stage the reviewed helper over the tracked path instead.
-  # (The committed binary is 4f5f0dab..., not the reviewed 03ffdfa5...; restore after install with
-  #  git checkout -- ui/desktop/src-tauri/audiocap/permagent-audiocap.)
-  cp "$TARGET/review-audiocap/permagent-audiocap" "$TAURI_DIR/audiocap/permagent-audiocap"
-  chmod +x "$TAURI_DIR/audiocap/permagent-audiocap"
-  [ "$(sha "$TAURI_DIR/audiocap/permagent-audiocap")" = "$AUDIOCAP_SHA" ] || die "staged audiocap sha mismatch"
-  note "reviewed audiocap helper staged over tracked path (build-audiocap.sh not run)"
+  # build-audiocap.sh is deliberately NOT run (it compiles into the tracked file). The helper that ships
+  # is the one committed at HEAD; its sha was checked against the blob above, so a dirty copy stops here.
+  note "audiocap helper == HEAD blob $AUDIOCAP_SHA (build-audiocap.sh not run)"
   record staged-permagentd "$B/permagentd-aarch64-apple-darwin"
   record staged-permagent-cli "$B/permagent-aarch64-apple-darwin"
   record staged-libsherpa "$B/libsherpa-onnx-c-api.dylib"
@@ -267,16 +361,21 @@ PY
   done < <(macho_files "$BUNDLE")
   note "$n Mach-O files, all Developer ID signed and strict-valid"
   # Daemon: the bundled copy gained an rpath (install_name_tool) and a new signature, so its
-  # whole-file sha CANNOT equal a73a4ac4... Compare __TEXT,__text instead, and show the built sha.
+  # whole-file sha CANNOT equal the built one. Compare __TEXT,__text instead, and show the built sha.
   BD=$BUNDLE/Contents/MacOS
-  [ "$(text_sha "$BD/permagentd")" = "$(text_sha "$TARGET/release/permagentd")" ] || die "bundled permagentd code differs from the reviewed build ($DAEMON_SHA)"
-  note "bundled permagentd __text == reviewed build $DAEMON_SHA"
-  [ "$(text_sha "$BD/permagent")" = "$(text_sha "$TARGET/release/permagent")" ] || die "bundled CLI code differs from built CLI ($CLI_SHA_BUILT)"
+  DAEMON_SHA=$(mget daemon_sha256); DEP=$(mget daemon_artefact)
+  [ -f "$DEP" ] && [ "$(sha "$DEP")" = "$DAEMON_SHA" ] || die "cargo artefact $DEP no longer matches manifest daemon_sha256 $DAEMON_SHA"
+  [ "$(text_sha "$BD/permagentd")" = "$(text_sha "$DEP")" ] || die "bundled permagentd code differs from the cargo artefact ($DAEMON_SHA)"
+  note "bundled permagentd __text == cargo artefact $DAEMON_SHA"
+  CLI_SHA=$(mget cli_sha256); CLI_DEP=$(mget cli_artefact); AUDIOCAP_SHA=$(mget audiocap_sha256)
+  [ -f "$CLI_DEP" ] && [ "$(sha "$CLI_DEP")" = "$CLI_SHA" ] || die "cargo CLI artefact $CLI_DEP no longer matches manifest cli_sha256 $CLI_SHA"
+  [ "$(text_sha "$BD/permagent")" = "$(text_sha "$CLI_DEP")" ] || die "bundled CLI code differs from the cargo CLI artefact ($CLI_SHA)"
   note "bundled permagent CLI __text == built CLI"
   [ "$(sha "$BUNDLE/Contents/Resources/permagent-audiocap")" = "$AUDIOCAP_SHA" ] \
-    && note "audiocap helper in bundle byte-identical to reviewed (unsigned-by-Tauri path)" \
-    || { [ "$(text_sha "$BUNDLE/Contents/Resources/permagent-audiocap")" = "$(text_sha "$TARGET/review-audiocap/permagent-audiocap")" ] \
-         && note "audiocap helper in bundle: same code as reviewed, re-signed" || die "audiocap helper in bundle differs from reviewed $AUDIOCAP_SHA"; }
+    && note "audiocap helper in bundle byte-identical to HEAD's blob (unsigned-by-Tauri path)" \
+    || { AC_HEAD=$(mktemp); git -C "$LANE" show "HEAD:$AUDIOCAP_REL" > "$AC_HEAD"
+         [ "$(text_sha "$BUNDLE/Contents/Resources/permagent-audiocap")" = "$(text_sha "$AC_HEAD")" ] \
+         && note "audiocap helper in bundle: same code as HEAD's blob, re-signed" || die "audiocap helper in bundle differs from HEAD's blob $AUDIOCAP_SHA"; rm -f "$AC_HEAD"; }
   for f in permagentd permagent permagent-app; do record "bundle-$f" "$BD/$f"; done
   record bundle-audiocap "$BUNDLE/Contents/Resources/permagent-audiocap"
   for f in "$BUNDLE"/Contents/Frameworks/*.dylib; do record "bundle-$(basename "$f")" "$f"; done
@@ -312,28 +411,33 @@ JS
   ;;
 # ---------------------------------------------------------------------------------------------
 5) # INSTALL to /Applications (rollback copy first). Needs RELEASE_CONFIRM_INSTALL=1.
+  ROLLBACK=/Applications/Permagent.app.before-release-$(date +%Y%m%d-%H%M%S)
   cat <<EOF
 WILL DO:
-  1. refuse if permagentd pid $LIVE_PID (or permagent-app) is still running
-  2. ditto $APP -> $ROLLBACK   (kept as rollback; refuses to overwrite an existing rollback)
+  1. refuse if any permagentd (launchd agent $LAUNCHD_LABEL pid: ${LIVE_NOW:-$(live_daemon_pid)}) or permagent-app is still running
+  2. ditto $APP -> $ROLLBACK   (new timestamped path; refuses to overwrite ANY existing path)
   3. ditto $BUNDLE -> $APP.staging-20261013, verify it (codesign --deep --strict)
   4. rm -rf $APP; mv staging into place
   5. provenance-check post $APP
 EOF
   [ "${RELEASE_CONFIRM_INSTALL:-0}" = 1 ] || { echo "Not installing: set RELEASE_CONFIRM_INSTALL=1 to proceed."; exit 3; }
-  pgrep -x permagentd | grep -qx "$LIVE_PID" && die "permagentd pid $LIVE_PID is still running: coordinator must stop it first"
+  mget baseline.shell_sha256 >/dev/null; mget daemon_sha256 >/dev/null   # steps 0 and 1 must have run for real
+  LIVE_NOW=$(live_daemon_pid)
+  [ -z "$LIVE_NOW" ] || die "installed daemon (pid $LIVE_NOW, launchd $LAUNCHD_LABEL / :3001) is still running: coordinator must bootout first"
+  pgrep -x permagentd >/dev/null && die "a permagentd process is still running: $(pgrep -x permagentd | tr '\n' ' ')"
   pgrep -x permagent-app >/dev/null && die "permagent-app is running: quit it first"
   [ -d "$BUNDLE" ] || die "no bundle: run steps 3 and 4"
   codesign --verify --deep --strict "$BUNDLE" || die "bundle fails codesign: rerun step 4"
   if [ -d "$APP" ] && [ "$(sha "$APP/Contents/MacOS/permagentd")" = "$(sha "$BUNDLE/Contents/MacOS/permagentd")" ]; then
     note "installed app already equals this bundle: skipping copy"
   else
-    [ -e "$ROLLBACK" ] && die "$ROLLBACK already exists: refusing to overwrite the rollback"
+    [ -e "$ROLLBACK" ] && die "$ROLLBACK already exists: refusing to overwrite a rollback"
     [ -d "$APP" ] || die "no current $APP to keep as rollback"
     ditto "$APP" "$ROLLBACK"
     codesign --verify --deep --strict "$ROLLBACK" 2>&1 || note "WARN: rollback copy does not verify strictly (the original may not have either)"
     [ "$(sha "$ROLLBACK/Contents/MacOS/permagentd")" = "$(sha "$APP/Contents/MacOS/permagentd")" ] || die "rollback copy differs from current app"
     note "rollback kept: $ROLLBACK"
+    mset rollback_path "$ROLLBACK"
     STG=$APP.staging-20261013; rm -rf "$STG"
     ditto "$BUNDLE" "$STG"
     codesign --verify --deep --strict "$STG" || die "staged copy fails codesign"
@@ -343,15 +447,15 @@ EOF
   record installed-permagent-app "$APP/Contents/MacOS/permagent-app"
   note "--- provenance-check post (installed)"
   prov post "$APP"
-  note "INSTALLED. Restore the tracked audiocap file when done: git checkout -- ui/desktop/src-tauri/audiocap/permagent-audiocap"
+  note "INSTALLED"
   ;;
 # ---------------------------------------------------------------------------------------------
-6) # POST-INSTALL CHECKS (coordinator has restarted the app/daemon)
-  EXPECTED_GIT_SHA=f233d3145   # build.rs bakes `git rev-parse --short=9 HEAD` (daemon source tip at build time)
-  tok=$(python3 -c "import json;d=json.load(open('$HOME/.permagent/secrets/daemon_token.json'));print(d.get('token') or list(d.values())[0])")
-  v=$(curl -s -m 5 -H "Authorization: Bearer $tok" http://127.0.0.1:3001/api/version)
-  echo "$v" | grep -q "\"git_sha\":\"$EXPECTED_GIT_SHA\"" && note "installed daemon /api/version git_sha $EXPECTED_GIT_SHA OK" || die "installed daemon /api/version mismatch: $v"
-  [ -f "$BASELINE" ] || die "baseline missing ($BASELINE): step 0 was never run for real"
+6) # POST-INSTALL CHECKS (coordinator has restarted the app/daemon); compares against MANIFEST facts only
+  EXPECTED_GIT_SHA=$(mget git_sha9)          # step 1: `git rev-parse --short=9 HEAD` at build time (what build.rs bakes)
+  DAEMON_SHA=$(mget daemon_sha256); DEP=$(mget daemon_artefact)
+  B_SHELL=$(mget baseline.shell_sha256); B_DAEMON=$(mget baseline.daemon_sha256); B_API=$(mget baseline.api_git_sha)
+  B_DEVN=$(mget baseline.device_count); B_DEVM=$(mget baseline.device_mtime); B_TS=$(mget baseline.tailscale_serve_status)
+  mget baseline.daemon_pid >/dev/null; mget rollback_path >/dev/null
   code=000
   for i in $(seq 1 24); do
     code=$(curl -s -m 5 -o /dev/null -w '%{http_code}' http://127.0.0.1:3001/status || true)
@@ -359,22 +463,33 @@ EOF
   done
   [ "$code" = 200 ] || die "daemon /status on 127.0.0.1:3001 -> $code after 2 min"
   note "daemon /status 200"
-  for p in $(pgrep -x permagentd); do
-    cmd=$(ps -p "$p" -o command= || true); note "permagentd pid $p: $cmd"
-  done
-  pgrep -x permagentd | while read -r p; do ps -p "$p" -o command= | grep -q "^$APP/" && echo ok; done | grep -q ok \
-    || die "no running permagentd is the one inside $APP"
+  now_api=$(api_git_sha)
+  [ -n "$now_api" ] || die "no /api/version git_sha from the installed daemon"
+  [ "$now_api" = "$EXPECTED_GIT_SHA" ] || die "installed daemon /api/version git_sha $now_api != manifest git_sha9 $EXPECTED_GIT_SHA"
+  note "installed daemon /api/version git_sha $now_api == manifest $EXPECTED_GIT_SHA"
+  [ "$now_api" != "$B_API" ] || note "WARN: git_sha equals the baseline's ($B_API): the daemon source did not change"
+  # installed files vs baseline and vs the reviewed build
+  n_shell=$(sha "$APP/Contents/MacOS/permagent-app"); n_daemon=$(sha "$APP/Contents/MacOS/permagentd")
+  [ "$n_shell" != "$B_SHELL" ] || die "installed shell sha equals the baseline's: the app was not replaced"
+  [ "$n_daemon" != "$B_DAEMON" ] || die "installed daemon sha equals the baseline's: the app was not replaced"
+  [ "$(text_sha "$APP/Contents/MacOS/permagentd")" = "$(text_sha "$DEP")" ] || die "installed permagentd __text != cargo artefact (manifest daemon_sha256 $DAEMON_SHA)"
+  note "installed shell and daemon differ from the baseline; installed daemon code == cargo artefact $DAEMON_SHA"
+  # running daemon: the launchd agent's pid, and its executable must be inside $APP
+  pid=$(live_daemon_pid)
+  [ -n "$pid" ] || die "cannot identify the running daemon (launchctl print $LAUNCHD_LABEL / lsof :3001)"
+  cmd=$(ps -p "$pid" -o command= || true); note "daemon pid $pid: $cmd"
+  case "$cmd" in "$APP/"*) ;; *) die "daemon pid $pid is not the one inside $APP";; esac
   codesign --verify --deep --strict "$APP" || die "installed app fails codesign"
-  /usr/bin/python3 - "$BASELINE" "$("$TS_BIN" serve status 2>&1 | /usr/bin/python3 -c 'import sys,json;print(json.dumps(sys.stdin.read()))')" <<'PY'
-import json, os, sys
-b = json.load(open(sys.argv[1])); now = json.loads(sys.argv[2]); bad = []
-if now != b["tailscale_serve_status"]: bad.append("tailscale serve status CHANGED:\n" + now)
-dev = b["device_file"]; st = os.stat(dev) if os.path.exists(dev) else None
-if (st.st_mtime if st else None) != b["device_mtime"]: bad.append("device registry mtime CHANGED: %s -> %s" % (b["device_mtime"], st.st_mtime if st else None))
-print("\n".join(bad) or "tailscale serve status unchanged; device registry mtime unchanged")
-sys.exit(1 if bad else 0)
-PY
+  # unchanged state: devices and tailscale, against the baseline in the manifest
+  bad=0
+  n_devn=$(device_count); n_devm=$(dev_mtime); n_ts=$(ts_status)
+  [ "$n_devn" = "$B_DEVN" ] || { echo "device count CHANGED: $B_DEVN -> $n_devn"; bad=1; }
+  [ "$n_devm" = "$B_DEVM" ] || { echo "device registry mtime CHANGED: $B_DEVM -> $n_devm"; bad=1; }
+  [ "$n_ts" = "$B_TS" ] || { echo "tailscale serve status CHANGED:"; echo "$n_ts"; bad=1; }
+  [ "$bad" = 0 ] || die "state differs from the step-0 baseline (above)"
+  note "device count ($n_devn), device registry mtime and tailscale serve status match the baseline"
   note "POST-INSTALL OK"
   ;;
+# ---------------------------------------------------------------------------------------------
 *) die "unknown step '$STEP' (use 0 1 2 3a 3 4 5 6)";;
 esac
