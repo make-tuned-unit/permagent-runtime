@@ -119,8 +119,14 @@ export function StepReview({ agentName, toneLabel, firstMessage, onFirstMessage,
       primary={{ label: 'Start Permagent', pending: saving, pendingLabel: 'Starting…' }}
       onPrimary={onStart}
     >
-      {!facts && !error && <StatusLine tone="info">Checking saved settings… You can start while these checks finish.</StatusLine>}
-      {error && <StatusLine tone="warn">{error} You can review your saved choices later in Settings.</StatusLine>}
+      <div data-testid="review-check-status" style={{ minHeight: space.huge * 3 }}>
+        <StatusLine tone={error || facts?.model.connected === false ? 'warn' : 'info'}>
+          {error ? `${error} You can review your saved choices later in Settings.`
+            : !facts ? 'Checking saved settings… You can start while these checks finish.'
+            : facts.model.connected === false ? `No model is connected, so ${agentName} can't reply yet. Add one any time in Settings → Models.`
+            : 'Saved settings checked. You can change them any time in Settings.'}
+        </StatusLine>
+      </div>
       <dl style={{ margin: 0, display: 'flex', flexDirection: 'column' }}>
         <Row label="Model" value={facts ? facts.model.text : pendingValue} warn={facts?.model.connected === false} onChange={() => onEdit(steps.model)} />
         <Row label="Agent" value={`${agentName} · ${toneLabel}`} onChange={() => onEdit(steps.agent)} />
@@ -128,10 +134,6 @@ export function StepReview({ agentName, toneLabel, firstMessage, onFirstMessage,
         <Row label="Web search" value={facts?.search ?? pendingValue} onChange={() => onEdit(steps.extras)} />
         <Row label="Memory model" value={facts?.memory ?? pendingValue} onChange={() => onEdit(steps.extras)} last />
       </dl>
-
-      {facts?.model.connected === false && (
-        <StatusLine tone="warn">No model is connected, so {agentName} can't reply yet. Add one any time in Settings → Models.</StatusLine>
-      )}
 
       <div>
         <FieldLabel htmlFor={msgId}>First message (optional)</FieldLabel>

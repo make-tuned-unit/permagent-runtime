@@ -87,30 +87,32 @@ export function StepModel({ initialChoice, onDone }: Props) {
     >
       <div role="radiogroup" aria-label="How your agent thinks" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: space.md }}>
         <ChoiceCard name="model-choice" value="hosted" checked={choice === 'hosted'} onSelect={() => setChoice('hosted')}
-          title="Hosted provider" detail="Best quality. Needs an API key from the provider." autoFocus />
-        {localAvailable && (
-          <ChoiceCard name="model-choice" value="local" checked={choice === 'local'} onSelect={() => setChoice('local')}
-            title="On this Mac" detail="Private, and free to run. Needs Ollama and a few GB of disk." />
-        )}
+          title="Hosted provider" detail="Runs on the provider's servers. Needs an API key; provider usage charges may apply." status="Internet connection required" autoFocus />
+        {/* Keep all three slots from first paint, including when this service
+            does not offer the local runtime. Capability reads only enable it. */}
+        <ChoiceCard name="model-choice" value="local" checked={choice === 'local'} onSelect={() => setChoice('local')}
+          disabled={!localAvailable}
+          title="On this Mac" detail="Runs locally through Ollama. Uses this Mac's memory and disk space."
+          status={!providers ? loadError ? 'Availability could not be checked' : 'Checking availability…' : localAvailable ? 'Local runtime available' : 'Not offered by this service'} />
         <ChoiceCard name="model-choice" value="later" checked={choice === 'later'} onSelect={() => setChoice('later')}
-          title="Decide later" detail="Look around first. Your agent can't reply until a model is connected." />
+          title="Decide later" detail="Look around first. Your agent can't reply until a model is connected." status="Setup is optional" />
       </div>
 
-      {!providers && !loadError && (
-        <StatusLine tone="info">Loading available providers…</StatusLine>
-      )}
-
-      {loadError && (
-        <StatusLine tone="error">
-          Couldn't load the provider list ({loadError}).{' '}
-          <GhostLink onClick={load}>Try again</GhostLink>
-        </StatusLine>
-      )}
-
+      <div data-testid="model-load-status" style={{ minHeight: space.huge * 2 }}>
+        {!providers && !loadError && (
+          <StatusLine tone="info">Loading available providers…</StatusLine>
+        )}
+        {loadError && (
+          <StatusLine tone="error">
+            Couldn't load the provider list ({loadError}).{' '}
+            <GhostLink onClick={load}>Try again</GhostLink>
+          </StatusLine>
+        )}
+      </div>
       {choice === 'hosted' && providers && (
         <HostedPanel providers={hosted} onAction={setAction} onDone={() => onDone('hosted')} />
       )}
-      {choice === 'local' && providers && (
+      {choice === 'local' && providers && localAvailable && (
         <LocalPanel onAction={setAction} onDone={() => onDone('local')} />
       )}
       {choice === 'later' && (

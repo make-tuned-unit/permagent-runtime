@@ -3,6 +3,7 @@ import { FiArrowLeft, FiChevronDown, FiCheck } from 'react-icons/fi';
 import { font, ease, duration, radius, space, textSize, type } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
+import { useForumReducedMotion } from '../world/forum/useForumReducedMotion';
 
 // ── WizardHeading / WizardSubhead ──────────────────────────────────────
 // One heading scale for every step, so the flow reads as one designed object.
@@ -357,31 +358,36 @@ export function Select({
 }
 
 // ── ChoiceCard: a radio rendered as a card ─────────────────────────────
-export function ChoiceCard({ name, value, checked, onSelect, title, detail, autoFocus }: {
+export function ChoiceCard({ name, value, checked, onSelect, title, detail, autoFocus, disabled = false, status }: {
   name: string; value: string; checked: boolean; onSelect: (v: string) => void;
-  title: string; detail: string; autoFocus?: boolean;
+  title: string; detail: string; autoFocus?: boolean; disabled?: boolean; status?: string;
 }) {
   const { colors } = useTheme();
   const [focus, setFocus] = useState(false);
+  const [keyboard, setKeyboard] = useState(false);
+  const reducedMotion = useForumReducedMotion();
   return (
-    <label style={{
-      display: 'flex', gap: space.lg, alignItems: 'flex-start', cursor: 'pointer',
+    <label data-choice-selected={checked} data-choice-focus={focus && keyboard} onPointerDown={() => setKeyboard(false)} style={{
+      display: 'flex', gap: space.lg, alignItems: 'flex-start', cursor: disabled ? 'not-allowed' : 'pointer',
       padding: `${space.xl}px ${space.xl}px`, borderRadius: radius.lg,
       background: checked ? colors.cyanSoft : colors.inputBg,
       border: `1px solid ${checked ? colors.cyan : colors.border}`,
-      boxShadow: focus ? `0 0 0 3px ${colors.cyanGlow}` : 'none',
-      transition: `background ${duration.fast}ms ${ease.out}, border-color ${duration.fast}ms ${ease.out}`,
+      // A neutral offset ring means keyboard focus; accent fill + the checked
+      // radio mean selection. Moving focus alone never paints a selected card.
+      boxShadow: focus && keyboard ? `0 0 0 ${space.xxs}px ${colors.bg}, 0 0 0 ${space.xs}px ${colors.text}` : 'none',
+      transition: reducedMotion || keyboard ? 'none' : `background ${duration.fast}ms ${ease.out}, border-color ${duration.fast}ms ${ease.out}`,
     }}>
       <input
-        type="radio" name={name} value={value} checked={checked}
+        type="radio" name={name} value={value} checked={checked} disabled={disabled}
         onChange={() => onSelect(value)}
-        onFocus={() => setFocus(true)} onBlur={() => setFocus(false)}
+        onFocus={event => { setFocus(true); setKeyboard(event.currentTarget.matches(':focus-visible')); }} onBlur={() => setFocus(false)}
         {...(autoFocus ? { 'data-autofocus': '' } : {})}
         style={{ accentColor: colors.cyan, marginTop: space.xs, flexShrink: 0, outline: 'none' }}
       />
       <span style={{ display: 'flex', flexDirection: 'column', gap: space.xxs }}>
         <span style={{ fontFamily: font.body, fontSize: textSize.body, fontWeight: 600, color: colors.text }}>{title}</span>
         <span style={{ fontFamily: font.body, fontSize: textSize.small, color: colors.textMuted, lineHeight: 1.45 }}>{detail}</span>
+        {status !== undefined && <span style={{ fontSize: textSize.caption, color: colors.textMuted, minHeight: '2.9em', lineHeight: 1.45, marginTop: space.sm }}>{status}</span>}
       </span>
     </label>
   );

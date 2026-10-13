@@ -144,7 +144,8 @@ describe('WizardShell', () => {
     await start();
     await submit();
     expect(Array.from(container.querySelectorAll('[role="status"]')).some(el => el.textContent === 'Loading available providers…')).toBe(true);
-    expect(radio('local')).toBeNull();
+    expect(radio('local')?.disabled).toBe(true);
+    expect(container.querySelectorAll('input[name="model-choice"]')).toHaveLength(3);
     await click(radio('later'));
     await act(async () => { resolveProviders(providers({}, 'ollama')); });
     await flush();

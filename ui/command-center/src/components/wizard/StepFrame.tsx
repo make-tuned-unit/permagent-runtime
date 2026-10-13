@@ -72,14 +72,14 @@ export function StepFrame({ title, why, lead, children, primary, onPrimary, seco
           </div>
         </div>
       </div>
-      <div style={{ flexShrink: 0, borderTop: `1px solid ${colors.border}`, padding: `${space.xl}px ${space.huge}px` }}>
+      <div data-testid="wizard-action-footer" style={{ flexShrink: 0, borderTop: `1px solid ${colors.border}`, padding: `${space.xl}px ${space.huge}px` }}>
         <div style={{ margin: '0 auto', maxWidth: Math.max(width, 560), display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: space.xl }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: space.md, minWidth: 0 }}>{secondary}</div>
           {/* Pending is shown in the label and on the form (aria-busy), not by
               disabling the button: a focused button that disables itself
               drops keyboard focus to the page, and the next Enter goes
               nowhere. The submit handler ignores presses while pending. */}
-          <PrimaryButton type="submit" disabled={primary.disabled} autoFocus={primary.autoFocus}>
+          <PrimaryButton type="submit" disabled={primary.disabled} autoFocus={primary.autoFocus} style={{ minWidth: 220, flexShrink: 0 }}>
             {primary.pending ? (primary.pendingLabel ?? `${primary.label}…`) : primary.label}
           </PrimaryButton>
         </div>
