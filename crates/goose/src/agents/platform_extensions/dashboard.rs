@@ -27,7 +27,9 @@ use tokio_util::sync::CancellationToken;
 
 pub static EXTENSION_NAME: &str = "dashboard";
 
-const DAEMON: &str = "http://127.0.0.1:3001";
+fn daemon_base() -> String {
+    super::browser::control_plane_url("")
+}
 
 /// The daemon's own bearer token, read from the file the server loads at
 /// startup. This tool runs in-process in the daemon, so reading it is
@@ -70,7 +72,7 @@ const FIRST_PARTY_CARD_TYPES: &[&str] = &[
 async fn get_json(path: &str) -> Result<serde_json::Value, String> {
     let client = reqwest::Client::new();
     let mut req = client
-        .get(format!("{DAEMON}{path}"))
+        .get(format!("{}{path}", daemon_base()))
         .timeout(std::time::Duration::from_secs(20));
     if let Some(token) = daemon_token().await {
         req = req.bearer_auth(token);
@@ -95,7 +97,7 @@ async fn send_json(
 ) -> Result<serde_json::Value, String> {
     let client = reqwest::Client::new();
     let mut req = client
-        .request(method, format!("{DAEMON}{path}"))
+        .request(method, format!("{}{path}", daemon_base()))
         .timeout(std::time::Duration::from_secs(20));
     if let Some(token) = daemon_token().await {
         req = req.bearer_auth(token);

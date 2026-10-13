@@ -14,8 +14,24 @@ use tokio_util::sync::CancellationToken;
 
 pub static EXTENSION_NAME: &str = "browser";
 
-// The browser bridge/control plane is not configurable at this layer.
-const CONTROL_PLANE_PORT: u16 = 3001;
+/// Port the hosting daemon is bound to. The daemon exports it at startup;
+/// when unset (tests, embedded use) we fall back to the default daemon port.
+pub const CONTROL_PLANE_PORT_ENV: &str = "PERMAGENT_CONTROL_PLANE_PORT";
+const DEFAULT_CONTROL_PLANE_PORT: u16 = 3001;
+
+fn parse_control_plane_port(raw: Option<&str>) -> u16 {
+    raw.and_then(|v| v.trim().parse::<u16>().ok())
+        .filter(|p| *p != 0)
+        .unwrap_or(DEFAULT_CONTROL_PLANE_PORT)
+}
+
+pub fn control_plane_port() -> u16 {
+    parse_control_plane_port(std::env::var(CONTROL_PLANE_PORT_ENV).ok().as_deref())
+}
+
+pub fn control_plane_url(path: &str) -> String {
+    format!("http://127.0.0.1:{}{}", control_plane_port(), path)
+}
 const READ_BYTE_CAP: usize = 2 * 1024 * 1024;
 const MAX_REDIRECTS: usize = 5;
 
@@ -338,6 +354,10 @@ fn guard_webview_url(input: &str) -> Result<String, String> {
 }
 
 pub fn reject_control_plane(url: &str) -> Result<(), String> {
+    reject_control_plane_on(url, control_plane_port())
+}
+
+fn reject_control_plane_on(url: &str, control_port: u16) -> Result<(), String> {
     let parsed = reqwest::Url::parse(url).map_err(|e| format!("Invalid URL: {e}"))?;
     let host = parsed.host_str().unwrap_or_default().to_ascii_lowercase();
     // For an IPv6 literal, `host_str()` keeps the brackets (`[::1]`), which do
@@ -348,7 +368,7 @@ pub fn reject_control_plane(url: &str) -> Result<(), String> {
         || ip_literal
             .parse::<IpAddr>()
             .is_ok_and(|ip| ip.is_loopback() || ip.is_unspecified());
-    if is_control_host && parsed.port_or_known_default() == Some(CONTROL_PLANE_PORT) {
+    if is_control_host && parsed.port_or_known_default() == Some(control_port) {
         return Err("cannot navigate to the Permagent control plane".to_string());
     }
     Ok(())
@@ -503,7 +523,7 @@ impl BrowserClient {
     async fn handle_read_browser_content(&self) -> Result<Vec<Content>, String> {
         let client = reqwest::Client::new();
         let resp = client
-            .post("http://127.0.0.1:3001/api/browser/content/read")
+            .post(control_plane_url("/api/browser/content/read"))
             .timeout(std::time::Duration::from_secs(15))
             .send()
             .await
@@ -560,7 +580,7 @@ impl BrowserClient {
         let url = guard_webview_url(url)?;
         let client = reqwest::Client::new();
         let resp = client
-            .post("http://127.0.0.1:3001/api/browser/navigate")
+            .post(control_plane_url("/api/browser/navigate"))
             .timeout(std::time::Duration::from_secs(5))
             .json(&serde_json::json!({ "url": url }))
             .send()
@@ -598,7 +618,7 @@ impl BrowserClient {
     async fn handle_wake_desktop(&self) -> Result<Vec<Content>, String> {
         let client = reqwest::Client::new();
         let resp = client
-            .post("http://127.0.0.1:3001/api/desktop/launch")
+            .post(control_plane_url("/api/desktop/launch"))
             .timeout(std::time::Duration::from_secs(15))
             .send()
             .await
@@ -703,7 +723,7 @@ impl BrowserClient {
     async fn handle_get_page_snapshot(&self, session_id: &str) -> Result<Vec<Content>, String> {
         let client = reqwest::Client::new();
         let resp = client
-            .post("http://127.0.0.1:3001/api/browser/snapshot/read")
+            .post(control_plane_url("/api/browser/snapshot/read"))
             .timeout(std::time::Duration::from_secs(15))
             .send()
             .await
@@ -766,7 +786,7 @@ impl BrowserClient {
 
         let client = reqwest::Client::new();
         let resp = client
-            .post("http://127.0.0.1:3001/api/browser/act")
+            .post(control_plane_url("/api/browser/act"))
             .timeout(std::time::Duration::from_secs(20))
             .json(&serde_json::json!({
                 "ref": ref_id,
@@ -1271,6 +1291,30 @@ mod tests {
         }
         assert!(guard_webview_url("http://localhost:5173").is_ok());
         assert!(guard_webview_url("https://example.com").is_ok());
+    }
+
+    #[test]
+    fn control_plane_guard_follows_the_configured_port() {
+        for url in [
+            "http://127.0.0.1:3002/ui",
+            "http://localhost:3002",
+            "http://[::1]:3002",
+        ] {
+            let error = reject_control_plane_on(url, 3002).unwrap_err();
+            assert!(error.contains("control plane"), "{url}: {error}");
+        }
+        // The old default port is no longer the control plane on a 3002 daemon.
+        assert!(reject_control_plane_on("http://localhost:3001", 3002).is_ok());
+        assert!(reject_control_plane_on("http://localhost:3001", 3001).is_err());
+    }
+
+    #[test]
+    fn control_plane_port_parsing_falls_back_to_default() {
+        assert_eq!(parse_control_plane_port(None), 3001);
+        assert_eq!(parse_control_plane_port(Some("3002")), 3002);
+        assert_eq!(parse_control_plane_port(Some(" 3002 ")), 3002);
+        assert_eq!(parse_control_plane_port(Some("junk")), 3001);
+        assert_eq!(parse_control_plane_port(Some("0")), 3001);
     }
 
     #[test]

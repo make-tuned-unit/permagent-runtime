@@ -53,7 +53,7 @@ impl PronunciationClient {
         // the same G2P that speaks. Authoring IPA here was the old contract and
         // it could not work — see provider::phonemize_text.
         let mut req = client
-            .put("http://127.0.0.1:3001/voice/pronunciations")
+            .put(super::browser::control_plane_url("/voice/pronunciations"))
             .timeout(std::time::Duration::from_secs(10))
             .json(&serde_json::json!({
                 "word": word,

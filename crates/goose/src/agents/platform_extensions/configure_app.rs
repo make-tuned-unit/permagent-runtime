@@ -636,7 +636,7 @@ async fn set_librarian_schedule(value: &Value, reason: &str) -> Result<String, S
 
     let client = reqwest::Client::new();
     let mut req = client
-        .put("http://127.0.0.1:3001/api/librarian/schedule")
+        .put(super::browser::control_plane_url("/api/librarian/schedule"))
         .timeout(std::time::Duration::from_secs(10))
         .json(&Value::Object(merged));
     if let Some(token) = daemon_token().await {
