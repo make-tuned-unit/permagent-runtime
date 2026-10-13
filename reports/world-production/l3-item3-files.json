@@ -1,0 +1,13 @@
+[
+  "ui/command-center/src/components/world/forum/ForumView.tsx",
+  "ui/command-center/src/components/world/forum/WorldAppearance.tsx",
+  "ui/command-center/src/components/world/forum/HabitatScene.tsx",
+  "ui/command-center/src/components/world/forum/habitatLayout.ts",
+  "ui/command-center/src/components/world/forum/forum.css",
+  "ui/command-center/src/components/world/forum/ForumView.profile.test.tsx",
+  "ui/command-center/src/components/world/forum/hudLanes.test.tsx",
+  "ui/command-center/src/components/world/forum/ForumView.hierarchy.test.tsx",
+  "ui/command-center/src/components/world/forum/HabitatNavigation.framing.test.tsx",
+  "ui/command-center/src/components/world/forum/habitatOverview.test.ts",
+  "ui/command-center/src/components/world/forum/__snapshots__/ForumView.hierarchy.test.tsx.snap"
+]

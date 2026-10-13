@@ -1,0 +1,92 @@
+{
+  "base": "35ca830d",
+  "l2": "10fa57e6",
+  "cwd": "ui/command-center",
+  "tsc": {
+    "command": "npx tsc --noEmit",
+    "exit_code": 0,
+    "diagnostics": 0
+  },
+  "serial": {
+    "command": "node --no-concurrent-sparkplug node_modules/vitest/vitest.mjs run --config ../../reports/world-production/vitest.serial-forks.config.ts",
+    "exit_code": 0,
+    "files_passed": 530,
+    "tests_passed": 4363,
+    "baseline_tests": 4254,
+    "added_tests": 109,
+    "duration_seconds": 396.16
+  },
+  "snapshots": {
+    "count": 80,
+    "manifest": "reports/world-production/l3-snapshots-20261012.json"
+  },
+  "patches": [
+    {
+      "item": 1,
+      "file": "reports/world-production/l3-item1.patch",
+      "sha256": "75e68c8b8abdcb4d9da0b3edda92a0566aa2b3f82d2b4f0c08b8e05d3e2efa9e",
+      "reverse_check_exit_code": 0,
+      "files": [
+        "ui/command-center/src/components/dashboard/Dashboard.tsx",
+        "ui/command-center/src/components/dashboard/LearnNext.tsx",
+        "ui/command-center/src/components/dashboard/homeFirstAction.ts",
+        "ui/command-center/src/components/dashboard/Dashboard.firstAction.test.tsx",
+        "ui/command-center/src/components/dashboard/__snapshots__/Dashboard.firstAction.test.tsx.snap"
+      ]
+    },
+    {
+      "item": 2,
+      "file": "reports/world-production/l3-item2.patch",
+      "sha256": "f71f0b7f479052aa4636b4da7ddc473ecafb6ab74e517d3021bef0149000dbe5",
+      "reverse_check_exit_code": 0,
+      "files": [
+        "ui/command-center/src/components/chat/ChatLauncher.tsx",
+        "ui/command-center/src/components/chat/ChatDock.tsx",
+        "ui/command-center/src/components/chat/ChatView.tsx",
+        "ui/command-center/src/components/browser/Browser.tsx",
+        "ui/command-center/src/components/voice/MeetingRecorder.tsx",
+        "ui/command-center/src/lib/store.ts",
+        "ui/command-center/src/components/common/rawButton.test.ts",
+        "ui/command-center/src/components/chat/ChatChrome.layout.test.tsx",
+        "ui/command-center/src/components/chat/__snapshots__/ChatChrome.layout.test.tsx.snap",
+        "ui/command-center/src/components/voice/MeetingRecorder.clearance.test.tsx",
+        "ui/command-center/src/components/voice/__snapshots__/MeetingRecorder.clearance.test.tsx.snap",
+        "ui/command-center/src/components/browser/browserChrome.test.ts"
+      ]
+    },
+    {
+      "item": 3,
+      "file": "reports/world-production/l3-item3.patch",
+      "sha256": "7755599361a5e0e957be9bdb16c1a94785c108820f80fce360693d977c6961db",
+      "reverse_check_exit_code": 0,
+      "files": [
+        "ui/command-center/src/components/world/forum/ForumView.tsx",
+        "ui/command-center/src/components/world/forum/WorldAppearance.tsx",
+        "ui/command-center/src/components/world/forum/HabitatScene.tsx",
+        "ui/command-center/src/components/world/forum/habitatLayout.ts",
+        "ui/command-center/src/components/world/forum/forum.css",
+        "ui/command-center/src/components/world/forum/ForumView.profile.test.tsx",
+        "ui/command-center/src/components/world/forum/hudLanes.test.tsx",
+        "ui/command-center/src/components/world/forum/ForumView.hierarchy.test.tsx",
+        "ui/command-center/src/components/world/forum/HabitatNavigation.framing.test.tsx",
+        "ui/command-center/src/components/world/forum/habitatOverview.test.ts",
+        "ui/command-center/src/components/world/forum/__snapshots__/ForumView.hierarchy.test.tsx.snap"
+      ]
+    },
+    {
+      "item": 4,
+      "file": "reports/world-production/l3-item4.patch",
+      "sha256": "99e931db3b2ad6b02de19b4608acce772091ef77e20fc7e30896cef00b197db3",
+      "reverse_check_exit_code": 0,
+      "files": [
+        "ui/command-center/src/components/wizard/StepFrame.tsx",
+        "ui/command-center/src/components/wizard/StepModel.tsx",
+        "ui/command-center/src/components/wizard/StepReview.tsx",
+        "ui/command-center/src/components/wizard/atoms.tsx",
+        "ui/command-center/src/components/wizard/WizardShell.flow.test.tsx",
+        "ui/command-center/src/components/wizard/Wizard.layout.test.tsx",
+        "ui/command-center/src/components/wizard/__snapshots__/Wizard.layout.test.tsx.snap"
+      ]
+    }
+  ]
+}

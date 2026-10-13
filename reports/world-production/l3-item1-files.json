@@ -1,0 +1,7 @@
+[
+  "ui/command-center/src/components/dashboard/Dashboard.tsx",
+  "ui/command-center/src/components/dashboard/LearnNext.tsx",
+  "ui/command-center/src/components/dashboard/homeFirstAction.ts",
+  "ui/command-center/src/components/dashboard/Dashboard.firstAction.test.tsx",
+  "ui/command-center/src/components/dashboard/__snapshots__/Dashboard.firstAction.test.tsx.snap"
+]

@@ -1,0 +1,9 @@
+[
+  "ui/command-center/src/components/wizard/StepFrame.tsx",
+  "ui/command-center/src/components/wizard/StepModel.tsx",
+  "ui/command-center/src/components/wizard/StepReview.tsx",
+  "ui/command-center/src/components/wizard/atoms.tsx",
+  "ui/command-center/src/components/wizard/WizardShell.flow.test.tsx",
+  "ui/command-center/src/components/wizard/Wizard.layout.test.tsx",
+  "ui/command-center/src/components/wizard/__snapshots__/Wizard.layout.test.tsx.snap"
+]

@@ -1,0 +1,115 @@
+{
+  "1": [
+    {
+      "file": "ui/command-center/src/components/dashboard/__snapshots__/Dashboard.firstAction.test.tsx.snap",
+      "names": [
+        "Home first action > DOM Home returning 1024x640 dark dock-closed 1",
+        "Home first action > DOM Home returning 1024x640 dark dock-open 1",
+        "Home first action > DOM Home returning 1024x640 silver dock-closed 1",
+        "Home first action > DOM Home returning 1024x640 silver dock-open 1",
+        "Home first action > DOM Home returning 1280x800 dark dock-closed 1",
+        "Home first action > DOM Home returning 1280x800 dark dock-open 1",
+        "Home first action > DOM Home returning 1280x800 silver dock-closed 1",
+        "Home first action > DOM Home returning 1280x800 silver dock-open 1",
+        "Home first action > DOM Home untouched 1024x640 dark dock-closed 1",
+        "Home first action > DOM Home untouched 1024x640 dark dock-open 1",
+        "Home first action > DOM Home untouched 1024x640 silver dock-closed 1",
+        "Home first action > DOM Home untouched 1024x640 silver dock-open 1",
+        "Home first action > DOM Home untouched 1280x800 dark dock-closed 1",
+        "Home first action > DOM Home untouched 1280x800 dark dock-open 1",
+        "Home first action > DOM Home untouched 1280x800 silver dock-closed 1",
+        "Home first action > DOM Home untouched 1280x800 silver dock-open 1"
+      ]
+    }
+  ],
+  "2": [
+    {
+      "file": "ui/command-center/src/components/chat/__snapshots__/ChatChrome.layout.test.tsx.snap",
+      "names": [
+        "DOM Browser and Chat 1024x640 dark dock-closed 1",
+        "DOM Browser and Chat 1024x640 dark dock-open 1",
+        "DOM Browser and Chat 1024x640 silver dock-closed 1",
+        "DOM Browser and Chat 1024x640 silver dock-open 1",
+        "DOM Browser and Chat 1280x800 dark dock-closed 1",
+        "DOM Browser and Chat 1280x800 dark dock-open 1",
+        "DOM Browser and Chat 1280x800 silver dock-closed 1",
+        "DOM Browser and Chat 1280x800 silver dock-open 1"
+      ]
+    },
+    {
+      "file": "ui/command-center/src/components/voice/__snapshots__/MeetingRecorder.clearance.test.tsx.snap",
+      "names": [
+        "DOM recorder 1024x640 dark dock-closed 1",
+        "DOM recorder 1024x640 dark dock-open 1",
+        "DOM recorder 1024x640 silver dock-closed 1",
+        "DOM recorder 1024x640 silver dock-open 1",
+        "DOM recorder 1280x800 dark dock-closed 1",
+        "DOM recorder 1280x800 dark dock-open 1",
+        "DOM recorder 1280x800 silver dock-closed 1",
+        "DOM recorder 1280x800 silver dock-open 1"
+      ]
+    }
+  ],
+  "3": [
+    {
+      "file": "ui/command-center/src/components/world/forum/__snapshots__/ForumView.hierarchy.test.tsx.snap",
+      "names": [
+        "DOM World appearance 1024x640 dark dock-closed 1",
+        "DOM World appearance 1024x640 dark dock-open 1",
+        "DOM World appearance 1024x640 silver dock-closed 1",
+        "DOM World appearance 1024x640 silver dock-open 1",
+        "DOM World appearance 1280x800 dark dock-closed 1",
+        "DOM World appearance 1280x800 dark dock-open 1",
+        "DOM World appearance 1280x800 silver dock-closed 1",
+        "DOM World appearance 1280x800 silver dock-open 1",
+        "DOM World desk 1024x640 dark dock-closed 1",
+        "DOM World desk 1024x640 dark dock-open 1",
+        "DOM World desk 1024x640 silver dock-closed 1",
+        "DOM World desk 1024x640 silver dock-open 1",
+        "DOM World desk 1280x800 dark dock-closed 1",
+        "DOM World desk 1280x800 dark dock-open 1",
+        "DOM World desk 1280x800 silver dock-closed 1",
+        "DOM World desk 1280x800 silver dock-open 1",
+        "DOM World overview 1024x640 dark dock-closed 1",
+        "DOM World overview 1024x640 dark dock-open 1",
+        "DOM World overview 1024x640 silver dock-closed 1",
+        "DOM World overview 1024x640 silver dock-open 1",
+        "DOM World overview 1280x800 dark dock-closed 1",
+        "DOM World overview 1280x800 dark dock-open 1",
+        "DOM World overview 1280x800 silver dock-closed 1",
+        "DOM World overview 1280x800 silver dock-open 1"
+      ]
+    }
+  ],
+  "4": [
+    {
+      "file": "ui/command-center/src/components/wizard/__snapshots__/Wizard.layout.test.tsx.snap",
+      "names": [
+        "DOM Wizard model failed 1024x640 dark 1",
+        "DOM Wizard model failed 1024x640 silver 1",
+        "DOM Wizard model failed 1280x800 dark 1",
+        "DOM Wizard model failed 1280x800 silver 1",
+        "DOM Wizard model loading 1024x640 dark 1",
+        "DOM Wizard model loading 1024x640 silver 1",
+        "DOM Wizard model loading 1280x800 dark 1",
+        "DOM Wizard model loading 1280x800 silver 1",
+        "DOM Wizard model ready 1024x640 dark 1",
+        "DOM Wizard model ready 1024x640 silver 1",
+        "DOM Wizard model ready 1280x800 dark 1",
+        "DOM Wizard model ready 1280x800 silver 1",
+        "DOM Wizard review failed 1024x640 dark 1",
+        "DOM Wizard review failed 1024x640 silver 1",
+        "DOM Wizard review failed 1280x800 dark 1",
+        "DOM Wizard review failed 1280x800 silver 1",
+        "DOM Wizard review loading 1024x640 dark 1",
+        "DOM Wizard review loading 1024x640 silver 1",
+        "DOM Wizard review loading 1280x800 dark 1",
+        "DOM Wizard review loading 1280x800 silver 1",
+        "DOM Wizard review ready 1024x640 dark 1",
+        "DOM Wizard review ready 1024x640 silver 1",
+        "DOM Wizard review ready 1280x800 dark 1",
+        "DOM Wizard review ready 1280x800 silver 1"
+      ]
+    }
+  ]
+}

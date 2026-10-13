@@ -1,0 +1,14 @@
+[
+  "ui/command-center/src/components/chat/ChatLauncher.tsx",
+  "ui/command-center/src/components/chat/ChatDock.tsx",
+  "ui/command-center/src/components/chat/ChatView.tsx",
+  "ui/command-center/src/components/browser/Browser.tsx",
+  "ui/command-center/src/components/voice/MeetingRecorder.tsx",
+  "ui/command-center/src/lib/store.ts",
+  "ui/command-center/src/components/common/rawButton.test.ts",
+  "ui/command-center/src/components/chat/ChatChrome.layout.test.tsx",
+  "ui/command-center/src/components/chat/__snapshots__/ChatChrome.layout.test.tsx.snap",
+  "ui/command-center/src/components/voice/MeetingRecorder.clearance.test.tsx",
+  "ui/command-center/src/components/voice/__snapshots__/MeetingRecorder.clearance.test.tsx.snap",
+  "ui/command-center/src/components/browser/browserChrome.test.ts"
+]
