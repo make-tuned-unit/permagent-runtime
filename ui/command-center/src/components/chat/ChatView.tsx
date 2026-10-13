@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { useLiveSessionSync } from '../../lib/liveSessionSync';
 import { useCommandCenter } from '../../lib/store';
 import { api } from '../../lib/api';
 import { MessageList } from './MessageList';
@@ -39,6 +40,7 @@ export function ChatView() {
     void loadProviders().then(() => { if (active) setProviderCheckKnown(true); });
     return () => { active = false; };
   }, [loadProviders, configRev]);
+  useLiveSessionSync();
   const chatInputRef = useRef<ChatInputHandle>(null);
   // #629 multi-client liveness: re-read identity when `identity_changed`
   // arrives on /events (persona edited on another device).

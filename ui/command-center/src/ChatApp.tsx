@@ -10,6 +10,7 @@ import { useTheme } from './styles/useTheme';
 import { Button } from './components/common/Button';
 import { Tooltip } from './components/common/Tooltip';
 import { Mobius } from './components/mobius/Mobius';
+import { useLiveSessionSync } from './lib/liveSessionSync';
 import { useCommandCenter } from './lib/store';
 import {
   clearPageBackgroundForVibrancy, NATIVE_WINDOW_IS_OPAQUE, TITLEBAR_HEIGHT,
@@ -113,6 +114,7 @@ export default function ChatApp() {
   const connectSession = useCommandCenter(s => s.connectSession);
   const loadSessionMessages = useCommandCenter(s => s.loadSessionMessages);
 
+  useLiveSessionSync();
   const chatInputRef = useRef<ChatInputHandle>(null);
   const connectedRef = useRef(false);
 

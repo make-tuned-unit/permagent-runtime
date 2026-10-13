@@ -512,7 +512,7 @@ interface CommandCenterStore {
 
   // --- Actions ---
   loadEvents: (params?: { type?: string; limit?: number }) => Promise<void>;
-  loadSessionMessages: (sessionId: string) => Promise<void>;
+  loadSessionMessages: (sessionId: string, opts?: { quiet?: boolean }) => Promise<void>;
   handleSessionEvent: (data: SSEEvent) => void;
   clearEvents: () => void;
 
@@ -942,6 +942,14 @@ function buildAppContext(state: CommandCenterStore): AppContextPayload | undefin
     ctx.view_state = { discuss_decision_id: state.discussSeedDecisionId };
   }
   return ctx;
+}
+
+/** What the pane last painted from the hub: session id + a cheap digest of the
+ *  daemon-derived messages. The live-sync poll compares against it so an
+ *  unchanged conversation costs one GET and zero re-renders. */
+let _lastSyncedSig = '';
+function syncSignature(sessionId: string, msgs: ChatMessage[]): string {
+  return `${sessionId}|${msgs.length}|${msgs.map(m => `${m.role}${m.content.length}`).join(',')}`;
 }
 
 export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
@@ -1955,10 +1963,19 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
    *  inline via sessionLoadError (MessageList renders it with a Retry —
    *  the #568 lesson), instead of silently discarding a working session and
    *  leaving connectSession running against a disowned id. */
-  loadSessionMessages: async (sessionId: string) => {
-    set({ sessionLoadError: null, chatHistoryLoaded: false });
+  loadSessionMessages: async (sessionId: string, opts?: { quiet?: boolean }) => {
+    // quiet = the live-sync poll (liveSessionSync.ts): a background re-read of
+    // the open session that must not flash the loading state, surface a
+    // transient failure, or touch anything when nothing changed on the hub.
+    const quiet = opts?.quiet === true;
+    if (!quiet) set({ sessionLoadError: null, chatHistoryLoaded: false });
     try {
       const session = await api.getSession(sessionId);
+      // A reply for a session that is no longer the open one (rapid switch
+      // from History), or a quiet read that raced a live turn, is stale: drop
+      // it instead of painting another conversation over the open one.
+      if (get().chatSessionId !== sessionId) return;
+      if (quiet && get().isStreaming) return;
       if (get().chatSessionId === sessionId) {
         set({ chatSessionRouteEvidence: !!session.provider_name?.trim() && !!session.model_config?.model_name?.trim() });
       }
@@ -1968,14 +1985,20 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
         const msgs = session.conversation
           .map((m, i) => (isToolResultCarrier(m) ? null : daemonMsgToChat(m, i, sessionId, responses)))
           .filter((m): m is ChatMessage => m !== null);
+        const sig = syncSignature(sessionId, msgs);
+        if (quiet && sig === _lastSyncedSig) return;
+        _lastSyncedSig = sig;
         set({ chatMessages: msgs });
       } else {
+        if (quiet && _lastSyncedSig === syncSignature(sessionId, [])) return;
+        _lastSyncedSig = syncSignature(sessionId, []);
         // An empty conversation is a LOADED fact, not an un-set state: leaving
         // chatMessages untouched kept a stale greeting on screen forever for
         // sessions whose turns went down the /voice socket.
         set({ chatMessages: [] });
       }
     } catch (err) {
+      if (quiet) return; // a missed background poll is not an error to show
       if ((err as { status?: number }).status === 404) {
         // Session no longer exists — clear the stale ID and start fresh.
         console.warn('Session not found, will create new on next message');
@@ -1990,7 +2013,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
         });
       }
     } finally {
-      set({ chatHistoryLoaded: true });
+      if (!quiet) set({ chatHistoryLoaded: true });
     }
   },
 

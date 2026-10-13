@@ -785,8 +785,10 @@ export function SessionsList({ onClose }: { onClose?: () => void } = {}) {
  *  re-hovering a row already seen doesn't refetch, and race-safe: a response
  *  for an id that isn't the current one any more (rapid hover, or the user
  *  switched rows before the daemon answered) is dropped. */
+const PREVIEW_CACHE_TTL_MS = 15_000;
+
 function useSessionDetail(id: string | null) {
-  const cache = useRef<Map<string, Session>>(new Map());
+  const cache = useRef<Map<string, { at: number; session: Session }>>(new Map());
   const [reloadKey, setReloadKey] = useState(0);
   const [state, setState] = useState<{ data: Session | null; loading: boolean; error: boolean }>({
     data: null, loading: false, error: false,
@@ -794,13 +796,15 @@ function useSessionDetail(id: string | null) {
 
   useEffect(() => {
     if (!id) { setState({ data: null, loading: false, error: false }); return; }
+    // A cached copy older than the TTL is refetched: another device (or a
+    // server-side truncation) may have changed the session since it was seen.
     const cached = cache.current.get(id);
-    if (cached) { setState({ data: cached, loading: false, error: false }); return; }
+    if (cached && Date.now() - cached.at < PREVIEW_CACHE_TTL_MS) { setState({ data: cached.session, loading: false, error: false }); return; }
     let cancelled = false;
     setState({ data: null, loading: true, error: false });
     api.getSession(id).then(s => {
       if (cancelled) return;
-      cache.current.set(id, s);
+      cache.current.set(id, { at: Date.now(), session: s });
       setState({ data: s, loading: false, error: false });
     }).catch(() => {
       if (!cancelled) setState({ data: null, loading: false, error: true });
