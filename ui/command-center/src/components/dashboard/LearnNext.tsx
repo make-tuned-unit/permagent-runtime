@@ -85,7 +85,7 @@ export function summarize(text: string): string {
   return s;
 }
 
-export function LearnNext() {
+export function LearnNext({ modelConfigured = true }: { modelConfigured?: boolean }) {
   const { colors } = useTheme();
   const sendMessage = useCommandCenter(s => s.sendMessage);
   const setActivePanel = useCommandCenter(s => s.setActivePanel);
@@ -94,7 +94,7 @@ export function LearnNext() {
   const [items, setItems] = useState<LearnNextItem[]>([]);
   const [idx, setIdx] = useState(0);
   const [totals, setTotals] = useState<{ used: number; teachable: number } | null>(null);
-  const [visible, setVisible] = useState(false);
+  const [visible, setVisible] = useState(() => !(readState().dismissedUntil! > Date.now()));
 
   useEffect(() => {
     const st = readState();
@@ -129,12 +129,12 @@ export function LearnNext() {
   // One banner at a time on Home (C8). Learn next has first claim: a user who
   // has not tried a capability needs it more than a memory they can find
   // again, and this retires itself once there is nothing left to teach.
-  const holdsSlot = useBannerSlot('learn-next', Boolean(item) && visible);
-  if (!holdsSlot || !item) return null;
+  const holdsSlot = useBannerSlot('learn-next', (!modelConfigured || Boolean(item)) && visible);
+  if (!holdsSlot || (modelConfigured && !item)) return null;
 
   const dismiss = () => {
     const st = readState();
-    writeState({ ...st, dismissedUntil: Date.now() + DISMISS_COOLDOWN, lastDismissedId: item.id });
+    writeState({ ...st, dismissedUntil: Date.now() + DISMISS_COOLDOWN, lastDismissedId: item?.id });
     setVisible(false);
   };
 
@@ -144,7 +144,7 @@ export function LearnNext() {
     if (items.length < 2) return;
     const st = readState();
     const skipped = new Set(st.skippedIds ?? []);
-    skipped.add(item.id);
+    if (item) skipped.add(item.id);
     writeState({ ...st, skippedIds: [...skipped].slice(-100) });
     setIdx((idx + 1) % items.length);
   };
@@ -152,6 +152,7 @@ export function LearnNext() {
   // The real teaching loop: hand the agent an explicit ask; it responds by
   // calling load_feature_lesson for this capability and navigating to its tab.
   const showMe = () => {
+    if (!item || !modelConfigured) return;
     // Open the dock explicitly — setActivePanel('chat') only dismisses
     // overlays, so before this the walkthrough was sent to a chat nobody
     // could see (the button looked dead) and the agent's streaming reply —
@@ -168,6 +169,15 @@ export function LearnNext() {
   };
 
   const progress = totals ? `${totals.used}/${totals.teachable} explored` : '';
+
+  if (!modelConfigured) return <HomeBanner
+    kicker="LEARN NEXT" ariaLabel="Learn next: getting started" data-testid="home-banner-learn-next"
+    onDismiss={dismiss} dismissLabel="Dismiss this suggestion"
+  >
+    World is ready to explore. Once you choose a model, your agent can guide you through the app.
+  </HomeBanner>;
+
+  if (!item) return null;
 
   return (
     <HomeBanner

@@ -19,6 +19,9 @@ import { CustomizeButton } from './CustomizeButton';
 import { MissingCard } from './MissingCard';
 import { Echo } from './Echo';
 import { LearnNext } from './LearnNext';
+import { isDefaultHomeLayout } from './homeFirstAction';
+import { navigateToTool, useCommandCenter } from '../../lib/store';
+import { openChatModelSetup } from '../chat/ChatSetupCard';
 import { ViewHeader } from '../common/ViewHeader';
 import { HeaderAgentStatus } from '../sidebar/NavAgentStatus';
 import { ConfirmDialog } from '../common/ConfirmDialog';
@@ -64,6 +67,15 @@ const COMPACT_TILE_SPAN = 3;
 export function Dashboard() {
   const { gradient, colors, reduceMotion } = useTheme();
   const { data, loading, error, lastOkAt, failing, retry, refresh } = useDashboard();
+  const currentModel = useCommandCenter(s => s.currentModel);
+  const chatRoute = useCommandCenter(s => s.chatResolvedRoute);
+  const providersError = useCommandCenter(s => s.providersError);
+  const loadProviders = useCommandCenter(s => s.loadProviders);
+  const configRev = useCommandCenter(s => s.configRev);
+  // Home can be the first surface after setup, before Chat has ever mounted.
+  // Confirm configuration here rather than treating the store's null as empty.
+  useEffect(() => { void loadProviders(); }, [loadProviders, configRev]);
+  const hasModel = Boolean(currentModel || (chatRoute?.source !== 'unconfigured' && chatRoute?.model));
   // One shared live-goal subscription for every "in flight" surface (count,
   // list, header, status) so they always agree. Sessions are a separate stat.
   const { goals: activeGoals, activeCount } = useLiveGoals();
@@ -394,7 +406,11 @@ export function Dashboard() {
     todos: todosProps,
   };
 
-  const visibleCards = layout.cards.filter(c => c.visible);
+  const untouched = !hasModel && chatRoute?.source === 'unconfigured' && !providersError && !failing
+    && data.stats.sessions_total === 0 && data.stats.memory_count === 0
+    && data.recent.length === 0 && data.in_flight.length === 0 && activeCount === 0 && dueTodos.todos.length === 0;
+  const firstAction = untouched && layoutLoaded && !isEditMode;
+  const visibleCards = firstAction && isDefaultHomeLayout(layout) ? [] : layout.cards.filter(c => c.visible);
   // Where each card is DRAWN. The stored x/y were a shelf packing that left
   // holes; this is a dense first-fit pack in the user's order, stretched into
   // any hole nothing else fits (display-only). Customize shows true sizes —
@@ -546,7 +562,23 @@ export function Dashboard() {
           simultaneously in identical shells, which read as one banner split in
           two — `bannerSlot` now hands the slot to whichever has something to
           say, Learn next first. Both are hidden while arranging cards. */}
-      {!isEditMode && <LearnNext />}
+      {firstAction && <section aria-label="Get started" style={{
+        padding: space.huge, marginBottom: space.xxxl, borderRadius: radius.lg,
+        border: `1px solid ${colors.border}`, background: colors.surface, fontFamily: font.body,
+      }}>
+        <h2 style={{ margin: 0, fontFamily: font.display, fontSize: textSize.title, color: colors.text }}>Start with a model</h2>
+        <p style={{ margin: `${space.xl}px 0`, fontSize: textSize.body, lineHeight: 1.5, color: colors.textMuted }}>
+          Choose a hosted model or one on this Mac to start working with your agent.
+        </p>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: space.md }}>
+          <Button colors={colors} variant="primary" flashSuccess={false} onClick={() => { void openChatModelSetup(); }}>Choose a model</Button>
+          <Button colors={colors} variant="ghost" flashSuccess={false} onClick={() => { navigateToTool('world'); }}>Explore World</Button>
+        </div>
+        <p style={{ margin: `${space.xxl}px 0 0`, fontSize: textSize.small, color: colors.textMuted }}>
+          No runs or memories yet. Your activity will appear here as you work.
+        </p>
+      </section>}
+      {!isEditMode && <LearnNext modelConfigured={hasModel} />}
       {!isEditMode && <Echo />}
 
       {/* CSS Grid — reflows natively with the container, no JS width measurement */}
