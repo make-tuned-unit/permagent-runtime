@@ -138,6 +138,28 @@ final class HubSession: ObservableObject {
         HubWatchRelay.shared.start()
 
         await APIClient.shared.loadSavedPairing()
+        #if DEBUG
+        // Launch-film hook: re-pair an already-paired device to another hub
+        // via `devicectl ... --environment-variables`. bootstrap() runs once
+        // per launch (.task on the root view), and the hook is DEBUG-only.
+        if let pairURL = ProcessInfo.processInfo.environment["PERMAGENT_PAIR_URL"],
+           !pairURL.isEmpty {
+            // Log host:port only; the URL fragment carries the claim code.
+            let comps = URLComponents(string: pairURL)
+            let target = (comps?.host ?? "?") + (comps?.port.map { ":\($0)" } ?? "")
+            NSLog("permagent-pair: DEBUG re-pair from launch environment → %@", target)
+            switch await pair(from: pairURL) {
+            case .success:
+                // pair(from:) stored the config, resolved the name, set
+                // isPaired and started listening: nothing left to resolve.
+                MeetingUploader.shared.requestDrain()
+                return
+            case .failure(let error):
+                NSLog("permagent-pair: DEBUG re-pair failed (%@); keeping existing pairing",
+                      String(describing: error))
+            }
+        }
+        #endif
         let paired = await APIClient.shared.isPaired
         if paired {
             // Drain on launch, so a meeting recorded with the Mac asleep
