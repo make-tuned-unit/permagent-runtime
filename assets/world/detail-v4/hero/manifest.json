@@ -2,22 +2,22 @@
   "schema": "permagent.world.detail-v4.hero.v1",
   "lane": "W3 (Astra ruling 2026-10-12)",
   "status": "candidate \u2014 not published; W6 integrates and publishes",
-  "generated": "2026-10-13T02:10:14Z",
+  "generated": "2026-10-13T02:13:36Z",
   "blender": "5.2.1 LTS",
   "metersPerUnit": 1,
   "runtimeUp": "Y",
   "sourceUp": "Z",
   "forward": "glTF +Z (Blender -Y)",
   "source_scripts": {
-    "scripts/blender/world_detail/arrival_furniture.py": "2d8ed27943c00991f93389e9a50991e2943cc6479921938f8375c2421a8922b1",
+    "scripts/blender/world_detail/arrival_furniture.py": "457c03a71bb129fd6b4f3fe2ad07ec04ebb1aaa978a1739c25180119f9050d6d",
     "scripts/blender/world_detail/botany_lib.py": "7a801a35d700a6289660e7a64dd7829430069f47fd762a83d39139b6d0b0093b",
     "scripts/blender/world_detail/botany_scatter.py": "041aecbda68302755b45d73c813ba161588b0018d83f3c51cddb5fd1b98451b9",
     "scripts/blender/world_detail/botany_species.py": "4ef526bb02037ce58dda08df7bb1677af611128d8f7a586d2ec1d952988779db",
     "scripts/blender/world_detail/build_botany.py": "a514ef6ca243658789b0888ad4cf27cd1b4d56f2b3ae79d7c2242f1a14ff41ce",
-    "scripts/blender/world_detail/build_hero.py": "32539735194047bca5e7bf390b69ab4ec1a25c55320a6d574bffa4f7ebf0dfd1",
+    "scripts/blender/world_detail/build_hero.py": "346d5a57ef7b1e7dc6ac37728fa5e44ed2af909d680d3ddf6de5593c25ff2eb4",
     "scripts/blender/world_detail/build_places.py": "afa933d230e566efb27fb533240ab47acc0ced885cf8925493603201267855f6",
     "scripts/blender/world_detail/detail_lib.py": "cfe3a2e52bfce5931940080aa41607b8b2903a9f35c96f2e63ec559e4e95b780",
-    "scripts/blender/world_detail/hero_lib.py": "754bd97b2ffde73f0bc6184dbf5a37a49aa88bf8c927097257f0714d125c3030",
+    "scripts/blender/world_detail/hero_lib.py": "5bd1a1db36b2116e1e2acfe05d936f801d9989e8248a757bd5080404bbe9446e",
     "scripts/blender/world_detail/hero_robot.py": "bf365cc4cc63b65c59991947593e21c17b36504f76ee77219aaacaae4381a1e3",
     "scripts/blender/world_detail/places_assets.py": "811aeece7c30126795bbbdde8da370a59c92b44f2980e2caffb628726a9256a9",
     "scripts/blender/world_detail/places_export.py": "f0eff0f026a9134e300b2c9111e52410e00e0f3589e1df0df034ed37990c5a60",
@@ -28,8 +28,24 @@
   },
   "provenance": {
     "geometry": "authored procedurally in Blender by these scripts; no third-party or generated meshes",
-    "textures": "authored procedurally (numpy noise/weave/grain) by detail_lib.py; no AI imagery, no downloads",
-    "license": "project-authored",
+    "textures": "authored procedurally (numpy) by detail_lib.py / hero_lib.py (walnut v2, leather, palettes), except the chair upholstery base colour, which is the accepted W5 candidate textures/w5_weave_a_basecolor.png (FAL nano-banana-pro, see external_textures and textures/w5_weave_a_basecolor.provenance.json)",
+    "external_textures": [
+      {
+        "file": "w5_weave_a_basecolor.png",
+        "sha256": "ab281f82791e6f653f7687d94070ca57599f3474debae756da52c0943579f5f3",
+        "copied_from": "assets/world/realism-20261012/candidates/weave-a-512.png",
+        "ledger": "assets/world/realism-20261012/LEDGER.json items[id=weave-a]",
+        "provenance": "W5 FAL fal-ai/nano-banana-pro, seed 61012052, request 01a132e1-29fc-7502-b8d1-96dd6fed6f39, original originals/weave-a.png sha256 18d2125f939a492440fdda73ff6c37fe9df409abd4ee2506682010f338823b65 (1024 px), derivative = ffmpeg area resize to 512 px, no retouch; commercial output use permitted per assets/world/realism-20261012/RIGHTS.md (FAL terms apply); estimated cost $0.15",
+        "physical_tile_m": 0.25,
+        "base_color_factor": [
+          0.62,
+          0.7,
+          0.52
+        ],
+        "accepted_by": "W3 round 2 (relit on the Arrival chair in review/chair-front-side-rear.jpg, ensemble shots)"
+      }
+    ],
+    "license": "project-authored geometry and procedural maps; W5 weave under FAL hosted-output commercial-use terms (assets/world/realism-20261012/RIGHTS.md)",
     "art_direction": "docs/design/solar-forum/north-star.png; legacy hero-kit v2/v3b robot"
   },
   "rig_contract": {
@@ -1247,8 +1263,8 @@
       "root_node": "arrival_table",
       "lods": {
         "lod0": {
-          "bytes": 417324,
-          "sha256": "2545dc451594825da0fdb22d49117df9e6d48b84711e90f134729684d6a27ac5",
+          "bytes": 452268,
+          "sha256": "a9a2ea70b0d1474b4a1e98177ac8a4e525774fe5c60e3ea7263f17b0c151c675",
           "triangles": 5780,
           "primitives_draw_calls": 2,
           "meshes": 2,
@@ -1260,20 +1276,20 @@
           "extensions_used": [],
           "images": [
             {
-              "name": "walnut_normal",
+              "name": "walnut_v2_normal",
               "mime": "image/jpeg",
               "width": 512,
               "height": 512,
-              "bytes": 49139,
+              "bytes": 42813,
               "colorspace": "linear",
               "decoded_bytes_with_mips": 1398101
             },
             {
-              "name": "walnut_basecolor",
+              "name": "walnut_v2_basecolor",
               "mime": "image/jpeg",
               "width": 1024,
               "height": 1024,
-              "bytes": 43487,
+              "bytes": 84744,
               "colorspace": "sRGB",
               "decoded_bytes_with_mips": 5592405
             },
@@ -1291,7 +1307,7 @@
               "mime": "image/jpeg",
               "width": 64,
               "height": 64,
-              "bytes": 902,
+              "bytes": 906,
               "colorspace": "linear",
               "decoded_bytes_with_mips": 21845
             }
@@ -1325,8 +1341,8 @@
           "blender_triangles": 5780
         },
         "lod1": {
-          "bytes": 203012,
-          "sha256": "512fdc5127360197c7443e8f1eb28c7a776916cffe49b665ea2304af477b606f",
+          "bytes": 237956,
+          "sha256": "3fa4bd7bfb84af393542710c370ec8c1f729d57c350b59721aea538493d7c3db",
           "triangles": 1562,
           "primitives_draw_calls": 2,
           "meshes": 2,
@@ -1338,20 +1354,20 @@
           "extensions_used": [],
           "images": [
             {
-              "name": "walnut_normal",
+              "name": "walnut_v2_normal",
               "mime": "image/jpeg",
               "width": 512,
               "height": 512,
-              "bytes": 49139,
+              "bytes": 42813,
               "colorspace": "linear",
               "decoded_bytes_with_mips": 1398101
             },
             {
-              "name": "walnut_basecolor",
+              "name": "walnut_v2_basecolor",
               "mime": "image/jpeg",
               "width": 1024,
               "height": 1024,
-              "bytes": 43487,
+              "bytes": 84744,
               "colorspace": "sRGB",
               "decoded_bytes_with_mips": 5592405
             },
@@ -1369,7 +1385,7 @@
               "mime": "image/jpeg",
               "width": 64,
               "height": 64,
-              "bytes": 902,
+              "bytes": 906,
               "colorspace": "linear",
               "decoded_bytes_with_mips": 21845
             }
@@ -1861,8 +1877,8 @@
       },
       "source_blend": {
         "file": "arrival-table.blend",
-        "sha256": "f5b139cce1f5aa243b69125bb7a1a14a24e0c5307f035b99f92cff687cfe0119",
-        "bytes": 213778,
+        "sha256": "7d63677762d385d5d32f0384b592660c9fd52bf344d64b1ad11208fbcd78f992",
+        "bytes": 213885,
         "contains": "LOD0 + collision proxy; LOD1 is regenerated by the script"
       },
       "texture_sources": [
@@ -1876,27 +1892,27 @@
         },
         {
           "file": "textures/trim_brass_and_bronze_palette_basecolor.png",
-          "sha256": "877cbe9593419e24ff98a14ba4c92c586bcb80dda8b793c45156ea28fbbd70aa"
+          "sha256": "1542cf4fc30b709dc99d1c16c94c0b0f0f18d0f0c3b50d64c48dcfbeeca850e6"
         },
         {
           "file": "textures/trim_brass_and_bronze_palette_orm.png",
-          "sha256": "fda6810e985ad1a32ff6d47ce7be63c66fe4fa230d901f83d2b2ef11f372f2d0"
+          "sha256": "b0a623b69911096204f3c75b551682b695cf5f2d6ff6d3a3d7e78617c03d5d53"
         },
         {
-          "file": "textures/walnut_basecolor.png",
-          "sha256": "1c150e502aa2fdb24fe6853335b464072705c610cbd40108deadb5e80dcb07b4"
+          "file": "textures/w5_weave_a_basecolor.png",
+          "sha256": "ab281f82791e6f653f7687d94070ca57599f3474debae756da52c0943579f5f3"
         },
         {
-          "file": "textures/walnut_normal.png",
-          "sha256": "2e03ac4f325b816c51eb90b828b3eabdc66fc2fd480102effa1b2af9af6cfe3f"
+          "file": "textures/w5_weave_a_normal.png",
+          "sha256": "92d087abdba111a3830eedc30f5111e4f8e1e9a1f640585ecbaa118e65cf2dee"
         },
         {
-          "file": "textures/weave_basecolor.png",
-          "sha256": "9f168f3e223cbcd7ed7ef4e706e23dea518f8ad8c4d35944c255732955fdd286"
+          "file": "textures/walnut_v2_basecolor.png",
+          "sha256": "befa99e402b23418c8f6f01cb77c3185a6c3bc8f48911dc98376fcbc41286208"
         },
         {
-          "file": "textures/weave_normal.png",
-          "sha256": "77ab64c22956a8b89d35ace12b6853d1f6e355ed9978d111247b45b72f590507"
+          "file": "textures/walnut_v2_normal.png",
+          "sha256": "6cc023dfac0435cb5fd89a742f55a6986ec811df510c85474c1d6bc99134a41d"
         }
       ]
     },
@@ -1905,8 +1921,8 @@
       "root_node": "arrival_chair",
       "lods": {
         "lod0": {
-          "bytes": 400608,
-          "sha256": "aa4bfef29db2ffa3eb76a9f143973549030fc50c096ded877f7d1e9ec909e06b",
+          "bytes": 501244,
+          "sha256": "1f8b9e8e905a51bf586ad0f87cb808a348525f1e2b695a06985a98df7e2e1446",
           "triangles": 4716,
           "primitives_draw_calls": 3,
           "meshes": 3,
@@ -1919,38 +1935,38 @@
           "extensions_used": [],
           "images": [
             {
-              "name": "weave_normal",
+              "name": "w5_weave_a_normal",
               "mime": "image/jpeg",
               "width": 512,
               "height": 512,
-              "bytes": 61026,
+              "bytes": 78430,
               "colorspace": "linear",
               "decoded_bytes_with_mips": 1398101
             },
             {
-              "name": "weave_basecolor",
+              "name": "w5_weave_a_basecolor",
               "mime": "image/jpeg",
               "width": 512,
               "height": 512,
-              "bytes": 23358,
+              "bytes": 71562,
               "colorspace": "sRGB",
               "decoded_bytes_with_mips": 1398101
             },
             {
-              "name": "walnut_normal",
+              "name": "walnut_v2_normal",
               "mime": "image/jpeg",
               "width": 512,
               "height": 512,
-              "bytes": 49139,
+              "bytes": 42813,
               "colorspace": "linear",
               "decoded_bytes_with_mips": 1398101
             },
             {
-              "name": "walnut_basecolor",
+              "name": "walnut_v2_basecolor",
               "mime": "image/jpeg",
               "width": 1024,
               "height": 1024,
-              "bytes": 43487,
+              "bytes": 84744,
               "colorspace": "sRGB",
               "decoded_bytes_with_mips": 5592405
             },
@@ -1968,7 +1984,7 @@
               "mime": "image/jpeg",
               "width": 64,
               "height": 64,
-              "bytes": 902,
+              "bytes": 906,
               "colorspace": "linear",
               "decoded_bytes_with_mips": 21845
             }
@@ -1990,8 +2006,8 @@
           "blender_triangles": 4716
         },
         "lod1": {
-          "bytes": 259080,
-          "sha256": "32231ec5ee1afae59cf0c53e1a3da124b86c5d4954e8a537b322eff16ea08913",
+          "bytes": 359720,
+          "sha256": "bf11778d10ff93d8196441d192778ff29341e7a0fbf380553b84def482ca71f5",
           "triangles": 1260,
           "primitives_draw_calls": 3,
           "meshes": 3,
@@ -2004,38 +2020,38 @@
           "extensions_used": [],
           "images": [
             {
-              "name": "weave_normal",
+              "name": "w5_weave_a_normal",
               "mime": "image/jpeg",
               "width": 512,
               "height": 512,
-              "bytes": 61026,
+              "bytes": 78430,
               "colorspace": "linear",
               "decoded_bytes_with_mips": 1398101
             },
             {
-              "name": "weave_basecolor",
+              "name": "w5_weave_a_basecolor",
               "mime": "image/jpeg",
               "width": 512,
               "height": 512,
-              "bytes": 23358,
+              "bytes": 71562,
               "colorspace": "sRGB",
               "decoded_bytes_with_mips": 1398101
             },
             {
-              "name": "walnut_normal",
+              "name": "walnut_v2_normal",
               "mime": "image/jpeg",
               "width": 512,
               "height": 512,
-              "bytes": 49139,
+              "bytes": 42813,
               "colorspace": "linear",
               "decoded_bytes_with_mips": 1398101
             },
             {
-              "name": "walnut_basecolor",
+              "name": "walnut_v2_basecolor",
               "mime": "image/jpeg",
               "width": 1024,
               "height": 1024,
-              "bytes": 43487,
+              "bytes": 84744,
               "colorspace": "sRGB",
               "decoded_bytes_with_mips": 5592405
             },
@@ -2053,7 +2069,7 @@
               "mime": "image/jpeg",
               "width": 64,
               "height": 64,
-              "bytes": 902,
+              "bytes": 906,
               "colorspace": "linear",
               "decoded_bytes_with_mips": 21845
             }
@@ -2250,8 +2266,8 @@
       },
       "source_blend": {
         "file": "arrival-chair.blend",
-        "sha256": "88dfba0bfea7bacc054260910e9b360d4dd1b3f42715346f28acbd8c24bddd25",
-        "bytes": 202085,
+        "sha256": "86979bb2e81834cc2bf5a281c85472690f03ea352089394b5923b8119844c428",
+        "bytes": 202525,
         "contains": "LOD0 + collision proxy; LOD1 is regenerated by the script"
       },
       "texture_sources": [
@@ -2265,27 +2281,27 @@
         },
         {
           "file": "textures/trim_brass_and_bronze_palette_basecolor.png",
-          "sha256": "877cbe9593419e24ff98a14ba4c92c586bcb80dda8b793c45156ea28fbbd70aa"
+          "sha256": "1542cf4fc30b709dc99d1c16c94c0b0f0f18d0f0c3b50d64c48dcfbeeca850e6"
         },
         {
           "file": "textures/trim_brass_and_bronze_palette_orm.png",
-          "sha256": "fda6810e985ad1a32ff6d47ce7be63c66fe4fa230d901f83d2b2ef11f372f2d0"
+          "sha256": "b0a623b69911096204f3c75b551682b695cf5f2d6ff6d3a3d7e78617c03d5d53"
         },
         {
-          "file": "textures/walnut_basecolor.png",
-          "sha256": "1c150e502aa2fdb24fe6853335b464072705c610cbd40108deadb5e80dcb07b4"
+          "file": "textures/w5_weave_a_basecolor.png",
+          "sha256": "ab281f82791e6f653f7687d94070ca57599f3474debae756da52c0943579f5f3"
         },
         {
-          "file": "textures/walnut_normal.png",
-          "sha256": "2e03ac4f325b816c51eb90b828b3eabdc66fc2fd480102effa1b2af9af6cfe3f"
+          "file": "textures/w5_weave_a_normal.png",
+          "sha256": "92d087abdba111a3830eedc30f5111e4f8e1e9a1f640585ecbaa118e65cf2dee"
         },
         {
-          "file": "textures/weave_basecolor.png",
-          "sha256": "9f168f3e223cbcd7ed7ef4e706e23dea518f8ad8c4d35944c255732955fdd286"
+          "file": "textures/walnut_v2_basecolor.png",
+          "sha256": "befa99e402b23418c8f6f01cb77c3185a6c3bc8f48911dc98376fcbc41286208"
         },
         {
-          "file": "textures/weave_normal.png",
-          "sha256": "77ab64c22956a8b89d35ace12b6853d1f6e355ed9978d111247b45b72f590507"
+          "file": "textures/walnut_v2_normal.png",
+          "sha256": "6cc023dfac0435cb5fd89a742f55a6986ec811df510c85474c1d6bc99134a41d"
         }
       ]
     },
@@ -2294,8 +2310,8 @@
       "root_node": "arrival_folio",
       "lods": {
         "lod0": {
-          "bytes": 86612,
-          "sha256": "c072d2defd0e330c7de29650b7a6bd518d306a7a097d7724b7f337c09e740cfb",
+          "bytes": 86616,
+          "sha256": "289ea0bfa5710ba0df52da0461e92317c971a992906a73d9395a8c77e9193c14",
           "triangles": 756,
           "primitives_draw_calls": 4,
           "meshes": 4,
@@ -2338,7 +2354,7 @@
               "mime": "image/jpeg",
               "width": 64,
               "height": 64,
-              "bytes": 902,
+              "bytes": 906,
               "colorspace": "linear",
               "decoded_bytes_with_mips": 21845
             }
@@ -2360,8 +2376,8 @@
           "blender_triangles": 756
         },
         "lod1": {
-          "bytes": 68764,
-          "sha256": "5224862b0c5c207be35b585dc7a10804acf50671bba436995462506f782863fb",
+          "bytes": 68768,
+          "sha256": "73fab095d1895536a32fef2e221d9048a5c29f0109d1301c4b7e202ab679c598",
           "triangles": 376,
           "primitives_draw_calls": 4,
           "meshes": 4,
@@ -2404,7 +2420,7 @@
               "mime": "image/jpeg",
               "width": 64,
               "height": 64,
-              "bytes": 902,
+              "bytes": 906,
               "colorspace": "linear",
               "decoded_bytes_with_mips": 21845
             }
@@ -2566,8 +2582,8 @@
       },
       "source_blend": {
         "file": "arrival-folio.blend",
-        "sha256": "512714c0c2966114fc7464a4251b8d3918fbb4f2924566ad3d3c656683a3bf39",
-        "bytes": 107359,
+        "sha256": "1d14a0bb1c5c4506fc6cd2422d5f24efb4e8103fa9945260805a3e9d3dba38b7",
+        "bytes": 107379,
         "contains": "LOD0 + collision proxy; LOD1 is regenerated by the script"
       },
       "texture_sources": [
@@ -2581,27 +2597,27 @@
         },
         {
           "file": "textures/trim_brass_and_bronze_palette_basecolor.png",
-          "sha256": "877cbe9593419e24ff98a14ba4c92c586bcb80dda8b793c45156ea28fbbd70aa"
+          "sha256": "1542cf4fc30b709dc99d1c16c94c0b0f0f18d0f0c3b50d64c48dcfbeeca850e6"
         },
         {
           "file": "textures/trim_brass_and_bronze_palette_orm.png",
-          "sha256": "fda6810e985ad1a32ff6d47ce7be63c66fe4fa230d901f83d2b2ef11f372f2d0"
+          "sha256": "b0a623b69911096204f3c75b551682b695cf5f2d6ff6d3a3d7e78617c03d5d53"
         },
         {
-          "file": "textures/walnut_basecolor.png",
-          "sha256": "1c150e502aa2fdb24fe6853335b464072705c610cbd40108deadb5e80dcb07b4"
+          "file": "textures/w5_weave_a_basecolor.png",
+          "sha256": "ab281f82791e6f653f7687d94070ca57599f3474debae756da52c0943579f5f3"
         },
         {
-          "file": "textures/walnut_normal.png",
-          "sha256": "2e03ac4f325b816c51eb90b828b3eabdc66fc2fd480102effa1b2af9af6cfe3f"
+          "file": "textures/w5_weave_a_normal.png",
+          "sha256": "92d087abdba111a3830eedc30f5111e4f8e1e9a1f640585ecbaa118e65cf2dee"
         },
         {
-          "file": "textures/weave_basecolor.png",
-          "sha256": "9f168f3e223cbcd7ed7ef4e706e23dea518f8ad8c4d35944c255732955fdd286"
+          "file": "textures/walnut_v2_basecolor.png",
+          "sha256": "befa99e402b23418c8f6f01cb77c3185a6c3bc8f48911dc98376fcbc41286208"
         },
         {
-          "file": "textures/weave_normal.png",
-          "sha256": "77ab64c22956a8b89d35ace12b6853d1f6e355ed9978d111247b45b72f590507"
+          "file": "textures/walnut_v2_normal.png",
+          "sha256": "6cc023dfac0435cb5fd89a742f55a6986ec811df510c85474c1d6bc99134a41d"
         }
       ]
     },
@@ -2610,8 +2626,8 @@
       "root_node": "arrival_cup",
       "lods": {
         "lod0": {
-          "bytes": 49280,
-          "sha256": "d58375efcf72922ee9095a0aaaa98ccecdca26c2fd11e43c6d4e737aaded259f",
+          "bytes": 49284,
+          "sha256": "dcf5ede096c25a6df73b8c8eb28d5c8d6657f47eb99a89fc21130ee7ee72b014",
           "triangles": 1450,
           "primitives_draw_calls": 2,
           "meshes": 2,
@@ -2638,7 +2654,7 @@
               "mime": "image/jpeg",
               "width": 64,
               "height": 64,
-              "bytes": 902,
+              "bytes": 906,
               "colorspace": "linear",
               "decoded_bytes_with_mips": 21845
             }
@@ -2657,8 +2673,8 @@
           "blender_triangles": 1450
         },
         "lod1": {
-          "bytes": 20676,
-          "sha256": "50f1cd4860cd05d5a50dac8b2a2ad27cedcd6e1a015b6934f05efaf826e14c88",
+          "bytes": 20680,
+          "sha256": "6409049a63d550e418ab8bce2b031a64dc1023c28b84ae616413b4ea080dca8e",
           "triangles": 492,
           "primitives_draw_calls": 2,
           "meshes": 2,
@@ -2685,7 +2701,7 @@
               "mime": "image/jpeg",
               "width": 64,
               "height": 64,
-              "bytes": 902,
+              "bytes": 906,
               "colorspace": "linear",
               "decoded_bytes_with_mips": 21845
             }
@@ -2834,8 +2850,8 @@
       },
       "source_blend": {
         "file": "arrival-cup.blend",
-        "sha256": "ec546e7eb31d3527a80ba5572eee8cfd3f718c24f3fc91e66669d06d0aa8c4d2",
-        "bytes": 119876,
+        "sha256": "7d38f757ea1c2e3b1c1f1b7119bd54282b8609bf242ec1d9f9d949f9aa1f7ee0",
+        "bytes": 119878,
         "contains": "LOD0 + collision proxy; LOD1 is regenerated by the script"
       },
       "texture_sources": [
@@ -2849,27 +2865,27 @@
         },
         {
           "file": "textures/trim_brass_and_bronze_palette_basecolor.png",
-          "sha256": "877cbe9593419e24ff98a14ba4c92c586bcb80dda8b793c45156ea28fbbd70aa"
+          "sha256": "1542cf4fc30b709dc99d1c16c94c0b0f0f18d0f0c3b50d64c48dcfbeeca850e6"
         },
         {
           "file": "textures/trim_brass_and_bronze_palette_orm.png",
-          "sha256": "fda6810e985ad1a32ff6d47ce7be63c66fe4fa230d901f83d2b2ef11f372f2d0"
+          "sha256": "b0a623b69911096204f3c75b551682b695cf5f2d6ff6d3a3d7e78617c03d5d53"
         },
         {
-          "file": "textures/walnut_basecolor.png",
-          "sha256": "1c150e502aa2fdb24fe6853335b464072705c610cbd40108deadb5e80dcb07b4"
+          "file": "textures/w5_weave_a_basecolor.png",
+          "sha256": "ab281f82791e6f653f7687d94070ca57599f3474debae756da52c0943579f5f3"
         },
         {
-          "file": "textures/walnut_normal.png",
-          "sha256": "2e03ac4f325b816c51eb90b828b3eabdc66fc2fd480102effa1b2af9af6cfe3f"
+          "file": "textures/w5_weave_a_normal.png",
+          "sha256": "92d087abdba111a3830eedc30f5111e4f8e1e9a1f640585ecbaa118e65cf2dee"
         },
         {
-          "file": "textures/weave_basecolor.png",
-          "sha256": "9f168f3e223cbcd7ed7ef4e706e23dea518f8ad8c4d35944c255732955fdd286"
+          "file": "textures/walnut_v2_basecolor.png",
+          "sha256": "befa99e402b23418c8f6f01cb77c3185a6c3bc8f48911dc98376fcbc41286208"
         },
         {
-          "file": "textures/weave_normal.png",
-          "sha256": "77ab64c22956a8b89d35ace12b6853d1f6e355ed9978d111247b45b72f590507"
+          "file": "textures/walnut_v2_normal.png",
+          "sha256": "6cc023dfac0435cb5fd89a742f55a6986ec811df510c85474c1d6bc99134a41d"
         }
       ]
     },
@@ -2878,8 +2894,8 @@
       "root_node": "arrival_lantern",
       "lods": {
         "lod0": {
-          "bytes": 72788,
-          "sha256": "c89c3a45b37a1af6edc606f3287e069b0abfee6e9748dd5a0931381fc27f330f",
+          "bytes": 72792,
+          "sha256": "5d88fa9f16e40df16b0b3414dc8e78f4610fef121c0397654005f927d5eafe02",
           "triangles": 1712,
           "primitives_draw_calls": 3,
           "meshes": 3,
@@ -2907,7 +2923,7 @@
               "mime": "image/jpeg",
               "width": 64,
               "height": 64,
-              "bytes": 902,
+              "bytes": 906,
               "colorspace": "linear",
               "decoded_bytes_with_mips": 21845
             }
@@ -2927,8 +2943,8 @@
           "blender_triangles": 1712
         },
         "lod1": {
-          "bytes": 31140,
-          "sha256": "81900a13c037cf1d173f4ec1b5a1b1df231857fa182d46bcb448ad8b41eef31f",
+          "bytes": 31144,
+          "sha256": "b1444b4b5ed8e7820b1e0c17e21a2b401ee10cdd7d8fd767cbee2f1ecbd70e38",
           "triangles": 652,
           "primitives_draw_calls": 3,
           "meshes": 3,
@@ -2956,7 +2972,7 @@
               "mime": "image/jpeg",
               "width": 64,
               "height": 64,
-              "bytes": 902,
+              "bytes": 906,
               "colorspace": "linear",
               "decoded_bytes_with_mips": 21845
             }
@@ -3106,8 +3122,8 @@
       },
       "source_blend": {
         "file": "arrival-lantern.blend",
-        "sha256": "0bd145fd4c56499ff6d24f66fdcd7ca82aa500ff6a9774b7b3b177161cd3b85a",
-        "bytes": 122997,
+        "sha256": "3442eb450d5c30621605707d102256568f234ea3a967b2cb1ce34cbb2053a818",
+        "bytes": 123016,
         "contains": "LOD0 + collision proxy; LOD1 is regenerated by the script"
       },
       "texture_sources": [
@@ -3121,27 +3137,27 @@
         },
         {
           "file": "textures/trim_brass_and_bronze_palette_basecolor.png",
-          "sha256": "877cbe9593419e24ff98a14ba4c92c586bcb80dda8b793c45156ea28fbbd70aa"
+          "sha256": "1542cf4fc30b709dc99d1c16c94c0b0f0f18d0f0c3b50d64c48dcfbeeca850e6"
         },
         {
           "file": "textures/trim_brass_and_bronze_palette_orm.png",
-          "sha256": "fda6810e985ad1a32ff6d47ce7be63c66fe4fa230d901f83d2b2ef11f372f2d0"
+          "sha256": "b0a623b69911096204f3c75b551682b695cf5f2d6ff6d3a3d7e78617c03d5d53"
         },
         {
-          "file": "textures/walnut_basecolor.png",
-          "sha256": "1c150e502aa2fdb24fe6853335b464072705c610cbd40108deadb5e80dcb07b4"
+          "file": "textures/w5_weave_a_basecolor.png",
+          "sha256": "ab281f82791e6f653f7687d94070ca57599f3474debae756da52c0943579f5f3"
         },
         {
-          "file": "textures/walnut_normal.png",
-          "sha256": "2e03ac4f325b816c51eb90b828b3eabdc66fc2fd480102effa1b2af9af6cfe3f"
+          "file": "textures/w5_weave_a_normal.png",
+          "sha256": "92d087abdba111a3830eedc30f5111e4f8e1e9a1f640585ecbaa118e65cf2dee"
         },
         {
-          "file": "textures/weave_basecolor.png",
-          "sha256": "9f168f3e223cbcd7ed7ef4e706e23dea518f8ad8c4d35944c255732955fdd286"
+          "file": "textures/walnut_v2_basecolor.png",
+          "sha256": "befa99e402b23418c8f6f01cb77c3185a6c3bc8f48911dc98376fcbc41286208"
         },
         {
-          "file": "textures/weave_normal.png",
-          "sha256": "77ab64c22956a8b89d35ace12b6853d1f6e355ed9978d111247b45b72f590507"
+          "file": "textures/walnut_v2_normal.png",
+          "sha256": "6cc023dfac0435cb5fd89a742f55a6986ec811df510c85474c1d6bc99134a41d"
         }
       ]
     },
@@ -3150,8 +3166,8 @@
       "root_node": "arrival_instrument",
       "lods": {
         "lod0": {
-          "bytes": 95832,
-          "sha256": "55379a0dd91dda42cafa5e29d70a117d391c155fb64e017e9e257a5492698e31",
+          "bytes": 95836,
+          "sha256": "8a5d1eacbb6400438e9776849bafbac54ad0b569911fe456bd89b3d1f97673d0",
           "triangles": 2292,
           "primitives_draw_calls": 2,
           "meshes": 2,
@@ -3176,7 +3192,7 @@
               "mime": "image/jpeg",
               "width": 64,
               "height": 64,
-              "bytes": 902,
+              "bytes": 906,
               "colorspace": "linear",
               "decoded_bytes_with_mips": 21845
             }
@@ -3195,8 +3211,8 @@
           "blender_triangles": 2292
         },
         "lod1": {
-          "bytes": 28796,
-          "sha256": "b330796fde5b18f4fd3fdc7de4729de913c5a02c0a6c1c7b2d6751106f3d6436",
+          "bytes": 28800,
+          "sha256": "6a41ba72cd46503b4dc1bee299e40a3119d0beac2a430a1af63b1a48a2a063a6",
           "triangles": 592,
           "primitives_draw_calls": 2,
           "meshes": 2,
@@ -3221,7 +3237,7 @@
               "mime": "image/jpeg",
               "width": 64,
               "height": 64,
-              "bytes": 902,
+              "bytes": 906,
               "colorspace": "linear",
               "decoded_bytes_with_mips": 21845
             }
@@ -3370,8 +3386,8 @@
       },
       "source_blend": {
         "file": "arrival-instrument.blend",
-        "sha256": "70ca57e03115a086d5c581d9b2abccf8a7210aecaae06d82cf8d7970adf8555c",
-        "bytes": 136477,
+        "sha256": "4c225ab2639dcdf2b434f45f9a26e67e13f969a318fe7a8fae331d1d027ac6e6",
+        "bytes": 136443,
         "contains": "LOD0 + collision proxy; LOD1 is regenerated by the script"
       },
       "texture_sources": [
@@ -3385,27 +3401,27 @@
         },
         {
           "file": "textures/trim_brass_and_bronze_palette_basecolor.png",
-          "sha256": "877cbe9593419e24ff98a14ba4c92c586bcb80dda8b793c45156ea28fbbd70aa"
+          "sha256": "1542cf4fc30b709dc99d1c16c94c0b0f0f18d0f0c3b50d64c48dcfbeeca850e6"
         },
         {
           "file": "textures/trim_brass_and_bronze_palette_orm.png",
-          "sha256": "fda6810e985ad1a32ff6d47ce7be63c66fe4fa230d901f83d2b2ef11f372f2d0"
+          "sha256": "b0a623b69911096204f3c75b551682b695cf5f2d6ff6d3a3d7e78617c03d5d53"
         },
         {
-          "file": "textures/walnut_basecolor.png",
-          "sha256": "1c150e502aa2fdb24fe6853335b464072705c610cbd40108deadb5e80dcb07b4"
+          "file": "textures/w5_weave_a_basecolor.png",
+          "sha256": "ab281f82791e6f653f7687d94070ca57599f3474debae756da52c0943579f5f3"
         },
         {
-          "file": "textures/walnut_normal.png",
-          "sha256": "2e03ac4f325b816c51eb90b828b3eabdc66fc2fd480102effa1b2af9af6cfe3f"
+          "file": "textures/w5_weave_a_normal.png",
+          "sha256": "92d087abdba111a3830eedc30f5111e4f8e1e9a1f640585ecbaa118e65cf2dee"
         },
         {
-          "file": "textures/weave_basecolor.png",
-          "sha256": "9f168f3e223cbcd7ed7ef4e706e23dea518f8ad8c4d35944c255732955fdd286"
+          "file": "textures/walnut_v2_basecolor.png",
+          "sha256": "befa99e402b23418c8f6f01cb77c3185a6c3bc8f48911dc98376fcbc41286208"
         },
         {
-          "file": "textures/weave_normal.png",
-          "sha256": "77ab64c22956a8b89d35ace12b6853d1f6e355ed9978d111247b45b72f590507"
+          "file": "textures/walnut_v2_normal.png",
+          "sha256": "6cc023dfac0435cb5fd89a742f55a6986ec811df510c85474c1d6bc99134a41d"
         }
       ]
     }

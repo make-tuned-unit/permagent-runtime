@@ -93,36 +93,39 @@ def tex_walnut_v2(size=1024, seed=11):
 
     Structure, coarse to fine:
       board tone   - slow colour drift across the grain (heartwood variation)
-      growth rings - 22 rings per tile, warped by noise that is ~20x longer
+      growth rings - 26 rings per tile (uneven widths), warped by noise that is ~20x longer
                      along the grain than across it, so rings run as long
                      gently wandering lines; each ring ends in a dark,
                      sharp-edged latewood line (the 'dark seams' of the figure)
-      fibre        - very long thin streaks (cells 6 along x 340 across)
+      fibre        - very long thin streaks (cells 6 along x 360 across) plus
+                     long colour streaks
       pores        - short dark dashes along the grain
     """
     n = size
     v = (np.arange(n, dtype=np.float32) / n)[:, None] * np.ones((1, n), np.float32)
-    warp = _aniso_fbm(seed, n, 2, 5, octaves=3)            # long wander of the rings
-    wobble = _aniso_fbm(seed + 1, n, 6, 24, octaves=2)      # local ripple
-    rings = 22
-    r = v * rings + (warp - 0.5) * 3.2 + (wobble - 0.5) * 0.45
+    warp = _aniso_fbm(seed, n, 2, 4, octaves=3)            # long, gentle wander of the rings
+    wobble = _aniso_fbm(seed + 1, n, 5, 30, octaves=2)      # local ripple
+    spacing = _aniso_fbm(seed + 5, n, 1, 8, octaves=2)      # uneven ring widths (wet/dry years)
+    rings = 26
+    r = v * rings + (warp - 0.5) * 1.7 + (wobble - 0.5) * 0.30 + (spacing - 0.5) * 2.2
     f = r - np.floor(r)
-    # earlywood (light, open) -> gradual darkening -> abrupt latewood line
-    late = _smoothstep(0.62, 0.90, f) * (1 - _smoothstep(0.93, 0.995, f))
-    line = np.exp(-((f - 0.90) / 0.035) ** 2)              # the crisp dark line itself
+    # earlywood (light, open) -> gradual darkening -> abrupt thin latewood line
+    late = _smoothstep(0.55, 0.92, f) * (1 - _smoothstep(0.94, 0.995, f))
+    line = np.exp(-((f - 0.925) / 0.022) ** 2)
     tone = _aniso_fbm(seed + 2, n, 1, 3, octaves=2)          # across-grain heartwood drift
-    fibre = _aniso_fbm(seed + 3, n, 6, 340, octaves=2)
+    streak = _aniso_fbm(seed + 6, n, 2, 48, octaves=3)       # long colour streaks along the grain
+    fibre = _aniso_fbm(seed + 3, n, 6, 360, octaves=2)
     fibre = (fibre - fibre.min()) / (np.ptp(fibre) + 1e-6)
-    pores = _aniso_fbm(seed + 4, n, 96, 512, octaves=1)
-    pores = _smoothstep(0.70, 0.82, pores)
-    t = np.clip(0.30 + 0.50 * (tone - 0.5) + 0.20 * (fibre - 0.5), 0, 1)
-    early = lerp_color(t, (0.20, 0.115, 0.062), (0.34, 0.205, 0.112))
-    dark = np.array((0.075, 0.040, 0.022), np.float32)
-    k = np.clip(0.55 * late + 0.55 * line, 0, 0.92)
+    pores = _aniso_fbm(seed + 4, n, 40, 420, octaves=2)
+    pores = _smoothstep(0.66, 0.78, pores)
+    t = np.clip(0.42 + 0.45 * (tone - 0.5) + 0.55 * (streak - 0.5) + 0.25 * (fibre - 0.5), 0, 1)
+    early = lerp_color(t, (0.155, 0.088, 0.048), (0.30, 0.18, 0.098))
+    dark = np.array((0.07, 0.038, 0.021), np.float32)
+    k = np.clip(0.38 * late + 0.50 * line, 0, 0.85)
     col = early * (1 - k[..., None]) + dark[None, None, :] * k[..., None]
-    col *= (1 - 0.30 * pores)[..., None]
-    col *= (0.92 + 0.16 * fibre)[..., None]
-    h = -0.45 * line - 0.25 * late - 0.9 * pores + 0.25 * fibre
+    col *= (1 - 0.28 * pores)[..., None]
+    col *= (0.86 + 0.28 * fibre)[..., None]
+    h = -0.35 * line - 0.2 * late - 0.8 * pores + 0.35 * fibre
     return np.clip(col, 0, 1).astype(np.float32), height_to_normal(h, 1.1)
 
 
@@ -153,3 +156,21 @@ def normal_from_basecolor(rgb, strength=1.6, blur=6):
     hp = lum - low
     hp = hp / (np.abs(hp).max() + 1e-6)
     return height_to_normal(hp, strength)
+
+
+def tint_base(mat, rgb):
+    """Multiply a material's base-colour texture by a factor (exported as glTF
+    baseColorFactor), so an external map is calibrated without editing its pixels."""
+    nt = mat.node_tree
+    b = nt.nodes['Principled BSDF']
+    link = b.inputs['Base Color'].links[0]
+    tex = link.from_node
+    nt.links.remove(link)
+    mix = nt.nodes.new('ShaderNodeMix')
+    mix.data_type = 'RGBA'
+    mix.blend_type = 'MULTIPLY'
+    mix.inputs['Factor'].default_value = 1.0
+    mix.inputs[7].default_value = (*rgb, 1.0)          # B (colour)
+    nt.links.new(tex.outputs['Color'], mix.inputs[6])  # A (colour)
+    nt.links.new(mix.outputs[2], b.inputs['Base Color'])
+    return mat

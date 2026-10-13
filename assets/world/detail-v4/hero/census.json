@@ -1,6 +1,6 @@
 {
   "schema": "permagent.world.detail-v4.hero.census.v1",
-  "generated": "2026-10-13T02:10:14Z",
+  "generated": "2026-10-13T02:13:36Z",
   "budgets_reference": "/Users/j/Documents/dev/permagent-worktrees/wq-reports/astra/ruling-world-production-20261012.md section 2 Budgets",
   "assets": [
     {
@@ -92,7 +92,7 @@
         "file": "arrival-table.lod0.glb",
         "triangles": 5780,
         "primitives_draw_calls": 2,
-        "bytes": 417324,
+        "bytes": 452268,
         "materials": [
           "Timber \u2022 oiled walnut",
           "Trim \u2022 brass and bronze"
@@ -103,7 +103,7 @@
         "file": "arrival-table.lod1.glb",
         "triangles": 1562,
         "primitives_draw_calls": 2,
-        "bytes": 203012,
+        "bytes": 237956,
         "materials": [
           "Timber \u2022 oiled walnut",
           "Trim \u2022 brass and bronze"
@@ -112,20 +112,20 @@
       },
       "textures_lod0": [
         {
-          "name": "walnut_normal",
+          "name": "walnut_v2_normal",
           "mime": "image/jpeg",
           "width": 512,
           "height": 512,
           "colorspace": "linear",
-          "bytes": 49139
+          "bytes": 42813
         },
         {
-          "name": "walnut_basecolor",
+          "name": "walnut_v2_basecolor",
           "mime": "image/jpeg",
           "width": 1024,
           "height": 1024,
           "colorspace": "sRGB",
-          "bytes": 43487
+          "bytes": 84744
         },
         {
           "name": "trim_brass_and_bronze_palette_basecolor",
@@ -141,7 +141,7 @@
           "width": 64,
           "height": 64,
           "colorspace": "linear",
-          "bytes": 902
+          "bytes": 906
         }
       ],
       "checks": {
@@ -162,7 +162,7 @@
           "pass": true
         },
         "lod0_bytes": {
-          "value": 417324,
+          "value": 452268,
           "ceiling": 1500000,
           "pass": true
         },
@@ -185,7 +185,7 @@
         "file": "arrival-chair.lod0.glb",
         "triangles": 4716,
         "primitives_draw_calls": 3,
-        "bytes": 400608,
+        "bytes": 501244,
         "materials": [
           "Fabric \u2022 moss weave",
           "Timber \u2022 oiled walnut",
@@ -197,7 +197,7 @@
         "file": "arrival-chair.lod1.glb",
         "triangles": 1260,
         "primitives_draw_calls": 3,
-        "bytes": 259080,
+        "bytes": 359720,
         "materials": [
           "Fabric \u2022 moss weave",
           "Timber \u2022 oiled walnut",
@@ -207,36 +207,36 @@
       },
       "textures_lod0": [
         {
-          "name": "weave_normal",
+          "name": "w5_weave_a_normal",
           "mime": "image/jpeg",
           "width": 512,
           "height": 512,
           "colorspace": "linear",
-          "bytes": 61026
+          "bytes": 78430
         },
         {
-          "name": "weave_basecolor",
+          "name": "w5_weave_a_basecolor",
           "mime": "image/jpeg",
           "width": 512,
           "height": 512,
           "colorspace": "sRGB",
-          "bytes": 23358
+          "bytes": 71562
         },
         {
-          "name": "walnut_normal",
+          "name": "walnut_v2_normal",
           "mime": "image/jpeg",
           "width": 512,
           "height": 512,
           "colorspace": "linear",
-          "bytes": 49139
+          "bytes": 42813
         },
         {
-          "name": "walnut_basecolor",
+          "name": "walnut_v2_basecolor",
           "mime": "image/jpeg",
           "width": 1024,
           "height": 1024,
           "colorspace": "sRGB",
-          "bytes": 43487
+          "bytes": 84744
         },
         {
           "name": "trim_brass_and_bronze_palette_basecolor",
@@ -252,7 +252,7 @@
           "width": 64,
           "height": 64,
           "colorspace": "linear",
-          "bytes": 902
+          "bytes": 906
         }
       ],
       "checks": {
@@ -273,7 +273,7 @@
           "pass": true
         },
         "lod0_bytes": {
-          "value": 400608,
+          "value": 501244,
           "ceiling": 1500000,
           "pass": true
         },
@@ -296,7 +296,7 @@
         "file": "arrival-folio.lod0.glb",
         "triangles": 756,
         "primitives_draw_calls": 4,
-        "bytes": 86612,
+        "bytes": 86616,
         "materials": [
           "Leather \u2022 tobacco",
           "Trim \u2022 brass and bronze"
@@ -307,7 +307,7 @@
         "file": "arrival-folio.lod1.glb",
         "triangles": 376,
         "primitives_draw_calls": 4,
-        "bytes": 68764,
+        "bytes": 68768,
         "materials": [
           "Leather \u2022 tobacco",
           "Trim \u2022 brass and bronze"
@@ -345,7 +345,7 @@
           "width": 64,
           "height": 64,
           "colorspace": "linear",
-          "bytes": 902
+          "bytes": 906
         }
       ],
       "checks": {
@@ -366,7 +366,7 @@
           "pass": true
         },
         "lod0_bytes": {
-          "value": 86612,
+          "value": 86616,
           "ceiling": 1500000,
           "pass": true
         },
@@ -389,7 +389,7 @@
         "file": "arrival-cup.lod0.glb",
         "triangles": 1450,
         "primitives_draw_calls": 2,
-        "bytes": 49280,
+        "bytes": 49284,
         "materials": [
           "Stoneware \u2022 oat glaze",
           "Trim \u2022 brass and bronze"
@@ -400,7 +400,7 @@
         "file": "arrival-cup.lod1.glb",
         "triangles": 492,
         "primitives_draw_calls": 2,
-        "bytes": 20676,
+        "bytes": 20680,
         "materials": [
           "Stoneware \u2022 oat glaze",
           "Trim \u2022 brass and bronze"
@@ -422,7 +422,7 @@
           "width": 64,
           "height": 64,
           "colorspace": "linear",
-          "bytes": 902
+          "bytes": 906
         }
       ],
       "checks": {
@@ -443,7 +443,7 @@
           "pass": true
         },
         "lod0_bytes": {
-          "value": 49280,
+          "value": 49284,
           "ceiling": 1500000,
           "pass": true
         },
@@ -466,7 +466,7 @@
         "file": "arrival-lantern.lod0.glb",
         "triangles": 1712,
         "primitives_draw_calls": 3,
-        "bytes": 72788,
+        "bytes": 72792,
         "materials": [
           "Glass \u2022 lantern",
           "Lantern \u2022 warm emission",
@@ -478,7 +478,7 @@
         "file": "arrival-lantern.lod1.glb",
         "triangles": 652,
         "primitives_draw_calls": 3,
-        "bytes": 31140,
+        "bytes": 31144,
         "materials": [
           "Glass \u2022 lantern",
           "Lantern \u2022 warm emission",
@@ -501,7 +501,7 @@
           "width": 64,
           "height": 64,
           "colorspace": "linear",
-          "bytes": 902
+          "bytes": 906
         }
       ],
       "checks": {
@@ -522,7 +522,7 @@
           "pass": true
         },
         "lod0_bytes": {
-          "value": 72788,
+          "value": 72792,
           "ceiling": 1500000,
           "pass": true
         },
@@ -545,7 +545,7 @@
         "file": "arrival-instrument.lod0.glb",
         "triangles": 2292,
         "primitives_draw_calls": 2,
-        "bytes": 95832,
+        "bytes": 95836,
         "materials": [
           "Display \u2022 jade phosphor",
           "Trim \u2022 brass and bronze"
@@ -556,7 +556,7 @@
         "file": "arrival-instrument.lod1.glb",
         "triangles": 592,
         "primitives_draw_calls": 2,
-        "bytes": 28796,
+        "bytes": 28800,
         "materials": [
           "Display \u2022 jade phosphor",
           "Trim \u2022 brass and bronze"
@@ -578,7 +578,7 @@
           "width": 64,
           "height": 64,
           "colorspace": "linear",
-          "bytes": 902
+          "bytes": 906
         }
       ],
       "checks": {
@@ -599,7 +599,7 @@
           "pass": true
         },
         "lod0_bytes": {
-          "value": 95832,
+          "value": 95836,
           "ceiling": 1500000,
           "pass": true
         },
@@ -616,8 +616,8 @@
     }
   ],
   "totals": {
-    "lod0_bytes": 1740140,
-    "lod1_bytes": 861252,
+    "lod0_bytes": 1875736,
+    "lod1_bytes": 996852,
     "lod0_triangles_one_of_each": 37810,
     "lod0_texture_decoded_bytes": 19879246,
     "all_pass": true

@@ -282,8 +282,13 @@ def main():
         'metersPerUnit': 1, 'runtimeUp': 'Y', 'sourceUp': 'Z', 'forward': 'glTF +Z (Blender -Y)',
         'source_scripts': {f'scripts/blender/world_detail/{k}': v for k, v in script_hashes.items()},
         'provenance': {'geometry': 'authored procedurally in Blender by these scripts; no third-party or generated meshes',
-                       'textures': 'authored procedurally (numpy noise/weave/grain) by detail_lib.py; no AI imagery, '
-                                   'no downloads', 'license': 'project-authored',
+                       'textures': 'authored procedurally (numpy) by detail_lib.py / hero_lib.py (walnut v2, leather, '
+                                   'palettes), except the chair upholstery base colour, which is the accepted W5 '
+                                   'candidate textures/w5_weave_a_basecolor.png (FAL nano-banana-pro, see '
+                                   'external_textures and textures/w5_weave_a_basecolor.provenance.json)',
+                       'external_textures': [F.WEAVE_SOURCE],
+                       'license': 'project-authored geometry and procedural maps; W5 weave under FAL hosted-output '
+                                  'commercial-use terms (assets/world/realism-20261012/RIGHTS.md)',
                        'art_direction': 'docs/design/solar-forum/north-star.png; legacy hero-kit v2/v3b robot'},
         'rig_contract': {
             'skinning': 'none; rigid nested pivots, no animation clips',

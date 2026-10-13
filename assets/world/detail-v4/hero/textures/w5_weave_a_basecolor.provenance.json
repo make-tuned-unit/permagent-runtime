@@ -1,0 +1,80 @@
+{
+  "schema": "permagent.world.detail-v4.hero.texture-provenance.v1",
+  "file": "w5_weave_a_basecolor.png",
+  "sha256": "ab281f82791e6f653f7687d94070ca57599f3474debae756da52c0943579f5f3",
+  "copied_verbatim_from": "assets/world/realism-20261012/candidates/weave-a-512.png",
+  "w3_acceptance": {
+    "status": "accepted for the Arrival chair upholstery (round 2)",
+    "binding": "arrival_furniture.WEAVE_SOURCE; box_uv scale 4.0 = 0.25 m tile; normal map w5_weave_a_normal.png derived by W3 from the luminance high-pass (hero_lib.normal_from_basecolor)",
+    "not_verified": "seamlessness at arbitrary magnification (W5 review note); runtime relight in the native World (W6)"
+  },
+  "w5_ledger_entry": {
+    "id": "weave-a",
+    "request": "W3 request 2: moss-green plain upholstery weave base colour, 512x512 delivery, 0.25 m, seamless both axes",
+    "model": "fal-ai/nano-banana-pro",
+    "model_version": "Nano Banana Pro / Google Gemini 3 Pro Image; immutable internal revision not exposed",
+    "seed": 61012052,
+    "request_id": "01a132e1-29fc-7502-b8d1-96dd6fed6f39",
+    "submitted_at": "2026-10-13T01:29:39.991977+00:00",
+    "provider": "fal",
+    "account_id": "github|5m4womwn5oan4fjuo2qmp172",
+    "prompt": "A single seamless tileable orthographic material texture: moss-green wool and linen upholstery cloth in a visible fine plain over-under weave, a square covering exactly 0.25 metre across. Muted natural moss green, restrained fibre colour variation and a slight irregular slub, coherent fine yarn spacing suitable for a chair cushion. Uniform diffuse base colour (albedo) only, delighted flat full-frame swatch. Both opposite edge pairs join continuously when repeated in a grid, including warp and weft spacing at top/bottom and left/right. No decorative pattern, no print, no embroidery, no seam, no stitching, no folds, no perspective, no directional lighting, no specular highlights, no baked shadows, no vignette or exposure gradient, no labels, no text or border. One square tile, uniformly detailed to every edge; suitable for a final 512x512 texture.",
+    "file": "originals/weave-a.png",
+    "sha256": "18d2125f939a492440fdda73ff6c37fe9df409abd4ee2506682010f338823b65",
+    "bytes": 2500164,
+    "px": [
+      1024,
+      1024
+    ],
+    "licence": {
+      "record": "RIGHTS.md",
+      "name": "FAL Nano Banana Pro hosted output commercial use",
+      "model_url": "https://fal.ai/models/fal-ai/nano-banana-pro",
+      "terms_url": "https://fal.ai/legal/terms-of-service",
+      "api_terms_url": "https://fal.ai/legal/api-services",
+      "commercial_use_permitted": true,
+      "checked_at_utc": "2026-10-13",
+      "output_exists": true
+    },
+    "estimate_usd": 0.15,
+    "actual_cost_usd": null,
+    "cost_basis": "estimate; actual charge unverified",
+    "physical_scale_m": 0.25,
+    "decision": "Candidate passes W5 image/seam review; W3 relight/UV acceptance outstanding",
+    "derivatives": [
+      {
+        "file": "candidates/weave-a-512.png",
+        "bytes": 628694,
+        "sha256": "ab281f82791e6f653f7687d94070ca57599f3474debae756da52c0943579f5f3",
+        "px": [
+          512,
+          512
+        ],
+        "parent_sha256": "18d2125f939a492440fdda73ff6c37fe9df409abd4ee2506682010f338823b65",
+        "processing": "ffmpeg -v error -i originals/weave-a.png -vf scale=512:512:flags=area -frames:v 1 candidates/weave-a-512.png",
+        "colour_space": "sRGB base colour; no creative retouch or seam correction",
+        "seam_metrics": {
+          "left_right": {
+            "wrap_mae": 23.630208333333332,
+            "interior_boundary_median_mae": 20.360677083333314,
+            "interior_boundary_p99_mae": 31.543619791666654,
+            "wrap_to_interior_median_ratio": 1.1605806740423366,
+            "wrap_percentile_vs_internal_boundaries": 68.88454011741683,
+            "wrap_channel_p95": 52,
+            "numeric_screen_pass": true
+          },
+          "top_bottom": {
+            "wrap_mae": 17.12890625,
+            "interior_boundary_median_mae": 18.287760416666668,
+            "interior_boundary_p99_mae": 26.453776041666668,
+            "wrap_to_interior_median_ratio": 0.9366322534709861,
+            "wrap_percentile_vs_internal_boundaries": 38.160469667318985,
+            "wrap_channel_p95": 43,
+            "numeric_screen_pass": true
+          }
+        }
+      }
+    ],
+    "reviewer": "Codex W5"
+  }
+}

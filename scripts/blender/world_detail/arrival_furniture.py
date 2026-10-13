@@ -10,7 +10,10 @@ Blender space: +Z up, a sitter faces -Y; the exporter converts to glTF +Y up.
 """
 import math
 import bpy
+from pathlib import Path
 from mathutils import Vector
+import detail_lib as L
+from hero_lib import tex_walnut_v2, load_png, normal_from_basecolor, tint_base
 from detail_lib import (Kit, Palette, pbr, make_image, tex_walnut, tex_weave, tex_leather, rbox, ellipsoid,
                         lathe, tube, torus, prism, annulus_sector, superquadric, path_tube, rounded_rect_path,
                         box_uv, transform, displace, seg, TAU)
@@ -33,22 +36,51 @@ FURNITURE_CELLS = {
     'coffee': ((0.05, 0.025, 0.012), 0.08, 0.0),
     'strap': ((0.07, 0.09, 0.08), 0.75, 0.0),
     'walnut': ((0.17, 0.09, 0.045), 0.48, 0.0),
+    'seam': ((0.012, 0.009, 0.007), 1.0, 0.0),    # plank-gap shadow: fully rough so it never glints at grazing angles
 }
 
 _SHARED = {}
+
+# Accepted W5 candidate (copied verbatim into detail-v4/hero/textures; W5's
+# directory is not modified). Physical tile 0.25 m -> box_uv scale 4.0.
+WEAVE_SOURCE = {
+    'file': 'w5_weave_a_basecolor.png',
+    'sha256': 'ab281f82791e6f653f7687d94070ca57599f3474debae756da52c0943579f5f3',
+    'copied_from': 'assets/world/realism-20261012/candidates/weave-a-512.png',
+    'ledger': 'assets/world/realism-20261012/LEDGER.json items[id=weave-a]',
+    'provenance': 'W5 FAL fal-ai/nano-banana-pro, seed 61012052, request 01a132e1-29fc-7502-b8d1-96dd6fed6f39, '
+                  'original originals/weave-a.png sha256 18d2125f939a492440fdda73ff6c37fe9df409abd4ee2506682010f338823b65 '
+                  '(1024 px), derivative = ffmpeg area resize to 512 px, no retouch; commercial output use permitted '
+                  'per assets/world/realism-20261012/RIGHTS.md (FAL terms apply); estimated cost $0.15',
+    'physical_tile_m': 0.25,
+    # W3 calibration: the candidate renders pale sage under neutral light; a
+    # baseColorFactor (not a pixel edit) brings it to the established moss.
+    'base_color_factor': (0.62, 0.70, 0.52),
+    'accepted_by': 'W3 round 2 (relit on the Arrival chair in review/chair-front-side-rear.jpg, ensemble shots)',
+}
+WEAVE_UV_SCALE = 1.0 / WEAVE_SOURCE['physical_tile_m']
 
 
 def shared_materials():
     """Authored procedural maps (numpy), cached per Blender session."""
     if _SHARED:
         return _SHARED
-    wc, wn = tex_walnut(1024)
-    fc, fn = tex_weave(512)
+    # Round 2: directional walnut v2 (W3-authored, until a seamless W5 walnut is
+    # accepted) and the accepted W5 moss weave (see WEAVE_SOURCE) with a normal
+    # map derived from it. Leather stays authored (W5's request was refused).
+    wc, wn = tex_walnut_v2(1024)
     lc, ln = tex_leather(512)
-    walnut = pbr('Timber • oiled walnut', (1, 1, 1), 0.46, base_img=make_image('walnut_basecolor', wc),
-                 normal_img=make_image('walnut_normal', wn[::2, ::2], 'Non-Color'), normal_strength=0.6)
-    fabric = pbr('Fabric • moss weave', (1, 1, 1), 0.88, base_img=make_image('weave_basecolor', fc),
-                 normal_img=make_image('weave_normal', fn, 'Non-Color'), normal_strength=0.8)
+    walnut = pbr('Timber • oiled walnut', (1, 1, 1), 0.46, base_img=make_image('walnut_v2_basecolor', wc),
+                 normal_img=make_image('walnut_v2_normal', wn[::2, ::2], 'Non-Color'), normal_strength=0.45)
+    src = Path(L.TEXTURE_DIR) / WEAVE_SOURCE['file']
+    if L.sha256(src) != WEAVE_SOURCE['sha256']:
+        raise SystemExit(f'{src} does not match the accepted W5 weave hash; re-copy it from '
+                         f"{WEAVE_SOURCE['copied_from']}")
+    wimg, warr = load_png(src, 'w5_weave_a_basecolor')
+    fabric = pbr('Fabric • moss weave', (1, 1, 1), 0.9, base_img=wimg,
+                 normal_img=make_image('w5_weave_a_normal', normal_from_basecolor(warr, 1.4, 4), 'Non-Color'),
+                 normal_strength=0.7)
+    tint_base(fabric, WEAVE_SOURCE['base_color_factor'])
     leather = pbr('Leather • tobacco', (1, 1, 1), 0.55, base_img=make_image('leather_basecolor', lc),
                   normal_img=make_image('leather_normal', ln, 'Non-Color'), normal_strength=0.5)
     stoneware = pbr('Stoneware • oat glaze', (0.80, 0.74, 0.62), 0.2, coat=0.5, coat_rough=0.1)
@@ -107,7 +139,7 @@ def build_table(detail=1.0):
             for j in range(arc + 1):
                 t = (math.pi - a1) + ((math.pi - a0) - (math.pi - a1)) * j / arc
                 out.append((field_r * math.cos(t), field_r * math.sin(t)))
-            plank = prism(out, z0, z1, bevel=0.003, segments=1)
+            plank = prism(out, z0, z1, bevel=0.0012, segments=1)
             box_uv(plank, 0.9, 'x', offset=(0.13 * i, 0.37 * i))
             k.add('arrival_table', W, plank)
         # breadboard ring: eight segments with butt joints
@@ -124,7 +156,7 @@ def build_table(detail=1.0):
                                                    (ring_in + 0.0005, z1 - 0.0004), (field_r - 0.0005, z1 - 0.0004)],
                                                   seg(96, d, 32)))
         # dark sub-top: makes plank seams read as real gaps
-        k.add('arrival_table', P + 'graphite', lathe([(0, z0 - 0.012), (0.975, z0 - 0.012), (0.975, z0 + 0.0005),
+        k.add('arrival_table', P + 'seam', lathe([(0, z0 - 0.012), (0.975, z0 - 0.012), (0.975, z0 + 0.0005),
                                                       (0, z0 + 0.0005)], seg(48, d, 16)))
         # brass edge band on the outer face, below the rounded rim
         k.add('arrival_table', P + 'brass', lathe([(TABLE_R - 0.001, z0 + 0.002), (TABLE_R + 0.0025, z0 + 0.002),
@@ -300,7 +332,7 @@ def build_chair(detail=1.0):
                 x *= sc
         return (x, y, z)
     displace(cush, compress)
-    box_uv(cush, 2.2, 'x')
+    box_uv(cush, WEAVE_UV_SCALE, 'x')
     k.add('arrival_chair', F, cush)
     if hi:
         for zz in (top_z - 0.012, cz - ch / 2 + 0.014):
@@ -315,7 +347,7 @@ def build_chair(detail=1.0):
     back = superquadric((0, 0, 0), (0.27, 0.045, 0.19), 0.22, 0.3, seg(36, d, 14), seg(16, d, 8))
     displace(back, lambda co: (co[0], co[1] - 0.012 * (1 - (co[0] / 0.27) ** 2) * (1 - (co[2] / 0.19) ** 2), co[2]))
     transform(back, (0, bcy, bcz), (-rake, 0, 0))
-    box_uv(back, 2.2, 'x')
+    box_uv(back, WEAVE_UV_SCALE, 'x')
     k.add('arrival_chair', F, back)
     if hi:
         pipe = path_tube([(x, 0, z) for (x, _, z) in rounded_rect_path(0, 0, 0, 0.52, 0.36, 0.05, 4)], 0.005, 5)
