@@ -74,3 +74,31 @@ it('folds to a one-line header with the count, is keyboard-operable, and remembe
   expect(localStorage.getItem('permagent.build.recentRuns.collapsed')).toBe('0');
   localStorage.removeItem('permagent.build.recentRuns.collapsed');
 });
+
+it('G10: a real pointer sequence on the header text, on the row, and on the count folds and unfolds; View all does not fold', async () => {
+  localStorage.removeItem('permagent.build.recentRuns.collapsed');
+  await act(async () => { root.render(<RecentRunsPanel />); });
+  const toggle = () => host.querySelector<HTMLButtonElement>('[data-testid="recent-runs-toggle"]')!;
+  const header = host.querySelector<HTMLElement>('[data-testid="recent-runs-header"]')!;
+  const press = (el: Element) => act(() => {
+    for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+      const Ctor = type.startsWith('pointer') && typeof PointerEvent !== 'undefined' ? PointerEvent : MouseEvent;
+      el.dispatchEvent(new Ctor(type, { bubbles: true, cancelable: true, clientX: 625, clientY: 141, button: 0 }));
+    }
+  });
+  const label = toggle().querySelector('span')!; // the visible header text
+  press(label);
+  expect(toggle().getAttribute('aria-expanded')).toBe('false');
+  press(header); // the row padding / empty space
+  expect(toggle().getAttribute('aria-expanded')).toBe('true');
+  press(label);
+  expect(toggle().getAttribute('aria-expanded')).toBe('false');
+  expect(localStorage.getItem('permagent.build.recentRuns.collapsed')).toBe('1');
+  press(header);
+  expect(toggle().getAttribute('aria-expanded')).toBe('true');
+  // View all is its own control and must not fold the panel.
+  press(button('View all 100'));
+  expect(toggle().getAttribute('aria-expanded')).toBe('true');
+  expect(toggle().style.transform).toBe('none');
+  localStorage.removeItem('permagent.build.recentRuns.collapsed');
+});

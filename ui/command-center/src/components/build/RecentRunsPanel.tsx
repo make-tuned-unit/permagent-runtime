@@ -138,19 +138,34 @@ export function RecentRunsPanel() {
       margin: '10px 18px 0', borderRadius: radius.md, border: `1px solid ${colors.border}`,
       background: colors.surface, overflow: 'hidden',
     }}>
-      <div style={{
-        display: 'flex', alignItems: 'center', gap: space.md, flexShrink: 0,
-        padding: `${space.md}px ${space.xl}px`, borderBottom: collapsed ? 'none' : `1px solid ${colors.border}`,
-      }}>
+      {/* G10: the WHOLE header row is the toggle. The click handler lives on the
+          row (not only on the text button inside it), so a pointer landing in the
+          row's padding, on the count, or beside the label still folds the panel;
+          the real button inside keeps keyboard/AT semantics (its Enter/Space click
+          bubbles here) and the "View all" control is excluded below. */}
+      <div
+        data-testid="recent-runs-header"
+        onClick={e => {
+          const inner = (e.target as HTMLElement).closest('button');
+          if (inner && inner.getAttribute('data-testid') !== 'recent-runs-toggle') return;
+          toggleCollapsed();
+        }}
+        style={{
+          display: 'flex', alignItems: 'center', gap: space.md, flexShrink: 0, cursor: 'pointer',
+          padding: `${space.md}px ${space.xl}px`, borderBottom: collapsed ? 'none' : `1px solid ${colors.border}`,
+        }}>
         <button
           type="button"
           className="pa-btn"
           data-testid="recent-runs-toggle"
           aria-expanded={!collapsed}
           aria-controls={listId}
-          onClick={toggleCollapsed}
           style={{
             display: 'inline-flex', alignItems: 'center', gap: space.sm, flex: 1, minWidth: 0,
+            // No press-scale: the global :active transform shrinks the hit box
+            // under a held pointer, which a native WebView can resolve as a
+            // mouseup off the target (no click).
+            transform: 'none',
             background: 'none', border: 'none', padding: 0, cursor: 'pointer', textAlign: 'left',
             fontSize: textSize.micro, color: colors.textDim, fontFamily: font.mono,
             textTransform: 'uppercase', letterSpacing: '0.04em',
