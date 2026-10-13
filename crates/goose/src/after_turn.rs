@@ -378,6 +378,7 @@ impl AfterTurn for PrematureDoneGuard {
                 } else {
                     inject_plan
                 };
+                let inject = with_closing_reply_note(inject);
                 AfterTurnAction::Continue { inject }
             }
             crate::cost_router::HoldOutcome::Park { reason } => {
@@ -390,6 +391,20 @@ impl AfterTurn for PrematureDoneGuard {
             }
         }
     }
+}
+
+/// Appended to every hold this guard injects. The hold is for the harness
+/// (verify before done); it must not leak into the user's closing message. A
+/// plain chat turn that wrote a file otherwise ends with a narration of each
+/// verify attempt instead of the short reply the user's instructions asked for.
+/// The discipline (run verify, fix, run again) is unchanged; only the final
+/// reply's shape is stated.
+const CLOSING_REPLY_NOTE: &str = " When verify passes, close with one or two short sentences \
+for the user saying what they now have; do not narrate the verify attempts.";
+
+fn with_closing_reply_note(mut inject: String) -> String {
+    inject.push_str(CLOSING_REPLY_NOTE);
+    inject
 }
 
 /// X-verify-2: honest hold text for a vacuous pass — verify DID run and DID
@@ -3447,6 +3462,14 @@ mod tests {
         match guard.after_turn(&ctx(&edited, 0)).await {
             AfterTurnAction::Continue { inject } => {
                 assert!(inject.contains("verify"), "inject was {inject:?}");
+                assert!(
+                    inject.starts_with("Do not declare this done."),
+                    "discipline text must lead, inject was {inject:?}"
+                );
+                assert!(
+                    inject.contains("do not narrate the verify attempts"),
+                    "inject was {inject:?}"
+                );
             }
             other => panic!("expected a Continue, got {other:?}"),
         }
