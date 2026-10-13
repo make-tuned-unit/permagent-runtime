@@ -845,10 +845,31 @@ final class VoiceEngine: ObservableObject {
     /// a barge-in.
     private func handlePlaybackLevel(rawRms: Float, orbLevel: Float) {
         playbackRms = rawRms
-        playbackTapAt = CACurrentMediaTime()
+        let now = CACurrentMediaTime()
+        playbackTapAt = now
+        // Peak envelope: between two scheduled TTS buffers the tap reads ~0
+        // while the room is still ringing with the last buffer's echo.
+        if rawRms >= playbackPeakRms || now - playbackPeakAt > Self.playbackPeakHold {
+            playbackPeakRms = rawRms
+            playbackPeakAt = now
+        }
         guard state == .speaking else { return }
         level = orbLevel
     }
+
+    /// Recent playback peak (held ~1.5 s) used to size the expected speaker
+    /// echo, and the confirmation streak for automatic barge-in on the
+    /// loudspeaker. 2026-10-13 13:01 ADT: a hands-free reply on speakerphone
+    /// was torn down ~6 s in by an automatic barge-in (immediate reconnect, no
+    /// user tap) because the instantaneous gate saw the mic over a floor sized
+    /// from a momentary playback dip.
+    private static let playbackPeakHold: CFTimeInterval = 1.5
+    private static let speakerBargeConfirmations = 3
+    private static let speakerBargeWindow: CFTimeInterval = 1.2
+    private var playbackPeakRms: Float = 0
+    private var playbackPeakAt: CFTimeInterval = 0
+    private var speakerBargeCount = 0
+    private var speakerBargeFirstAt: CFTimeInterval = 0
 
     private var playbackRecentlyObserved: Bool {
         guard state == .speaking, let playbackTapAt else { return false }
@@ -958,7 +979,7 @@ final class VoiceEngine: ObservableObject {
             // mic hears. Ignore barge while playback is actually coming out.
             if VoiceAudioRoute.ignoreBargeIn(
                 speakerphone: !Self.usingExternalOutput(),
-                playbackRms: playbackRms,
+                playbackRms: max(playbackRms, CACurrentMediaTime() - playbackPeakAt < Self.playbackPeakHold ? playbackPeakRms : 0),
                 micRms: rms,
                 playbackRecentlyObserved: playbackRecentlyObserved
             ) {
@@ -969,6 +990,26 @@ final class VoiceEngine: ObservableObject {
                 // returning here re-arms hands-free without touching the
                 // active socket or playback queue.
                 break
+            }
+            if !Self.usingExternalOutput() {
+                // No AEC on the loudspeaker: one over-floor burst is as likely
+                // echo as a voice. Demand several within a short window.
+                let t = CACurrentMediaTime()
+                if speakerBargeCount == 0 || t - speakerBargeFirstAt > Self.speakerBargeWindow {
+                    speakerBargeCount = 0
+                    speakerBargeFirstAt = t
+                }
+                speakerBargeCount += 1
+                if speakerBargeCount < Self.speakerBargeConfirmations {
+                    voiceLogger.info(
+                        "voice_barge_pending route=speakerphone count=\(self.speakerBargeCount, privacy: .public) mic_rms=\(rms, privacy: .public) playback_rms=\(self.playbackRms, privacy: .public)"
+                    )
+                    break
+                }
+                speakerBargeCount = 0
+                voiceLogger.info(
+                    "voice_barge_confirmed route=speakerphone mic_rms=\(rms, privacy: .public) playback_peak=\(self.playbackPeakRms, privacy: .public)"
+                )
             }
             interrupt(source: .automaticBargeIn)
         case .none: break
