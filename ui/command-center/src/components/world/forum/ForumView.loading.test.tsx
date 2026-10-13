@@ -10,9 +10,9 @@ vi.mock('./ForumConversation', () => ({ ForumConversation: () => null }));
 vi.mock('./ForumCapabilities', () => ({ ForumCapabilities: () => null }));
 vi.mock('../agents/goalActivity', () => ({ useActiveGoals: () => ({ goals: [], loaded: true }) }));
 import { ForumView } from './ForumView';
-import { ForumStageReady, WORLD_READY_BUDGET_MS } from './ForumStageStatus';
+import { ForumStageReady, WORLD_ASSET_DEADLINE_MS, WORLD_READY_BUDGET_MS } from './ForumStageStatus';
 import { ForumPostProcessing } from './ForumPostProcessing';
-import { noteForumAssetLoaded, noteForumAssetRequest, resetForumAssetRetryForTests } from './forumAssetRetry';
+import { guardForumAssetRequest, noteForumAssetLoaded, noteForumAssetRequest, resetForumAssetRetryForTests } from './forumAssetRetry';
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 let root: Root, host: HTMLDivElement;
 beforeEach(() => { resetForumAssetRetryForTests(); vi.useFakeTimers(); window.history.replaceState({}, '', '/?campus=1'); localStorage.clear(); gpu.fail = false; vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false }))); host = document.createElement('div'); document.body.append(host); root = createRoot(host); });
@@ -91,4 +91,25 @@ it('does not tell a failed World that it is still loading', () => {
   settleStartup();
   expect(host.textContent).toContain('World could not start');
   expect(host.textContent).not.toContain('while it loads');
+});
+
+it('a World asset request that never completes is reported as still loading, then as failed with Retry, and Retry refetches', () => {
+  act(() => root.render(<ForumView />));
+  settleStartup();
+  const ready = sceneChildren(gpu.props!).find((child: any) => child?.type === ForumStageReady);
+  act(() => ready.props.onReady());
+  const onError = vi.fn(), clear = vi.fn();
+  noteForumAssetRequest('test:hung', ['world/hung.glb'], clear);
+  act(() => { guardForumAssetRequest('world/hung.glb', undefined, onError); });
+  expect(host.textContent).not.toContain('scenery');
+  act(() => vi.advanceTimersByTime(WORLD_READY_BUDGET_MS));
+  expect(host.textContent).toContain('Still loading the World\u2019s scenery');
+  expect(onError).not.toHaveBeenCalled();
+  act(() => vi.advanceTimersByTime(WORLD_ASSET_DEADLINE_MS - WORLD_READY_BUDGET_MS));
+  expect(onError).toHaveBeenCalledTimes(1);
+  expect(host.textContent).toContain('The World\u2019s scenery did not load');
+  expect(host.textContent).not.toContain('Still loading the World');
+  act(() => [...host.querySelectorAll('button')].filter(b => b.textContent === 'Retry World').pop()!.click());
+  expect(clear).toHaveBeenCalledTimes(1);
+  expect(host.textContent).not.toContain('scenery did not load');
 });

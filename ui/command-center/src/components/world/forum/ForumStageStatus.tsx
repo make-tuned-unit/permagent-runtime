@@ -6,6 +6,8 @@ import { useTheme } from '../../../styles/useTheme';
 
 export type ForumStageState = 'loading' | 'ready' | 'slow' | 'failed';
 export const WORLD_READY_BUDGET_MS = 5000;
+/** A World asset request that has not settled by now is failed (and cancelled on Retry), so a hung request cannot leave the scene waiting forever. */
+export const WORLD_ASSET_DEADLINE_MS = 20_000;
 
 /** Outside Canvas/Suspense, so errors and suspended assets cannot hide recovery. */
 export class ForumStageBoundary extends Component<{

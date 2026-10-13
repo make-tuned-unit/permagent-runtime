@@ -1,17 +1,20 @@
 import { useLoader, useThree } from '@react-three/fiber';
-import { ImageBitmapLoader, Loader, Texture, TextureLoader, LinearFilter, NoColorSpace, RepeatWrapping, SRGBColorSpace, type WebGLRenderer } from 'three';
+import { ImageBitmapLoader, Loader, LoadingManager, Texture, TextureLoader, LinearFilter, NoColorSpace, RepeatWrapping, SRGBColorSpace, type WebGLRenderer } from 'three';
 import { measureForumStartup, scheduleForumStartup } from './forumStartup';
-import { noteForumAssetLoaded, noteForumAssetRequest } from './forumAssetRetry';
+import { forumAssetManager, guardForumAssetRequest, noteForumAssetRequest } from './forumAssetRetry';
 
 /** Explicit asynchronous image decode. Keep the loader identity shared by sky
  * preparation and rendering so choosing an appearance never fetches it twice. */
 export class ForumTextureLoader extends Loader<Texture> {
-  override load(url: string, onLoad?: (texture: Texture) => void, onProgress?: (event: ProgressEvent) => void, onError?: (error: unknown) => void): Texture {
+  constructor(manager: LoadingManager = forumAssetManager) { super(manager); }
+  override load(url: string, rawLoad?: (texture: Texture) => void, onProgress?: (event: ProgressEvent) => void, rawError?: (error: unknown) => void): Texture {
+    // A request that never settles fails at the World asset deadline instead of suspending forever.
+    const { onLoad, onError } = guardForumAssetRequest<Texture>(url, rawLoad, rawError);
     if (typeof createImageBitmap !== 'function') {
       return new TextureLoader(this.manager).setPath(this.path).load(url, texture => {
         const image = texture.image as HTMLImageElement;
         image.decoding = 'async';
-        void (image.decode?.() ?? Promise.resolve()).then(() => { noteForumAssetLoaded(url); onLoad?.(texture); }, onError);
+        void (image.decode?.() ?? Promise.resolve()).then(() => onLoad(texture), onError);
       }, onProgress, onError);
     }
     const texture = new Texture();
@@ -19,8 +22,7 @@ export class ForumTextureLoader extends Loader<Texture> {
       measureForumStartup('texture decoded / assign', () => {
         texture.image = bitmap; texture.flipY = false; texture.needsUpdate = true;
         texture.addEventListener('dispose', () => bitmap.close());
-        noteForumAssetLoaded(url);
-        onLoad?.(texture);
+        onLoad(texture);
       });
     }, onProgress, onError);
     return texture;

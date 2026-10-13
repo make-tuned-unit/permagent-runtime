@@ -3,7 +3,7 @@ import { ForumActivity, ForumCanvasActivity } from './ForumActivity';
 import { ForumLightingPreparation, clearForumLightingPreparation } from './ForumLightingPreparation';
 import { useForumLightingReadiness } from './useForumLightingReadiness';
 import { ForumStageBoundary, ForumStageReady, ForumStageStatus, WORLD_READY_BUDGET_MS, type ForumStageState } from './ForumStageStatus';
-import { clearUnsettledForumAssets } from './forumAssetRetry';
+import { clearUnsettledForumAssets, useForumAssetHealth } from './forumAssetRetry';
 import { useAppNavigationRequests, consumeNavigationRequest } from '../../../lib/appNavigationRequests';
 import { HabitatScene, HabitatLighting, HabitatNavigation } from './HabitatScene';
 import { OrchestratorConversation } from './OrchestratorConversation';
@@ -322,6 +322,16 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
     const timer = window.setTimeout(() => setStageState('slow'), WORLD_READY_BUDGET_MS);
     return () => window.clearTimeout(timer);
   }, [onPanel, pageVisible, stageState, stageAttempt]);
+  // Truthful asset feedback: a request still pending after the ready budget is "still loading";
+  // one that hit the asset deadline has failed and Retry World refetches it.
+  const assetHealth = useForumAssetHealth();
+  const [scenerySlow, setScenerySlow] = useState(false);
+  useEffect(() => {
+    if (assetHealth.pending === 0) { setScenerySlow(false); return; }
+    const timer = window.setTimeout(() => setScenerySlow(true), WORLD_READY_BUDGET_MS);
+    return () => window.clearTimeout(timer);
+  }, [assetHealth.pending > 0]);
+  const sceneryNotice = assetNotice || (assetHealth.timedOut > 0 ? 'The World\u2019s scenery did not load. The walkable garden and agent controls remain available.' : scenerySlow && stageState === 'ready' ? 'Still loading the World\u2019s scenery\u2026' : '');
   const startupStage = useForumStartupStage(active, 4);
   const [habitatReady, setHabitatReady] = useState(false);
   const habitatPrepared = useCallback(() => setHabitatReady(true), []);
@@ -608,7 +618,7 @@ export function ForumView({ visible = true, onNavigate, onOpenGoal, onManageAgen
       {/* First in the lane and never dismissible: an unpaired or refused tab
           otherwise reads as a quiet world (see ForumAuthNotice). */}
       <ForumAuthNotice compact={compact} />
-      {assetNotice && <div className="habitat-asset-alert" role="status">{assetNotice}</div>}
+      {sceneryNotice && stageState !== 'failed' && <div className="habitat-asset-alert" role="status">{sceneryNotice}{(assetNotice || assetHealth.timedOut > 0) && <> <Button colors={colors} flashSuccess={false} onClick={retryStage}>Retry World</Button></>}</div>}
       {!cards.isDismissed('brand') && <header className="forum-brand"><DismissCard label="the world title" onDismiss={()=>cards.dismiss('brand')} /><div><div className="eyebrow">{compact ? 'PERMAGENT / WORLD' : 'WORLD / SOLAR FORUM'}</div><h1 style={typeRamp.display}>The Solar Forum</h1><p>Living forum · <span data-testid="forum-appearance">{light.applied ? light.applied === 'night' ? 'Night' : 'Day' : 'Preparing lighting'} / {lighting === 'system' ? 'follows system appearance' : 'World lighting override'}</span></p></div></header>}
       <ForumPlaceRail
         places={places.map(d => ({ id: d.id, name: d.name, subtitle: d.subtitle }))}
