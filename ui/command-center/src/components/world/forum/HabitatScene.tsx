@@ -72,7 +72,7 @@ export function HabitatNavigation({district,focusAgent,overview,overviewRevision
   const initialized=useRef(false);
   const previousView=useRef<{district:ForumDistrict;focusAgent:typeof focusAgent;overview:boolean;overviewRevision:number;conversation:boolean;aspect:number}|null>(null);
   const manuallyFramed=useRef(false);
-  const transition=useRef<{elapsed:number;from:Vector3;to:Vector3;lookFrom:Vector3;lookTo:Vector3;fovFrom:number;fovTo:number}|null>(null);
+  const transition=useRef<{elapsed:number;retargetedAt:number;from:Vector3;to:Vector3;lookFrom:Vector3;lookTo:Vector3;fovFrom:number;fovTo:number}|null>(null);
   useEffect(()=>{
     // Hidden canvases can report 0x0 on workspace leave. Neither that resize nor
     // returning to the workspace is a new camera command. Keep manual framing;
@@ -93,7 +93,11 @@ export function HabitatNavigation({district,focusAgent,overview,overviewRevision
     const lookTo=new Vector3(...(conversation?TABLE_CONVERSATION_CAMERA.target:overview?framing.target:arrival?HABITAT_ARRIVAL.target:archive?[-10,4.65,-20.7]:[at[0],at[1]+1.0,at[2]]) as Point3);
     const fovTo=conversation?TABLE_CONVERSATION_CAMERA.fov:overview?framing.fov:arrival?HABITAT_ARRIVAL.fov:58;
     if(initialized.current&&!reducedMotion&&!keyboardInput.current){
-      transition.current={elapsed:0,from:camera.position.clone(),to,lookFrom:controls.current?.target.clone()??lookTo.clone(),lookTo,fovFrom:camera instanceof PerspectiveCamera?camera.fov:fovTo,fovTo};
+      // A ResizeObserver update refits the destination of the same command.
+      // Start its remaining segment at the current pose, but keep the original
+      // deadline: repeated narrow-shell measurements must not restart travel.
+      const elapsed=changed?0:transition.current?.elapsed??0;
+      transition.current={elapsed,retargetedAt:elapsed,from:camera.position.clone(),to,lookFrom:controls.current?.target.clone()??lookTo.clone(),lookTo,fovFrom:camera instanceof PerspectiveCamera?camera.fov:fovTo,fovTo};
     }else{
       transition.current=null;
       camera.position.copy(to);controls.current?.target.copy(lookTo);
@@ -106,7 +110,9 @@ export function HabitatNavigation({district,focusAgent,overview,overviewRevision
     if(!active)return;
     const travel=transition.current;
     if(travel){
-      travel.elapsed+=Math.min(dt,.05);const t=Math.min(1,travel.elapsed/.85),ease=t*t*(3-2*t);
+      // This is a timed camera command, not a physics integrator. Capping dt
+      // stretched the 0.85 s action over many seconds on slow native frames.
+      travel.elapsed+=dt;const t=Math.min(1,(travel.elapsed-travel.retargetedAt)/(.85-travel.retargetedAt)),ease=t*t*(3-2*t);
       camera.position.lerpVectors(travel.from,travel.to,ease);controls.current?.target.lerpVectors(travel.lookFrom,travel.lookTo,ease);
       if(camera instanceof PerspectiveCamera){camera.fov=travel.fovFrom+(travel.fovTo-travel.fovFrom)*ease;camera.updateProjectionMatrix();}
       controls.current?.update();if(t===1)transition.current=null;return;
