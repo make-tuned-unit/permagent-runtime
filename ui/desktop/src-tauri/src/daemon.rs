@@ -26,14 +26,18 @@
 //! `~/.permagent/logs/daemon-sidecar.log` (previous run rotated to `.old`)
 //! and the stderr tail is echoed to the app's stderr on failure so a dead
 //! first launch is diagnosable.
+//!
+//! Startup runs on a worker after the main window exists. The frontend boot
+//! screen owns connection status and its deadline, independently of these waits.
 
 use std::collections::VecDeque;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
-use tauri::Manager;
+use tauri::Emitter;
 use tauri_plugin_shell::process::{CommandChild, CommandEvent, TerminatedPayload};
 use tauri_plugin_shell::ShellExt;
 
@@ -52,6 +56,11 @@ const SPAWNED_WAIT_SECS: u64 = 20;
 /// Poll interval for both waits.
 const POLL_STEP_MS: u64 = 100;
 
+/// Bound each token request well below the frontend's 10 s boot deadline.
+const TOKEN_WAIT_MS: u64 = 1_000;
+const TOKEN_NOT_READY: &str =
+    "Daemon token not yet available; the background service may still be starting. Retry shortly.";
+
 /// stderr lines kept in memory for the failure diagnostics.
 const STDERR_TAIL_LINES: usize = 30;
 
@@ -69,8 +78,8 @@ static DAEMON_CHILD: Mutex<Option<CommandChild>> = Mutex::new(None);
 /// [`supervise_sidecar`].
 static SPAWN_ATTEMPTED: AtomicBool = AtomicBool::new(false);
 
-/// Set by [`stop_daemon`] so the supervisor can tell "the app is quitting"
-/// from "the daemon fell over" and not fight app shutdown by respawning.
+/// Set by [`stop_daemon`] so startup and supervision stop on app exit. The
+/// child mutex serializes spawn/publication with shutdown taking the child.
 static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
 
 /// How often the supervisor checks whether the child is still alive.
@@ -102,10 +111,29 @@ enum PollOutcome {
     TimedOut,
 }
 
+/// Queue startup after the window exists (RunEvent::Ready). All health waits,
+/// sidecar setup and process spawning stay off the AppKit/event-loop thread.
+pub fn start_daemon(app: &tauri::AppHandle) {
+    let handle = app.clone();
+    if let Err(error) = std::thread::Builder::new()
+        .name("permagent-daemon-startup".into())
+        .spawn(move || {
+            if let Err(error) = start_daemon_blocking(&handle) {
+                surface_daemon_failure(&handle, &format!("backend startup failed: {error}"));
+            }
+        })
+    {
+        surface_daemon_failure(app, &format!("could not start backend worker: {error}"));
+    }
+}
+
 /// Ensure a daemon is available: prefer an existing one, else launchd's, else
 /// spawn the bundled sidecar. Never returns `Err` for a missing/unhealthy
 /// daemon — the app must still open so the failure is visible and diagnosable.
-pub fn start_daemon(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
+fn start_daemon_blocking(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
+    if SHUTTING_DOWN.load(Ordering::SeqCst) {
+        return Ok(());
+    }
     if crate::runtime_target::target().review {
         // Review daemons are launched explicitly with a fresh Paths root by the
         // coordinator. Never consult production launchd or spawn a bundled fallback.
@@ -143,6 +171,9 @@ pub fn start_daemon(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Er
                 supervise_sidecar(app.clone(), spawned);
             }
             PollOutcome::Aborted => {
+                if SHUTTING_DOWN.load(Ordering::SeqCst) {
+                    return Ok(());
+                }
                 eprintln!(
                     "[permagent-app] ERROR: spawned daemon exited before becoming healthy; stderr tail:"
                 );
@@ -158,8 +189,7 @@ pub fn start_daemon(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Er
                 );
                 dump_stderr_tail(&spawned);
                 // Leave the child running — first boots can be slow and the
-                // frontend keeps retrying; the title is corrected too late in
-                // that case, but honesty beats a silent hang.
+                // frontend can retry. Its boot screen owns the visible state.
                 surface_daemon_failure(
                     app,
                     "backend slow to start (see ~/.permagent/logs/daemon-sidecar.log)",
@@ -266,12 +296,11 @@ fn supervise_sidecar(app: tauri::AppHandle, spawned: SpawnedDaemon) {
 /// bounded grace period and a SIGKILL backstop. No-op when the daemon is
 /// launchd/user-managed (we never stored a child).
 pub fn stop_daemon(_app: &tauri::AppHandle) {
+    // Also cancel a review-mode wait; review still never owns a child.
+    SHUTTING_DOWN.store(true, Ordering::SeqCst);
     if crate::runtime_target::target().review {
         return;
     }
-    // Tell the supervisor this exit is intentional before we signal the child,
-    // or it would race us and start a replacement as the app quits.
-    SHUTTING_DOWN.store(true, Ordering::SeqCst);
     let child = DAEMON_CHILD.lock().unwrap().take();
     let Some(child) = child else {
         return;
@@ -320,6 +349,13 @@ fn spawn_sidecar(app: &tauri::AppHandle) -> Result<SpawnedDaemon, Box<dyn std::e
     // empty one — no other env is needed.
     let config_path = format!("{home}/.permagent/config.yaml");
     let spectral_db = format!("{home}/.permagent/spectral/permagent.db");
+    // Exit can now race initial startup as well as a supervised restart.
+    // Hold the child slot through spawn + publication: either shutdown sees
+    // this child and stops it, or its flag prevents any new spawn.
+    let mut daemon_child = DAEMON_CHILD.lock().unwrap();
+    if SHUTTING_DOWN.load(Ordering::SeqCst) {
+        return Err("app is shutting down".into());
+    }
     let (mut rx, child) = app
         .shell()
         .sidecar("permagentd")?
@@ -329,7 +365,8 @@ fn spawn_sidecar(app: &tauri::AppHandle) -> Result<SpawnedDaemon, Box<dyn std::e
         .spawn()?;
 
     let pid = child.pid();
-    *DAEMON_CHILD.lock().unwrap() = Some(child);
+    *daemon_child = Some(child);
+    drop(daemon_child);
     eprintln!(
         "[permagent-app] spawned bundled permagentd (pid {pid}); log: {}",
         log_path.display()
@@ -345,7 +382,7 @@ fn spawn_sidecar(app: &tauri::AppHandle) -> Result<SpawnedDaemon, Box<dyn std::e
     let tail_writer = stderr_tail.clone();
 
     // Reader task: runs on the Tokio pool, so it keeps draining while
-    // `start_daemon` blocks the main thread polling for health.
+    // the startup worker polls for health.
     tauri::async_runtime::spawn(async move {
         while let Some(event) = rx.recv().await {
             match event {
@@ -366,9 +403,14 @@ fn spawn_sidecar(app: &tauri::AppHandle) -> Result<SpawnedDaemon, Box<dyn std::e
                     let status = format_termination(&payload);
                     let _ = writeln!(log_file, "--- permagentd {status} ---");
                     eprintln!("[permagent-app] spawned daemon {status}");
-                    exited_writer.store(true, Ordering::SeqCst);
                     // Don't SIGTERM a dead pid on app exit.
-                    *DAEMON_CHILD.lock().unwrap() = None;
+                    let mut daemon_child = DAEMON_CHILD.lock().unwrap();
+                    if daemon_child.as_ref().map(|child| child.pid()) == Some(pid) {
+                        *daemon_child = None;
+                    }
+                    // Publish the exit only after clearing this child's slot,
+                    // so the supervisor cannot have its replacement erased.
+                    exited_writer.store(true, Ordering::SeqCst);
                     break;
                 }
                 _ => {}
@@ -389,7 +431,7 @@ fn wait_for_spawned(spawned: &SpawnedDaemon) -> PollOutcome {
     let outcome = poll_until(
         SPAWNED_WAIT_SECS,
         is_daemon_running,
-        move || exited.load(Ordering::SeqCst),
+        move || SHUTTING_DOWN.load(Ordering::SeqCst) || exited.load(Ordering::SeqCst),
         POLL_STEP_MS,
     );
     if outcome == PollOutcome::Healthy {
@@ -402,12 +444,18 @@ fn wait_for_spawned(spawned: &SpawnedDaemon) -> PollOutcome {
 /// whether it became healthy (the historical `wait_for_daemon`, with the
 /// result now reported instead of swallowed).
 fn wait_for_daemon(timeout_secs: u64) -> bool {
-    match poll_until(timeout_secs, is_daemon_running, || false, POLL_STEP_MS) {
+    match poll_until(
+        timeout_secs,
+        is_daemon_running,
+        || SHUTTING_DOWN.load(Ordering::SeqCst),
+        POLL_STEP_MS,
+    ) {
         PollOutcome::Healthy => {
             eprintln!("[permagent-app] daemon ready");
             true
         }
-        _ => {
+        PollOutcome::Aborted => false,
+        PollOutcome::TimedOut => {
             eprintln!(
                 "[permagent-app] WARNING: daemon did not become ready within {timeout_secs}s"
             );
@@ -499,39 +547,64 @@ fn dump_stderr_tail(spawned: &SpawnedDaemon) {
     );
 }
 
-/// Honest failure surface: the shell drives no in-app UI, so put the state
-/// where the user will see it — the window title — alongside the stderr
-/// diagnostics. The SPA keeps retrying and takes over normally if the daemon
-/// shows up late.
+/// Preserve diagnostics without competing with the frontend boot/retry UI.
+/// The event carries a detail string for frontend listeners; it is best-effort
+/// (a webview may not be listening yet), so stderr remains the fallback report.
 fn surface_daemon_failure(app: &tauri::AppHandle, detail: &str) {
+    if SHUTTING_DOWN.load(Ordering::SeqCst) {
+        return;
+    }
     eprintln!("[permagent-app] ERROR: {detail}");
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.set_title(&format!("Permagent — {detail}"));
-        // `set_title` rebuilds the titlebar container and snaps the traffic
-        // lights back to AppKit's (9, 9) — permanently (tauri#13044, measured
-        // by the A1a spike). Without this, a daemon hiccup leaves the window
-        // controls sitting outside the sidebar's titlebar band for the rest of
-        // the session. See chrome.rs.
-        crate::chrome::ensure_inset(&window);
+    if let Err(error) = app.emit("daemon-failure", detail) {
+        eprintln!("[permagent-app] could not emit backend failure: {error}");
     }
 }
 
 /// Read the daemon Bearer token from ~/.permagent/secrets/daemon_token.json.
-/// Returns the token string if available, or an error message.
+/// A fresh sidecar may still be creating it now that the window opens first.
+/// Wait briefly on the blocking pool, never on the UI/async executor thread.
 #[tauri::command]
 pub async fn get_daemon_token() -> Result<String, String> {
-    read_daemon_token()
+    tauri::async_runtime::spawn_blocking(|| {
+        wait_for_daemon_token(
+            &crate::runtime_target::target().token_path(),
+            Duration::from_millis(TOKEN_WAIT_MS),
+        )
+    })
+    .await
+    .map_err(|error| format!("Daemon token lookup failed: {error}"))?
 }
 
-/// Synchronous core of [`get_daemon_token`] — also used by the supervised-
-/// session tee (`terminal.rs`), which runs on a plain thread.
+/// Immediate read for native callers such as the supervised-session tee.
 pub fn read_daemon_token() -> Result<String, String> {
-    let token_path = crate::runtime_target::target().token_path();
+    wait_for_daemon_token(
+        &crate::runtime_target::target().token_path(),
+        Duration::ZERO,
+    )
+}
 
-    let content = std::fs::read_to_string(&token_path)
-        .map_err(|e| format!("Failed to read daemon token: {}", e))?;
-
-    parse_daemon_token(&content)
+fn wait_for_daemon_token(token_path: &Path, timeout: Duration) -> Result<String, String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match std::fs::read_to_string(token_path) {
+            Ok(content) => return parse_daemon_token(&content),
+            // The daemon publishes this file atomically. Only absence is a
+            // startup race; permission/parse errors keep their diagnostics.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if SHUTTING_DOWN.load(Ordering::SeqCst) {
+                    return Err("Daemon token unavailable: app is shutting down".into());
+                }
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    // Keep Result<String, String> for existing IPC callers;
+                    // the frontend clears failed lookups and retries later.
+                    return Err(TOKEN_NOT_READY.into());
+                }
+                std::thread::sleep(remaining.min(Duration::from_millis(POLL_STEP_MS)));
+            }
+            Err(error) => return Err(format!("Failed to read daemon token: {error}")),
+        }
+    }
 }
 
 /// Extract the `token` field from daemon_token.json content.
@@ -597,6 +670,85 @@ mod tests {
             .unwrap_err()
             .contains("missing 'token'"));
         assert!(parse_daemon_token("not json").is_err());
+    }
+
+    fn token_test_dir() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("permagent-token-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn token_available_without_waiting() {
+        let dir = token_test_dir();
+        let path = dir.join("daemon_token.json");
+        std::fs::write(&path, r#"{"token":"already-ready"}"#).unwrap();
+
+        assert_eq!(
+            wait_for_daemon_token(&path, Duration::ZERO).unwrap(),
+            "already-ready"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn token_created_after_request_is_picked_up() {
+        let dir = token_test_dir();
+        let path = dir.join("daemon_token.json");
+        // The shell is already accepting IPC while the daemon initializes.
+        assert_eq!(
+            wait_for_daemon_token(&path, Duration::ZERO).unwrap_err(),
+            TOKEN_NOT_READY
+        );
+        let writer_path = path.clone();
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            let staged = writer_path.with_extension("tmp");
+            std::fs::write(&staged, r#"{"token":"fresh-sidecar"}"#).unwrap();
+            std::fs::rename(staged, writer_path).unwrap();
+        });
+
+        let result = wait_for_daemon_token(&path, Duration::from_secs(2));
+        writer.join().unwrap();
+        assert_eq!(result.unwrap(), "fresh-sidecar");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn missing_token_times_out_with_retryable_message_and_can_recover() {
+        let dir = token_test_dir();
+        let path = dir.join("daemon_token.json");
+        let started = Instant::now();
+        let timeout = Duration::from_millis(20);
+        assert_eq!(
+            wait_for_daemon_token(&path, timeout).unwrap_err(),
+            TOKEN_NOT_READY
+        );
+        assert!(started.elapsed() >= timeout);
+
+        // A timed-out request must not cache a permanent token failure.
+        std::fs::write(&path, r#"{"token":"late-daemon"}"#).unwrap();
+        assert_eq!(
+            wait_for_daemon_token(&path, Duration::ZERO).unwrap(),
+            "late-daemon"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn invalid_token_and_io_errors_are_not_reported_as_pending() {
+        let dir = token_test_dir();
+        let path = dir.join("daemon_token.json");
+        std::fs::write(&path, "invalid JSON").unwrap();
+        assert!(wait_for_daemon_token(&path, Duration::ZERO)
+            .unwrap_err()
+            .contains("Failed to parse daemon token"));
+
+        // A directory is an I/O error, distinct from a missing startup token.
+        assert!(wait_for_daemon_token(&dir, Duration::ZERO)
+            .unwrap_err()
+            .contains("Failed to read daemon token"));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

@@ -411,7 +411,6 @@ fn main() {
                 chrome::make_window_transparent(&main);
             }
             runtime_target::initialize(&app.config().identifier).map_err(std::io::Error::other)?;
-            daemon::start_daemon(app.handle())?;
             // Auto-update check (#326/#378): on launch, ask the hosted manifest
             // if a newer signed build exists. Non-blocking, failure-tolerant —
             // an offline or manifest-less launch is a no-op, never a crash.
@@ -434,6 +433,13 @@ fn main() {
             // Media capture is enabled per-window via enable_media_capture_cmd,
             // called from JS on mount. NOT done here — the WKWebView is not
             // fully initialized during did_finish_launching.
+
+            // Let the frontend paint its boot screen immediately. Daemon
+            // startup is queued on a worker from RunEvent::Ready, after setup
+            // returns, so its 10/20 s health waits never hold up this window.
+            if let Some(main) = app.get_webview_window("main") {
+                main.show()?;
+            }
             Ok(())
         });
 
@@ -443,6 +449,9 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("error while running Permagent")
         .run(|app_handle, event| {
+            if let tauri::RunEvent::Ready = event {
+                daemon::start_daemon(app_handle);
+            }
             // Kill the spawned daemon sidecar (if any) when the APP exits —
             // not when the main window closes (the chat window may still be
             // open and using it). tauri-plugin-shell's own Exit hook only
