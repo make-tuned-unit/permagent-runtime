@@ -155,6 +155,63 @@ def fresh_root_check():
             raise RuntimeError('prepare requires fresh state (only native logs/ui-heartbeat is permitted)')
 
 
+def resume_root_check(requested):
+    """Staging-only resume gate: accept only the exact canonical owned root, no wipe.
+
+    Returns a one-line summary. Never reads secrets; refuses symlinks, anything
+    outside TARGET/record-qa-runtime, production paths and a root with a live daemon.
+    """
+    text = str(requested)
+    if not os.path.isabs(text) or os.path.normpath(text) != text:
+        raise RuntimeError('--resume-root must be an absolute normalised path')
+    path = Path(text)
+    if path != ROOT or ROOT != TARGET / 'record-qa-runtime':
+        raise RuntimeError(f'--resume-root accepts only the canonical owned staging root: {ROOT}')
+    home = Path.home()
+    for forbidden in (home / '.permagent', Path('/Applications')):
+        if forbidden == path or forbidden in path.parents or path in forbidden.parents:
+            raise RuntimeError('--resume-root may never point at a production location')
+    if '.permagent' in path.parts or path == home:
+        raise RuntimeError('--resume-root may never point at a production location')
+    probe = Path(path.anchor)
+    for part in path.parts[1:]:
+        probe = probe / part
+        if probe.is_symlink():
+            raise RuntimeError(f'--resume-root path component is a symlink: {probe}')
+    if not path.is_dir() or path.resolve() != path:
+        raise RuntimeError('--resume-root must be an existing canonical directory')
+    if path.stat().st_mode & 0o077:
+        raise RuntimeError('--resume-root must be private (0700)')
+    if ACTIVE.exists() or ACTIVE.is_symlink() or STOP.exists() or STOP.is_symlink():
+        raise RuntimeError('--resume-root refused: an owned runner/stop marker remains')
+    # The blank runner records daemonPid/supervisorPid in an evidence file; an
+    # unfinished record whose pid is alive means a daemon still owns this root.
+    for evidence in sorted(path.glob('blank-native-daemon-*.json')):
+        try:
+            record = json.loads(evidence.read_text())
+        except (OSError, ValueError):
+            continue
+        if record.get('finishedUtc'):
+            continue
+        for key in ('daemonPid', 'supervisorPid'):
+            pid = record.get(key)
+            if isinstance(pid, int) and pid != os.getpid():
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    continue
+                except PermissionError:
+                    pass
+                raise RuntimeError(f'--resume-root refused: {key} {pid} from {evidence.name} is still alive')
+    port_free()
+    names = sorted(entry.name for entry in path.iterdir())
+    return (f'resuming existing staging profile at {path}: {len(names)} top-level entries '
+            f'(config.yaml={"yes" if "config.yaml" in names else "no"}, '
+            f'secrets={"yes" if "secrets" in names else "no"}, '
+            f'spectral={"yes" if "spectral" in names else "no"}, '
+            f'previous runs={len(list(path.glob("blank-native-daemon-*.json")))})')
+
+
 def reviewed_artifacts(binary_path, binary_sha, whisper_path):
     binary = artifact(binary_path, binary_sha)
     if Path(binary['path']) != DEBUG / 'permagentd' or not os.access(binary['path'], os.X_OK):

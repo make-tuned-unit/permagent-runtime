@@ -88,7 +88,18 @@ def reviewed_artifacts(expected_sha: str) -> dict:
     return {'binary': binary, 'libraries': [isolated.artifact(path) for path in libraries]}
 
 
-def fresh_root() -> tuple[Path, Path]:
+def fresh_root(resume_root: str | None = None) -> tuple[Path, Path]:
+    if resume_root is not None:
+        # Explicit staging-only resume: validate, print, never wipe or recreate.
+        summary = isolated.resume_root_check(resume_root)
+        root = isolated.ROOT
+        print(json.dumps({'resumeRoot': str(root), 'summary': summary}), flush=True)
+        home = root / 'home'
+        logs = root / 'logs'
+        for needed in (home, logs):
+            if needed.is_symlink() or not needed.is_dir() or needed.stat().st_mode & 0o077:
+                raise RuntimeError(f'Resumed root needs a private canonical {needed.name} directory')
+        return root, home
     root = isolated.ROOT
     if root != isolated.TARGET / 'record-qa-runtime' or root.name != 'record-qa-runtime':
         raise RuntimeError('Unexpected native review root')
@@ -179,6 +190,9 @@ def main() -> int:
     parser.add_argument('--max-seconds', type=int, default=1800, help='Supervisor lifetime, 1..3600 seconds')
     parser.add_argument('--use-existing-local-ollama', action='store_true',
                         help='Explicit positive-path review: use an existing localhost:11434 service without starting it or selecting a model')
+    parser.add_argument('--resume-root', metavar='PATH', default=None,
+                        help='Staging-only: reuse the canonical owned record-qa-runtime root (exact path) '
+                             'instead of requiring a fresh one; off by default')
     args = parser.parse_args()
     isolated.set_profile(args.profile)
     if not args.execute:
@@ -189,7 +203,7 @@ def main() -> int:
     selected = reviewed_artifacts(args.sha256)
     require_free_port(PORT)
     require_free_port(OLLAMA_DENIED_PORT)
-    root, home = fresh_root()
+    root, home = fresh_root(args.resume_root)
     check_disks(START_FREE)
     require_free_port(PORT)
     require_free_port(OLLAMA_DENIED_PORT)
@@ -209,6 +223,8 @@ def main() -> int:
         'initialFreeGiB': initial_free,
         'maxSeconds': args.max_seconds,
     }
+    if args.resume_root is not None:
+        report['resumed_root'] = True
     stopped = False
     def stop_signal(_signum, _frame):
         nonlocal stopped
