@@ -45,7 +45,32 @@ pub fn spawn(state: Arc<AppState>) {
     });
 }
 
+/// The close scan only exists for someone who set the finance scanner up.
+/// Without a configured scanner there is nothing to scan and nothing to judge,
+/// and saying so ("no pick tomorrow, set picker_root…") on a profile that never
+/// asked for Finance is noise: no desk announces, no none-pick row is written,
+/// no notification goes out. The check runs before anything else — including the
+/// database — so an unconfigured pass has no side effects at all.
+async fn run_when_configured<F, Fut>(configured: bool, body: F) -> Result<(), String>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<(), String>>,
+{
+    if !configured {
+        tracing::debug!(
+            target: "permagentd::finance",
+            "close scan not run: the finance scanner is not configured"
+        );
+        return Ok(());
+    }
+    body().await
+}
+
 async fn run_once(state: &Arc<AppState>) -> Result<(), String> {
+    run_when_configured(picker::is_configured(), || run_scan_pass(state)).await
+}
+
+async fn run_scan_pass(state: &Arc<AppState>) -> Result<(), String> {
     let pool = state
         .session_manager()
         .pool_clone()
@@ -175,6 +200,47 @@ fn emit_pick(pick: &DailyPick) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// F1 (native smoke 2026-10-12): a blank profile got a Financier
+    /// notification ("no pick tomorrow… set picker_root… No pick invented.").
+    /// Unconfigured means the pass never starts: the body (which announces,
+    /// writes the none-pick and notifies) is not even entered, and nothing
+    /// reaches the event bus.
+    #[tokio::test]
+    async fn an_unconfigured_scanner_skips_the_pass_without_announcing() {
+        let mut bus = permagent::events::subscribe();
+        let entered = AtomicBool::new(false);
+
+        let result = run_when_configured(false, || async {
+            entered.store(true, Ordering::SeqCst);
+            announce_scan("working");
+            Ok(())
+        })
+        .await;
+
+        assert_eq!(result, Ok(()));
+        assert!(!entered.load(Ordering::SeqCst), "the pass must not start");
+        assert!(
+            matches!(
+                bus.try_recv(),
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+            ),
+            "an unconfigured scanner must emit nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_configured_scanner_runs_the_pass() {
+        let entered = AtomicBool::new(false);
+        let result = run_when_configured(true, || async {
+            entered.store(true, Ordering::SeqCst);
+            Ok(())
+        })
+        .await;
+        assert_eq!(result, Ok(()));
+        assert!(entered.load(Ordering::SeqCst));
+    }
 
     /// D22: one pass, two desks. The scan belongs to the Picker and the
     /// judgement to the Financier, and before this every frame in the pass
