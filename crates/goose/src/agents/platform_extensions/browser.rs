@@ -1191,7 +1191,8 @@ mod annotation_tests {
 mod tests {
     use super::{
         append_capped, format_snapshot, guard_fetch_host, guard_webview_url, host_of,
-        is_private_ip, validate_act_args, validate_content_length, PageSnapshot, SnapshotElement,
+        is_private_ip, parse_control_plane_port, reject_control_plane_on, validate_act_args,
+        validate_content_length, PageSnapshot, SnapshotElement,
         READ_BYTE_CAP,
     };
     use std::net::IpAddr;
