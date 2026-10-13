@@ -2556,6 +2556,20 @@
       "sha256": "32c8cab42ea1d2bbf370c61ff2ed1a5081c6a9c5a6826fc8bc8d32a63222cd75",
       "bytes": 136584,
       "recorded": "2026-10-13T08:45:06-0300"
+    },
+    "installed-permagentd": {
+      "step": "5",
+      "path": "/Applications/Permagent.app/Contents/MacOS/permagentd",
+      "sha256": "ab6342c12960ba447ccf89f2f4eddc512807df463da6c9a04f788715b9415f14",
+      "bytes": 365900480,
+      "recorded": "2026-10-13T08:56:12-0300"
+    },
+    "installed-permagent-app": {
+      "step": "5",
+      "path": "/Applications/Permagent.app/Contents/MacOS/permagent-app",
+      "sha256": "a82a306a27434132a0c7e656f61a292003455c627fb64fd2e4f488400bb5653e",
+      "bytes": 89574832,
+      "recorded": "2026-10-13T08:56:12-0300"
     }
   }
 }
