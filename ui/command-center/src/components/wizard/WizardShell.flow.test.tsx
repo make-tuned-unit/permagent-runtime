@@ -240,8 +240,9 @@ describe('WizardShell', () => {
     m.getOllamaStatus.mockResolvedValue({ reachable: false, installed: [], running: [] });
     await start();
     await submit();
-    await click(radio('local'));
-    expect(text()).toContain("Ollama isn't running on this Mac");
+    expect(radio('local')?.disabled).toBe(true);
+    expect(text()).toContain('Ollama unavailable');
+    expect(text()).toContain("Ollama isn't reachable on this Mac");
     expect((container.querySelector('main form button[type="submit"]') as HTMLButtonElement).disabled).toBe(true);
     expect(m.startOllama).not.toHaveBeenCalled();
   });
@@ -257,7 +258,7 @@ describe('WizardShell', () => {
     expect(text()).toContain('Downloading qwen3:8b');
     await act(async () => { resolvePull(); });
     await flush();
-    expect(m.getOllamaStatus).toHaveBeenCalledTimes(2);
+    expect(m.getOllamaStatus).toHaveBeenCalledTimes(3); // step-level probe + panel + post-download
     expect(container.querySelector('[role="alert"]')?.textContent).toContain('qwen3:8b was not found in Ollama');
     expect(byText('button', 'Download')).toBeTruthy();
     expect((container.querySelector('main form button[type="submit"]') as HTMLButtonElement).disabled).toBe(true);
@@ -265,7 +266,7 @@ describe('WizardShell', () => {
   });
 
   it('local download: confirms installed inventory, then asks for a separate live check', async () => {
-    m.getOllamaStatus.mockResolvedValueOnce(ollamaStatus([])).mockResolvedValueOnce(ollamaStatus(['qwen3:8b']));
+    m.getOllamaStatus.mockResolvedValueOnce(ollamaStatus([])).mockResolvedValueOnce(ollamaStatus([])).mockResolvedValueOnce(ollamaStatus(['qwen3:8b']));
     let resolvePull!: () => void;
     m.pullOllamaModel.mockReturnValue({ promise: new Promise<void>(resolve => { resolvePull = resolve; }), abort: vi.fn() });
     await start();

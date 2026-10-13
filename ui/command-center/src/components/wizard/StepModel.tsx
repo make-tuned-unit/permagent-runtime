@@ -6,7 +6,9 @@ import { recommendModel } from '../../lib/modelTiers';
 import { REFERENCE_HINTS, buildSpec, suggestedManager, type SourceKind } from '../settings/secretSource';
 import { ChoiceCard, FieldLabel, GhostLink, Input, Panel, SecondaryButton, Select, StatusLine } from './atoms';
 import { StepFrame, type StepPrimary } from './StepFrame';
-import { keyProviders, hasLocalRuntime, splitStepLink, LOCAL_RUNTIME_PROVIDER, type KeyProvider, type ProviderEntry } from './providerChoices';
+import { localRuntimeFacts, localRuntimeCard } from './localRuntime';
+import type { OllamaInventory } from './memoryStatus';
+import { keyProviders, splitStepLink, LOCAL_RUNTIME_PROVIDER, type KeyProvider, type ProviderEntry } from './providerChoices';
 import type { ModelChoice } from './wizardDraft';
 import { safeWizardError } from './wizardErrors';
 
@@ -47,6 +49,24 @@ export function StepModel({ initialChoice, onDone }: Props) {
   const [loadError, setLoadError] = useState('');
   const [choice, setChoice] = useState<ModelChoice | null>(initialChoice);
   const [action, setAction] = useState<PanelAction | null>(null);
+  const [ollama, setOllama] = useState<OllamaInventory | null>(null);
+  const [ollamaFailed, setOllamaFailed] = useState(false);
+
+  // The same Ollama read the review step makes, so both steps agree.
+  const readOllama = useCallback(() => api.getOllamaStatus()
+    .then(s => { setOllama({ reachable: s.reachable, installed: s.installed }); setOllamaFailed(false); return s.reachable; })
+    .catch(() => { setOllamaFailed(true); return false; }), []);
+  useEffect(() => { void readOllama(); }, [readOllama]);
+  const [startingOllama, setStartingOllama] = useState(false);
+  const startOllama = async () => {
+    setStartingOllama(true);
+    try { await api.startOllama(); } catch { /* not installed: the re-read below reports it */ }
+    for (let i = 0; i < 8; i += 1) {
+      await new Promise(r => setTimeout(r, 2000));
+      if (await readOllama()) break;
+    }
+    setStartingOllama(false);
+  };
 
   const load = useCallback(() => {
     setLoadError('');
@@ -67,7 +87,9 @@ export function StepModel({ initialChoice, onDone }: Props) {
   useEffect(() => { load(); }, [load]);
 
   const hosted = providers ? keyProviders(providers) : [];
-  const localAvailable = providers ? hasLocalRuntime(providers) : false;
+  const localFacts = localRuntimeFacts({ providers, ollama, checkFailed: ollamaFailed });
+  const localCard = localRuntimeCard(localFacts, !!providers);
+  const localAvailable = localCard.enabled;
 
   const primary: StepPrimary = choice === 'later'
     ? { label: 'Continue without a model' }
@@ -93,7 +115,7 @@ export function StepModel({ initialChoice, onDone }: Props) {
         <ChoiceCard name="model-choice" value="local" checked={choice === 'local'} onSelect={() => setChoice('local')}
           disabled={!localAvailable}
           title="On this Mac" detail="Runs locally through Ollama. Uses this Mac's memory and disk space."
-          status={!providers ? loadError ? 'Availability could not be checked' : 'Checking availability…' : localAvailable ? 'Local runtime available' : 'Not offered by this service'} />
+          status={!providers && loadError ? 'Availability could not be checked' : localCard.status} />
         <ChoiceCard name="model-choice" value="later" checked={choice === 'later'} onSelect={() => setChoice('later')}
           title="Decide later" detail="Look around first. Your agent can't reply until a model is connected." status="Setup is optional" />
       </div>
@@ -101,6 +123,14 @@ export function StepModel({ initialChoice, onDone }: Props) {
       <div data-testid="model-load-status" style={{ minHeight: space.huge * 2 }}>
         {!providers && !loadError && (
           <StatusLine tone="info">Loading available providers…</StatusLine>
+        )}
+        {providers && localFacts.offered && !localAvailable && (ollamaFailed || ollama !== null) && (
+          <StatusLine tone="warn">
+            Ollama isn't reachable on this Mac, so "On this Mac" is off until it is.{' '}
+            <SecondaryButton onClick={startOllama} disabled={startingOllama}>{startingOllama ? 'Starting…' : 'Start Ollama'}</SecondaryButton>{' '}
+            <GhostLink onClick={() => { void readOllama(); }}>Check again</GhostLink>{' '}
+            <GhostLink onClick={() => { window.open('https://ollama.com/download', '_blank', 'noopener,noreferrer'); }}>Get Ollama ↗</GhostLink>
+          </StatusLine>
         )}
         {loadError && (
           <StatusLine tone="error">

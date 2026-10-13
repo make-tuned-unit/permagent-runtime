@@ -1541,7 +1541,7 @@ exports[`DOM Wizard model ready 1024x640 dark 1`] = `
                 <span
                   style="font-size: 12px; color: rgb(138, 148, 166); min-height: 2.9em; line-height: 1.45; margin-top: 6px;"
                 >
-                  Local runtime available
+                  Ollama ready · models installed
                 </span>
               </span>
             </label>
@@ -1705,7 +1705,7 @@ exports[`DOM Wizard model ready 1024x640 silver 1`] = `
                 <span
                   style="font-size: 12px; color: rgb(75, 85, 99); min-height: 2.9em; line-height: 1.45; margin-top: 6px;"
                 >
-                  Local runtime available
+                  Ollama ready · models installed
                 </span>
               </span>
             </label>
@@ -1869,7 +1869,7 @@ exports[`DOM Wizard model ready 1280x800 dark 1`] = `
                 <span
                   style="font-size: 12px; color: rgb(138, 148, 166); min-height: 2.9em; line-height: 1.45; margin-top: 6px;"
                 >
-                  Local runtime available
+                  Ollama ready · models installed
                 </span>
               </span>
             </label>
@@ -2033,7 +2033,7 @@ exports[`DOM Wizard model ready 1280x800 silver 1`] = `
                 <span
                   style="font-size: 12px; color: rgb(75, 85, 99); min-height: 2.9em; line-height: 1.45; margin-top: 6px;"
                 >
-                  Local runtime available
+                  Ollama ready · models installed
                 </span>
               </span>
             </label>

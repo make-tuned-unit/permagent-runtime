@@ -18,7 +18,7 @@ beforeEach(() => {
   reads.getProviders.mockReturnValue(new Promise((resolve, reject) => { finish = resolve; fail = reject; }));
   reads.getConfig.mockResolvedValue({ config: {} });
   reads.getLibrarianSchedule.mockResolvedValue({ enabled: false, model: '' });
-  reads.getOllamaStatus.mockResolvedValue({ reachable: false, installed: [], running: [] });
+  reads.getOllamaStatus.mockResolvedValue({ reachable: true, installed: [{ name: 'm', size: 1 }], running: [] });
   reads.readSecretConfig.mockResolvedValue(null);
   host = document.createElement('div'); document.body.append(host); root = createRoot(host);
 });
