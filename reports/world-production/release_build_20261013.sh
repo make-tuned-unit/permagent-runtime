@@ -90,7 +90,9 @@ macho_files() { find "$1" -type f -exec sh -c 'for f; do file -b "$f" | grep -q 
 
 # Hash of __TEXT,__text only: stable across install_name_tool and re-signing, so it shows the
 # bundled executable is the reviewed build even though its whole-file sha256 must differ.
-text_sha() { otool -s __TEXT __text "$1" | shasum -a 256 | awk '{print $1}'; }
+# __TEXT,__text bytes only: `otool -s` prints the file path on its first line, so it never matches
+# across two paths; segedit extracts the raw section.
+text_sha() { local t; t=$(mktemp); segedit "$1" -extract __TEXT __text "$t" >/dev/null 2>&1 || { rm -f "$t"; echo "segedit-failed-$RANDOM"; return; }; shasum -a 256 "$t" | awk '{print $1}'; rm -f "$t"; }
 
 case "$STEP" in
 # ---------------------------------------------------------------------------------------------
@@ -211,11 +213,13 @@ PY
 # ---------------------------------------------------------------------------------------------
 3) # TAURI RELEASE BUILD, updater artefacts off, Developer ID signing. Only the .app is built
    # (--bundles app): the dmg step drives Finder via AppleScript, is not installed, and is not wanted.
-  cd "$LANE"
+  # tauri.conf.json's beforeBuildCommand is `cd ../command-center && npm run build`, so the
+  # build must run from ui/desktop (as run_guarded_native.py does); the launcher inherits cwd.
+  cd "$LANE/ui/desktop"
   ID=$(identity_name); [ -n "$ID" ] || die "no Developer ID Application identity"
   export APPLE_SIGNING_IDENTITY="$ID"
   # APPLE_SIGNING_IDENTITY is inherited by the launcher child (it copies os.environ).
-  via_launcher node ui/command-center/node_modules/@tauri-apps/cli/tauri.js build \
+  via_launcher node ../command-center/node_modules/@tauri-apps/cli/tauri.js build \
     --bundles app --config '{"bundle":{"createUpdaterArtifacts":false}}' \
     || { note "tauri build did not finish (exit $?). If it hit the 1h kill, run 3a again then 3"; exit 75; }
   [ -d "$BUNDLE" ] || die "bundle not found at $BUNDLE"
@@ -224,7 +228,7 @@ PY
   # so check every Mach-O and fix up only the ones that are not Developer ID signed.
   bad=()
   while IFS= read -r f; do
-    codesign -dvv "$f" 2>&1 | grep -q 'Authority=Developer ID Application' || bad+=("$f")
+    codesign -dvv "$f" 2>&1 | grep 'Authority=Developer ID Application' >/dev/null || bad+=("$f")
   done < <(macho_files "$BUNDLE")
   if [ "${#bad[@]}" -gt 0 ]; then
     note "Mach-O files NOT Developer-ID signed after the Tauri step (${#bad[@]}):"; printf '  %s\n' "${bad[@]}"
@@ -251,7 +255,7 @@ PY
   n=0
   while IFS= read -r f; do
     codesign --verify --strict "$f" 2>/dev/null || die "strict verify failed: $f"
-    codesign -dvv "$f" 2>&1 | grep -q 'Authority=Developer ID Application' || die "not Developer ID signed: $f"
+    codesign -dvv "$f" 2>&1 | grep 'Authority=Developer ID Application' >/dev/null || die "not Developer ID signed: $f"
     n=$((n+1))
   done < <(macho_files "$BUNDLE")
   note "$n Mach-O files, all Developer ID signed and strict-valid"
