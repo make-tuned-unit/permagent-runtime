@@ -1,5 +1,5 @@
 import { type CSSProperties } from 'react';
-import { font, radius, textSize } from '../../styles/tokens';
+import { font, radius, space, textSize } from '../../styles/tokens';
 import type { ThemeColors } from '../../styles/tokens';
 import { Button } from '../common/Button';
 import { CHROME_GEOM, chromeBareVars } from './browserChrome';
@@ -20,13 +20,13 @@ export function QuickStartHint({ template, colors, onFocusAddress }: {
 }) {
   if (!template) {
     return (
-      <p data-testid="browser-quickstart-hint" className="mt-6 text-xs" style={{ fontFamily: font.body, color: colors.textMuted }}>
+      <p data-testid="browser-quickstart-hint" className="text-xs" style={{ fontFamily: font.body, color: colors.textMuted, maxWidth: '100%', overflowWrap: 'anywhere', margin: 0 }}>
         Enter a URL, or set a search template in Settings to search from the address bar.
       </p>
     );
   }
   return (
-    <div className="mt-6 flex flex-wrap gap-2 justify-center">
+    <div className="flex flex-wrap justify-center" style={{ gap: space.md, maxWidth: '100%' }}>
       <Button
         colors={colors}
         variant="bare"

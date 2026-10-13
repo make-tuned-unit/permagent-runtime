@@ -28,3 +28,18 @@ it('offers the user-set template, and only that, when one exists', async () => {
   act(() => button.click());
   expect(focus).toHaveBeenCalledOnce();
 });
+
+it('stacks and wraps inside a narrow (1024x640 pane) container instead of overflowing', async () => {
+  Object.defineProperty(window, 'innerWidth', { value: 1024, configurable: true });
+  Object.defineProperty(window, 'innerHeight', { value: 640, configurable: true });
+  await render('https://search.example/?q=%s');
+  const row = host.firstElementChild as HTMLElement;
+  expect(row.className).toContain('flex-wrap');
+  expect(row.style.maxWidth).toBe('100%');
+  expect(row.className).not.toMatch(/\bmt-\d/);
+  await render(null);
+  const hint = host.querySelector('[data-testid="browser-quickstart-hint"]') as HTMLElement;
+  expect(hint.style.overflowWrap).toBe('anywhere');
+  expect(hint.style.maxWidth).toBe('100%');
+  expect(hint.className).not.toMatch(/\bmt-\d/);
+});

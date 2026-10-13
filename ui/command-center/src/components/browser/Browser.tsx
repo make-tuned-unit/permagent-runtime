@@ -2,7 +2,7 @@ import { useState, useCallback, useRef, useEffect, useImperativeHandle, forwardR
 import { useCommandCenter } from '../../lib/store';
 import { QuickStartHint } from './QuickStartHint';
 import { SEARCH_TEMPLATE_KEY, getSearchTemplate, resolveAddress } from './addressInput';
-import { concentric, duration, ease, font, radius, textSize } from '../../styles/tokens';
+import { concentric, duration, ease, font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { useGlass } from '../common/Glass';
@@ -1442,11 +1442,13 @@ export const Browser = forwardRef<{ getActiveTab: () => BrowserTab }, BrowserPro
             </div>
           </div>
         ) : !activeTab?.webviewId ? (
-          <div className="flex items-center justify-center h-full">
-            <div className="text-center p-8">
-              <FiGlobe size={48} className="mx-auto mb-4" style={{ color: colors.cyan, opacity: 0.3 }} />
-              <h3 className="text-sm mb-2" style={{ fontFamily: font.display, fontWeight: 600, color: colors.text }}>Ready to Browse</h3>
-              <p className="text-xs" style={{ fontFamily: font.body, color: colors.textMuted }}>
+          // Scrolls instead of overlapping when the pane is short (1024x640
+          // leaves ~170px): the content stacks, wraps, and the globe is small.
+          <div data-testid="browser-empty-state" className="h-full overflow-y-auto">
+            <div className="min-h-full flex flex-col items-center justify-center text-center" style={{ padding: space.xxl, gap: space.md }}>
+              <FiGlobe size={28} className="shrink-0" style={{ color: colors.cyan, opacity: 0.3 }} />
+              <h3 className="text-sm" style={{ fontFamily: font.display, fontWeight: 600, color: colors.text }}>Ready to Browse</h3>
+              <p className="text-xs" style={{ fontFamily: font.body, color: colors.textMuted, maxWidth: '100%', overflowWrap: 'anywhere' }}>
                 Enter a URL above or press{' '}
                 <kbd className="px-1.5 py-0.5 rounded text-[10px]" style={{ fontFamily: font.mono, backgroundColor: colors.fillSubtle }}>Cmd+L</kbd> to
                 focus the address bar
