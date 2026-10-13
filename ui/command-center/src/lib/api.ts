@@ -1953,7 +1953,7 @@ export const api = {
     }),
 
   // Config
-  getConfig: () => apiFetch<PermagentConfig>('/config'),
+  getConfig: (signal?: AbortSignal) => apiFetch<PermagentConfig>('/config', signal ? { signal } : undefined),
 
   /** Read-only connection status per integration (`gmail`, `slack`). Reports
    *  whether a token is stored — never the token. The daemon's Gmail connect

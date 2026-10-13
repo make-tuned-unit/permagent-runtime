@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { duration, ease, font, space, textSize } from '../../styles/tokens';
 import { Mobius, type MobiusState } from '../mobius/Mobius';
 import { useTheme } from '../../styles/useTheme';
@@ -17,8 +17,8 @@ interface Props {
   onMalformed: () => void;
 }
 
-/** Same budget the old inline retry loop used: ~10s of polling before this
- *  is an honest failure rather than a transient "still starting" blip. */
+export const BOOT_DEADLINE_MS = 10_000;
+export const BOOT_ATTEMPT_MS = 2_000;
 const MAX_ATTEMPTS = 10;
 const RETRY_DELAY_MS = 1000;
 
@@ -50,39 +50,71 @@ export function BootScreen({ onReady, onMalformed }: Props) {
     return () => cancelAnimationFrame(frame);
   }, []);
 
+  const callbacks = useRef({ onReady, onMalformed });
+  callbacks.current = { onReady, onMalformed };
+  const [remaining, setRemaining] = useState(10);
+
   useEffect(() => {
-    let cancelled = false;
+    const deadline = performance.now() + BOOT_DEADLINE_MS;
+    let finished = false;
+    let current: AbortController | undefined;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let attemptTimer: ReturnType<typeof setTimeout> | undefined;
+    const stop = () => {
+      finished = true;
+      clearTimeout(deadlineTimer);
+      clearInterval(countdown);
+      clearTimeout(retryTimer);
+      clearTimeout(attemptTimer);
+      current?.abort();
+    };
+    const fail = () => { stop(); setRemaining(0); setStatus('failed'); };
+    // Independent of fetch/auth/body parsing: even an implementation that ignores
+    // AbortSignal cannot hold the recovery screen hostage. Only an explicit Retry
+    // starts a new deadline, never a request retry or changed parent callback.
+    const deadlineTimer = setTimeout(fail, BOOT_DEADLINE_MS);
+    const countdown = setInterval(() => {
+      setRemaining(Math.max(0, Math.ceil((deadline - performance.now()) / 1000)));
+    }, 250);
     setStatus('connecting');
     setAttempt(0);
+    setRemaining(10);
 
-    (async () => {
-      for (let n = 1; n <= MAX_ATTEMPTS; n += 1) {
-        if (cancelled) return;
-        setAttempt(n);
-        setStatus(n === 1 ? 'connecting' : 'retrying');
-        try {
-          const config: unknown = await api.getConfig();
-          if (cancelled) return;
-          const route = classifyStartupConfig(config);
-          if (route === 'malformed') onMalformed();
-          else onReady(route);
-          return;
-        } catch (e) {
-          // No credential (or a dead pairing link): retrying cannot help, and
-          // ten seconds of "still connecting" for a browser that was never
-          // paired is a lie. Say it now (QA 2026-10-07 Q1/Q24).
-          if ((e as { status?: number })?.status === 401 && getDaemonTokenError()) {
-            if (!cancelled) setStatus('unpaired');
-            return;
-          }
-          if (n < MAX_ATTEMPTS) await new Promise(r => setTimeout(r, RETRY_DELAY_MS));
+    const connect = async (n: number) => {
+      if (finished) return;
+      const left = deadline - performance.now();
+      if (left <= 0) { fail(); return; }
+      setAttempt(n);
+      setStatus(n === 1 ? 'connecting' : 'retrying');
+      current = new AbortController();
+      const controller = current;
+      try {
+        const config = await Promise.race([
+          api.getConfig(controller.signal),
+          new Promise<never>((_, reject) => {
+            controller.signal.addEventListener('abort', () => reject(new Error('Connection timed out')), { once: true });
+            attemptTimer = setTimeout(() => controller.abort(), Math.min(BOOT_ATTEMPT_MS, left));
+          }),
+        ]);
+        if (finished) return;
+        if (performance.now() >= deadline) { fail(); return; }
+        const route = classifyStartupConfig(config);
+        stop();
+        if (route === 'malformed') callbacks.current.onMalformed();
+        else callbacks.current.onReady(route);
+      } catch (e) {
+        clearTimeout(attemptTimer);
+        if (finished) return;
+        if ((e as { status?: number })?.status === 401 && getDaemonTokenError()) {
+          stop(); setStatus('unpaired'); return;
         }
+        if (n >= MAX_ATTEMPTS || performance.now() >= deadline) { fail(); return; }
+        retryTimer = setTimeout(() => void connect(n + 1), Math.min(RETRY_DELAY_MS, deadline - performance.now()));
       }
-      if (!cancelled) setStatus('failed');
-    })();
-
-    return () => { cancelled = true; };
-  }, [onReady, onMalformed, retryKey]);
+    };
+    void connect(1);
+    return stop;
+  }, [retryKey]);
 
   const copy = status === 'unpaired'
     ? {
@@ -123,7 +155,7 @@ export function BootScreen({ onReady, onMalformed }: Props) {
     >
       <Mobius size={120} state={mobiusState} glow={status === 'failed' || status === 'unpaired' ? 0 : 1} />
       <div style={{ marginTop: space.huge, textAlign: 'center', maxWidth: 320 }}>
-        <p style={{
+        <p role="status" aria-live="polite" style={{
           fontFamily: font.display, fontSize: textSize.body, fontWeight: 600,
           color: colors.text,
         }}>
@@ -137,6 +169,7 @@ export function BootScreen({ onReady, onMalformed }: Props) {
             {copy.sub}
           </p>
         )}
+        {(status === 'connecting' || status === 'retrying') && <p style={{ color: colors.textMuted, marginTop: space.md }}>Connection check: {remaining}s remaining</p>}
         {(status === 'failed' || status === 'unpaired') && (
           <div style={{ marginTop: space.xxl, display: 'flex', justifyContent: 'center' }}>
             <Button colors={colors} variant="primary" onClick={() => setRetryKey(k => k + 1)}>

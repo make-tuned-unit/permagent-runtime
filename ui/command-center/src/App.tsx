@@ -10,7 +10,6 @@ import { WorkspaceRenderer } from './components/workspaces/WorkspaceRenderer';
 import { WorkspaceSaveErrorChip } from './components/workspaces/WorkspaceSaveErrorChip';
 import { ErrorBoundary } from './components/common/ErrorBoundary';
 import { WizardShell } from './components/wizard/WizardShell';
-import { Splash } from './components/splash/Splash';
 import { BootScreen } from './components/splash/BootScreen';
 import { ChatLauncher } from './components/chat/ChatLauncher';
 import { ChatDock } from './components/chat/ChatDock';
@@ -199,7 +198,7 @@ function App() {
     })();
   }, [theme, themePref, gradient.shell]);
 
-  const [phase, setPhase] = useState<'splash' | 'loading' | 'unavailable' | 'wizard' | 'app'>('splash');
+  const [phase, setPhase] = useState<'loading' | 'unavailable' | 'wizard' | 'app'>('loading');
 
   const dictationReadiness = useDictationReadiness(phase === 'app');
   // Transcription only matters when recording; the banner must not nag on every
@@ -323,10 +322,6 @@ function App() {
       unready();
     }
   }, [activeWorkspace, theme]);
-
-  if (phase === 'splash') {
-    return <Splash onDone={() => setPhase('loading')} />;
-  }
 
   if (phase === 'loading') {
     return <BootScreen onReady={onBootReady} onMalformed={onBootMalformed} />;

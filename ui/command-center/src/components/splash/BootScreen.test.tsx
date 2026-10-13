@@ -142,3 +142,45 @@ describe('BootScreen', () => {
     expect(getConfigMock).toHaveBeenCalledTimes(1);
   });
 });
+
+
+describe('absolute startup deadline', () => {
+  it('aborts hung attempts and offers recovery at exactly 10s, ignoring late success', async () => {
+    let answer!: (value: never) => void;
+    getConfigMock.mockImplementation(() => new Promise(resolve => { answer = resolve; }));
+    const onReady = vi.fn();
+    act(() => root.render(<BootScreen onReady={onReady} onMalformed={vi.fn()} />));
+    expect(container.textContent).toContain('10s remaining');
+    await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+    expect(getConfigMock.mock.calls[0][0]?.aborted).toBe(true);
+    await act(async () => { await vi.advanceTimersByTimeAsync(7999); });
+    expect(container.querySelector('button')).toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(container.querySelector('button')?.textContent).toContain('Retry');
+    expect(getConfigMock).toHaveBeenCalledTimes(4);
+    await act(async () => { answer({ config: { wizard_complete: true } } as never); });
+    expect(onReady).not.toHaveBeenCalled();
+  });
+
+  it('changing callbacks cannot renew the deadline, and unmount cancels requests', async () => {
+    getConfigMock.mockReturnValue(new Promise(() => {}));
+    act(() => root.render(<BootScreen onReady={vi.fn()} onMalformed={vi.fn()} />));
+    await act(async () => { await vi.advanceTimersByTimeAsync(9500); });
+    act(() => root.render(<BootScreen onReady={vi.fn()} onMalformed={vi.fn()} />));
+    await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+    expect(container.querySelector('button')?.textContent).toContain('Retry');
+    expect(getConfigMock.mock.calls.every(([signal]) => signal?.aborted)).toBe(true);
+  });
+
+  it('three healthy returning connections have no minimum wait', async () => {
+    getConfigMock.mockResolvedValue({ config: { wizard_complete: true } });
+    for (let i = 0; i < 3; i++) {
+      const onReady = vi.fn();
+      const started = performance.now();
+      act(() => root.render(<BootScreen key={i} onReady={onReady} onMalformed={vi.fn()} />));
+      await flush();
+      expect(onReady).toHaveBeenCalledWith('app');
+      expect(performance.now() - started).toBeLessThan(3000);
+    }
+  });
+});

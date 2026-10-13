@@ -104,7 +104,7 @@ afterEach(() => {
 
 async function enterLoading() {
   act(() => root.render(<App />));
-  act(() => (container.querySelector('[data-testid="splash"]') as HTMLButtonElement).click());
+  // Connection starts on first render, without a mandatory logo delay.
   await act(async () => { await Promise.resolve(); });
 }
 
