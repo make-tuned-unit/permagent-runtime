@@ -293,11 +293,42 @@ final class WatchRelay: NSObject, ObservableObject, WCSessionDelegate {
             if url.lastPathComponent.hasPrefix("watch-injected-") {
                 metadata["injected"] = true
                 metadata["source"] = "injected"
+                // transferFile never arrives between paired simulators, so the
+                // injected clip goes as chunked sendMessageData (65 KB cap).
+                if let data = try? Data(contentsOf: url) {
+                    Self.sendInjected(session, data, metadata: metadata)
+                    transferFinished(id: item.id, kind: item.kind, path: item.path, error: nil)
+                    continue
+                }
             }
             #endif
             session.transferFile(url, metadata: metadata)
         }
     }
+
+    #if DEBUG
+    /// Frame: "PGINJ1" + UInt32 BE header length + JSON header + audio chunk.
+    private nonisolated static func sendInjected(_ session: WCSession, _ data: Data,
+                                                 metadata: [String: Any]) {
+        let chunkSize = 40_000
+        let total = max(1, (data.count + chunkSize - 1) / chunkSize)
+        for index in 0..<total {
+            var header = metadata
+            header["index"] = index
+            header["total"] = total
+            guard let json = try? JSONSerialization.data(withJSONObject: header) else { return }
+            var frame = Data("PGINJ1".utf8)
+            var len = UInt32(json.count).bigEndian
+            frame.append(Data(bytes: &len, count: 4))
+            frame.append(json)
+            frame.append(data.subdata(in: (index * chunkSize)..<min(data.count, (index + 1) * chunkSize)))
+            session.sendMessageData(frame, replyHandler: nil, errorHandler: { @Sendable error in
+                NSLog("permagent-inject: chunk send failed %@", error.localizedDescription)
+            })
+        }
+        NSLog("permagent-inject: sent INJECTED audio as %d message chunk(s), %d bytes", total, data.count)
+    }
+    #endif
 
     private func transferFinished(id: String?, kind: String?, path: String, error: String?) {
         let resolvedId = id ?? queuedRecordings.first(where: { $0.path == path })?.id

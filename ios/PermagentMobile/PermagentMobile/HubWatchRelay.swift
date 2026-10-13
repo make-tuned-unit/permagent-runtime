@@ -72,6 +72,9 @@ final class HubWatchRelay: NSObject, WCSessionDelegate {
     }
 
     nonisolated func session(_ session: WCSession, didReceiveMessageData messageData: Data) {
+        #if DEBUG
+        if Self.acceptInjected(messageData) { return }
+        #endif
         Task { @MainActor in
             _ = await handle(messageData)
         }
@@ -304,6 +307,51 @@ final class HubWatchRelay: NSObject, WCSessionDelegate {
             await processStagedFile(at: file, requestId: parts[0], kind: parts[1])
         }
     }
+
+    #if DEBUG
+    private nonisolated static let injectLock = NSLock()
+    private nonisolated(unsafe) static var injectChunks: [String: [Int: Data]] = [:]
+
+    /// DEBUG-only: the watch hook sends injected audio as chunked messages
+    /// (see WatchRelay.sendInjected). Reassemble, stage like a file transfer.
+    nonisolated private static func acceptInjected(_ message: Data) -> Bool {
+        let magic = Data("PGINJ1".utf8)
+        guard message.count > 10, message.prefix(6) == magic else { return false }
+        let lenBytes = [UInt8](message[6..<10])
+        let hlen = lenBytes.reduce(0) { ($0 << 8) | Int($1) }
+        guard message.count >= 10 + hlen,
+              let header = try? JSONSerialization.jsonObject(with: message[10..<(10 + hlen)]) as? [String: Any],
+              header["injected"] as? Bool == true,
+              let index = header["index"] as? Int, let total = header["total"] as? Int
+        else { return true }
+        let requestId = (header["id"] as? String) ?? UUID().uuidString
+        let kind = (header["kind"] as? String) ?? "note"
+        injectLock.lock()
+        var parts = injectChunks[requestId] ?? [:]
+        parts[index] = message.subdata(in: (10 + hlen)..<message.count)
+        injectChunks[requestId] = parts
+        let complete = parts.count == total
+        if complete { injectChunks[requestId] = nil }
+        injectLock.unlock()
+        guard complete else { return true }
+        var audio = Data()
+        for i in 0..<total { audio.append(parts[i] ?? Data()) }
+        NSLog("permagent-inject: received INJECTED (not real) watch audio id=%@ kind=%@ bytes=%d via sendMessageData",
+              requestId, kind, audio.count)
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("inject-\(UUID().uuidString).wav")
+        do {
+            try audio.write(to: tmp)
+            let dest = try stage(file: tmp, requestId: requestId, kind: kind)
+            try? FileManager.default.removeItem(at: tmp)
+            Task { @MainActor in
+                await shared.processStagedFile(at: dest, requestId: requestId, kind: kind)
+            }
+        } catch {
+            NSLog("permagent-inject: staging failed %@", error.localizedDescription)
+        }
+        return true
+    }
+    #endif
 
     nonisolated private static func stage(file source: URL,
                                           requestId: String,
