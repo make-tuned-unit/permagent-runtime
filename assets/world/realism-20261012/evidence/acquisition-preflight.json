@@ -1,0 +1,333 @@
+{
+  "checked_at_utc": "2026-10-13T01:28:05.177Z",
+  "model": {
+    "endpoint": "fal-ai/nano-banana-pro",
+    "name": "Nano Banana Pro",
+    "base_architecture": "Google Gemini 3 Pro Image",
+    "immutable_provider_version": "Not exposed by endpoint; cannot pin internal weight revision.",
+    "schema_date_utc": "2026-10-13",
+    "input_schema": {
+      "required": [
+        "prompt"
+      ],
+      "type": "object",
+      "x-fal-order-properties": [
+        "prompt",
+        "num_images",
+        "seed",
+        "aspect_ratio",
+        "output_format",
+        "safety_tolerance",
+        "sync_mode",
+        "system_prompt",
+        "resolution",
+        "limit_generations",
+        "enable_web_search"
+      ],
+      "title": "NanoBananaTextToImageInput",
+      "properties": {
+        "seed": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Seed",
+          "description": "The seed for the random number generator."
+        },
+        "aspect_ratio": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "auto",
+                "21:9",
+                "16:9",
+                "3:2",
+                "4:3",
+                "5:4",
+                "1:1",
+                "4:5",
+                "3:4",
+                "2:3",
+                "9:16"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": "1:1",
+          "title": "Aspect Ratio",
+          "description": "The aspect ratio of the generated image."
+        },
+        "limit_generations": {
+          "default": true,
+          "title": "Limit Generations",
+          "type": "boolean",
+          "description": "Experimental parameter to limit the number of generations from each round of prompting to 1. Set to `True` to to disregard any instructions in the prompt regarding the number of images to generate."
+        },
+        "sync_mode": {
+          "default": false,
+          "title": "Sync Mode",
+          "type": "boolean",
+          "description": "If `True`, the media will be returned as a data URI and the output data won't be available in the request history."
+        },
+        "resolution": {
+          "default": "1K",
+          "title": "Resolution",
+          "type": "string",
+          "enum": [
+            "1K",
+            "2K",
+            "4K"
+          ],
+          "description": "The resolution of the image to generate."
+        },
+        "num_images": {
+          "minimum": 1,
+          "default": 1,
+          "title": "Number of Images",
+          "maximum": 4,
+          "type": "integer",
+          "description": "The number of images to generate."
+        },
+        "enable_web_search": {
+          "default": false,
+          "title": "Enable Web Search",
+          "type": "boolean",
+          "description": "Enable web search for the image generation task. This will allow the model to use the latest information from the web to generate the image."
+        },
+        "output_format": {
+          "default": "png",
+          "title": "Output Format",
+          "type": "string",
+          "enum": [
+            "jpeg",
+            "png",
+            "webp"
+          ],
+          "description": "The format of the generated image."
+        },
+        "system_prompt": {
+          "maxLength": 50000,
+          "default": "",
+          "title": "System Prompt",
+          "type": "string",
+          "description": "Optional system instruction that steers the model's persona and output style across the request. Leave blank to omit; when provided, it is sent as the system instruction to Gemini (or as a system message on OpenAI-compatible providers)."
+        },
+        "prompt": {
+          "maxLength": 50000,
+          "type": "string",
+          "title": "Prompt",
+          "examples": [
+            "An action shot of a black lab swimming in an inground suburban swimming pool. The camera is placed meticulously on the water line, dividing the image in half, revealing both the dogs head above water holding a tennis ball in it's mouth, and it's paws paddling underwater."
+          ],
+          "description": "The text prompt to generate an image from.",
+          "minLength": 3
+        },
+        "safety_tolerance": {
+          "default": "4",
+          "title": "Safety Tolerance",
+          "type": "string",
+          "enum": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6"
+          ],
+          "description": "The safety tolerance level for content moderation. 1 is the most strict (blocks most content), 6 is the least strict."
+        }
+      }
+    },
+    "output_schema": {
+      "required": [
+        "images",
+        "description"
+      ],
+      "type": "object",
+      "x-fal-order-properties": [
+        "images",
+        "description"
+      ],
+      "title": "NanoBananaTextToImageOutput",
+      "properties": {
+        "images": {
+          "type": "array",
+          "title": "Images",
+          "examples": [
+            [
+              {
+                "file_name": "nano-banana-pro-t2i-output.png",
+                "content_type": "image/png",
+                "url": "https://storage.googleapis.com/falserverless/example_outputs/nano-banana-pro-t2i-output.png"
+              }
+            ]
+          ],
+          "description": "The generated images.",
+          "items": {
+            "required": [
+              "url"
+            ],
+            "type": "object",
+            "x-fal-order-properties": [
+              "url",
+              "content_type",
+              "file_name",
+              "file_size",
+              "width",
+              "height"
+            ],
+            "title": "ImageFile",
+            "properties": {
+              "file_name": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "File Name",
+                "examples": [
+                  "z9RV14K95DvU.png"
+                ],
+                "description": "The name of the file. It will be auto-generated if not provided."
+              },
+              "height": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Height",
+                "description": "The height of the image"
+              },
+              "content_type": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Content Type",
+                "examples": [
+                  "image/png"
+                ],
+                "description": "The mime type of the file."
+              },
+              "width": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Width",
+                "description": "The width of the image"
+              },
+              "file_size": {
+                "anyOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "File Size",
+                "examples": [
+                  4404019
+                ],
+                "description": "The size of the file in bytes."
+              },
+              "url": {
+                "type": "string",
+                "title": "Url",
+                "description": "The URL where the file can be downloaded from."
+              }
+            }
+          }
+        },
+        "description": {
+          "type": "string",
+          "title": "Description",
+          "description": "The description of the generated images."
+        }
+      }
+    }
+  },
+  "pricing": {
+    "endpoint_id": "fal-ai/nano-banana-pro",
+    "advisory_only": true,
+    "estimated_cost_usd": 0.15,
+    "currency": "USD",
+    "pricing_source": "fal_platform_pricing",
+    "pricing_cache_max_age_seconds": 300,
+    "limitations": "This is a rate \u00d7 quantity estimate, not a configured quote or final charge. The pricing API does not expose configuration-specific rules, minimum charges, rounding, or input-media measurements. Audio, resolution, quality and provider rules may change the final cost. It does not check balance or permission and does not block generation.",
+    "status": "estimated",
+    "price": {
+      "endpoint_id": "fal-ai/nano-banana-pro",
+      "unit_price": 0.15,
+      "unit": "images",
+      "currency": "USD"
+    },
+    "quantity": 1,
+    "quantity_basis": "input.num_images"
+  },
+  "account": {
+    "status": "ready",
+    "checked_at": "2026-10-13T01:24:06.675Z",
+    "account": {
+      "id": "github|5m4womwn5oan4fjuo2qmp172",
+      "name": "Jesse Sharratt"
+    },
+    "message": "No billing restriction was reported for this fal account. Check model pricing before generating; the API checks whether each job is allowed and affordable."
+  },
+  "guidance": {
+    "status": "complete",
+    "data": {
+      "retrieval": {
+        "status": "complete",
+        "warnings": [],
+        "retrieved_at": "2026-10-13T01:24:24.408Z"
+      },
+      "skills": []
+    },
+    "fetched_at": "2026-10-13T01:24:23.819Z",
+    "warnings": []
+  },
+  "selection": {
+    "decision_id": "e97e8226-61e7-43c9-a3f6-dd2a6a7efd72",
+    "status": "schema_and_price_verified",
+    "limitations": "Recommendation initially returned needs_input solely for quantity_unavailable. Resolved with num_images=1, estimate_cost, and model page configuration pricing. Initial 3D misrouting discarded. Semantic routing warning was a non-error advisory; exact schema and keyword catalog remain available. No seam switch. 512 delivery requires documented 1K-to-512 resampling.",
+    "initial_candidates_estimated_usd": 0.6,
+    "max_eight_estimated_usd": 1.2
+  },
+  "licence": {
+    "name": "FAL-hosted Nano Banana Pro commercial output use under model listing and FAL service/API terms; not CC0 or an open-weight licence",
+    "model_url": "https://fal.ai/models/fal-ai/nano-banana-pro",
+    "terms_url": "https://fal.ai/legal/terms-of-service",
+    "api_terms_url": "https://fal.ai/legal/api-services",
+    "terms_updated": "2026-09-08",
+    "checked_at_utc": "2026-10-13T01:28:05.190Z",
+    "commercial_use_permitted": true,
+    "model_quote": "Commercial use enabled through fal.ai",
+    "conditions": "Lawful, non-infringing use; customer must hold input rights and review outputs. FAL disclaims originality, uniqueness and non-infringement guarantees.",
+    "attribution": "No attribution requirement identified in the reviewed model listing and service/API terms. Preserve original files and provenance; do not remove SynthID or other applied provenance.",
+    "inputs": "Original text prompts describing generic materials; no uploaded references, brands, artist imitation, or external imagery; web grounding disabled."
+  }
+}

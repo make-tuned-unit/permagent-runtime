@@ -1,0 +1,31 @@
+{
+  "index": 2,
+  "endpoint_id": "fal-ai/nano-banana-pro",
+  "request_id": "01a132e1-3173-7a52-adf1-bc7c34d5f090",
+  "account": {
+    "id": "github|5m4womwn5oan4fjuo2qmp172",
+    "name": "Jesse Sharratt"
+  },
+  "status": "failed",
+  "queue_status": "COMPLETED",
+  "error": "Result fetch failed (422)",
+  "http_status": 422,
+  "error_detail_shape": "validation_array",
+  "validation_issues": [
+    {
+      "field": "other",
+      "code": "content_policy_violation"
+    }
+  ],
+  "field_errors": [
+    {
+      "path": [
+        "body"
+      ],
+      "message": "The content could not be processed because it contained material flagged by a content checker.",
+      "type": "content_policy_violation"
+    }
+  ],
+  "retryable": false,
+  "job_outcome": "failed"
+}

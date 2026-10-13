@@ -1,0 +1,24 @@
+{
+  "index": 1,
+  "endpoint_id": "fal-ai/nano-banana-pro",
+  "request_id": "01a132e1-29fc-7502-b8d1-96dd6fed6f39",
+  "account": {
+    "id": "github|5m4womwn5oan4fjuo2qmp172",
+    "name": "Jesse Sharratt"
+  },
+  "status": "completed",
+  "queue_status": "COMPLETED",
+  "result": {
+    "images": [
+      {
+        "url": "https://v3b.fal.media/files/b/0aae2759/NtHCAHnK43z6td5LYyEXn_887gIdQc.png",
+        "content_type": "image/png",
+        "file_name": "NtHCAHnK43z6td5LYyEXn_887gIdQc.png",
+        "file_size": null,
+        "width": null,
+        "height": null
+      }
+    ],
+    "description": ""
+  }
+}

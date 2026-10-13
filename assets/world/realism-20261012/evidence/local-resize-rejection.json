@@ -1,0 +1,6 @@
+{
+  "operation": "Initial sips resize overlapped an active curl download; QA caught a black lower portion. Download subsequently exited 0. No second download or paid job. Rejected derivative retained and replaced from the complete original with ffmpeg.",
+  "file": "review/weave-a-incomplete-resize-rejected.png",
+  "sha256": "4a5b7a3a2918c257243f2070b62eb0ec77f331195f1cafe19aa048bbd9bfa010",
+  "bytes": 346847
+}

@@ -1,0 +1,90 @@
+[
+  {
+    "id": "walnut-a",
+    "request": "W3 request 1: oiled walnut base colour, 1024x1024, 1.0 m, seamless both axes",
+    "seed": 61012051,
+    "size": 1024,
+    "scale": 1,
+    "prompt": "A single seamless tileable orthographic material texture: dark warm oiled walnut timber, exactly 1.0 metre of surface across this square tile. Straight to gently figured grain runs horizontally from left to right, fine natural pores, restrained natural variation, few tiny knots at most 3 cm across. Palette in sRGB approximately #2a1a10 through #4a2c16, dark warm brown without orange highlights. Uniform diffuse base colour (albedo) only, delighted, completely flat orthographic full-frame swatch. Match opposite edges on BOTH axes with continuously flowing grain: left/right and top/bottom must join seamlessly when repeated in a grid. No plank gaps or board seams, no perspective, no directional light, no specular reflection, no baked shadows or ambient occlusion, no vignette, no gradients, no fixtures, no symbols, no text, no border. One 1024x1024 material tile filling the entire image.",
+    "proposal": "Candidate replacement for W3 textures/walnut_basecolor.png on the Arrival table and chair; W3 retains control of supporting maps and acceptance.",
+    "input": {
+      "num_images": 1,
+      "resolution": "1K",
+      "aspect_ratio": "1:1",
+      "output_format": "png",
+      "enable_web_search": false,
+      "limit_generations": true,
+      "sync_mode": false,
+      "safety_tolerance": "4",
+      "system_prompt": "",
+      "prompt": "A single seamless tileable orthographic material texture: dark warm oiled walnut timber, exactly 1.0 metre of surface across this square tile. Straight to gently figured grain runs horizontally from left to right, fine natural pores, restrained natural variation, few tiny knots at most 3 cm across. Palette in sRGB approximately #2a1a10 through #4a2c16, dark warm brown without orange highlights. Uniform diffuse base colour (albedo) only, delighted, completely flat orthographic full-frame swatch. Match opposite edges on BOTH axes with continuously flowing grain: left/right and top/bottom must join seamlessly when repeated in a grid. No plank gaps or board seams, no perspective, no directional light, no specular reflection, no baked shadows or ambient occlusion, no vignette, no gradients, no fixtures, no symbols, no text, no border. One 1024x1024 material tile filling the entire image.",
+      "seed": 61012051
+    }
+  },
+  {
+    "id": "weave-a",
+    "request": "W3 request 2: moss-green plain upholstery weave base colour, 512x512 delivery, 0.25 m, seamless both axes",
+    "seed": 61012052,
+    "size": 512,
+    "scale": 0.25,
+    "prompt": "A single seamless tileable orthographic material texture: moss-green wool and linen upholstery cloth in a visible fine plain over-under weave, a square covering exactly 0.25 metre across. Muted natural moss green, restrained fibre colour variation and a slight irregular slub, coherent fine yarn spacing suitable for a chair cushion. Uniform diffuse base colour (albedo) only, delighted flat full-frame swatch. Both opposite edge pairs join continuously when repeated in a grid, including warp and weft spacing at top/bottom and left/right. No decorative pattern, no print, no embroidery, no seam, no stitching, no folds, no perspective, no directional lighting, no specular highlights, no baked shadows, no vignette or exposure gradient, no labels, no text or border. One square tile, uniformly detailed to every edge; suitable for a final 512x512 texture.",
+    "proposal": "Candidate replacement for W3 textures/weave_basecolor.png on Arrival-chair upholstery; W3 derives supporting maps after inspection.",
+    "input": {
+      "num_images": 1,
+      "resolution": "1K",
+      "aspect_ratio": "1:1",
+      "output_format": "png",
+      "enable_web_search": false,
+      "limit_generations": true,
+      "sync_mode": false,
+      "safety_tolerance": "4",
+      "system_prompt": "",
+      "prompt": "A single seamless tileable orthographic material texture: moss-green wool and linen upholstery cloth in a visible fine plain over-under weave, a square covering exactly 0.25 metre across. Muted natural moss green, restrained fibre colour variation and a slight irregular slub, coherent fine yarn spacing suitable for a chair cushion. Uniform diffuse base colour (albedo) only, delighted flat full-frame swatch. Both opposite edge pairs join continuously when repeated in a grid, including warp and weft spacing at top/bottom and left/right. No decorative pattern, no print, no embroidery, no seam, no stitching, no folds, no perspective, no directional lighting, no specular highlights, no baked shadows, no vignette or exposure gradient, no labels, no text or border. One square tile, uniformly detailed to every edge; suitable for a final 512x512 texture.",
+      "seed": 61012052
+    }
+  },
+  {
+    "id": "leather-a",
+    "request": "W3 request 3: tobacco vegetable-tanned leather base colour, 512x512 delivery, 0.30 m, seamless both axes",
+    "seed": 61012053,
+    "size": 512,
+    "scale": 0.3,
+    "prompt": "A single seamless tileable orthographic material texture: tobacco-brown vegetable-tanned leather, one square covering exactly 0.30 metre across. Fine small-scale pebble grain, restrained subtle natural wear, warm brown tonal variation and an even matte appearance. Uniform diffuse base colour (albedo) only, delighted flat full-frame swatch. Match both opposite edge pairs seamlessly, top/bottom and left/right, with no discontinuity when repeated in a grid. No stitching, no seams, no embossed designs, no logos, no text, no strong scars, no folds, no perspective, no directional lighting, no reflections or highlights, no baked shadows or ambient occlusion, no vignette, no border or exposure gradient. One square tile covering the full image; suitable for final 512x512 texture.",
+    "proposal": "Candidate replacement for W3 textures/leather_basecolor.png on the Arrival folio; preserve authored geometry and defer normal/roughness to W3.",
+    "input": {
+      "num_images": 1,
+      "resolution": "1K",
+      "aspect_ratio": "1:1",
+      "output_format": "png",
+      "enable_web_search": false,
+      "limit_generations": true,
+      "sync_mode": false,
+      "safety_tolerance": "4",
+      "system_prompt": "",
+      "prompt": "A single seamless tileable orthographic material texture: tobacco-brown vegetable-tanned leather, one square covering exactly 0.30 metre across. Fine small-scale pebble grain, restrained subtle natural wear, warm brown tonal variation and an even matte appearance. Uniform diffuse base colour (albedo) only, delighted flat full-frame swatch. Match both opposite edge pairs seamlessly, top/bottom and left/right, with no discontinuity when repeated in a grid. No stitching, no seams, no embossed designs, no logos, no text, no strong scars, no folds, no perspective, no directional lighting, no reflections or highlights, no baked shadows or ambient occlusion, no vignette, no border or exposure gradient. One square tile covering the full image; suitable for final 512x512 texture.",
+      "seed": 61012053
+    }
+  },
+  {
+    "id": "brass-a",
+    "request": "W3 optional request 4: grayscale brushed-brass roughness study, 512x512 delivery, 0.20 m, seamless both axes",
+    "seed": 61012054,
+    "size": 512,
+    "scale": 0.2,
+    "prompt": "A single seamless tileable GREYSCALE roughness variation study for brushed brass, an orthographic square covering exactly 0.20 metre across. This is a data-like material study, not a lit photograph: mid-grey field with restrained fine horizontal directional brushing and very light irregular patina. Black corresponds to low roughness and white to high roughness, but keep values in a narrow medium-grey range. Both opposite edge pairs join continuously in an infinite repeated grid; horizontal brushing must wrap left/right and patina must wrap top/bottom. No colour, no metallic reflections, no specular highlights, no directional illumination, no baked shadows, no fixtures, no writing, no symbols, no border, no vignette. Uniformly detailed full-frame square, intended for a final 512x512 roughness candidate; not a physically measured map.",
+    "proposal": "Optional inspected roughness-study input for the trim palette's brass only if W6 separates brass into its own material; requires calibration before use.",
+    "input": {
+      "num_images": 1,
+      "resolution": "1K",
+      "aspect_ratio": "1:1",
+      "output_format": "png",
+      "enable_web_search": false,
+      "limit_generations": true,
+      "sync_mode": false,
+      "safety_tolerance": "4",
+      "system_prompt": "",
+      "prompt": "A single seamless tileable GREYSCALE roughness variation study for brushed brass, an orthographic square covering exactly 0.20 metre across. This is a data-like material study, not a lit photograph: mid-grey field with restrained fine horizontal directional brushing and very light irregular patina. Black corresponds to low roughness and white to high roughness, but keep values in a narrow medium-grey range. Both opposite edge pairs join continuously in an infinite repeated grid; horizontal brushing must wrap left/right and patina must wrap top/bottom. No colour, no metallic reflections, no specular highlights, no directional illumination, no baked shadows, no fixtures, no writing, no symbols, no border, no vignette. Uniformly detailed full-frame square, intended for a final 512x512 roughness candidate; not a physically measured map.",
+      "seed": 61012054
+    }
+  }
+]

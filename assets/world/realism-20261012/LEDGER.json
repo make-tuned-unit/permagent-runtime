@@ -1,0 +1,615 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-12",
+  "status": "stopped_on_fal_error",
+  "provider": "fal",
+  "account_id": "github|5m4womwn5oan4fjuo2qmp172",
+  "hard_cap_usd": 5,
+  "estimated_total_usd": 0.6,
+  "actual_total_usd": null,
+  "reserved_usd": 0.6,
+  "items": [
+    {
+      "id": "walnut-a",
+      "request": "W3 request 1: oiled walnut base colour, 1024x1024, 1.0 m, seamless both axes",
+      "model": "fal-ai/nano-banana-pro",
+      "prompt": "A single seamless tileable orthographic material texture: dark warm oiled walnut timber, exactly 1.0 metre of surface across this square tile. Straight to gently figured grain runs horizontally from left to right, fine natural pores, restrained natural variation, few tiny knots at most 3 cm across. Palette in sRGB approximately #2a1a10 through #4a2c16, dark warm brown without orange highlights. Uniform diffuse base colour (albedo) only, delighted, completely flat orthographic full-frame swatch. Match opposite edges on BOTH axes with continuously flowing grain: left/right and top/bottom must join seamlessly when repeated in a grid. No plank gaps or board seams, no perspective, no directional light, no specular reflection, no baked shadows or ambient occlusion, no vignette, no gradients, no fixtures, no symbols, no text, no border. One 1024x1024 material tile filling the entire image.",
+      "params": {
+        "num_images": 1,
+        "resolution": "1K",
+        "aspect_ratio": "1:1",
+        "output_format": "png",
+        "enable_web_search": false,
+        "limit_generations": true,
+        "sync_mode": false,
+        "safety_tolerance": "4",
+        "system_prompt": "",
+        "prompt": "A single seamless tileable orthographic material texture: dark warm oiled walnut timber, exactly 1.0 metre of surface across this square tile. Straight to gently figured grain runs horizontally from left to right, fine natural pores, restrained natural variation, few tiny knots at most 3 cm across. Palette in sRGB approximately #2a1a10 through #4a2c16, dark warm brown without orange highlights. Uniform diffuse base colour (albedo) only, delighted, completely flat orthographic full-frame swatch. Match opposite edges on BOTH axes with continuously flowing grain: left/right and top/bottom must join seamlessly when repeated in a grid. No plank gaps or board seams, no perspective, no directional light, no specular reflection, no baked shadows or ambient occlusion, no vignette, no gradients, no fixtures, no symbols, no text, no border. One 1024x1024 material tile filling the entire image.",
+        "seed": 61012051
+      },
+      "seed": 61012051,
+      "file": "originals/walnut-a.png",
+      "sha256": "53195a1d6e86c123b567c4a076aef94cde1a1f614dd25032d682bd43da596028",
+      "bytes": 1587360,
+      "px": [
+        1024,
+        1024
+      ],
+      "licence": {
+        "record": "RIGHTS.md",
+        "name": "FAL Nano Banana Pro hosted output commercial use",
+        "model_url": "https://fal.ai/models/fal-ai/nano-banana-pro",
+        "terms_url": "https://fal.ai/legal/terms-of-service",
+        "api_terms_url": "https://fal.ai/legal/api-services",
+        "commercial_use_permitted": true,
+        "checked_at_utc": "2026-10-13",
+        "output_exists": true
+      },
+      "cost_usd": 0.15,
+      "status": "held_visible_seam",
+      "estimate_usd": 0.15,
+      "actual_cost_usd": null,
+      "derivative_proposal": "Candidate replacement for W3 textures/walnut_basecolor.png on the Arrival table and chair; W3 retains control of supporting maps and acceptance.",
+      "target_px": [
+        1024,
+        1024
+      ],
+      "physical_scale_m": 1,
+      "history": [
+        {
+          "status": "prepared_not_submitted"
+        },
+        {
+          "status": "submitted",
+          "request_id": "01a132df-e455-7633-9453-d1e0b15be90d"
+        },
+        {
+          "status": "completed",
+          "at": "2026-10-13T01:31:03.053681+00:00"
+        },
+        {
+          "status": "held_visible_seam",
+          "at": "2026-10-13T01:33:02.875463+00:00",
+          "review": "Inspected original, full 2x2 repeat, and 512 px wrap offset at native 1024 px. Dark warm horizontal walnut grain and small knots are plausible, but a vertical join interrupts grain in the repeat and offset. Numeric screen passes narrowly (LR ratio 1.896); its edge MAE is worse than every interior boundary. Visual rejection takes precedence."
+        }
+      ],
+      "request_id": "01a132df-e455-7633-9453-d1e0b15be90d",
+      "submitted_at": "2026-10-13T01:28:40.671435+00:00",
+      "cost_basis": "estimate; actual charge unverified",
+      "provider_status": "completed",
+      "output_path": "/images/0/url",
+      "download_url": "https://v3b.fal.media/files/b/0aae2751/9miG4d7KHUn1O0uDEku3v_IZ5gTBiH.png",
+      "downloaded_at": "2026-10-13T01:31:03.055182+00:00",
+      "provider": "fal",
+      "account_id": "github|5m4womwn5oan4fjuo2qmp172",
+      "schema_date_utc": "2026-10-13",
+      "model_version": "Nano Banana Pro / Google Gemini 3 Pro Image; immutable internal revision not exposed",
+      "reference_origins": [],
+      "parent_request_ids": [],
+      "reviewer": "Codex W5",
+      "runtime_destination": "None; W3/W6 own acceptance and integration",
+      "measured_runtime_cost": null,
+      "cleanup_time_seconds": null,
+      "original_metrics": {
+        "file": "originals/walnut-a.png",
+        "bytes": 1587360,
+        "sha256": "53195a1d6e86c123b567c4a076aef94cde1a1f614dd25032d682bd43da596028",
+        "px": [
+          1024,
+          1024
+        ],
+        "colour_mode": "decoded RGB8",
+        "channel_means": [
+          68.73404884338379,
+          45.760786056518555,
+          27.345622062683105
+        ],
+        "max_channel_spread": 66,
+        "seam_metrics": {
+          "left_right": {
+            "wrap_mae": 5.642903645833333,
+            "interior_boundary_median_mae": 2.9759114583333317,
+            "interior_boundary_p99_mae": 3.7050781249999996,
+            "wrap_to_interior_median_ratio": 1.896193393130607,
+            "wrap_percentile_vs_internal_boundaries": 100.0,
+            "wrap_channel_p95": 14,
+            "numeric_screen_pass": true
+          },
+          "top_bottom": {
+            "wrap_mae": 6.3271484375,
+            "interior_boundary_median_mae": 5.740234375,
+            "interior_boundary_p99_mae": 7.642903645833333,
+            "wrap_to_interior_median_ratio": 1.1022456617897245,
+            "wrap_percentile_vs_internal_boundaries": 71.94525904203323,
+            "wrap_channel_p95": 16,
+            "numeric_screen_pass": true
+          }
+        },
+        "numeric_screen_pass": true,
+        "method": "Lossless 2x2 repeat and half-width/half-height wrap offset; compare seam MAE against every interior boundary. Numeric screen: each wrap MAE <= max(2x interior median, interior p99). Visual inspection is still required; this screen cannot prove grain continuity or absence of large-scale repetition.",
+        "visual_review": "Inspected original, full 2x2 repeat, and 512 px wrap offset at native 1024 px. Dark warm horizontal walnut grain and small knots are plausible, but a vertical join interrupts grain in the repeat and offset. Numeric screen passes narrowly (LR ratio 1.896); its edge MAE is worse than every interior boundary. Visual rejection takes precedence."
+      },
+      "decision": "Hold; not accepted as seamless",
+      "tileability": {
+        "verified": false,
+        "review": "Inspected original, full 2x2 repeat, and 512 px wrap offset at native 1024 px. Dark warm horizontal walnut grain and small knots are plausible, but a vertical join interrupts grain in the repeat and offset. Numeric screen passes narrowly (LR ratio 1.896); its edge MAE is worse than every interior boundary. Visual rejection takes precedence.",
+        "review_files": [
+          "review/walnut-a-offset.png",
+          "review/walnut-a-repeat-2x2.png"
+        ]
+      },
+      "derivatives": []
+    },
+    {
+      "id": "weave-a",
+      "request": "W3 request 2: moss-green plain upholstery weave base colour, 512x512 delivery, 0.25 m, seamless both axes",
+      "model": "fal-ai/nano-banana-pro",
+      "prompt": "A single seamless tileable orthographic material texture: moss-green wool and linen upholstery cloth in a visible fine plain over-under weave, a square covering exactly 0.25 metre across. Muted natural moss green, restrained fibre colour variation and a slight irregular slub, coherent fine yarn spacing suitable for a chair cushion. Uniform diffuse base colour (albedo) only, delighted flat full-frame swatch. Both opposite edge pairs join continuously when repeated in a grid, including warp and weft spacing at top/bottom and left/right. No decorative pattern, no print, no embroidery, no seam, no stitching, no folds, no perspective, no directional lighting, no specular highlights, no baked shadows, no vignette or exposure gradient, no labels, no text or border. One square tile, uniformly detailed to every edge; suitable for a final 512x512 texture.",
+      "params": {
+        "num_images": 1,
+        "resolution": "1K",
+        "aspect_ratio": "1:1",
+        "output_format": "png",
+        "enable_web_search": false,
+        "limit_generations": true,
+        "sync_mode": false,
+        "safety_tolerance": "4",
+        "system_prompt": "",
+        "prompt": "A single seamless tileable orthographic material texture: moss-green wool and linen upholstery cloth in a visible fine plain over-under weave, a square covering exactly 0.25 metre across. Muted natural moss green, restrained fibre colour variation and a slight irregular slub, coherent fine yarn spacing suitable for a chair cushion. Uniform diffuse base colour (albedo) only, delighted flat full-frame swatch. Both opposite edge pairs join continuously when repeated in a grid, including warp and weft spacing at top/bottom and left/right. No decorative pattern, no print, no embroidery, no seam, no stitching, no folds, no perspective, no directional lighting, no specular highlights, no baked shadows, no vignette or exposure gradient, no labels, no text or border. One square tile, uniformly detailed to every edge; suitable for a final 512x512 texture.",
+        "seed": 61012052
+      },
+      "seed": 61012052,
+      "file": "originals/weave-a.png",
+      "sha256": "18d2125f939a492440fdda73ff6c37fe9df409abd4ee2506682010f338823b65",
+      "bytes": 2500164,
+      "px": [
+        1024,
+        1024
+      ],
+      "licence": {
+        "record": "RIGHTS.md",
+        "name": "FAL Nano Banana Pro hosted output commercial use",
+        "model_url": "https://fal.ai/models/fal-ai/nano-banana-pro",
+        "terms_url": "https://fal.ai/legal/terms-of-service",
+        "api_terms_url": "https://fal.ai/legal/api-services",
+        "commercial_use_permitted": true,
+        "checked_at_utc": "2026-10-13",
+        "output_exists": true
+      },
+      "cost_usd": 0.15,
+      "status": "candidate_for_w3_review",
+      "estimate_usd": 0.15,
+      "actual_cost_usd": null,
+      "derivative_proposal": "Candidate replacement for W3 textures/weave_basecolor.png on Arrival-chair upholstery; W3 derives supporting maps after inspection.",
+      "target_px": [
+        512,
+        512
+      ],
+      "physical_scale_m": 0.25,
+      "history": [
+        {
+          "status": "prepared_not_submitted"
+        },
+        {
+          "status": "submitted",
+          "request_id": "01a132e1-29fc-7502-b8d1-96dd6fed6f39"
+        },
+        {
+          "status": "completed",
+          "at": "2026-10-13T01:31:03.055613+00:00"
+        },
+        {
+          "status": "download_completion_measurement_corrected",
+          "previous": {
+            "bytes": 1454080,
+            "sha256": "ecdbbb97313137fc438f7f6b4cd925c8697c88cd6515e84282baa828c687bfc5",
+            "px": [
+              1024,
+              1024
+            ]
+          },
+          "final": {
+            "bytes": 2500164,
+            "sha256": "18d2125f939a492440fdda73ff6c37fe9df409abd4ee2506682010f338823b65",
+            "px": [
+              1024,
+              1024
+            ]
+          },
+          "reason": "Initial metadata read overlapped curl; final curl exit 0 and ffmpeg full decode confirmed"
+        },
+        {
+          "status": "candidate_for_w3_review",
+          "at": "2026-10-13T01:33:02.875463+00:00",
+          "review": "Inspected full original plus final 512 px half-wrap offset and 1024 px 2x2 repeat. Plain moss/olive weave with restrained slub and continuous overall tone. No conspicuous hard seam at delivery scale; numeric LR/TB ratios 1.161/0.937 are within normal texture variation. Yarn pattern repeats and physical yarn size remains an artistic scale assumption. Not proof of seamlessness at arbitrary magnification."
+        }
+      ],
+      "request_id": "01a132e1-29fc-7502-b8d1-96dd6fed6f39",
+      "submitted_at": "2026-10-13T01:29:39.991977+00:00",
+      "cost_basis": "estimate; actual charge unverified",
+      "provider_status": "completed",
+      "output_path": "/images/0/url",
+      "download_url": "https://v3b.fal.media/files/b/0aae2759/NtHCAHnK43z6td5LYyEXn_887gIdQc.png",
+      "downloaded_at": "2026-10-13T01:31:03.056757+00:00",
+      "provider": "fal",
+      "account_id": "github|5m4womwn5oan4fjuo2qmp172",
+      "schema_date_utc": "2026-10-13",
+      "model_version": "Nano Banana Pro / Google Gemini 3 Pro Image; immutable internal revision not exposed",
+      "reference_origins": [],
+      "parent_request_ids": [],
+      "reviewer": "Codex W5",
+      "runtime_destination": "None; W3/W6 own acceptance and integration",
+      "measured_runtime_cost": null,
+      "cleanup_time_seconds": null,
+      "original_metrics": {
+        "file": "originals/weave-a.png",
+        "bytes": 2500164,
+        "sha256": "18d2125f939a492440fdda73ff6c37fe9df409abd4ee2506682010f338823b65",
+        "px": [
+          1024,
+          1024
+        ],
+        "colour_mode": "decoded RGB8",
+        "channel_means": [
+          118.7642765045166,
+          127.63585090637207,
+          83.58797073364258
+        ],
+        "max_channel_spread": 70,
+        "seam_metrics": {
+          "left_right": {
+            "wrap_mae": 21.988606770833332,
+            "interior_boundary_median_mae": 20.311523437500014,
+            "interior_boundary_p99_mae": 28.68164062500001,
+            "wrap_to_interior_median_ratio": 1.0825680721829567,
+            "wrap_percentile_vs_internal_boundaries": 64.51612903225806,
+            "wrap_channel_p95": 54,
+            "numeric_screen_pass": true
+          },
+          "top_bottom": {
+            "wrap_mae": 17.1162109375,
+            "interior_boundary_median_mae": 18.391927083333332,
+            "interior_boundary_p99_mae": 24.228190104166668,
+            "wrap_to_interior_median_ratio": 0.930637168141593,
+            "wrap_percentile_vs_internal_boundaries": 28.73900293255132,
+            "wrap_channel_p95": 44,
+            "numeric_screen_pass": true
+          }
+        },
+        "numeric_screen_pass": true,
+        "method": "Lossless 2x2 repeat and half-width/half-height wrap offset; compare seam MAE against every interior boundary. Numeric screen: each wrap MAE <= max(2x interior median, interior p99). Visual inspection is still required; this screen cannot prove grain continuity or absence of large-scale repetition.",
+        "visual_review": "Inspected full original plus final 512 px half-wrap offset and 1024 px 2x2 repeat. Plain moss/olive weave with restrained slub and continuous overall tone. No conspicuous hard seam at delivery scale; numeric LR/TB ratios 1.161/0.937 are within normal texture variation. Yarn pattern repeats and physical yarn size remains an artistic scale assumption. Not proof of seamlessness at arbitrary magnification."
+      },
+      "decision": "Candidate passes W5 image/seam review; W3 relight/UV acceptance outstanding",
+      "tileability": {
+        "verified": true,
+        "review": "Inspected full original plus final 512 px half-wrap offset and 1024 px 2x2 repeat. Plain moss/olive weave with restrained slub and continuous overall tone. No conspicuous hard seam at delivery scale; numeric LR/TB ratios 1.161/0.937 are within normal texture variation. Yarn pattern repeats and physical yarn size remains an artistic scale assumption. Not proof of seamlessness at arbitrary magnification.",
+        "review_files": [
+          "review/weave-a-512-offset.png",
+          "review/weave-a-512-repeat-2x2.png"
+        ]
+      },
+      "derivatives": [
+        {
+          "file": "candidates/weave-a-512.png",
+          "bytes": 628694,
+          "sha256": "ab281f82791e6f653f7687d94070ca57599f3474debae756da52c0943579f5f3",
+          "px": [
+            512,
+            512
+          ],
+          "parent_sha256": "18d2125f939a492440fdda73ff6c37fe9df409abd4ee2506682010f338823b65",
+          "processing": "ffmpeg -v error -i originals/weave-a.png -vf scale=512:512:flags=area -frames:v 1 candidates/weave-a-512.png",
+          "colour_space": "sRGB base colour; no creative retouch or seam correction",
+          "seam_metrics": {
+            "left_right": {
+              "wrap_mae": 23.630208333333332,
+              "interior_boundary_median_mae": 20.360677083333314,
+              "interior_boundary_p99_mae": 31.543619791666654,
+              "wrap_to_interior_median_ratio": 1.1605806740423366,
+              "wrap_percentile_vs_internal_boundaries": 68.88454011741683,
+              "wrap_channel_p95": 52,
+              "numeric_screen_pass": true
+            },
+            "top_bottom": {
+              "wrap_mae": 17.12890625,
+              "interior_boundary_median_mae": 18.287760416666668,
+              "interior_boundary_p99_mae": 26.453776041666668,
+              "wrap_to_interior_median_ratio": 0.9366322534709861,
+              "wrap_percentile_vs_internal_boundaries": 38.160469667318985,
+              "wrap_channel_p95": 43,
+              "numeric_screen_pass": true
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": "leather-a",
+      "request": "W3 request 3: tobacco vegetable-tanned leather base colour, 512x512 delivery, 0.30 m, seamless both axes",
+      "model": "fal-ai/nano-banana-pro",
+      "prompt": "A single seamless tileable orthographic material texture: tobacco-brown vegetable-tanned leather, one square covering exactly 0.30 metre across. Fine small-scale pebble grain, restrained subtle natural wear, warm brown tonal variation and an even matte appearance. Uniform diffuse base colour (albedo) only, delighted flat full-frame swatch. Match both opposite edge pairs seamlessly, top/bottom and left/right, with no discontinuity when repeated in a grid. No stitching, no seams, no embossed designs, no logos, no text, no strong scars, no folds, no perspective, no directional lighting, no reflections or highlights, no baked shadows or ambient occlusion, no vignette, no border or exposure gradient. One square tile covering the full image; suitable for final 512x512 texture.",
+      "params": {
+        "num_images": 1,
+        "resolution": "1K",
+        "aspect_ratio": "1:1",
+        "output_format": "png",
+        "enable_web_search": false,
+        "limit_generations": true,
+        "sync_mode": false,
+        "safety_tolerance": "4",
+        "system_prompt": "",
+        "prompt": "A single seamless tileable orthographic material texture: tobacco-brown vegetable-tanned leather, one square covering exactly 0.30 metre across. Fine small-scale pebble grain, restrained subtle natural wear, warm brown tonal variation and an even matte appearance. Uniform diffuse base colour (albedo) only, delighted flat full-frame swatch. Match both opposite edge pairs seamlessly, top/bottom and left/right, with no discontinuity when repeated in a grid. No stitching, no seams, no embossed designs, no logos, no text, no strong scars, no folds, no perspective, no directional lighting, no reflections or highlights, no baked shadows or ambient occlusion, no vignette, no border or exposure gradient. One square tile covering the full image; suitable for final 512x512 texture.",
+        "seed": 61012053
+      },
+      "seed": 61012053,
+      "file": null,
+      "sha256": null,
+      "bytes": null,
+      "px": null,
+      "licence": {
+        "record": "RIGHTS.md",
+        "name": "FAL Nano Banana Pro hosted output commercial use",
+        "model_url": "https://fal.ai/models/fal-ai/nano-banana-pro",
+        "terms_url": "https://fal.ai/legal/terms-of-service",
+        "api_terms_url": "https://fal.ai/legal/api-services",
+        "commercial_use_permitted": true,
+        "checked_at_utc": "2026-10-13",
+        "output_exists": false
+      },
+      "cost_usd": null,
+      "status": "failed_provider_content_checker",
+      "estimate_usd": 0.15,
+      "actual_cost_usd": null,
+      "derivative_proposal": "Candidate replacement for W3 textures/leather_basecolor.png on the Arrival folio; preserve authored geometry and defer normal/roughness to W3.",
+      "target_px": [
+        512,
+        512
+      ],
+      "physical_scale_m": 0.3,
+      "history": [
+        {
+          "status": "prepared_not_submitted"
+        },
+        {
+          "status": "submitted",
+          "request_id": "01a132e1-3173-7a52-adf1-bc7c34d5f090"
+        },
+        {
+          "status": "failed",
+          "at": "2026-10-13T01:31:03.057102+00:00"
+        }
+      ],
+      "request_id": "01a132e1-3173-7a52-adf1-bc7c34d5f090",
+      "submitted_at": "2026-10-13T01:29:42.140852+00:00",
+      "cost_basis": "failed request; actual charge unverified; reserve $0.15 conservatively",
+      "provider_status": "failed",
+      "error": {
+        "error": "Result fetch failed (422)",
+        "http_status": 422,
+        "error_detail_shape": "validation_array",
+        "validation_issues": [
+          {
+            "field": "other",
+            "code": "content_policy_violation"
+          }
+        ],
+        "field_errors": [
+          {
+            "path": [
+              "body"
+            ],
+            "message": "The content could not be processed because it contained material flagged by a content checker.",
+            "type": "content_policy_violation"
+          }
+        ],
+        "retryable": false,
+        "job_outcome": "failed"
+      },
+      "provider": "fal",
+      "account_id": "github|5m4womwn5oan4fjuo2qmp172",
+      "schema_date_utc": "2026-10-13",
+      "model_version": "Nano Banana Pro / Google Gemini 3 Pro Image; immutable internal revision not exposed",
+      "reference_origins": [],
+      "parent_request_ids": [],
+      "reviewer": "Codex W5",
+      "runtime_destination": "None; W3/W6 own acceptance and integration",
+      "measured_runtime_cost": null,
+      "cleanup_time_seconds": null,
+      "tileability": {
+        "verified": false,
+        "reason": "No output: FAL content checker rejection"
+      },
+      "decision": "Unfulfilled; no retry under user stop rule",
+      "derivatives": []
+    },
+    {
+      "id": "brass-a",
+      "request": "W3 optional request 4: grayscale brushed-brass roughness study, 512x512 delivery, 0.20 m, seamless both axes",
+      "model": "fal-ai/nano-banana-pro",
+      "prompt": "A single seamless tileable GREYSCALE roughness variation study for brushed brass, an orthographic square covering exactly 0.20 metre across. This is a data-like material study, not a lit photograph: mid-grey field with restrained fine horizontal directional brushing and very light irregular patina. Black corresponds to low roughness and white to high roughness, but keep values in a narrow medium-grey range. Both opposite edge pairs join continuously in an infinite repeated grid; horizontal brushing must wrap left/right and patina must wrap top/bottom. No colour, no metallic reflections, no specular highlights, no directional illumination, no baked shadows, no fixtures, no writing, no symbols, no border, no vignette. Uniformly detailed full-frame square, intended for a final 512x512 roughness candidate; not a physically measured map.",
+      "params": {
+        "num_images": 1,
+        "resolution": "1K",
+        "aspect_ratio": "1:1",
+        "output_format": "png",
+        "enable_web_search": false,
+        "limit_generations": true,
+        "sync_mode": false,
+        "safety_tolerance": "4",
+        "system_prompt": "",
+        "prompt": "A single seamless tileable GREYSCALE roughness variation study for brushed brass, an orthographic square covering exactly 0.20 metre across. This is a data-like material study, not a lit photograph: mid-grey field with restrained fine horizontal directional brushing and very light irregular patina. Black corresponds to low roughness and white to high roughness, but keep values in a narrow medium-grey range. Both opposite edge pairs join continuously in an infinite repeated grid; horizontal brushing must wrap left/right and patina must wrap top/bottom. No colour, no metallic reflections, no specular highlights, no directional illumination, no baked shadows, no fixtures, no writing, no symbols, no border, no vignette. Uniformly detailed full-frame square, intended for a final 512x512 roughness candidate; not a physically measured map.",
+        "seed": 61012054
+      },
+      "seed": 61012054,
+      "file": "originals/brass-a.png",
+      "sha256": "2804e7ebd96686ad086715bd5b559f4e9a603631b90a2f421f60191e874189cb",
+      "bytes": 1329670,
+      "px": [
+        1024,
+        1024
+      ],
+      "licence": {
+        "record": "RIGHTS.md",
+        "name": "FAL Nano Banana Pro hosted output commercial use",
+        "model_url": "https://fal.ai/models/fal-ai/nano-banana-pro",
+        "terms_url": "https://fal.ai/legal/terms-of-service",
+        "api_terms_url": "https://fal.ai/legal/api-services",
+        "commercial_use_permitted": true,
+        "checked_at_utc": "2026-10-13",
+        "output_exists": true
+      },
+      "cost_usd": 0.15,
+      "status": "held_edge_discontinuity_and_uncalibrated",
+      "estimate_usd": 0.15,
+      "actual_cost_usd": null,
+      "derivative_proposal": "Optional inspected roughness-study input for the trim palette's brass only if W6 separates brass into its own material; requires calibration before use.",
+      "target_px": [
+        512,
+        512
+      ],
+      "physical_scale_m": 0.2,
+      "history": [
+        {
+          "status": "prepared_not_submitted"
+        },
+        {
+          "status": "submitted",
+          "request_id": "01a132e1-3a67-7f61-9204-21a23aad0664"
+        },
+        {
+          "status": "completed",
+          "at": "2026-10-13T01:31:03.057383+00:00"
+        },
+        {
+          "status": "held_edge_discontinuity_and_uncalibrated",
+          "at": "2026-10-13T01:33:02.875463+00:00",
+          "review": "Inspected original offset and final 512 px grayscale 2x2 repeat. Fine horizontal brushing with cloudy vertical patina; repeating patina is visible. The original is near grayscale but has channel differences up to 7/255, so a true grayscale derivative was made. Final LR boundary ratio 2.035 exceeds the 2x numeric screen, while TB ratio is 1.090. Keep as study only pending seam treatment, material separation by W6 and calibration."
+        }
+      ],
+      "request_id": "01a132e1-3a67-7f61-9204-21a23aad0664",
+      "submitted_at": "2026-10-13T01:29:44.188390+00:00",
+      "cost_basis": "estimate; actual charge unverified",
+      "provider_status": "completed",
+      "output_path": "/images/0/url",
+      "download_url": "https://v3b.fal.media/files/b/0aae275a/SRvxw6ITr8XPlsldNRKQ5_vvVHmohK.png",
+      "downloaded_at": "2026-10-13T01:31:03.058374+00:00",
+      "provider": "fal",
+      "account_id": "github|5m4womwn5oan4fjuo2qmp172",
+      "schema_date_utc": "2026-10-13",
+      "model_version": "Nano Banana Pro / Google Gemini 3 Pro Image; immutable internal revision not exposed",
+      "reference_origins": [],
+      "parent_request_ids": [],
+      "reviewer": "Codex W5",
+      "runtime_destination": "None; W3/W6 own acceptance and integration",
+      "measured_runtime_cost": null,
+      "cleanup_time_seconds": null,
+      "original_metrics": {
+        "file": "originals/brass-a.png",
+        "bytes": 1329670,
+        "sha256": "2804e7ebd96686ad086715bd5b559f4e9a603631b90a2f421f60191e874189cb",
+        "px": [
+          1024,
+          1024
+        ],
+        "colour_mode": "decoded RGB8",
+        "channel_means": [
+          146.02719116210938,
+          145.98591136932373,
+          145.89066123962402
+        ],
+        "max_channel_spread": 7,
+        "seam_metrics": {
+          "left_right": {
+            "wrap_mae": 3.7744140625,
+            "interior_boundary_median_mae": 1.9440104166666683,
+            "interior_boundary_p99_mae": 2.4641927083333326,
+            "wrap_to_interior_median_ratio": 1.9415606162089736,
+            "wrap_percentile_vs_internal_boundaries": 100.0,
+            "wrap_channel_p95": 9,
+            "numeric_screen_pass": true
+          },
+          "top_bottom": {
+            "wrap_mae": 4.267903645833333,
+            "interior_boundary_median_mae": 3.8665364583333335,
+            "interior_boundary_p99_mae": 5.736979166666667,
+            "wrap_to_interior_median_ratio": 1.1038053544367739,
+            "wrap_percentile_vs_internal_boundaries": 74.58455522971651,
+            "wrap_channel_p95": 10,
+            "numeric_screen_pass": true
+          }
+        },
+        "numeric_screen_pass": true,
+        "method": "Lossless 2x2 repeat and half-width/half-height wrap offset; compare seam MAE against every interior boundary. Numeric screen: each wrap MAE <= max(2x interior median, interior p99). Visual inspection is still required; this screen cannot prove grain continuity or absence of large-scale repetition.",
+        "visual_review": "Inspected original offset and final 512 px grayscale 2x2 repeat. Fine horizontal brushing with cloudy vertical patina; repeating patina is visible. The original is near grayscale but has channel differences up to 7/255, so a true grayscale derivative was made. Final LR boundary ratio 2.035 exceeds the 2x numeric screen, while TB ratio is 1.090. Keep as study only pending seam treatment, material separation by W6 and calibration."
+      },
+      "decision": "Hold optional roughness study; not accepted as a seamless calibrated map",
+      "tileability": {
+        "verified": false,
+        "review": "Inspected original offset and final 512 px grayscale 2x2 repeat. Fine horizontal brushing with cloudy vertical patina; repeating patina is visible. The original is near grayscale but has channel differences up to 7/255, so a true grayscale derivative was made. Final LR boundary ratio 2.035 exceeds the 2x numeric screen, while TB ratio is 1.090. Keep as study only pending seam treatment, material separation by W6 and calibration.",
+        "review_files": [
+          "review/brass-a-offset.png",
+          "review/brass-a-512-repeat-2x2.png"
+        ]
+      },
+      "derivatives": [
+        {
+          "file": "candidates/brass-a-512.png",
+          "bytes": 115688,
+          "sha256": "197ed04a81a731a17584cc8437025a7b9184cb460a20aa85e638f761f28aeda8",
+          "px": [
+            512,
+            512
+          ],
+          "parent_sha256": "2804e7ebd96686ad086715bd5b559f4e9a603631b90a2f421f60191e874189cb",
+          "processing": "ffmpeg -v error -i originals/brass-a.png -vf scale=512:512:flags=area,format=gray -frames:v 1 candidates/brass-a-512.png",
+          "colour_space": "Linear-data interpretation requires W3/W6 calibration; encoded grayscale study",
+          "seam_metrics": {
+            "left_right": {
+              "wrap_mae": 2.46484375,
+              "interior_boundary_median_mae": 1.2109375,
+              "interior_boundary_p99_mae": 1.65234375,
+              "wrap_to_interior_median_ratio": 2.035483870967742,
+              "wrap_percentile_vs_internal_boundaries": 100.0,
+              "wrap_channel_p95": 6,
+              "numeric_screen_pass": false
+            },
+            "top_bottom": {
+              "wrap_mae": 3.48046875,
+              "interior_boundary_median_mae": 3.193359375,
+              "interior_boundary_p99_mae": 4.99609375,
+              "wrap_to_interior_median_ratio": 1.089908256880734,
+              "wrap_percentile_vs_internal_boundaries": 66.73189823874755,
+              "wrap_channel_p95": 9,
+              "numeric_screen_pass": true
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "reconciliation": "evidence/october7-reconciliation.json",
+  "stop_reason": "Leather request failed HTTP 422 content_policy_violation; user requires stopping on FAL errors. No retries, second candidates or alternate sources.",
+  "estimated_successful_cost_usd": 0.45,
+  "cost_note": "Three completed images at $0.15 each. Failed request charge unknown; $0.15 retained in conservative $0.60 exposure. No billing statement or actual-cost tool was available.",
+  "review_summary": {
+    "completed_images": 3,
+    "failed_jobs": 1,
+    "candidate_for_review": 1,
+    "held": 2,
+    "runtime_accepted": 0,
+    "second_candidates": 0,
+    "total_generation_requests": 4,
+    "provider_errors_triggered_stop": true
+  },
+  "finalized_at": "2026-10-13T01:33:02.875463+00:00",
+  "delivery": {
+    "requested_receipt": "/Users/j/Documents/dev/permagent-worktrees/wq-reports/world/w5-receipt-20261012.md",
+    "receipt_written": false,
+    "receipt_error": "PermissionError: [Errno 1] Operation not permitted: '/Users/j/Documents/dev/permagent-worktrees/wq-reports/world/w5-receipt-20261012.md'",
+    "receipt_copy": "w5-receipt-20261012.md",
+    "commit": null,
+    "commit_error": "fatal: Unable to create '/Users/j/Documents/dev/permagent-runtime/.git/worktrees/world-production-20261006/index.lock': Operation not permitted",
+    "push_attempted": false
+  }
+}

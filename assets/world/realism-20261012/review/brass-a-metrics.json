@@ -1,0 +1,39 @@
+{
+  "file": "originals/brass-a.png",
+  "bytes": 1329670,
+  "sha256": "2804e7ebd96686ad086715bd5b559f4e9a603631b90a2f421f60191e874189cb",
+  "px": [
+    1024,
+    1024
+  ],
+  "colour_mode": "decoded RGB8",
+  "channel_means": [
+    146.02719116210938,
+    145.98591136932373,
+    145.89066123962402
+  ],
+  "max_channel_spread": 7,
+  "seam_metrics": {
+    "left_right": {
+      "wrap_mae": 3.7744140625,
+      "interior_boundary_median_mae": 1.9440104166666683,
+      "interior_boundary_p99_mae": 2.4641927083333326,
+      "wrap_to_interior_median_ratio": 1.9415606162089736,
+      "wrap_percentile_vs_internal_boundaries": 100.0,
+      "wrap_channel_p95": 9,
+      "numeric_screen_pass": true
+    },
+    "top_bottom": {
+      "wrap_mae": 4.267903645833333,
+      "interior_boundary_median_mae": 3.8665364583333335,
+      "interior_boundary_p99_mae": 5.736979166666667,
+      "wrap_to_interior_median_ratio": 1.1038053544367739,
+      "wrap_percentile_vs_internal_boundaries": 74.58455522971651,
+      "wrap_channel_p95": 10,
+      "numeric_screen_pass": true
+    }
+  },
+  "numeric_screen_pass": true,
+  "method": "Lossless 2x2 repeat and half-width/half-height wrap offset; compare seam MAE against every interior boundary. Numeric screen: each wrap MAE <= max(2x interior median, interior p99). Visual inspection is still required; this screen cannot prove grain continuity or absence of large-scale repetition.",
+  "visual_review": "Inspected original offset and final 512 px grayscale 2x2 repeat. Fine horizontal brushing with cloudy vertical patina; repeating patina is visible. The original is near grayscale but has channel differences up to 7/255, so a true grayscale derivative was made. Final LR boundary ratio 2.035 exceeds the 2x numeric screen, while TB ratio is 1.090. Keep as study only pending seam treatment, material separation by W6 and calibration."
+}

@@ -1,0 +1,470 @@
+{
+  "checked_at": "2026-10-13T01:25:43.904970+00:00",
+  "production_head": "3622134e67e70fc4fc7d50785ab687d64a7012ad",
+  "branch_head": "206396e0316560bba8725b2243990104edc59a18",
+  "runtime_sources_present": false,
+  "provider_records": [
+    {
+      "provider": "fal",
+      "account_id": "github|5m4womwn5oan4fjuo2qmp172",
+      "endpoint_id": "fal-ai/nano-banana-pro",
+      "request_id": "01a118d4-d655-7e12-b8af-ac822b4df790",
+      "status": "found",
+      "http_status": 200,
+      "sent_at": "2026-10-08T00:06:04.117Z",
+      "started_at": "2026-10-08T00:26:24.387Z",
+      "ended_at": "2026-10-08T00:26:50.474Z",
+      "input": {
+        "prompt": "One continuous ultra-wide 360-degree equirectangular environment panorama for a realistic solarpunk future world, not a collage. Photorealistic cinematic environment concept art with exquisitely detailed natural materials, rich biodiversity, layered atmospheric depth. Camera floats high above a great emerald lake valley. The horizon is exactly halfway up the image; upper half luminous blue-teal sky with delicate golden clouds, lower half completely filled by descending green floating islands, cliffs, rivers, blue lakes, mist and distant terraces so there is no dark void below. Huge elegant pale ivory orbital ring megastructures arch across the valley, with gardens growing on them, small utopian spires and glass domes on levitating landmasses, long fine waterfalls dropping into lakes. Large softly visible amber gas giant and two small moons high in the sky; a few tiny graceful flying craft. Sun low on horizon at horizontal 25 percent, warm amber highlights, cool teal shadows, gentle golden volumetric haze. Scenic focal ring at horizontal 60 percent; no giant objects at image edges. Left and right edges join into the same distant hazy blue-green mountains and sky, matching continuous horizon and lighting across wrap. Zenith and nadir naturally stretched as an equirectangular environment map. No humans, robots, text, lettering, logos, UI, railings, balcony, close foreground structures, vignette, black background. One original coherent spectacular landscape. Composition A: airy balanced amphitheater of lush islands, monumental ring rising on right, cascading waterfall on center right, broad reflective turquoise lake below center.",
+        "num_images": 1,
+        "resolution": "2K",
+        "aspect_ratio": "21:9",
+        "output_format": "png",
+        "seed": 610071,
+        "enable_web_search": false
+      },
+      "output": {
+        "images": [
+          {
+            "url": "https://v3b.fal.media/files/b/0aad7d1e/J-NAr97jAdA7WCCKyWdIX_R5RaGsgE.png",
+            "content_type": "image/png",
+            "file_name": "J-NAr97jAdA7WCCKyWdIX_R5RaGsgE.png",
+            "file_size": null,
+            "width": null,
+            "height": null
+          }
+        ],
+        "description": ""
+      },
+      "local_file": "assets/world/fal-vista-20261007/candidate-a/panorama.png",
+      "sha256": "0a13c917a924cd04e368f28774290fce7ccb9e95eec2803013314b03f97fd990",
+      "bytes": 6557573,
+      "px": [
+        3168,
+        1344
+      ],
+      "estimated_cost_usd": 0.15,
+      "actual_cost_usd": null,
+      "retained_input_matches_ledger": true,
+      "retained_output_url_matches_ledger": true
+    },
+    {
+      "provider": "fal",
+      "account_id": "github|5m4womwn5oan4fjuo2qmp172",
+      "endpoint_id": "fal-ai/nano-banana-pro",
+      "request_id": "01a118d4-da49-7a81-a797-422c422438cb",
+      "status": "found",
+      "http_status": 200,
+      "sent_at": "2026-10-08T00:06:05.129Z",
+      "started_at": "2026-10-08T00:37:01.818Z",
+      "ended_at": "2026-10-08T00:37:25.583Z",
+      "input": {
+        "prompt": "One continuous ultra-wide 360-degree equirectangular environment panorama for a realistic solarpunk future world, not a collage. Photorealistic cinematic environment concept art with exquisitely detailed natural materials, rich biodiversity, layered atmospheric depth. Camera floats high above a great emerald lake valley. The horizon is exactly halfway up the image; upper half luminous blue-teal sky with delicate golden clouds, lower half completely filled by descending green floating islands, cliffs, rivers, blue lakes, mist and distant terraces so there is no dark void below. Huge elegant pale ivory orbital ring megastructures arch across the valley, with gardens growing on them, small utopian spires and glass domes on levitating landmasses, long fine waterfalls dropping into lakes. Large softly visible amber gas giant and two small moons high in the sky; a few tiny graceful flying craft. Sun low on horizon at horizontal 25 percent, warm amber highlights, cool teal shadows, gentle golden volumetric haze. Scenic focal ring at horizontal 60 percent; no giant objects at image edges. Left and right edges join into the same distant hazy blue-green mountains and sky, matching continuous horizon and lighting across wrap. Zenith and nadir naturally stretched as an equirectangular environment map. No humans, robots, text, lettering, logos, UI, railings, balcony, close foreground structures, vignette, black background. One original coherent spectacular landscape. Composition B: denser inhabited living world with several levels of floating gardens across the horizon, broad lakes and fine waterfalls down sheer moss cliffs, a giant tilted ring at center right.",
+        "num_images": 1,
+        "resolution": "2K",
+        "aspect_ratio": "21:9",
+        "output_format": "png",
+        "seed": 610072,
+        "enable_web_search": false
+      },
+      "output": {
+        "images": [
+          {
+            "url": "https://v3b.fal.media/files/b/0aad7d5e/FCyC2gW1OByT7zY_ouK1Z_sTKgJJZf.png",
+            "content_type": "image/png",
+            "file_name": "FCyC2gW1OByT7zY_ouK1Z_sTKgJJZf.png",
+            "file_size": null,
+            "width": null,
+            "height": null
+          }
+        ],
+        "description": ""
+      },
+      "local_file": "assets/world/fal-vista-20261007/candidate-b/panorama.png",
+      "sha256": "6d3f5735bc02671b5f8c1651bd02cea87f313e611a760bf5ce5774dc8d86f67b",
+      "bytes": 6354533,
+      "px": [
+        3168,
+        1344
+      ],
+      "estimated_cost_usd": 0.15,
+      "actual_cost_usd": null,
+      "retained_input_matches_ledger": true,
+      "retained_output_url_matches_ledger": true
+    },
+    {
+      "provider": "fal",
+      "account_id": "github|5m4womwn5oan4fjuo2qmp172",
+      "endpoint_id": "fal-ai/nano-banana-pro",
+      "request_id": "01a118d4-d690-77b3-8614-2677d2cb6906",
+      "status": "found",
+      "http_status": 200,
+      "sent_at": "2026-10-08T00:06:04.176Z",
+      "started_at": "2026-10-08T00:35:05.911Z",
+      "ended_at": "2026-10-08T00:35:31.484Z",
+      "input": {
+        "prompt": "One continuous ultra-wide 360-degree equirectangular environment panorama for a realistic solarpunk future world, not a collage. Photorealistic cinematic environment concept art with exquisitely detailed natural materials, rich biodiversity, layered atmospheric depth. Camera floats high above a great emerald lake valley. The horizon is exactly halfway up the image; upper half luminous blue-teal sky with delicate golden clouds, lower half completely filled by descending green floating islands, cliffs, rivers, blue lakes, mist and distant terraces so there is no dark void below. Huge elegant pale ivory orbital ring megastructures arch across the valley, with gardens growing on them, small utopian spires and glass domes on levitating landmasses, long fine waterfalls dropping into lakes. Large softly visible amber gas giant and two small moons high in the sky; a few tiny graceful flying craft. Sun low on horizon at horizontal 25 percent, warm amber highlights, cool teal shadows, gentle golden volumetric haze. Scenic focal ring at horizontal 60 percent; no giant objects at image edges. Left and right edges join into the same distant hazy blue-green mountains and sky, matching continuous horizon and lighting across wrap. Zenith and nadir naturally stretched as an equirectangular environment map. No humans, robots, text, lettering, logos, UI, railings, balcony, close foreground structures, vignette, black background. One original coherent spectacular landscape. Composition C: majestic wide river basin under a single elegant great ring, strongest waterfall on right, flying garden islands on left, beautiful restrained pale-gold architecture embedded in deep green forest.",
+        "num_images": 1,
+        "resolution": "2K",
+        "aspect_ratio": "21:9",
+        "output_format": "png",
+        "seed": 610073,
+        "enable_web_search": false
+      },
+      "output": {
+        "images": [
+          {
+            "url": "https://v3b.fal.media/files/b/0aad7d52/y-KsGDusHKOXebLk43hrv_jziaYJ17.png",
+            "content_type": "image/png",
+            "file_name": "y-KsGDusHKOXebLk43hrv_jziaYJ17.png",
+            "file_size": null,
+            "width": null,
+            "height": null
+          }
+        ],
+        "description": ""
+      },
+      "local_file": "assets/world/fal-vista-20261007/candidate-c/panorama.png",
+      "sha256": "9be4ce492dfa5ad58a56d53a91a6c152e9063561a76f8b8f1b033e317262172e",
+      "bytes": 5965735,
+      "px": [
+        3168,
+        1344
+      ],
+      "estimated_cost_usd": 0.15,
+      "actual_cost_usd": null,
+      "retained_input_matches_ledger": true,
+      "retained_output_url_matches_ledger": true
+    },
+    {
+      "provider": "fal",
+      "account_id": "github|5m4womwn5oan4fjuo2qmp172",
+      "endpoint_id": "fal-ai/nano-banana-pro",
+      "request_id": "01a118d6-5798-76a2-b08a-429c020f68ba",
+      "status": "found",
+      "http_status": 200,
+      "sent_at": "2026-10-08T00:07:42.744Z",
+      "started_at": "2026-10-08T00:40:32.680Z",
+      "ended_at": "2026-10-08T00:40:56.078Z",
+      "input": {
+        "prompt": "Photorealistic botanical game texture atlas, perfectly orthographic flat front views of separate lush vegetation cutouts. Exactly TWO rows and THREE columns of equal sized square cells. Upper left: long trailing hanging vine strands with small heart shaped emerald leaves. Upper center: dense broadleaf tree canopy cluster of detailed oval green leaves. Upper right: elegant spread fern frond cluster. Lower left: flowering leafy branch with tiny warm white and pale coral blossoms. Lower center: lush moss ground cover cushion with tiny grasses. Lower right: a second trailing vine cluster. Each isolated cluster fully contained within its own cell, generous black empty space between cells, no overlap between cells. Rich varied natural green hues, tiny leaf veins, warm golden sunlight from upper left and teal shaded undersides. Pure solid black background RGB 0,0,0 with no background shadow or ground. All plants mid green to bright green, no black leaves. No pots, frames, labels, text, borders, grid lines, watermarks. Plants must be realistically botanical with fine crisp silhouettes.",
+        "num_images": 1,
+        "resolution": "2K",
+        "aspect_ratio": "3:2",
+        "output_format": "png",
+        "seed": 610078
+      },
+      "output": {
+        "images": [
+          {
+            "url": "https://v3b.fal.media/files/b/0aad7d73/6FYTee9g8BWbDU0OW-NRh_EGGcO0iE.png",
+            "content_type": "image/png",
+            "file_name": "6FYTee9g8BWbDU0OW-NRh_EGGcO0iE.png",
+            "file_size": null,
+            "width": null,
+            "height": null
+          }
+        ],
+        "description": ""
+      },
+      "local_file": "assets/world/fal-vista-20261007/botanical/panorama.png",
+      "sha256": "25edc9e547c710f2c5fcd9a42d38f4aaccfc49179721b479f97a192622806747",
+      "bytes": 6024187,
+      "px": [
+        2528,
+        1696
+      ],
+      "estimated_cost_usd": 0.15,
+      "actual_cost_usd": null,
+      "retained_input_matches_ledger": true,
+      "retained_output_url_matches_ledger": true
+    },
+    {
+      "provider": "fal",
+      "account_id": "github|5m4womwn5oan4fjuo2qmp172",
+      "endpoint_id": "fal-ai/nano-banana-pro",
+      "request_id": "01a118da-0e81-7420-8705-5c0ac68d7ddb",
+      "status": "found",
+      "http_status": 200,
+      "sent_at": "2026-10-08T00:11:46.177Z",
+      "started_at": "2026-10-08T00:42:01.449Z",
+      "ended_at": "2026-10-08T00:42:22.560Z",
+      "input": {
+        "prompt": "A single isolated cinematic photorealistic distant solarpunk landscape landform cutout: broad mossy floating cliff shelf covered in lush natural forest, a small elegant pale ivory garden tower and glass dome, long delicate waterfalls cascading down its rocky underside into luminous turquoise mist. Three quarter view from slightly above, entire complete isolated island and waterfall visible with generous empty margins, no sky or ground. Wide silhouette, finely detailed trees and stone, spectacular realistic environment matte painting. Warm golden sunlight from upper left, teal cool shadows. Perfectly solid pure black background RGB 0,0,0 all around and between isolated branches for later alpha extraction, no shadows on background, no vignette, no text, no people, no frame.",
+        "num_images": 1,
+        "resolution": "2K",
+        "aspect_ratio": "3:2",
+        "output_format": "png",
+        "seed": 610082
+      },
+      "output": {
+        "images": [
+          {
+            "url": "https://v3b.fal.media/files/b/0aad7d7c/RRLkRsQYlfumojaHCSeY-_1II74gkp.png",
+            "content_type": "image/png",
+            "file_name": "RRLkRsQYlfumojaHCSeY-_1II74gkp.png",
+            "file_size": null,
+            "width": null,
+            "height": null
+          }
+        ],
+        "description": ""
+      },
+      "local_file": "assets/world/fal-vista-20261007/cliff-waterfall/panorama.png",
+      "sha256": "6fdbfe6aafa813f1f72129795d7fdeab4741ff604447ce3ec18a025abc441957",
+      "bytes": 5631265,
+      "px": [
+        2528,
+        1696
+      ],
+      "estimated_cost_usd": 0.15,
+      "actual_cost_usd": null,
+      "retained_input_matches_ledger": true,
+      "retained_output_url_matches_ledger": true
+    },
+    {
+      "provider": "fal",
+      "account_id": "github|5m4womwn5oan4fjuo2qmp172",
+      "endpoint_id": "fal-ai/nano-banana-pro",
+      "request_id": "01a118da-0ebe-7143-ae4f-9903fd7e94f1",
+      "status": "found",
+      "http_status": 200,
+      "sent_at": "2026-10-08T00:11:46.238Z",
+      "started_at": "2026-10-08T00:42:33.187Z",
+      "ended_at": "2026-10-08T00:42:56.438Z",
+      "input": {
+        "prompt": "A single isolated cinematic photorealistic distant solarpunk landscape landform cutout: a wide lush floating green island with waterfalls spilling from its base, pale futuristic spires and a monumental elegant ivory circular ring arching high above the island, gardens along the ring, tiny hovering craft nearby. Three quarter view from slightly above, whole complete ring and island visible with generous empty margins on all edges, no sky or ground. Wide silhouette, exquisite natural trees and stone, spectacular realistic environment matte painting. Warm golden sunlight from upper left, teal cool shadows. Perfectly solid pure black background RGB 0,0,0 all around and through ring opening for later alpha extraction, no shadows on background, no vignette, no text, no people, no frame.",
+        "num_images": 1,
+        "resolution": "2K",
+        "aspect_ratio": "3:2",
+        "output_format": "png",
+        "seed": 610083
+      },
+      "output": {
+        "images": [
+          {
+            "url": "https://v3b.fal.media/files/b/0aad7d7f/pKozStJ3CHceYx3KpX_de_Ym2vd3JH.png",
+            "content_type": "image/png",
+            "file_name": "pKozStJ3CHceYx3KpX_de_Ym2vd3JH.png",
+            "file_size": null,
+            "width": null,
+            "height": null
+          }
+        ],
+        "description": ""
+      },
+      "local_file": "assets/world/fal-vista-20261007/floating-islet/panorama.png",
+      "sha256": "f5e66b72b93796f950c3f00bbf3791bf0a56d9f9580f62ae971bf41f7c2f1400",
+      "bytes": 5320761,
+      "px": [
+        2528,
+        1696
+      ],
+      "estimated_cost_usd": 0.15,
+      "actual_cost_usd": null,
+      "retained_input_matches_ledger": true,
+      "retained_output_url_matches_ledger": true
+    },
+    {
+      "provider": "fal",
+      "account_id": "github|5m4womwn5oan4fjuo2qmp172",
+      "endpoint_id": "fal-ai/ideogram/remove-background",
+      "request_id": "01a118fe-0692-7851-b4e1-34a55d784113",
+      "status": "found",
+      "http_status": 200,
+      "sent_at": "2026-10-08T00:51:03.442Z",
+      "started_at": "2026-10-08T00:51:03.784Z",
+      "ended_at": "2026-10-08T00:51:17.104Z",
+      "input": {
+        "image_url": "https://v3b.fal.media/files/b/0aad7d7c/RRLkRsQYlfumojaHCSeY-_1II74gkp.png",
+        "sync_mode": false
+      },
+      "output": {
+        "image": {
+          "url": "https://v3b.fal.media/files/b/0aad7db3/FH-ysMCZcGrjtwoJbm-Rr_7XXp4Itb.png",
+          "content_type": "image/png",
+          "file_name": "FH-ysMCZcGrjtwoJbm-Rr_7XXp4Itb.png",
+          "file_size": null
+        }
+      },
+      "local_file": "assets/world/fal-vista-20261007/cliff-waterfall-alpha/panorama.png",
+      "sha256": "1d9e255618fd69525e14f4064434929adfadcf74fc6446af11c8f7cd0ee8d895",
+      "bytes": 4943186,
+      "px": [
+        2528,
+        1696
+      ],
+      "estimated_cost_usd": 0.01,
+      "actual_cost_usd": null,
+      "retained_input_matches_ledger": true,
+      "retained_output_url_matches_ledger": true
+    },
+    {
+      "provider": "fal",
+      "account_id": "github|5m4womwn5oan4fjuo2qmp172",
+      "endpoint_id": "fal-ai/ideogram/remove-background",
+      "request_id": "01a118fe-06eb-7511-9fe3-0ae4a8d9f573",
+      "status": "found",
+      "http_status": 200,
+      "sent_at": "2026-10-08T00:51:03.531Z",
+      "started_at": "2026-10-08T00:51:03.688Z",
+      "ended_at": "2026-10-08T00:51:19.317Z",
+      "input": {
+        "image_url": "https://v3b.fal.media/files/b/0aad7d7f/pKozStJ3CHceYx3KpX_de_Ym2vd3JH.png",
+        "sync_mode": false
+      },
+      "output": {
+        "image": {
+          "url": "https://v3b.fal.media/files/b/0aad7db3/hpyqQebrIhVhVof3pEQQm_gCF5xlBe.png",
+          "content_type": "image/png",
+          "file_name": "hpyqQebrIhVhVof3pEQQm_gCF5xlBe.png",
+          "file_size": null
+        }
+      },
+      "local_file": "assets/world/fal-vista-20261007/floating-islet-alpha/panorama.png",
+      "sha256": "a0cdabc1c861ef5ab0a41eabbe2ce2f2c06427c2ecde46fe849b70bb0adc294c",
+      "bytes": 4232079,
+      "px": [
+        2528,
+        1696
+      ],
+      "estimated_cost_usd": 0.01,
+      "actual_cost_usd": null,
+      "retained_input_matches_ledger": true,
+      "retained_output_url_matches_ledger": true
+    }
+  ],
+  "derivatives": [
+    {
+      "file": "ui/command-center/public/world/vista/golden-hour-panorama-4096.jpg",
+      "bytes": 1323490,
+      "sha256": "4a01dc8418fef6c1f4449f8188b7a2f5c1ed4b8f7ab6c62877d7bb5d937aab8e",
+      "matches_old_ledger": true
+    },
+    {
+      "file": "ui/command-center/public/world/vista/golden-hour-panorama-2048.jpg",
+      "bytes": 420835,
+      "sha256": "9f2163a53415cca842a023e7b2c2aba58490baf59d9e81ebe76c238b1ce59108",
+      "matches_old_ledger": true
+    },
+    {
+      "file": "assets/world/fal-vista-20261007/candidate-b/golden-hour-panorama-4096.jpg",
+      "bytes": 1276039,
+      "sha256": "8529f0d178e8c057c5a478c511f9b89cc20ec259dc582d7c2d1a971ec91bb8bc",
+      "matches_old_ledger": true
+    },
+    {
+      "file": "assets/world/fal-vista-20261007/candidate-b/golden-hour-panorama-2048.jpg",
+      "bytes": 412498,
+      "sha256": "2880b2ccd898646033c8bb1518b6dc27439f78c37f906fc4e60f583fd81830f3",
+      "matches_old_ledger": true
+    },
+    {
+      "file": "assets/world/fal-vista-20261007/candidate-c/golden-hour-panorama-4096.jpg",
+      "bytes": 1122919,
+      "sha256": "502e92c957d04a32c0f6a3237316db1a9c36d618cdd7e2a00ee6fa14f75f2e03",
+      "matches_old_ledger": true
+    },
+    {
+      "file": "assets/world/fal-vista-20261007/candidate-c/golden-hour-panorama-2048.jpg",
+      "bytes": 354164,
+      "sha256": "4507d0caac2b3f2d95988eaecb9cdea7806c6f543ea93bb567b371375248c692",
+      "matches_old_ledger": true
+    },
+    {
+      "file": "ui/command-center/public/world/vista/cards/cliff-waterfall.png",
+      "bytes": 4798584,
+      "sha256": "ea056c05b28969e3dbc4adc62a9f65d959c1a7c1ab009a6e7322266b72a0ac95",
+      "matches_old_ledger": true
+    },
+    {
+      "file": "ui/command-center/public/world/vista/cards/floating-islet.png",
+      "bytes": 4166932,
+      "sha256": "ea58795b9eda217fb6e88227b3463874ebb483b32c000a4ad2e19a0aca8a89cd",
+      "matches_old_ledger": true
+    }
+  ],
+  "blocked_branch_ledger": {
+    "schema_version": 1,
+    "date": "2026-10-07",
+    "branch": "wq/world",
+    "worktree": "/Users/j/Documents/dev/permagent-worktrees/wq-world",
+    "status": "blocked_fal_approval",
+    "prior_estimated_spend_usd": 6.6,
+    "new_estimated_spend_usd": 0.0,
+    "cumulative_estimated_spend_usd": 6.6,
+    "budget_cap_usd": 18.0,
+    "preflight": {
+      "free_disk_command": "df -h /",
+      "free_disk_gib_observed": 16,
+      "free_disk_gib_required_by_lane_rules": 12,
+      "exit_code": 0,
+      "decision": "preflight passed under coordinator lane override; stopped after FAL upload preparation was refused for approval"
+    },
+    "jobs": [],
+    "assets": [],
+    "fal_operations": [
+      {
+        "operation": "check_account_status",
+        "status": "ready"
+      },
+      {
+        "operation": "search_models",
+        "status": "completed",
+        "endpoints": [
+          "fal-ai/nano-banana-pro",
+          "fal-ai/hunyuan_world",
+          "fal-ai/hunyuan-3d/v3.1/pro/image-to-3d"
+        ]
+      },
+      {
+        "operation": "get_model_schema",
+        "status": "completed",
+        "endpoints": [
+          "fal-ai/nano-banana-pro",
+          "fal-ai/hunyuan_world",
+          "fal-ai/hunyuan-3d/v3.1/pro/image-to-3d"
+        ]
+      },
+      {
+        "operation": "get_pricing",
+        "status": "completed",
+        "prices": [
+          {
+            "endpoint_id": "fal-ai/nano-banana-pro",
+            "unit_price_usd": 0.15,
+            "unit": "images"
+          },
+          {
+            "endpoint_id": "fal-ai/hunyuan_world",
+            "unit_price_usd": 0.15,
+            "unit": "images"
+          },
+          {
+            "endpoint_id": "fal-ai/hunyuan-3d/v3.1/pro/image-to-3d",
+            "unit_price_usd": 0.015,
+            "unit": "units"
+          }
+        ]
+      },
+      {
+        "operation": "upload_file_prepare",
+        "status": "refused_for_approval",
+        "file": "docs/design/solar-forum/north-star.png"
+      }
+    ],
+    "notes": [
+      "The FAL MCP upload_file preparation call was refused for approval; no FAL MCP job was submitted.",
+      "No signed storage URL was downloaded or recorded.",
+      "Blocks A, B, and C were not started because the FAL MCP upload preparation call was refused for approval.",
+      "A documentation commit was attempted but Git refused because the shared worktree index.lock path was not writable in the sandbox; files remain uncommitted."
+    ]
+  },
+  "historical_new_estimated_usd": 0.92,
+  "historical_prior_estimated_usd": 6.6,
+  "conservative_combined_estimate_usd": 7.52,
+  "historical_session_cap_usd": 18,
+  "estimated_headroom_usd": 10.48,
+  "actual_charges_verified": false,
+  "warning": "Historic estimates are not current billing; account readiness is not a balance. Current W5 instruction authorizes a maximum USD 5 tranche without top-up."
+}

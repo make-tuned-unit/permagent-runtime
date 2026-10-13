@@ -1,0 +1,39 @@
+{
+  "file": "originals/weave-a.png",
+  "bytes": 2500164,
+  "sha256": "18d2125f939a492440fdda73ff6c37fe9df409abd4ee2506682010f338823b65",
+  "px": [
+    1024,
+    1024
+  ],
+  "colour_mode": "decoded RGB8",
+  "channel_means": [
+    118.7642765045166,
+    127.63585090637207,
+    83.58797073364258
+  ],
+  "max_channel_spread": 70,
+  "seam_metrics": {
+    "left_right": {
+      "wrap_mae": 21.988606770833332,
+      "interior_boundary_median_mae": 20.311523437500014,
+      "interior_boundary_p99_mae": 28.68164062500001,
+      "wrap_to_interior_median_ratio": 1.0825680721829567,
+      "wrap_percentile_vs_internal_boundaries": 64.51612903225806,
+      "wrap_channel_p95": 54,
+      "numeric_screen_pass": true
+    },
+    "top_bottom": {
+      "wrap_mae": 17.1162109375,
+      "interior_boundary_median_mae": 18.391927083333332,
+      "interior_boundary_p99_mae": 24.228190104166668,
+      "wrap_to_interior_median_ratio": 0.930637168141593,
+      "wrap_percentile_vs_internal_boundaries": 28.73900293255132,
+      "wrap_channel_p95": 44,
+      "numeric_screen_pass": true
+    }
+  },
+  "numeric_screen_pass": true,
+  "method": "Lossless 2x2 repeat and half-width/half-height wrap offset; compare seam MAE against every interior boundary. Numeric screen: each wrap MAE <= max(2x interior median, interior p99). Visual inspection is still required; this screen cannot prove grain continuity or absence of large-scale repetition.",
+  "visual_review": "Inspected full original plus final 512 px half-wrap offset and 1024 px 2x2 repeat. Plain moss/olive weave with restrained slub and continuous overall tone. No conspicuous hard seam at delivery scale; numeric LR/TB ratios 1.161/0.937 are within normal texture variation. Yarn pattern repeats and physical yarn size remains an artistic scale assumption. Not proof of seamlessness at arbitrary magnification."
+}

@@ -1,0 +1,29 @@
+{
+  "status": "submitted",
+  "decision_id": "e97e8226-61e7-43c9-a3f6-dd2a6a7efd72",
+  "recipe": {
+    "endpoint_id": "fal-ai/nano-banana-pro",
+    "input": {
+      "num_images": 1,
+      "resolution": "1K",
+      "aspect_ratio": "1:1",
+      "output_format": "png",
+      "enable_web_search": false,
+      "limit_generations": true,
+      "sync_mode": false,
+      "safety_tolerance": "4",
+      "system_prompt": "",
+      "prompt": "A single seamless tileable orthographic material texture: tobacco-brown vegetable-tanned leather, one square covering exactly 0.30 metre across. Fine small-scale pebble grain, restrained subtle natural wear, warm brown tonal variation and an even matte appearance. Uniform diffuse base colour (albedo) only, delighted flat full-frame swatch. Match both opposite edge pairs seamlessly, top/bottom and left/right, with no discontinuity when repeated in a grid. No stitching, no seams, no embossed designs, no logos, no text, no strong scars, no folds, no perspective, no directional lighting, no reflections or highlights, no baked shadows or ambient occlusion, no vignette, no border or exposure gradient. One square tile covering the full image; suitable for final 512x512 texture.",
+      "seed": 61012053
+    },
+    "note": "These are the submitted inputs, not resolved server defaults. For a variation, copy them and change only requested fields; reuse returned_seed when supported by the schema. Source URLs may expire."
+  },
+  "request_id": "01a132e1-3173-7a52-adf1-bc7c34d5f090",
+  "endpoint_id": "fal-ai/nano-banana-pro",
+  "status_url": "https://queue.fal.run/fal-ai/nano-banana-pro/requests/01a132e1-3173-7a52-adf1-bc7c34d5f090/status",
+  "response_url": "https://queue.fal.run/fal-ai/nano-banana-pro/requests/01a132e1-3173-7a52-adf1-bc7c34d5f090",
+  "cancel_url": "https://queue.fal.run/fal-ai/nano-banana-pro/requests/01a132e1-3173-7a52-adf1-bc7c34d5f090/cancel",
+  "poll_after_seconds": 20,
+  "polling_hint": "Wait poll_after_seconds before calling check_job with the same request_id and status_url. This interval is not an ETA. Report meaningful status changes rather than repeating unchanged progress. Do not submit another job to check progress.",
+  "hint": "Job submitted. Use check_job with status_url to check status, then get_job_result with response_url when it completes."
+}

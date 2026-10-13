@@ -1,0 +1,39 @@
+{
+  "file": "originals/walnut-a.png",
+  "bytes": 1587360,
+  "sha256": "53195a1d6e86c123b567c4a076aef94cde1a1f614dd25032d682bd43da596028",
+  "px": [
+    1024,
+    1024
+  ],
+  "colour_mode": "decoded RGB8",
+  "channel_means": [
+    68.73404884338379,
+    45.760786056518555,
+    27.345622062683105
+  ],
+  "max_channel_spread": 66,
+  "seam_metrics": {
+    "left_right": {
+      "wrap_mae": 5.642903645833333,
+      "interior_boundary_median_mae": 2.9759114583333317,
+      "interior_boundary_p99_mae": 3.7050781249999996,
+      "wrap_to_interior_median_ratio": 1.896193393130607,
+      "wrap_percentile_vs_internal_boundaries": 100.0,
+      "wrap_channel_p95": 14,
+      "numeric_screen_pass": true
+    },
+    "top_bottom": {
+      "wrap_mae": 6.3271484375,
+      "interior_boundary_median_mae": 5.740234375,
+      "interior_boundary_p99_mae": 7.642903645833333,
+      "wrap_to_interior_median_ratio": 1.1022456617897245,
+      "wrap_percentile_vs_internal_boundaries": 71.94525904203323,
+      "wrap_channel_p95": 16,
+      "numeric_screen_pass": true
+    }
+  },
+  "numeric_screen_pass": true,
+  "method": "Lossless 2x2 repeat and half-width/half-height wrap offset; compare seam MAE against every interior boundary. Numeric screen: each wrap MAE <= max(2x interior median, interior p99). Visual inspection is still required; this screen cannot prove grain continuity or absence of large-scale repetition.",
+  "visual_review": "Inspected original, full 2x2 repeat, and 512 px wrap offset at native 1024 px. Dark warm horizontal walnut grain and small knots are plausible, but a vertical join interrupts grain in the repeat and offset. Numeric screen passes narrowly (LR ratio 1.896); its edge MAE is worse than every interior boundary. Visual rejection takes precedence."
+}

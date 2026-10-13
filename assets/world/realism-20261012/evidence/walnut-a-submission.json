@@ -1,0 +1,29 @@
+{
+  "status": "submitted",
+  "decision_id": "e97e8226-61e7-43c9-a3f6-dd2a6a7efd72",
+  "recipe": {
+    "endpoint_id": "fal-ai/nano-banana-pro",
+    "input": {
+      "num_images": 1,
+      "resolution": "1K",
+      "aspect_ratio": "1:1",
+      "output_format": "png",
+      "enable_web_search": false,
+      "limit_generations": true,
+      "sync_mode": false,
+      "safety_tolerance": "4",
+      "system_prompt": "",
+      "prompt": "A single seamless tileable orthographic material texture: dark warm oiled walnut timber, exactly 1.0 metre of surface across this square tile. Straight to gently figured grain runs horizontally from left to right, fine natural pores, restrained natural variation, few tiny knots at most 3 cm across. Palette in sRGB approximately #2a1a10 through #4a2c16, dark warm brown without orange highlights. Uniform diffuse base colour (albedo) only, delighted, completely flat orthographic full-frame swatch. Match opposite edges on BOTH axes with continuously flowing grain: left/right and top/bottom must join seamlessly when repeated in a grid. No plank gaps or board seams, no perspective, no directional light, no specular reflection, no baked shadows or ambient occlusion, no vignette, no gradients, no fixtures, no symbols, no text, no border. One 1024x1024 material tile filling the entire image.",
+      "seed": 61012051
+    },
+    "note": "These are the submitted inputs, not resolved server defaults. For a variation, copy them and change only requested fields; reuse returned_seed when supported by the schema. Source URLs may expire."
+  },
+  "request_id": "01a132df-e455-7633-9453-d1e0b15be90d",
+  "endpoint_id": "fal-ai/nano-banana-pro",
+  "status_url": "https://queue.fal.run/fal-ai/nano-banana-pro/requests/01a132df-e455-7633-9453-d1e0b15be90d/status",
+  "response_url": "https://queue.fal.run/fal-ai/nano-banana-pro/requests/01a132df-e455-7633-9453-d1e0b15be90d",
+  "cancel_url": "https://queue.fal.run/fal-ai/nano-banana-pro/requests/01a132df-e455-7633-9453-d1e0b15be90d/cancel",
+  "poll_after_seconds": 20,
+  "polling_hint": "Wait poll_after_seconds before calling check_job with the same request_id and status_url. This interval is not an ETA. Report meaningful status changes rather than repeating unchanged progress. Do not submit another job to check progress.",
+  "hint": "Job submitted. Use check_job with status_url to check status, then get_job_result with response_url when it completes."
+}
