@@ -7,6 +7,7 @@ import { Button } from '../common/Button';
 import { api } from '../../lib/api';
 import { getDaemonTokenError } from '../../lib/daemonAuth';
 import { classifyStartupConfig } from '../../lib/startupConfig';
+import { useDaemonFailure } from './useDaemonFailure';
 
 interface Props {
   /** Called once the background service answers with a valid config: `app`
@@ -39,6 +40,7 @@ type Status = 'connecting' | 'retrying' | 'failed' | 'unpaired';
 export function BootScreen({ onReady, onMalformed }: Props) {
   const { colors, reduceMotion } = useTheme();
   const [status, setStatus] = useState<Status>('connecting');
+  const failureDetail = useDaemonFailure();
   const [attempt, setAttempt] = useState(0);
   const [mounted, setMounted] = useState(false);
   // Bumping this re-runs the connect effect below — the Retry button's entire
@@ -170,6 +172,14 @@ export function BootScreen({ onReady, onMalformed }: Props) {
           </p>
         )}
         {(status === 'connecting' || status === 'retrying') && <p style={{ color: colors.textMuted, marginTop: space.md }}>Connection check: {remaining}s remaining</p>}
+        {failureDetail && (status === 'connecting' || status === 'retrying' || status === 'failed') && (
+          <p style={{
+            fontFamily: font.body, fontSize: textSize.small, fontWeight: 400,
+            color: colors.textMuted, marginTop: space.md,
+          }}>
+            Background service: {failureDetail}
+          </p>
+        )}
         {(status === 'failed' || status === 'unpaired') && (
           <div style={{ marginTop: space.xxl, display: 'flex', justifyContent: 'center' }}>
             <Button colors={colors} variant="primary" onClick={() => setRetryKey(k => k + 1)}>

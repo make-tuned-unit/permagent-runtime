@@ -13,6 +13,17 @@ import { act } from 'react-dom/test-utils';
 
 vi.mock('../../lib/api', () => ({ api: { getConfig: vi.fn() } }));
 
+const eventMock = vi.hoisted(() => ({
+  handlers: [] as Array<(e: { payload: unknown }) => void>,
+  unlisten: vi.fn(),
+}));
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: (_name: string, cb: (e: { payload: unknown }) => void) => {
+    eventMock.handlers.push(cb);
+    return Promise.resolve(eventMock.unlisten);
+  },
+}));
+
 import { api } from '../../lib/api';
 import { BootScreen } from './BootScreen';
 
@@ -182,5 +193,36 @@ describe('absolute startup deadline', () => {
       expect(onReady).toHaveBeenCalledWith('app');
       expect(performance.now() - started).toBeLessThan(3000);
     }
+  });
+});
+
+
+describe('daemon-failure detail from the Tauri shell', () => {
+  afterEach(() => { delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__; });
+
+  it('shows the detail while connecting and in the failed state, without moving the deadline, and unsubscribes', async () => {
+    (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {};
+    eventMock.handlers.length = 0;
+    eventMock.unlisten.mockClear();
+    getConfigMock.mockReturnValue(new Promise(() => {}));
+    act(() => root.render(<BootScreen onReady={vi.fn()} onMalformed={vi.fn()} />));
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(eventMock.handlers).toHaveLength(1);
+    expect(container.textContent).not.toContain('Background service:');
+
+    act(() => eventMock.handlers[0]({ payload: 'sidecar exited with code 1' }));
+    expect(container.textContent).toContain('Connection check');
+    expect(container.textContent).toContain('Background service: sidecar exited with code 1');
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(9999); });
+    expect(container.querySelector('button')).toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(container.querySelector('button')?.textContent).toContain('Retry');
+    expect(container.textContent).toContain('Try again in a moment.');
+    expect(container.textContent).toContain('Background service: sidecar exited with code 1');
+
+    act(() => root.unmount());
+    expect(eventMock.unlisten).toHaveBeenCalled();
+    root = createRoot(container);
   });
 });
