@@ -82,6 +82,12 @@ final class HubWatchRelay: NSObject, WCSessionDelegate {
         // first, then hop to the actor to transcribe.
         let requestId = (file.metadata?["id"] as? String) ?? UUID().uuidString
         let kind = (file.metadata?["kind"] as? String) ?? "note"
+        #if DEBUG
+        if file.metadata?["injected"] as? Bool == true {
+            NSLog("permagent-inject: received INJECTED (not real) watch audio id=%@ kind=%@; hub request unchanged",
+                  requestId, kind)
+        }
+        #endif
         do {
             let dest = try Self.stage(file: file.fileURL, requestId: requestId, kind: kind)
             Task { @MainActor in

@@ -20,10 +20,51 @@ final class WatchRecorder: NSObject, ObservableObject, AVAudioRecorderDelegate {
     private var lastTick: TimeInterval = 0
 
     func requestPermission() async -> Bool {
-        await AVAudioApplication.requestRecordPermission()
+        #if DEBUG
+        if Self.injectedSource != nil { return true }
+        #endif
+        return await AVAudioApplication.requestRecordPermission()
     }
 
+    #if DEBUG
+    /// Debug-only test hook: the simulators have no microphone. When the app is
+    /// launched with PERMAGENT_INJECT_WAV=<absolute path>, `start()` copies that
+    /// file as the recording instead of opening the mic. The copy is named
+    /// `watch-injected-*` so the relay marks it `injected: true` end to end.
+    static var injectedSource: URL? {
+        guard let path = ProcessInfo.processInfo.environment["PERMAGENT_INJECT_WAV"],
+              path.hasPrefix("/"), FileManager.default.fileExists(atPath: path) else { return nil }
+        return URL(fileURLWithPath: path)
+    }
+
+    private func startInjected(_ source: URL) throws {
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let file = dir.appendingPathComponent("watch-injected-\(UUID().uuidString).wav")
+        try FileManager.default.copyItem(at: source, to: file)
+        NSLog("permagent-inject: watch recording replaced by injected audio %@", source.path)
+        fileURL = file
+        elapsed = 0
+        level = 0.6
+        heardSpeech = true
+        isRecording = true
+        meterTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled, let self, self.isRecording else { return }
+            let finish = self.onFinish
+            let url = self.fileURL
+            self.isRecording = false
+            self.level = 0
+            finish?(url)
+        }
+    }
+    #endif
+
     func start() throws {
+        #if DEBUG
+        if let source = Self.injectedSource { try startInjected(source); return }
+        #endif
         if recorder != nil {
             recorder?.delegate = nil
             recorder?.stop()

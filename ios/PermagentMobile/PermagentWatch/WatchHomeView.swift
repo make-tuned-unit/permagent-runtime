@@ -65,7 +65,12 @@ struct WatchHomeView: View {
         accent: Color,
         action: @escaping () -> Void
     ) -> some View {
-        Button(action: action) {
+        var usable = relay.paired
+        #if DEBUG
+        // Rehearsal on a simulator with no paired hub: the injected-audio hook enables the buttons.
+        if WatchRecorder.injectedSource != nil { usable = true }
+        #endif
+        return Button(action: action) {
             HStack(spacing: 10) {
                 ZStack {
                     Circle()
@@ -99,8 +104,8 @@ struct WatchHomeView: View {
             }
         }
         .buttonStyle(WatchActionButtonStyle())
-        .disabled(!relay.paired)
-        .opacity(relay.paired ? 1 : 0.45)
+        .disabled(!usable)
+        .opacity(usable ? 1 : 0.45)
     }
 }
 

@@ -287,7 +287,15 @@ final class WatchRelay: NSObject, ObservableObject, WCSessionDelegate {
             guard !activeTransferIds.contains(item.id) else { continue }
             let url = URL(fileURLWithPath: item.path)
             activeTransferIds.insert(item.id)
-            session.transferFile(url, metadata: ["id": item.id, "kind": item.kind])
+            var metadata: [String: Any] = ["id": item.id, "kind": item.kind]
+            #if DEBUG
+            // Audio from the PERMAGENT_INJECT_WAV test hook is never passed off as a real recording.
+            if url.lastPathComponent.hasPrefix("watch-injected-") {
+                metadata["injected"] = true
+                metadata["source"] = "injected"
+            }
+            #endif
+            session.transferFile(url, metadata: metadata)
         }
     }
 
