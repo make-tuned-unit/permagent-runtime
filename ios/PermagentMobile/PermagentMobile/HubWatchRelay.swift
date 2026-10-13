@@ -204,7 +204,18 @@ final class HubWatchRelay: NSObject, WCSessionDelegate {
         }
     }
 
-    private func streamChat(id: String, text: String) async {
+    private func streamChat(id: String, text: String, announceTranscript: Bool = false) async {
+        if announceTranscript {
+            // The user's own line, as soon as it exists (live + durable).
+            var line = WatchResponse.ack(id, op: "chatTranscript")
+            line.text = text
+            send(line)
+        }
+        NotificationCenter.default.post(name: .watchTurnChanged, object: nil)
+        defer {
+            NotificationCenter.default.post(name: .watchTurnChanged, object: nil,
+                                            userInfo: ["finished": true])
+        }
         do {
             let sid = try await MobileSession.chatSessionId()
             var acc = AssistantAccumulator()
@@ -249,7 +260,7 @@ final class HubWatchRelay: NSObject, WCSessionDelegate {
                     send(WatchResponse.fail(requestId, op: "chatDelta", "I didn't catch that."))
                     return
                 }
-                await streamChat(id: requestId, text: clipped)
+                await streamChat(id: requestId, text: clipped, announceTranscript: true)
                 return
             }
             var payload = WatchResponse.ack(requestId, op: "transcript")

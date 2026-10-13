@@ -633,6 +633,12 @@ struct ReasoningDisclosure: View {
     }
 }
 
+extension Notification.Name {
+    /// Posted by HubWatchRelay when a Watch turn is posted (userInfo
+    /// "finished" absent) and when its reply has landed ("finished": true).
+    static let watchTurnChanged = Notification.Name("permagent.watchTurnChanged")
+}
+
 struct ChatView: View {
     @ObservedObject private var identity = AgentIdentity.shared
     @Environment(\.scenePhase) private var scenePhase
@@ -811,6 +817,22 @@ struct ChatView: View {
                 await modelSelection.refresh(scope: .chat)
                 await initialRestore()
             }
+            // A Watch turn runs through this phone into the same hub session.
+            // Refresh the open chat when it starts and again when it lands.
+            .onReceive(NotificationCenter.default.publisher(for: .watchTurnChanged)) { note in
+                guard !sending else { return }
+                if sessionId == nil { sessionId = MobileSession.persistedId }
+                guard let sid = sessionId else { return }
+                if note.userInfo?["finished"] as? Bool == true {
+                    Task {
+                        if let loaded = try? await MobileSession.adopt(sid) {
+                            withAnimation(Motion.ease) { messages = loaded }
+                        }
+                    }
+                } else if !hubTurnLive {
+                    Task { await catchUpFromHub() }
+                }
+            }
         }
     }
 
@@ -896,7 +918,7 @@ struct ChatView: View {
             if m.role == "user" {
                 HStack {
                     Spacer(minLength: 56)
-                    Text(m.text)
+                    Text(markdownAttributed(m.text))
                         .font(.chatUser)
                         .foregroundStyle(ChatSurface.text)
                         .textSelection(.enabled)
@@ -913,7 +935,7 @@ struct ChatView: View {
                     if m.text.isEmpty && m.thinking.isEmpty {
                         ThinkingDots()
                     } else if !m.text.isEmpty {
-                        Text(m.text)
+                        Text(markdownAttributed(m.text))
                             .font(.chatProse)
                             .lineSpacing(4)
                             .foregroundStyle(ChatSurface.text)

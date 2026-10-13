@@ -11,6 +11,8 @@ final class WatchRelay: NSObject, ObservableObject, WCSessionDelegate {
     @Published var notice: String?
 
     @Published var chatText = ""
+    /// What the user said this turn (typed, or transcribed by the phone).
+    @Published var chatUserText = ""
     @Published var chatThinking = false
     @Published var chatBusy = false
 
@@ -59,6 +61,7 @@ final class WatchRelay: NSObject, ObservableObject, WCSessionDelegate {
         chatBusy = true
         chatThinking = true
         chatText = ""
+        chatUserText = trimmed
         notice = nil
         armResponseWatchdog(kind: "chat")
         send(WatchRequest(op: .chat, id: UUID().uuidString, text: trimmed, projectId: nil))
@@ -72,6 +75,7 @@ final class WatchRelay: NSObject, ObservableObject, WCSessionDelegate {
             chatBusy = true
             chatThinking = true
             chatText = ""
+            chatUserText = ""
         } else {
             noteBusy = true
             noteTranscript = ""
@@ -237,6 +241,8 @@ final class WatchRelay: NSObject, ObservableObject, WCSessionDelegate {
                 chatBusy = false
                 chatThinking = false
             }
+        case "chatTranscript":
+            if !finishedChatIds.contains(reply.id), let text = reply.text { chatUserText = text }
         case "chatDelta":
             let final = reply.done == true || reply.ok == false
             // Duplicate or late progress for a turn that is over (or was given

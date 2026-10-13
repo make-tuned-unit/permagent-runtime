@@ -631,7 +631,19 @@ final class VoiceEngine: ObservableObject {
             input.voiceProcessingOtherAudioDuckingConfiguration =
                 .init(enableAdvancedDucking: false, duckingLevel: .min)
         }
-        let inFormat = input.inputFormat(forBus: 0)
+        var inFormat = input.inputFormat(forBus: 0)
+        var micless = false
+        #if DEBUG
+        // The simulator has no microphone (0 Hz, 0 ch). With an injected WAV
+        // pending, run micless: a synthetic 16 kHz format feeds the pipe and
+        // no input tap is installed; the injected frames are the capture.
+        if (inFormat.sampleRate <= 0 || inFormat.channelCount == 0), !Self.injectConsumed,
+           ProcessInfo.processInfo.environment["PERMAGENT_INJECT_WAV"]?.hasPrefix("/") == true,
+           let synthetic = AVAudioFormat(standardFormatWithSampleRate: 16_000, channels: 1) {
+            inFormat = synthetic
+            micless = true
+        }
+        #endif
         guard inFormat.sampleRate > 0, inFormat.channelCount > 0 else {
             throw AudioSetupError.unusableInputFormat(inFormat.sampleRate,
                                                       inFormat.channelCount)
@@ -678,6 +690,7 @@ final class VoiceEngine: ObservableObject {
         // no check is planted. Everything it touches is already safe to use off
         // the main actor: `pipe` is @unchecked Sendable and confined to this
         // thread, and the only main-actor work hops explicitly via Task.
+        if !micless {
         input.installTap(onBus: 0, bufferSize: 4096, format: inFormat) { @Sendable [weak self] buffer, _ in
             guard let self else { return }
             let (data, rms, voiceLike) = pipe.convert(buffer)
@@ -686,6 +699,7 @@ final class VoiceEngine: ObservableObject {
                 return
             }
             Task { @MainActor in self.handleMicFrame(data, rms: rms, voiceLike: voiceLike) }
+        }
         }
         // Playback tap — the orb's TRUTH while the agent speaks. The level used
         // to be pulsed once per delivered TTS chunk, but the daemon synthesizes
@@ -722,7 +736,83 @@ final class VoiceEngine: ObservableObject {
         self.engine = engine
         self.playerNode = player
         graphBuilt = true
+        #if DEBUG
+        startInjectedFeedIfNeeded()
+        #endif
     }
+
+    #if DEBUG
+    /// Debug-only test hook: the simulators have no microphone. When launched
+    /// with PERMAGENT_INJECT_WAV=<absolute 16 kHz mono 16-bit WAV>, the first
+    /// time the voice socket is ready this feeds that file's samples (paced in
+    /// real time, then 2 s of silence for the VAD) through the same path as the
+    /// mic, once per launch. Real mic frames are dropped only while it feeds.
+    private static var injectConsumed = false
+    private var injectFeeding = false
+
+    private func startInjectedFeedIfNeeded() {
+        guard !Self.injectConsumed, !injectFeeding,
+              let path = ProcessInfo.processInfo.environment["PERMAGENT_INJECT_WAV"],
+              path.hasPrefix("/") else { return }
+        guard let wav = try? Data(contentsOf: URL(fileURLWithPath: path)), wav.count > 44 else {
+            NSLog("permagent-inject: voice WAV unreadable at %@", path)
+            return
+        }
+        // Locate the data chunk (header may carry extra chunks).
+        var offset = 12
+        var pcm = Data()
+        while offset + 8 <= wav.count {
+            let id = String(decoding: wav[offset..<offset + 4], as: UTF8.self)
+            let size = Int(wav[offset + 4]) | Int(wav[offset + 5]) << 8
+                | Int(wav[offset + 6]) << 16 | Int(wav[offset + 7]) << 24
+            if id == "data" {
+                pcm = wav.subdata(in: (offset + 8)..<min(wav.count, offset + 8 + size))
+                break
+            }
+            offset += 8 + size + (size & 1)
+        }
+        guard !pcm.isEmpty else { return }
+        Self.injectConsumed = true
+        injectFeeding = true
+        let rate = wireSampleRateHz
+        var samples: [Float] = pcm.withUnsafeBytes { raw in
+            let i16 = raw.bindMemory(to: Int16.self)
+            return (0..<i16.count).map { Float(Int16(littleEndian: i16[$0])) / 32768 }
+        }
+        if rate != 16_000 {
+            // Nearest-neighbour resample to the wire rate (the WAV is 16 kHz).
+            let ratio = Double(rate) / 16_000
+            samples = (0..<Int(Double(samples.count) * ratio)).map { samples[min(samples.count - 1, Int(Double($0) / ratio))] }
+        }
+        samples += [Float](repeating: 0, count: rate * 2)
+        NSLog("permagent-inject: voice capture replaced by injected audio %@ (%d samples @ %d Hz)",
+              path, samples.count, rate)
+        Task { @MainActor [weak self] in
+            // Wait for the connected, ready state (up to 90 s).
+            for _ in 0..<900 {
+                guard let self else { return }
+                if self.state == .ready || self.state == .listening { break }
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            let frame = max(1, rate * 85 / 1000)
+            var i = 0
+            while i < samples.count, let self {
+                let chunk = Array(samples[i..<min(samples.count, i + frame)])
+                i += frame
+                var sum: Float = 0
+                for v in chunk { sum += v * v }
+                let rms = (sum / Float(chunk.count)).squareRoot()
+                let bins = chunk.withUnsafeBufferPointer {
+                    VoiceSpectrum.byteBins(samples: $0.baseAddress!, count: chunk.count)
+                }
+                let data = chunk.withUnsafeBufferPointer { Data(buffer: $0) }
+                self.handleMicFrame(data, rms: rms, voiceLike: VoiceSpectrum.looksLikeVoice(bins), injected: true)
+                try? await Task.sleep(for: .milliseconds(85))
+            }
+            self?.injectFeeding = false
+        }
+    }
+    #endif
 
     private func teardownGraph() {
         guard graphBuilt else { return }
@@ -904,7 +994,10 @@ final class VoiceEngine: ObservableObject {
         }
     }
 
-    private func handleMicFrame(_ data: Data, rms: Float, voiceLike: Bool) {
+    private func handleMicFrame(_ data: Data, rms: Float, voiceLike: Bool, injected: Bool = false) {
+        #if DEBUG
+        if injectFeeding && !injected { return }
+        #endif
         droppedTapStreak = 0
         if let cfg = pendingVADConfig, state != .listening {
             vad = VoiceVAD(config: cfg)

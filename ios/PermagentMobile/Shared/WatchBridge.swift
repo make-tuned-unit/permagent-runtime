@@ -56,6 +56,14 @@ struct WatchResponse: Codable, Equatable, Sendable {
     }
 }
 
+/// Inline markdown (bold, italics, code, links) for chat text, newlines kept.
+/// Falls back to the plain string if the parser rejects it.
+func markdownAttributed(_ text: String) -> AttributedString {
+    let options = AttributedString.MarkdownParsingOptions(
+        interpretedSyntax: .inlineOnlyPreservingWhitespace)
+    return (try? AttributedString(markdown: text, options: options)) ?? AttributedString(text)
+}
+
 enum ProjectMatch: Equatable, Sendable {
     case none
     case one(WatchProject)

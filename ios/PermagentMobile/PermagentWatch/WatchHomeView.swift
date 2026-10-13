@@ -146,8 +146,15 @@ struct WatchChatView: View {
                     .foregroundStyle(ChatSurface.muted)
                     .multilineTextAlignment(.center)
 
+                if !relay.chatUserText.isEmpty {
+                    Text("You: \(relay.chatUserText)")
+                        .font(.brandCaption)
+                        .foregroundStyle(ChatSurface.muted)
+                        .multilineTextAlignment(.center)
+                        .lineLimit(2)
+                }
                 if !relay.chatText.isEmpty {
-                    Text(relay.chatText)
+                    Text(markdownAttributed(relay.chatText))
                         .font(.brandCaption)
                         .foregroundStyle(ChatSurface.text)
                         .multilineTextAlignment(.center)
