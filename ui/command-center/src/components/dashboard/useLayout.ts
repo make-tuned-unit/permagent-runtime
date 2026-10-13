@@ -284,10 +284,18 @@ export function justifyRows(
  */
 export function layoutForDisplay(
   cards: { id: string; size: CardSize }[],
-  opts: { minSpan?: number; fill?: boolean } = {},
+  opts: { minSpan?: number; fill?: boolean; splitFullWidth?: boolean } = {},
 ): PackedCell[] {
   const minSpan = Math.min(opts.minSpan ?? 1, GRID_COLS);
-  const sized = cards.map(c => ({ id: c.id, size: { w: Math.max(c.size.w, minSpan), h: c.size.h } }));
+  // Display-only, large viewports: a full-width card is drawn as a half so two
+  // sit side by side instead of stretching across a 32-inch screen.
+  const sized = cards.map(c => ({
+    id: c.id,
+    size: {
+      w: Math.max(opts.splitFullWidth && c.size.w >= GRID_COLS ? GRID_COLS / 2 : c.size.w, minSpan),
+      h: c.size.h,
+    },
+  }));
   const packed = packDense(sized);
   if (opts.fill === false) return packed;
   const filled = fillHoles(packed);
@@ -303,6 +311,9 @@ export function layoutForDisplay(
  * `spanForContent`'s doc and Dashboard.tsx.
  */
 export const MASONRY_ROW_UNIT = 8;
+
+/** Grid width (px) from which Home draws full-width cards two to a row. */
+export const WIDE_GRID_SPLIT_PX = 1600;
 
 /**
  * How many `rowUnit`-tall grid rows a card needs, and may use at most.

@@ -8,7 +8,7 @@ import { useDashboard } from './useDashboard';
 import { useLiveGoals } from '../../lib/useLiveGoals';
 import { useDueTodos } from '../../lib/useDueTodos';
 import {
-  useLayout, reflow, layoutForDisplay, minSpanForWidth, DEFAULT_LAYOUT,
+  useLayout, reflow, layoutForDisplay, WIDE_GRID_SPLIT_PX, minSpanForWidth, DEFAULT_LAYOUT,
   MASONRY_ROW_UNIT, spanForContent, settleSpan,
   type DashboardLayoutData, type DashboardCardLayout, type SpanSettleState,
 } from './useLayout';
@@ -416,7 +416,11 @@ export function Dashboard() {
   // no stretch — so the resize grip edits what you see.
   const cells = layoutForDisplay(
     visibleCards.map(c => (resizeId === c.id && resizePreview ? { id: c.id, size: resizePreview } : c)),
-    { minSpan: minSpanForWidth(gridWidth, GAP), fill: !isEditMode },
+    {
+      minSpan: minSpanForWidth(gridWidth, GAP),
+      fill: !isEditMode,
+      splitFullWidth: !isEditMode && !focusMode && gridWidth >= WIDE_GRID_SPLIT_PX,
+    },
   );
   const canRemove = visibleCards.length > 1;
   const currentTypes = layout.cards.map(c => c.type);
