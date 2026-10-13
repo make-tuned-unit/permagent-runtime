@@ -3,6 +3,7 @@ import SwiftUI
 struct WatchHomeView: View {
     @EnvironmentObject private var relay: WatchRelay
     @ObservedObject private var route = AppRoute.shared
+    @ObservedObject private var voice = WatchVoiceProvisioning.shared
     @State private var dest: Dest?
 
     enum Dest: Hashable { case chat, note }
@@ -12,7 +13,7 @@ struct WatchHomeView: View {
             ZStack {
                 ChatSurface.bg.ignoresSafeArea()
                 VStack(spacing: 8) {
-                    if let notice = relay.notice, !relay.paired {
+                    if let notice = relay.notice, !relay.paired, !voice.available {
                         Text(notice)
                             .font(.brandCaption)
                             .foregroundStyle(Brand.warning)
@@ -41,7 +42,7 @@ struct WatchHomeView: View {
             }
             .navigationDestination(item: $dest) { d in
                 switch d {
-                case .chat: WatchChatView()
+                case .chat: WatchChatEntry()
                 case .note: WatchNoteView()
                 }
             }
@@ -65,7 +66,8 @@ struct WatchHomeView: View {
         accent: Color,
         action: @escaping () -> Void
     ) -> some View {
-        var usable = relay.paired
+        // Chat also works without the phone once direct voice is provisioned.
+        var usable = relay.paired || (title == "Chat" && voice.available)
         #if DEBUG
         // Rehearsal on a simulator with no paired hub: the injected-audio hook enables the buttons.
         if WatchRecorder.injectedSource != nil { usable = true }

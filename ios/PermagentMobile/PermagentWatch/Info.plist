@@ -22,6 +22,11 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Permagent uses the microphone so you can chat with your agent and dictate notes. Audio is transcribed on your Mac.</string>
 	<key>UIAppFonts</key>

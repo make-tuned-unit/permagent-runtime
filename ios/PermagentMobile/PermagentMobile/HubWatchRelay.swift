@@ -24,6 +24,7 @@ final class HubWatchRelay: NSObject, WCSessionDelegate {
     }
 
     func pushStatus() {
+        WatchVoiceProvisioner.shared.refreshIfNeeded()
         Task {
             let name = AgentIdentity.shared.displayName
             let paired = await APIClient.shared.isPaired

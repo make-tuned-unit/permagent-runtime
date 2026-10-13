@@ -283,6 +283,7 @@ final class HubSession: ObservableObject {
         else {
             return .failure(.unexpectedResponse(statusCode: http.statusCode))
         }
+        WatchVoiceProvisioner.rememberPairedDevice(claimResponse: data)
         return .success(decoded.token)
     }
 

@@ -239,6 +239,11 @@ targets:
         # foreground. Network turns still relay through the paired phone.
         WKRunsIndependentlyOfCompanionApp: true
         WKCompanionAppBundleIdentifier: ai.permagent.ios
+        # Direct voice (WatchVoiceClient) reaches the hub's LAN gateway over
+        # TLS pinned by fingerprint; local networking covers the plain-ws
+        # loopback rehearsal hub on the simulator only.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
         NSMicrophoneUsageDescription: Permagent uses the microphone so you can chat with your agent and dictate notes. Audio is transcribed on your Mac.
         ITSAppUsesNonExemptEncryption: false
         INAlternativeAppNames:

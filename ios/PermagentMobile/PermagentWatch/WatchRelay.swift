@@ -123,10 +123,21 @@ final class WatchRelay: NSObject, ObservableObject, WCSessionDelegate {
         // Copy Sendable bits here. WCSession is not Sendable; hopping the
         // object itself to MainActor is a Swift 6 data-race error.
         let reachable = session.isReachable
+        let voice = WatchVoiceProvisioning.extract(session.receivedApplicationContext)
         Task { @MainActor in
             phoneReachable = reachable
+            WatchVoiceProvisioning.shared.apply(credentialData: voice.data, clear: voice.clear)
             ping()
             flushQueue()
+        }
+    }
+
+    /// The phone's standalone-voice credential (WatchVoiceProvisioning).
+    nonisolated func session(_ session: WCSession,
+                             didReceiveApplicationContext applicationContext: [String: Any]) {
+        let voice = WatchVoiceProvisioning.extract(applicationContext)
+        Task { @MainActor in
+            WatchVoiceProvisioning.shared.apply(credentialData: voice.data, clear: voice.clear)
         }
     }
 
