@@ -28,18 +28,22 @@ from mathutils import Vector  # noqa: E402
 import detail_lib as L  # noqa: E402
 import hero_robot as R  # noqa: E402
 import arrival_furniture as F  # noqa: E402
+import hero_lib as H  # noqa: E402
 
 # ----------------------------------------------------------------------------- asset table
 # Budgets: Astra ruling 2026-10-12 section 2. Where the ruling has no class for a
 # small prop, the ceiling is this lane's own (marked 'lane').
 ASSETS = {
-    'hero-robot': dict(root='robot', build=R.build_robot, lods={0: 1.0, 1: 0.45}, image_format='AUTO',
+    'hero-robot': dict(root='robot', build=R.build_robot, lods={0: 1.0, 1: 0.45, 2: 0.3}, decimate={2: 2900}, decimate_weights={'Head_': 2.2},
+                       image_format='AUTO',
                        budget=dict(source='ruling: characters', lod0=24000, lod1=10000, lod2=3000,
                                    note='ceiling includes runtime wardrobe (agentWardrobe.ts, <= ~2.5k tris)'),
                        wardrobe_allowance=2500),
-    'arrival-table': dict(root='arrival_table', build=F.build_table, lods={0: 1.0, 1: 0.45}, image_format='JPEG',
+    'arrival-table': dict(root='arrival_table', build=F.build_table, lods={0: 1.0, 1: 0.45, 2: 0.3},
+                          decimate={2: 960}, image_format='JPEG',
                           budget=dict(source='ruling: hero table / bookcase', lod0=12000, lod1=4000, lod2=1000)),
-    'arrival-chair': dict(root='arrival_chair', build=F.build_chair, lods={0: 1.0, 1: 0.45}, image_format='JPEG',
+    'arrival-chair': dict(root='arrival_chair', build=F.build_chair, lods={0: 1.0, 1: 0.45, 2: 0.3},
+                          decimate={2: 480}, image_format='JPEG',
                           budget=dict(source='ruling: repeated desk / bench / planter', lod0=6000, lod1=2000,
                                       lod2=500)),
     'arrival-folio': dict(root='arrival_folio', build=F.build_folio, lods={0: 1.0, 1: 0.45}, image_format='JPEG',
@@ -175,10 +179,16 @@ def build_asset(name, spec, out, write_blend=True):
         F._SHARED.clear()
         kit = spec['build'](detail)
         objs = kit.objects
+        lod_method = 'authored at this detail level'
+        if lod in spec.get('decimate', {}):
+            ratio, _ = H.decimate_to(objs, spec['decimate'][lod], weights=spec.get('decimate_weights'))
+            lod_method = (f'geometric decimation (Blender Decimate collapse, uniform ratio {ratio:.4f}) of the '
+                          f'detail-{detail} build to <= {spec["decimate"][lod]} tris; no baking; nodes, pivots, '
+                          f'anchors and materials identical to LOD1')
         glb = out / f'{name}.lod{lod}.glb'
         L.export_glb_fmt(glb, objs, spec['image_format'])
         info = inspect_glb(glb)
-        info.update({'file': glb.name, 'detail': detail, 'blender_triangles': L.triangles(objs)})
+        info.update({'file': glb.name, 'detail': detail, 'blender_triangles': L.triangles(objs), 'method': lod_method})
         rec['lods'][f'lod{lod}'] = info
         if lod == 0:
             rec['bounds'] = world_bounds(objs)
@@ -216,6 +226,7 @@ def build_asset(name, spec, out, write_blend=True):
 def census_entry(rec, spec):
     b = spec['budget']
     l0, l1 = rec['lods']['lod0'], rec['lods']['lod1']
+    l2 = rec['lods'].get('lod2')
     allowance = spec.get('wardrobe_allowance', 0)
     max_px = max([max(i['width'], i['height']) for i in l0['images']] or [0])
     checks = {
@@ -227,12 +238,18 @@ def census_entry(rec, spec):
         'collision_present': {'value': rec['collision']['file'], 'pass': True},
         'anchors_present': {'value': len(rec['anchors']), 'pass': len(rec['anchors']) > 0},
     }
+    if 'lod2' in b:
+        checks['lod2_triangles'] = ({'value': l2['triangles'], 'ceiling': b['lod2'], 'pass': l2['triangles'] <= b['lod2']}
+                                    if l2 else {'value': None, 'ceiling': b['lod2'], 'pass': False,
+                                                'note': 'ruling LOD2 class exists but no LOD2 was produced'})
+    keys = ('file', 'triangles', 'primitives_draw_calls', 'bytes', 'materials', 'texture_decoded_bytes')
     return {
         'asset': rec['name'], 'budget_source': b['source'], 'budget_note': b.get('note', ''),
         'lod0': {k: l0[k] for k in ('file', 'triangles', 'primitives_draw_calls', 'bytes', 'materials',
                                     'texture_decoded_bytes')},
         'lod1': {k: l1[k] for k in ('file', 'triangles', 'primitives_draw_calls', 'bytes', 'materials',
                                     'texture_decoded_bytes')},
+        **({'lod2': dict({k: l2[k] for k in keys}, method=l2['method'])} if l2 else {}),
         'textures_lod0': [{k: i[k] for k in ('name', 'mime', 'width', 'height', 'colorspace', 'bytes')}
                           for i in l0['images']],
         'checks': checks, 'pass': all(c['pass'] for c in checks.values()),
@@ -338,6 +355,7 @@ def main():
     census['totals'] = {
         'lod0_bytes': sum(a['lod0']['bytes'] for a in census['assets']),
         'lod1_bytes': sum(a['lod1']['bytes'] for a in census['assets']),
+        'lod2_bytes': sum(a['lod2']['bytes'] for a in census['assets'] if 'lod2' in a),
         'lod0_triangles_one_of_each': sum(a['lod0']['triangles'] for a in census['assets']),
         'lod0_texture_decoded_bytes': sum(a['lod0']['texture_decoded_bytes'] for a in census['assets']),
         'all_pass': all(a['pass'] for a in census['assets']),
@@ -345,7 +363,8 @@ def main():
     (out / 'census.json').write_text(json.dumps(census, indent=2) + '\n')
     for a in census['assets']:
         print(f"[W3] {a['asset']:20s} lod0 {a['lod0']['triangles']:6d} tris {a['lod0']['primitives_draw_calls']:3d} prims "
-              f"{a['lod0']['bytes']:8d} B | lod1 {a['lod1']['triangles']:6d} | pass={a['pass']}")
+              f"{a['lod0']['bytes']:8d} B | lod1 {a['lod1']['triangles']:6d} | lod2 {a.get('lod2', {}).get('triangles', '-')!s:>5} "
+              f"| pass={a['pass']}")
     print('[W3] totals', json.dumps(census['totals']))
 
 

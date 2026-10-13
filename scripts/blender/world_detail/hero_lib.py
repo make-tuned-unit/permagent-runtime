@@ -174,3 +174,56 @@ def tint_base(mat, rgb):
     nt.links.new(tex.outputs['Color'], mix.inputs[6])  # A (colour)
     nt.links.new(mix.outputs[2], b.inputs['Base Color'])
     return mat
+
+
+# ----------------------------------------------------------------------------- LOD2
+def _tris(objs):
+    return sum(sum(len(p.vertices) - 2 for p in o.data.polygons) for o in objs if o.type == 'MESH')
+
+
+def decimate_to(objs, target, min_tris=8, weights=None):
+    """Geometric LOD: one uniform Decimate (collapse) ratio across every mesh,
+    found by bisection so the total lands at or just under `target`. Each mesh
+    keeps at least `min_tris` (small parts degrade, they do not vanish).
+    `weights` maps an object-name prefix to a ratio multiplier, so the parts that
+    carry identity at distance (the head) keep more of their budget.
+    No baking. Returns (ratio, triangles)."""
+    weights = weights or {}
+    meshes = [o for o in objs if o.type == 'MESH']
+    src = {o.name: o.data for o in meshes}
+    counts = {o.name: _tris([o]) for o in meshes}
+
+    def apply(r):
+        dg = bpy.context.evaluated_depsgraph_get()
+        for o in meshes:
+            o.data = src[o.name]
+            o.modifiers.clear()
+            wgt = next((w for p, w in weights.items() if o.name.startswith(p)), 1.0)
+            rr = min(1.0, max(r * wgt, min_tris / max(counts[o.name], 1)))
+            if rr < 1.0:
+                m = o.modifiers.new('lod2', 'DECIMATE')
+                m.decimate_type = 'COLLAPSE'
+                m.ratio = rr
+                m.use_collapse_triangulate = True
+        dg.update()
+        return sum(len(o.evaluated_get(dg).data.polygons) for o in meshes)   # triangles (triangulated)
+
+    lo, hi = 0.02, 1.0
+    if apply(hi) > target:
+        for _ in range(22):
+            mid = (lo + hi) / 2
+            if apply(mid) > target:
+                hi = mid
+            else:
+                lo = mid
+        r = lo
+    else:
+        r = hi
+    apply(r)
+    dg = bpy.context.evaluated_depsgraph_get()
+    for o in meshes:
+        me = bpy.data.meshes.new_from_object(o.evaluated_get(dg), preserve_all_data_layers=True, depsgraph=dg)
+        me.name = src[o.name].name + '_lod2'
+        o.modifiers.clear()
+        o.data = me
+    return r, _tris(meshes)

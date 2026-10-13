@@ -26,6 +26,14 @@
       "messages": []
     },
     {
+      "file": "arrival-chair.lod2.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 1,
+      "hints": 0,
+      "messages": []
+    },
+    {
       "file": "arrival-cup.collision.glb",
       "errors": 0,
       "warnings": 0,
@@ -146,6 +154,14 @@
       "messages": []
     },
     {
+      "file": "arrival-table.lod2.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 1,
+      "hints": 0,
+      "messages": []
+    },
+    {
       "file": "hero-robot.collision.glb",
       "errors": 0,
       "warnings": 0,
@@ -163,6 +179,14 @@
     },
     {
       "file": "hero-robot.lod1.glb",
+      "errors": 0,
+      "warnings": 0,
+      "infos": 17,
+      "hints": 0,
+      "messages": []
+    },
+    {
+      "file": "hero-robot.lod2.glb",
       "errors": 0,
       "warnings": 0,
       "infos": 17,

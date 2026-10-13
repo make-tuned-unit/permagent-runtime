@@ -1,6 +1,6 @@
 {
   "schema": "permagent.world.detail-v4.hero.census.v1",
-  "generated": "2026-10-13T02:13:36Z",
+  "generated": "2026-10-13T02:15:30Z",
   "budgets_reference": "/Users/j/Documents/dev/permagent-worktrees/wq-reports/astra/ruling-world-production-20261012.md section 2 Budgets",
   "assets": [
     {
@@ -32,6 +32,20 @@
           "Faceplate \u2022 deep teal glass"
         ],
         "texture_decoded_bytes": 43690
+      },
+      "lod2": {
+        "file": "hero-robot.lod2.glb",
+        "triangles": 2900,
+        "primitives_draw_calls": 31,
+        "bytes": 121404,
+        "materials": [
+          "Ceramic \u2022 warm ivory",
+          "Trim \u2022 graphite and brass",
+          "Eyes \u2022 jade phosphor",
+          "Faceplate \u2022 deep teal glass"
+        ],
+        "texture_decoded_bytes": 43690,
+        "method": "geometric decimation (Blender Decimate collapse, uniform ratio 0.3567) of the detail-0.3 build to <= 2900 tris; no baking; nodes, pivots, anchors and materials identical to LOD1"
       },
       "textures_lod0": [
         {
@@ -80,6 +94,11 @@
         "anchors_present": {
           "value": 23,
           "pass": true
+        },
+        "lod2_triangles": {
+          "value": 2900,
+          "ceiling": 3000,
+          "pass": true
         }
       },
       "pass": true
@@ -109,6 +128,18 @@
           "Trim \u2022 brass and bronze"
         ],
         "texture_decoded_bytes": 7034196
+      },
+      "lod2": {
+        "file": "arrival-table.lod2.glb",
+        "triangles": 960,
+        "primitives_draw_calls": 2,
+        "bytes": 195196,
+        "materials": [
+          "Timber \u2022 oiled walnut",
+          "Trim \u2022 brass and bronze"
+        ],
+        "texture_decoded_bytes": 7034196,
+        "method": "geometric decimation (Blender Decimate collapse, uniform ratio 0.6455) of the detail-0.3 build to <= 960 tris; no baking; nodes, pivots, anchors and materials identical to LOD1"
       },
       "textures_lod0": [
         {
@@ -173,6 +204,11 @@
         "anchors_present": {
           "value": 18,
           "pass": true
+        },
+        "lod2_triangles": {
+          "value": 960,
+          "ceiling": 1000,
+          "pass": true
         }
       },
       "pass": true
@@ -204,6 +240,19 @@
           "Trim \u2022 brass and bronze"
         ],
         "texture_decoded_bytes": 9830398
+      },
+      "lod2": {
+        "file": "arrival-chair.lod2.glb",
+        "triangles": 480,
+        "primitives_draw_calls": 3,
+        "bytes": 317456,
+        "materials": [
+          "Fabric \u2022 moss weave",
+          "Timber \u2022 oiled walnut",
+          "Trim \u2022 brass and bronze"
+        ],
+        "texture_decoded_bytes": 9830398,
+        "method": "geometric decimation (Blender Decimate collapse, uniform ratio 0.4143) of the detail-0.3 build to <= 480 tris; no baking; nodes, pivots, anchors and materials identical to LOD1"
       },
       "textures_lod0": [
         {
@@ -283,6 +332,11 @@
         },
         "anchors_present": {
           "value": 5,
+          "pass": true
+        },
+        "lod2_triangles": {
+          "value": 480,
+          "ceiling": 500,
           "pass": true
         }
       },
@@ -618,6 +672,7 @@
   "totals": {
     "lod0_bytes": 1875736,
     "lod1_bytes": 996852,
+    "lod2_bytes": 634056,
     "lod0_triangles_one_of_each": 37810,
     "lod0_texture_decoded_bytes": 19879246,
     "all_pass": true

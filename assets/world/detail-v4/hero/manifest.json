@@ -2,7 +2,7 @@
   "schema": "permagent.world.detail-v4.hero.v1",
   "lane": "W3 (Astra ruling 2026-10-12)",
   "status": "candidate \u2014 not published; W6 integrates and publishes",
-  "generated": "2026-10-13T02:13:36Z",
+  "generated": "2026-10-13T02:15:30Z",
   "blender": "5.2.1 LTS",
   "metersPerUnit": 1,
   "runtimeUp": "Y",
@@ -14,10 +14,10 @@
     "scripts/blender/world_detail/botany_scatter.py": "041aecbda68302755b45d73c813ba161588b0018d83f3c51cddb5fd1b98451b9",
     "scripts/blender/world_detail/botany_species.py": "4ef526bb02037ce58dda08df7bb1677af611128d8f7a586d2ec1d952988779db",
     "scripts/blender/world_detail/build_botany.py": "a514ef6ca243658789b0888ad4cf27cd1b4d56f2b3ae79d7c2242f1a14ff41ce",
-    "scripts/blender/world_detail/build_hero.py": "346d5a57ef7b1e7dc6ac37728fa5e44ed2af909d680d3ddf6de5593c25ff2eb4",
+    "scripts/blender/world_detail/build_hero.py": "7f90b15f7e69939b165669e9bcec491349de943a892db27575d520abab6bd575",
     "scripts/blender/world_detail/build_places.py": "afa933d230e566efb27fb533240ab47acc0ced885cf8925493603201267855f6",
     "scripts/blender/world_detail/detail_lib.py": "cfe3a2e52bfce5931940080aa41607b8b2903a9f35c96f2e63ec559e4e95b780",
-    "scripts/blender/world_detail/hero_lib.py": "5bd1a1db36b2116e1e2acfe05d936f801d9989e8248a757bd5080404bbe9446e",
+    "scripts/blender/world_detail/hero_lib.py": "b63460f7e219b9e70f2c3088fbd883a7cd54c1ea44e892e06f638ed617c75ce0",
     "scripts/blender/world_detail/hero_robot.py": "bf365cc4cc63b65c59991947593e21c17b36504f76ee77219aaacaae4381a1e3",
     "scripts/blender/world_detail/places_assets.py": "811aeece7c30126795bbbdde8da370a59c92b44f2980e2caffb628726a9256a9",
     "scripts/blender/world_detail/places_export.py": "f0eff0f026a9134e300b2c9111e52410e00e0f3589e1df0df034ed37990c5a60",
@@ -319,7 +319,8 @@
           ],
           "file": "hero-robot.lod0.glb",
           "detail": 1.0,
-          "blender_triangles": 21104
+          "blender_triangles": 21104,
+          "method": "authored at this detail level"
         },
         "lod1": {
           "bytes": 249784,
@@ -440,7 +441,130 @@
           ],
           "file": "hero-robot.lod1.glb",
           "detail": 0.45,
-          "blender_triangles": 6396
+          "blender_triangles": 6396,
+          "method": "authored at this detail level"
+        },
+        "lod2": {
+          "bytes": 121404,
+          "sha256": "ab0e98356f97e4099195f46ed8f97f5ca1510e421f337d708cddd9e8416449d7",
+          "triangles": 2900,
+          "primitives_draw_calls": 31,
+          "meshes": 31,
+          "nodes": 78,
+          "materials": [
+            "Ceramic \u2022 warm ivory",
+            "Trim \u2022 graphite and brass",
+            "Eyes \u2022 jade phosphor",
+            "Faceplate \u2022 deep teal glass"
+          ],
+          "extensions_used": [
+            "KHR_materials_clearcoat"
+          ],
+          "images": [
+            {
+              "name": "trim_graphite_and_brass_palette_basecolor",
+              "mime": "image/png",
+              "width": 64,
+              "height": 64,
+              "bytes": 420,
+              "colorspace": "sRGB",
+              "decoded_bytes_with_mips": 21845
+            },
+            {
+              "name": "trim_graphite_and_brass_palette_orm",
+              "mime": "image/png",
+              "width": 64,
+              "height": 64,
+              "bytes": 405,
+              "colorspace": "linear",
+              "decoded_bytes_with_mips": 21845
+            }
+          ],
+          "texture_decoded_bytes": 43690,
+          "node_names": [
+            "anchor_chest_reader",
+            "anchor_seat_contact",
+            "Arm.L_Ceramic \u2022 warm ivory",
+            "Arm.L_Trim \u2022 graphite and brass",
+            "Forearm.L_Ceramic \u2022 warm ivory",
+            "Forearm.L_Trim \u2022 graphite and brass",
+            "anchor_grip_L",
+            "anchor_palm_L",
+            "Hand.L_Ceramic \u2022 warm ivory",
+            "Hand.L_Trim \u2022 graphite and brass",
+            "anchor_tip_index_L",
+            "Index.L",
+            "anchor_tip_little_L",
+            "Little.L",
+            "anchor_fingertips_L",
+            "anchor_tip_middle_L",
+            "Middle.L",
+            "anchor_tip_ring_L",
+            "Ring.L",
+            "anchor_tip_thumb_L",
+            "Thumb.L",
+            "Hand.L",
+            "Forearm.L",
+            "Arm.L",
+            "Arm.R_Ceramic \u2022 warm ivory",
+            "Arm.R_Trim \u2022 graphite and brass",
+            "Forearm.R_Ceramic \u2022 warm ivory",
+            "Forearm.R_Trim \u2022 graphite and brass",
+            "anchor_grip_R",
+            "anchor_palm_R",
+            "Hand.R_Ceramic \u2022 warm ivory",
+            "Hand.R_Trim \u2022 graphite and brass",
+            "anchor_tip_index_R",
+            "Index.R",
+            "anchor_tip_little_R",
+            "Little.R",
+            "anchor_fingertips_R",
+            "anchor_tip_middle_R",
+            "Middle.R",
+            "anchor_tip_ring_R",
+            "Ring.R",
+            "anchor_tip_thumb_R",
+            "Thumb.R",
+            "Hand.R",
+            "Forearm.R",
+            "Arm.R",
+            "anchor_gaze",
+            "anchor_headwear",
+            "anchor_mouth",
+            "Head_Ceramic \u2022 warm ivory",
+            "Head_Eyes \u2022 jade phosphor",
+            "Head_Faceplate \u2022 deep teal glass",
+            "Head_Trim \u2022 graphite and brass",
+            "Head",
+            "Leg.L_Ceramic \u2022 warm ivory",
+            "Leg.L_Trim \u2022 graphite and brass",
+            "anchor_sole_L",
+            "Foot.L_Ceramic \u2022 warm ivory",
+            "Foot.L_Trim \u2022 graphite and brass",
+            "Foot.L",
+            "Shin.L_Ceramic \u2022 warm ivory",
+            "Shin.L_Trim \u2022 graphite and brass",
+            "Shin.L",
+            "Leg.L",
+            "Leg.R_Ceramic \u2022 warm ivory",
+            "Leg.R_Trim \u2022 graphite and brass",
+            "anchor_sole_R",
+            "Foot.R_Ceramic \u2022 warm ivory",
+            "Foot.R_Trim \u2022 graphite and brass",
+            "Foot.R",
+            "Shin.R_Ceramic \u2022 warm ivory",
+            "Shin.R_Trim \u2022 graphite and brass",
+            "Shin.R",
+            "Leg.R",
+            "robot_Ceramic \u2022 warm ivory",
+            "robot_Eyes \u2022 jade phosphor",
+            "robot_Trim \u2022 graphite and brass",
+            "robot"
+          ],
+          "file": "hero-robot.lod2.glb",
+          "detail": 0.3,
+          "blender_triangles": 2900,
+          "method": "geometric decimation (Blender Decimate collapse, uniform ratio 0.3567) of the detail-0.3 build to <= 2900 tris; no baking; nodes, pivots, anchors and materials identical to LOD1"
         }
       },
       "budget": {
@@ -1243,8 +1367,8 @@
       },
       "source_blend": {
         "file": "hero-robot.blend",
-        "sha256": "afab99b16a6ac8bb83e77ac2ab684e5b6edb1f54472df8014d9fa563834afc48",
-        "bytes": 342592,
+        "sha256": "9178b66cec1699f3671f5b260a7c372a6204a01d2fb6c91cf2583eabc5869f2e",
+        "bytes": 342572,
         "contains": "LOD0 + collision proxy; LOD1 is regenerated by the script"
       },
       "texture_sources": [
@@ -1338,7 +1462,8 @@
           ],
           "file": "arrival-table.lod0.glb",
           "detail": 1.0,
-          "blender_triangles": 5780
+          "blender_triangles": 5780,
+          "method": "authored at this detail level"
         },
         "lod1": {
           "bytes": 237956,
@@ -1416,7 +1541,87 @@
           ],
           "file": "arrival-table.lod1.glb",
           "detail": 0.45,
-          "blender_triangles": 1562
+          "blender_triangles": 1562,
+          "method": "authored at this detail level"
+        },
+        "lod2": {
+          "bytes": 195196,
+          "sha256": "491f3d78ffcbb0867d20d0d05c2c266cd928b0142c35574652d152890efacf1c",
+          "triangles": 960,
+          "primitives_draw_calls": 2,
+          "meshes": 2,
+          "nodes": 21,
+          "materials": [
+            "Timber \u2022 oiled walnut",
+            "Trim \u2022 brass and bronze"
+          ],
+          "extensions_used": [],
+          "images": [
+            {
+              "name": "walnut_v2_normal",
+              "mime": "image/jpeg",
+              "width": 512,
+              "height": 512,
+              "bytes": 42813,
+              "colorspace": "linear",
+              "decoded_bytes_with_mips": 1398101
+            },
+            {
+              "name": "walnut_v2_basecolor",
+              "mime": "image/jpeg",
+              "width": 1024,
+              "height": 1024,
+              "bytes": 84744,
+              "colorspace": "sRGB",
+              "decoded_bytes_with_mips": 5592405
+            },
+            {
+              "name": "trim_brass_and_bronze_palette_basecolor",
+              "mime": "image/jpeg",
+              "width": 64,
+              "height": 64,
+              "bytes": 893,
+              "colorspace": "sRGB",
+              "decoded_bytes_with_mips": 21845
+            },
+            {
+              "name": "trim_brass_and_bronze_palette_orm",
+              "mime": "image/jpeg",
+              "width": 64,
+              "height": 64,
+              "bytes": 906,
+              "colorspace": "linear",
+              "decoded_bytes_with_mips": 21845
+            }
+          ],
+          "texture_decoded_bytes": 7034196,
+          "node_names": [
+            "anchor_cup_host",
+            "anchor_eye_companion",
+            "anchor_eye_guest",
+            "anchor_eye_host",
+            "anchor_folio_slot",
+            "anchor_gaze_shared",
+            "anchor_hand_companion_L",
+            "anchor_hand_companion_R",
+            "anchor_hand_guest_L",
+            "anchor_hand_guest_R",
+            "anchor_hand_host_L",
+            "anchor_hand_host_R",
+            "anchor_instrument",
+            "anchor_lantern",
+            "anchor_seat_companion",
+            "anchor_seat_guest",
+            "anchor_seat_host",
+            "anchor_table_surface",
+            "arrival_table_Timber \u2022 oiled walnut",
+            "arrival_table_Trim \u2022 brass and bronze",
+            "arrival_table"
+          ],
+          "file": "arrival-table.lod2.glb",
+          "detail": 0.3,
+          "blender_triangles": 960,
+          "method": "geometric decimation (Blender Decimate collapse, uniform ratio 0.6455) of the detail-0.3 build to <= 960 tris; no baking; nodes, pivots, anchors and materials identical to LOD1"
         }
       },
       "budget": {
@@ -1877,8 +2082,8 @@
       },
       "source_blend": {
         "file": "arrival-table.blend",
-        "sha256": "7d63677762d385d5d32f0384b592660c9fd52bf344d64b1ad11208fbcd78f992",
-        "bytes": 213885,
+        "sha256": "6880c0b62ce1a74d62af78324a077fae9baf156d7a031b83bbcf5f87cb427dd8",
+        "bytes": 213819,
         "contains": "LOD0 + collision proxy; LOD1 is regenerated by the script"
       },
       "texture_sources": [
@@ -2003,7 +2208,8 @@
           ],
           "file": "arrival-chair.lod0.glb",
           "detail": 1.0,
-          "blender_triangles": 4716
+          "blender_triangles": 4716,
+          "method": "authored at this detail level"
         },
         "lod1": {
           "bytes": 359720,
@@ -2088,7 +2294,94 @@
           ],
           "file": "arrival-chair.lod1.glb",
           "detail": 0.45,
-          "blender_triangles": 1260
+          "blender_triangles": 1260,
+          "method": "authored at this detail level"
+        },
+        "lod2": {
+          "bytes": 317456,
+          "sha256": "888f8ae3db768ce3d58ddadd1b5b282c64b7ea813763dfc556256b3fe7eae723",
+          "triangles": 480,
+          "primitives_draw_calls": 3,
+          "meshes": 3,
+          "nodes": 9,
+          "materials": [
+            "Fabric \u2022 moss weave",
+            "Timber \u2022 oiled walnut",
+            "Trim \u2022 brass and bronze"
+          ],
+          "extensions_used": [],
+          "images": [
+            {
+              "name": "w5_weave_a_normal",
+              "mime": "image/jpeg",
+              "width": 512,
+              "height": 512,
+              "bytes": 78430,
+              "colorspace": "linear",
+              "decoded_bytes_with_mips": 1398101
+            },
+            {
+              "name": "w5_weave_a_basecolor",
+              "mime": "image/jpeg",
+              "width": 512,
+              "height": 512,
+              "bytes": 71562,
+              "colorspace": "sRGB",
+              "decoded_bytes_with_mips": 1398101
+            },
+            {
+              "name": "walnut_v2_normal",
+              "mime": "image/jpeg",
+              "width": 512,
+              "height": 512,
+              "bytes": 42813,
+              "colorspace": "linear",
+              "decoded_bytes_with_mips": 1398101
+            },
+            {
+              "name": "walnut_v2_basecolor",
+              "mime": "image/jpeg",
+              "width": 1024,
+              "height": 1024,
+              "bytes": 84744,
+              "colorspace": "sRGB",
+              "decoded_bytes_with_mips": 5592405
+            },
+            {
+              "name": "trim_brass_and_bronze_palette_basecolor",
+              "mime": "image/jpeg",
+              "width": 64,
+              "height": 64,
+              "bytes": 893,
+              "colorspace": "sRGB",
+              "decoded_bytes_with_mips": 21845
+            },
+            {
+              "name": "trim_brass_and_bronze_palette_orm",
+              "mime": "image/jpeg",
+              "width": 64,
+              "height": 64,
+              "bytes": 906,
+              "colorspace": "linear",
+              "decoded_bytes_with_mips": 21845
+            }
+          ],
+          "texture_decoded_bytes": 9830398,
+          "node_names": [
+            "anchor_back",
+            "anchor_eye_seated",
+            "anchor_feet",
+            "anchor_seat",
+            "anchor_stand",
+            "arrival_chair_Fabric \u2022 moss weave",
+            "arrival_chair_Timber \u2022 oiled walnut",
+            "arrival_chair_Trim \u2022 brass and bronze",
+            "arrival_chair"
+          ],
+          "file": "arrival-chair.lod2.glb",
+          "detail": 0.3,
+          "blender_triangles": 480,
+          "method": "geometric decimation (Blender Decimate collapse, uniform ratio 0.4143) of the detail-0.3 build to <= 480 tris; no baking; nodes, pivots, anchors and materials identical to LOD1"
         }
       },
       "budget": {
@@ -2266,8 +2559,8 @@
       },
       "source_blend": {
         "file": "arrival-chair.blend",
-        "sha256": "86979bb2e81834cc2bf5a281c85472690f03ea352089394b5923b8119844c428",
-        "bytes": 202525,
+        "sha256": "2b2c889c29c089ba2dc5ec2f2db6f40119b7c63111e57e7d9b0f2ded044b4623",
+        "bytes": 202394,
         "contains": "LOD0 + collision proxy; LOD1 is regenerated by the script"
       },
       "texture_sources": [
@@ -2373,7 +2666,8 @@
           ],
           "file": "arrival-folio.lod0.glb",
           "detail": 1.0,
-          "blender_triangles": 756
+          "blender_triangles": 756,
+          "method": "authored at this detail level"
         },
         "lod1": {
           "bytes": 68768,
@@ -2439,7 +2733,8 @@
           ],
           "file": "arrival-folio.lod1.glb",
           "detail": 0.45,
-          "blender_triangles": 376
+          "blender_triangles": 376,
+          "method": "authored at this detail level"
         }
       },
       "budget": {
@@ -2582,8 +2877,8 @@
       },
       "source_blend": {
         "file": "arrival-folio.blend",
-        "sha256": "1d14a0bb1c5c4506fc6cd2422d5f24efb4e8103fa9945260805a3e9d3dba38b7",
-        "bytes": 107379,
+        "sha256": "171954f8c368f38f21bcbc10bb5ea60308e6415e4d9cbfd3ce8658446835a4cb",
+        "bytes": 107408,
         "contains": "LOD0 + collision proxy; LOD1 is regenerated by the script"
       },
       "texture_sources": [
@@ -2670,7 +2965,8 @@
           ],
           "file": "arrival-cup.lod0.glb",
           "detail": 1.0,
-          "blender_triangles": 1450
+          "blender_triangles": 1450,
+          "method": "authored at this detail level"
         },
         "lod1": {
           "bytes": 20680,
@@ -2717,7 +3013,8 @@
           ],
           "file": "arrival-cup.lod1.glb",
           "detail": 0.45,
-          "blender_triangles": 492
+          "blender_triangles": 492,
+          "method": "authored at this detail level"
         }
       },
       "budget": {
@@ -2850,8 +3147,8 @@
       },
       "source_blend": {
         "file": "arrival-cup.blend",
-        "sha256": "7d38f757ea1c2e3b1c1f1b7119bd54282b8609bf242ec1d9f9d949f9aa1f7ee0",
-        "bytes": 119878,
+        "sha256": "4cab50f6834e79221c1fe0618f567a1f23c30df8721378385dd89f5bc2f952e2",
+        "bytes": 119842,
         "contains": "LOD0 + collision proxy; LOD1 is regenerated by the script"
       },
       "texture_sources": [
@@ -2940,7 +3237,8 @@
           ],
           "file": "arrival-lantern.lod0.glb",
           "detail": 1.0,
-          "blender_triangles": 1712
+          "blender_triangles": 1712,
+          "method": "authored at this detail level"
         },
         "lod1": {
           "bytes": 31144,
@@ -2989,7 +3287,8 @@
           ],
           "file": "arrival-lantern.lod1.glb",
           "detail": 0.45,
-          "blender_triangles": 652
+          "blender_triangles": 652,
+          "method": "authored at this detail level"
         }
       },
       "budget": {
@@ -3122,8 +3421,8 @@
       },
       "source_blend": {
         "file": "arrival-lantern.blend",
-        "sha256": "3442eb450d5c30621605707d102256568f234ea3a967b2cb1ce34cbb2053a818",
-        "bytes": 123016,
+        "sha256": "c3d647eb6a3c86776bc16c5ca1233489e50c4ffb2420e9c5372a6b213ad71104",
+        "bytes": 123004,
         "contains": "LOD0 + collision proxy; LOD1 is regenerated by the script"
       },
       "texture_sources": [
@@ -3208,7 +3507,8 @@
           ],
           "file": "arrival-instrument.lod0.glb",
           "detail": 1.0,
-          "blender_triangles": 2292
+          "blender_triangles": 2292,
+          "method": "authored at this detail level"
         },
         "lod1": {
           "bytes": 28800,
@@ -3253,7 +3553,8 @@
           ],
           "file": "arrival-instrument.lod1.glb",
           "detail": 0.45,
-          "blender_triangles": 592
+          "blender_triangles": 592,
+          "method": "authored at this detail level"
         }
       },
       "budget": {
@@ -3386,8 +3687,8 @@
       },
       "source_blend": {
         "file": "arrival-instrument.blend",
-        "sha256": "4c225ab2639dcdf2b434f45f9a26e67e13f969a318fe7a8fae331d1d027ac6e6",
-        "bytes": 136443,
+        "sha256": "28df1e7df4fefbce56c45b875276686d9f5118ea6e5b08c73c80ec20c4dc7f71",
+        "bytes": 136446,
         "contains": "LOD0 + collision proxy; LOD1 is regenerated by the script"
       },
       "texture_sources": [
