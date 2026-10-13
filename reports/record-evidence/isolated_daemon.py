@@ -27,7 +27,20 @@ from run_guarded_native import stop_owned_group
 
 TARGET = Path(os.environ.get('PERMAGENT_BUILD_TARGET', str(LANE.parent / '.shared-target/world-production-20261006')))
 ROOT = TARGET / 'record-qa-runtime'
-DEBUG = TARGET / 'debug'
+PROFILES = ('debug', 'release')
+PROFILE = 'debug'
+# Despite the historical name, DEBUG is the ACTIVE profile directory (TARGET/<profile>);
+# it is debug unless set_profile('release') is called before any artifact is touched.
+DEBUG = TARGET / PROFILE
+
+
+def set_profile(name):
+    global PROFILE, DEBUG
+    if name not in PROFILES:
+        raise RuntimeError(f'Unknown build profile: {name!r}')
+    PROFILE = name
+    DEBUG = TARGET / name
+    return DEBUG
 PORT = 3002
 URL = f'http://127.0.0.1:{PORT}'
 MODEL = 'qwen2.5:7b'
@@ -87,10 +100,10 @@ def artifact(path, expected=None):
 def libraries():
     items = [DEBUG / 'libsherpa-onnx-c-api.dylib', *sorted(DEBUG.glob('libonnxruntime*.dylib'))]
     if len(items) < 2 or not all(p.is_file() for p in items):
-        raise RuntimeError('Expected sherpa and onnxruntime debug dylibs are missing')
+        raise RuntimeError(f'Expected sherpa and onnxruntime {PROFILE} dylibs are missing in {DEBUG} (libraries of another profile are never borrowed)')
     resolved = sorted(set(p.resolve() for p in items))
     if any(not p.is_relative_to(DEBUG.resolve()) for p in resolved):
-        raise RuntimeError('Dylib symlink escapes owned debug target')
+        raise RuntimeError(f'Dylib symlink escapes owned {PROFILE} target')
     return resolved
 
 
@@ -145,7 +158,7 @@ def fresh_root_check():
 def reviewed_artifacts(binary_path, binary_sha, whisper_path):
     binary = artifact(binary_path, binary_sha)
     if Path(binary['path']) != DEBUG / 'permagentd' or not os.access(binary['path'], os.X_OK):
-        raise RuntimeError('Only the owned debug/permagentd executable is allowed')
+        raise RuntimeError(f'Only the owned {PROFILE}/permagentd executable is allowed')
     whisper = artifact(whisper_path, WHISPER_SHA)
     if Path(whisper['path']).name != WHISPER_NAME:
         raise RuntimeError('Unexpected bundled Whisper filename')
@@ -196,7 +209,7 @@ def owned_manifest():
     for path in map(Path, library_paths):
         if path.parent != DEBUG or not (path.name == 'libsherpa-onnx-c-api.dylib' or
                                        re.fullmatch(r'libonnxruntime.*\.dylib', path.name)):
-            raise RuntimeError('Ownership manifest dylib escapes the owned debug target')
+            raise RuntimeError(f'Ownership manifest dylib escapes the owned {PROFILE} target')
     return value
 
 
@@ -384,7 +397,8 @@ def run(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='action', required=True)
-    sub.add_parser('sign-libs', help='Explicitly ad-hoc sign only owned debug sherpa/onnx dylibs')
+    parser.add_argument('--profile', choices=PROFILES, default='debug', help='Build profile directory under the target (default debug)')
+    sub.add_parser('sign-libs', help='Explicitly ad-hoc sign only owned sherpa/onnx dylibs of the selected --profile')
     prep = sub.add_parser('prepare', help='Initialize empty isolated root after build and signing')
     prep.add_argument('--binary', required=True)
     prep.add_argument('--sha256', required=True)
@@ -400,6 +414,7 @@ def main():
     sub.add_parser('stop', help='Request this supervisor stop its owned group; never signals by stored PID')
     sub.add_parser('dry-run', help='Show public target/config/env keys; no filesystem mutation or launch')
     args = parser.parse_args()
+    set_profile(args.profile)
     if args.action == 'sign-libs': sign_libraries()
     elif args.action == 'prepare': prepare(args)
     elif args.action == 'refresh-artifacts': refresh_artifacts(args)
@@ -415,7 +430,7 @@ def main():
         write_json(STOP, {'owner': value['owner'], 'run_id': active['run_id']})
         print('Stop requested for owned supervisor; wait for its completion evidence.')
     elif args.action == 'dry-run':
-        print(json.dumps({'root': str(ROOT), 'url': URL, 'debug_libraries': str(DEBUG),
+        print(json.dumps({'root': str(ROOT), 'url': URL, 'profile': PROFILE, 'debug_libraries': str(DEBUG),
                           'config': config(), 'child_env_keys': sorted(child_env()),
                           'whisper_sha256': WHISPER_SHA, 'launched': False}, indent=2))
 

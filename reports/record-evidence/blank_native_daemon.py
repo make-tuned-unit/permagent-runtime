@@ -75,7 +75,7 @@ def reviewed_artifacts(expected_sha: str) -> dict:
     binary_path = isolated.DEBUG / 'permagentd'
     binary = isolated.artifact(binary_path, expected_sha)
     if Path(binary['path']) != binary_path or not os.access(binary_path, os.X_OK):
-        raise RuntimeError('Only the executable in the owned debug target may run')
+        raise RuntimeError(f'Only the executable in the owned {isolated.PROFILE} target may run')
     libraries = isolated.libraries()
     for path in libraries:
         subprocess.run(['/usr/bin/codesign', '--verify', '--strict', str(path)], check=True,
@@ -174,11 +174,13 @@ def authenticated_projects(token: str) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--execute', action='store_true', help='Required to launch the verified daemon')
-    parser.add_argument('--sha256', required=True, help='Reviewed SHA-256 of debug/permagentd')
+    parser.add_argument('--sha256', required=True, help='Reviewed SHA-256 of <profile>/permagentd')
+    parser.add_argument('--profile', choices=isolated.PROFILES, default='debug', help='Build profile directory under the target (default debug)')
     parser.add_argument('--max-seconds', type=int, default=1800, help='Supervisor lifetime, 1..3600 seconds')
     parser.add_argument('--use-existing-local-ollama', action='store_true',
                         help='Explicit positive-path review: use an existing localhost:11434 service without starting it or selecting a model')
     args = parser.parse_args()
+    isolated.set_profile(args.profile)
     if not args.execute:
         raise RuntimeError('Refusing launch without --execute')
     if not 1 <= args.max_seconds <= 3600:
@@ -198,7 +200,7 @@ def main() -> int:
     command = [selected['binary']['path'], 'agent', '--host', '127.0.0.1', '--port', str(PORT)]
     report = {
         'schema': 1, 'kind': 'blank-native-daemon', 'root': str(root),
-        'url': f'http://127.0.0.1:{PORT}', 'binary': selected['binary'],
+        'url': f'http://127.0.0.1:{PORT}', 'profile': isolated.PROFILE, 'binary': selected['binary'],
         'libraries': selected['libraries'], 'log': str(log_path),
         'startedUtc': stamp, 'ready': False, 'tokenLogged': False,
         'inheritedEnvironment': False, 'defaultConfigSeeded': False,
