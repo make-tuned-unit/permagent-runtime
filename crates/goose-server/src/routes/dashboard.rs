@@ -63,21 +63,35 @@ async fn get_dashboard(State(state): State<Arc<AppState>>) -> Json<DashboardResp
         .await
         .unwrap_or_default();
 
-    let sessions_total = sessions.len();
+    // An empty session (no messages: a chat dock opened, nothing sent) is not a
+    // session the user had.
+    let sessions_total = sessions.iter().filter(|s| s.message_count > 0).count();
     let sessions_today = sessions
         .iter()
-        .filter(|s| s.created_at >= today_midnight)
+        .filter(|s| s.message_count > 0 && s.created_at >= today_midnight)
         .count();
 
-    // Determine active sessions (updated within last 2 minutes, not system type)
+    // In flight = a turn is actually running. Recency alone is not enough: an
+    // empty chat session created by opening the dock was reported as
+    // "thinking" for two minutes. A session counts only when it has messages
+    // AND its event bus holds an active request (or it is a scheduled run
+    // that just wrote, which has no bus).
     let two_min_ago = now - chrono::Duration::seconds(120);
-    let active: Vec<_> = sessions
-        .iter()
-        .filter(|s| {
-            s.updated_at >= two_min_ago
-                && matches!(s.session_type, SessionType::User | SessionType::Scheduled)
-        })
-        .collect();
+    let mut active: Vec<_> = Vec::new();
+    for s in sessions.iter() {
+        if s.updated_at < two_min_ago
+            || !matches!(s.session_type, SessionType::User | SessionType::Scheduled)
+        {
+            continue;
+        }
+        let has_request = match state.get_event_bus(&s.id).await {
+            Some(bus) => !bus.active_request_ids().await.is_empty(),
+            None => false,
+        };
+        if session_is_in_flight(s, has_request, two_min_ago) {
+            active.push(s);
+        }
+    }
     let active_count = active.len();
 
     let agent_state = if active_count > 0 { "thinking" } else { "idle" };
@@ -92,7 +106,16 @@ async fn get_dashboard(State(state): State<Arc<AppState>>) -> Json<DashboardResp
         match brain.recall(&name, spectral::Visibility::Private).await {
             Ok(r) => {
                 let ent_count = r.graph.neighborhood.entities.len();
-                let mem_count = r.memory_hits.len();
+                // The four first-run welcome memories are seeded, not the
+                // user's: they must not make an untouched profile look used.
+                // Entities are derived from memory content, so with no
+                // user-authored hit they do not count either.
+                let mem_count = r
+                    .memory_hits
+                    .iter()
+                    .filter(|h| !is_onboarding_memory(&h.key, h.source.as_deref()))
+                    .count();
+                let ent_count = if mem_count == 0 { 0 } else { ent_count };
                 (ent_count + mem_count, 0) // delta requires timestamp tracking we don't have
             }
             Err(_) => (0, 0),
@@ -126,8 +149,9 @@ async fn get_dashboard(State(state): State<Arc<AppState>>) -> Json<DashboardResp
     let recent: Vec<RecentSession> = sessions
         .iter()
         .filter(|s| {
-            s.updated_at < two_min_ago
-                && matches!(s.session_type, SessionType::User | SessionType::Scheduled)
+            matches!(s.session_type, SessionType::User | SessionType::Scheduled)
+                && s.message_count > 0
+                && !active.iter().any(|a| a.id == s.id)
         })
         .take(4)
         .map(|s| {
@@ -164,6 +188,26 @@ async fn get_dashboard(State(state): State<Arc<AppState>>) -> Json<DashboardResp
         in_flight,
         recent,
     })
+}
+
+/// A first-run welcome memory seeded by `automation::onboarding_seed`.
+fn is_onboarding_memory(key: &str, source: Option<&str>) -> bool {
+    key.starts_with("onboarding:") || source == Some("permagent.onboarding")
+}
+
+/// Whether a session has a turn in flight. An empty session (no messages) never
+/// does; otherwise a live request on its event bus is the truth, and a
+/// scheduled run (no bus) counts only while it is still writing.
+fn session_is_in_flight(
+    s: &permagent::session::session_manager::SessionSummary,
+    has_active_request: bool,
+    two_min_ago: DateTime<Utc>,
+) -> bool {
+    if s.message_count == 0 {
+        return false;
+    }
+    has_active_request
+        || (matches!(s.session_type, SessionType::Scheduled) && s.updated_at >= two_min_ago)
 }
 
 /// Longest session title Home is sent, in bytes.
@@ -822,6 +866,50 @@ pub fn routes(state: Arc<AppState>) -> Router {
 
 #[cfg(test)]
 mod tests {
+    fn summary(
+        message_count: usize,
+        session_type: &str,
+    ) -> permagent::session::session_manager::SessionSummary {
+        let now = chrono::Utc::now().to_rfc3339();
+        serde_json::from_value(serde_json::json!({
+            "id": "s1", "name": "New Chat", "session_type": session_type,
+            "created_at": now, "updated_at": now, "message_count": message_count,
+        }))
+        .expect("summary")
+    }
+
+    #[test]
+    fn onboarding_memories_are_recognised_by_key_or_source() {
+        assert!(super::is_onboarding_memory("onboarding:welcome", None));
+        assert!(super::is_onboarding_memory(
+            "x",
+            Some("permagent.onboarding")
+        ));
+        assert!(!super::is_onboarding_memory("user:note", Some("chat")));
+    }
+
+    #[test]
+    fn a_fresh_session_with_no_messages_is_not_in_flight() {
+        let two_min_ago = chrono::Utc::now() - chrono::Duration::seconds(120);
+        let fresh = summary(0, "user");
+        assert!(!super::session_is_in_flight(&fresh, false, two_min_ago));
+        assert!(!super::session_is_in_flight(&fresh, true, two_min_ago));
+        let scheduled = summary(0, "scheduled");
+        assert!(!super::session_is_in_flight(&scheduled, false, two_min_ago));
+    }
+
+    #[test]
+    fn a_session_is_in_flight_only_with_a_live_request() {
+        let two_min_ago = chrono::Utc::now() - chrono::Duration::seconds(120);
+        let touched = summary(4, "user");
+        assert!(!super::session_is_in_flight(&touched, false, two_min_ago));
+        assert!(super::session_is_in_flight(&touched, true, two_min_ago));
+        assert!(super::session_is_in_flight(
+            &summary(2, "scheduled"),
+            false,
+            two_min_ago
+        ));
+    }
 
     #[test]
     fn session_titles_are_not_cut_at_forty_chars() {
