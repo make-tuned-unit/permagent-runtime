@@ -48,6 +48,28 @@ pub(crate) async fn apply_schema(pool: &Pool<Sqlite>) -> Result<()> {
     Ok(())
 }
 
+/// The orchestrator supplies a *derived* contract (`text`, `source`,
+/// `session_id`, `budget_task_id`, ...) while the session stores the raw
+/// native one (`task_id`, `source_message_id`, `text`), so whole-object
+/// equality can never hold. Compare only what the guard protects: the exact
+/// task text, the originating message and the task identity.
+fn contract_matches_native(supplied: &serde_json::Value, native: &serde_json::Value) -> bool {
+    if supplied.get("text") != native.get("text") {
+        return false;
+    }
+    for (supplied_key, native_key) in [
+        ("source_message_id", "source_message_id"),
+        ("budget_task_id", "task_id"),
+        ("task_id", "task_id"),
+    ] {
+        match supplied.get(supplied_key).filter(|v| !v.is_null()) {
+            Some(value) if Some(value) != native.get(native_key) => return false,
+            _ => {}
+        }
+    }
+    true
+}
+
 /// Only called while materializing a newly approved native goal. Missing
 /// source evidence stays explicitly unverified, including non-coding goals.
 pub(crate) async fn bind_new_goal_tx(
@@ -83,7 +105,7 @@ pub(crate) async fn bind_new_goal_tx(
         bail!("Native task identity differs from roadmap binding");
     }
     if let (Some(supplied), Some(native)) = (contract, native_contract) {
-        if supplied != native {
+        if !contract_matches_native(supplied, native) {
             bail!("Original contract differs from native task origin");
         }
     }

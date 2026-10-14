@@ -559,3 +559,40 @@ async fn claim_rollback_and_duplicate_claim_id_are_atomic() {
         .unwrap();
     assert_eq!(count, 1);
 }
+
+#[tokio::test]
+async fn orchestrator_derived_contract_binds_when_it_carries_the_native_text() {
+    // Regression: `roadmap_task_contract` supplies a derived object (source,
+    // session_id, budget_task_id) that never equals the raw native contract.
+    let pool = pool().await;
+    let temp = tempfile::tempdir().unwrap();
+    let origin = valid_origin("task-1");
+    let root = std::fs::canonicalize(temp.path())
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    add_coordinator(&pool, Some(origin.clone()), Some(&root)).await;
+    let text = origin["budget_task_contract.v1"]["text"].clone();
+    let derived = |text: Value, task: &str| {
+        json!({"text": text, "source": "budget_task_origin", "source_message_id": null,
+               "session_id": "coordinator", "budget_task_id": task})
+    };
+    for (contract, ok) in [
+        (derived(text.clone(), "task-1"), true),
+        (derived(json!("a different brief"), "task-1"), false),
+        (derived(text.clone(), "other-task"), false),
+    ] {
+        let mut tx = pool.begin().await.unwrap();
+        let result = bind_new_goal_tx(
+            &mut tx,
+            "goal-1",
+            "project-1",
+            Some("task-1"),
+            Some("coordinator"),
+            Some(&contract),
+        )
+        .await;
+        assert_eq!(result.is_ok(), ok, "{contract}");
+        tx.rollback().await.unwrap();
+    }
+}
