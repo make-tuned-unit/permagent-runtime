@@ -105,6 +105,41 @@ impl AgentManager {
         *self.default_provider.write().await = Some(provider);
     }
 
+    /// Build the default provider from the persisted `GOOSE_PROVIDER` /
+    /// `GOOSE_MODEL`. The provider id is used verbatim (built-in `deepseek` and
+    /// a user-made `custom_deepseek` are both valid registry ids; there is no
+    /// mapping). Bounded and off the async worker: key resolution can hit a
+    /// synchronous keychain call. Logs only the non-secret ids.
+    async fn build_default_from_config() -> Option<Arc<dyn crate::providers::base::Provider>> {
+        let config = Config::global();
+        let (name, model) = default_route_from(
+            config.get_goose_provider().ok(),
+            config.get_goose_model().ok(),
+        )?;
+        let model_config = match model.as_deref() {
+            Some(m) => crate::model::ModelConfig::new(m).ok().unwrap_or_default(),
+            None => Default::default(),
+        };
+        let create_name = name.clone();
+        let handle = tokio::spawn(async move {
+            crate::providers::create(&create_name, model_config, vec![]).await
+        });
+        match tokio::time::timeout(std::time::Duration::from_secs(30), handle).await {
+            Ok(Ok(Ok(provider))) => {
+                info!(provider = %name, model = ?model, "Default provider built lazily from persisted config");
+                Some(provider)
+            }
+            Ok(Ok(Err(e))) => {
+                tracing::warn!("Lazy default provider '{}' failed: {}", name, e);
+                None
+            }
+            _ => {
+                tracing::warn!("Lazy default provider '{}' did not initialize", name);
+                None
+            }
+        }
+    }
+
     pub async fn get_or_create_agent(&self, session_id: String) -> Result<Arc<Agent>> {
         {
             let existing = {
@@ -165,6 +200,18 @@ impl AgentManager {
         }
 
         if agent.provider().await.is_err() {
+            // No boot-time default (config had no GOOSE_PROVIDER at startup, or
+            // the boot build failed): build one now from the persisted config
+            // so a fresh session never depends on a client calling
+            // /agent/update_provider first.
+            if self.default_provider.read().await.is_none() {
+                if let Some(built) = Self::build_default_from_config().await {
+                    let mut slot = self.default_provider.write().await;
+                    if slot.is_none() {
+                        *slot = Some(built);
+                    }
+                }
+            }
             if let Some(provider) = &*self.default_provider.read().await {
                 agent
                     .update_provider(Arc::clone(provider), &session_id)
@@ -350,6 +397,17 @@ impl AgentManager {
             .map(|(id, _)| id.clone())
             .collect()
     }
+}
+
+/// Pure: normalise the persisted provider/model pair. Blank provider means
+/// "not configured"; a blank model falls back to the provider's default.
+fn default_route_from(
+    provider: Option<String>,
+    model: Option<String>,
+) -> Option<(String, Option<String>)> {
+    let provider = provider.map(|p| p.trim().to_string()).filter(|p| !p.is_empty())?;
+    let model = model.map(|m| m.trim().to_string()).filter(|m| !m.is_empty());
+    Some((provider, model))
 }
 
 #[cfg(test)]
@@ -808,5 +866,20 @@ mod tests {
 
         assert_eq!(a1.goose_mode().await, GooseMode::Approve);
         assert_eq!(a2.goose_mode().await, GooseMode::Auto);
+    }
+
+    #[test]
+    fn default_route_from_persisted_config() {
+        use super::default_route_from;
+        assert_eq!(default_route_from(None, Some("m".into())), None);
+        assert_eq!(default_route_from(Some("  ".into()), None), None);
+        assert_eq!(
+            default_route_from(Some("deepseek".into()), Some(" deepseek-chat ".into())),
+            Some(("deepseek".to_string(), Some("deepseek-chat".to_string())))
+        );
+        assert_eq!(
+            default_route_from(Some("custom_deepseek".into()), Some("".into())),
+            Some(("custom_deepseek".to_string(), None))
+        );
     }
 }
