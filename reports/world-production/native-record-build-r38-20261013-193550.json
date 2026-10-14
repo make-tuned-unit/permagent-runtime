@@ -1,0 +1,955 @@
+{
+  "revision": "r38",
+  "record_review": true,
+  "review_config": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/reports/world-production/native-record-review-config.json",
+  "compiled_review_root": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/record-qa-runtime",
+  "compiled_review_port": "3002",
+  "frontend_api_base": "http://127.0.0.1:3002",
+  "lane": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006",
+  "target": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006",
+  "command": [
+    "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/scripts/build-guard.sh",
+    "--min-free-gb",
+    "12",
+    "--",
+    "/Users/j/Documents/dev/permagent-runtime/bin/node",
+    "../command-center/node_modules/@tauri-apps/cli/tauri.js",
+    "build",
+    "--debug",
+    "--no-bundle",
+    "--config",
+    "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/reports/world-production/native-record-review-config.json",
+    "--",
+    "--locked",
+    "-j",
+    "1"
+  ],
+  "log": "/Users/j/Documents/dev/permagent-worktrees/world-production-20261006/reports/world-production/native-record-build-r38-20261013-193550.log",
+  "exit_code": 0,
+  "reason": null,
+  "cleanup_error": null,
+  "owned_group_stopped": true,
+  "daemon_artifact_preservation": {
+    "path": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/debug/permagentd",
+    "preexisting": true,
+    "restored": true,
+    "original_sha256": "74dd76cfe7c647b5f7487b1a9f5cc85868aa769a8844a2c3f21eec807ae6cb15",
+    "backup": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/native-daemon-preservation/c360b1cf15fa49eb88c2414a620d187c/permagentd",
+    "status": "restored",
+    "after_build_sha256": "203f1dea2d41bda76761662312d9ff7f2e95d50971acf192dd2ef165f0d4b1fe",
+    "restored_sha256": "74dd76cfe7c647b5f7487b1a9f5cc85868aa769a8844a2c3f21eec807ae6cb15"
+  },
+  "daemon_preservation_error": null,
+  "elapsed_s": 272.89,
+  "minimum_free_gib": 14.648,
+  "samples": [
+    {
+      "elapsed_s": 30.23,
+      "free_gib": 15.051,
+      "volumes_gib": {
+        "/System/Volumes/Data": 15.051,
+        "/Volumes/PermagentBuilds": 121.963
+      }
+    },
+    {
+      "elapsed_s": 32.24,
+      "free_gib": 15.052,
+      "volumes_gib": {
+        "/System/Volumes/Data": 15.052,
+        "/Volumes/PermagentBuilds": 121.963
+      }
+    },
+    {
+      "elapsed_s": 34.24,
+      "free_gib": 15.052,
+      "volumes_gib": {
+        "/System/Volumes/Data": 15.052,
+        "/Volumes/PermagentBuilds": 121.963
+      }
+    },
+    {
+      "elapsed_s": 36.24,
+      "free_gib": 15.052,
+      "volumes_gib": {
+        "/System/Volumes/Data": 15.052,
+        "/Volumes/PermagentBuilds": 121.963
+      }
+    },
+    {
+      "elapsed_s": 38.25,
+      "free_gib": 15.052,
+      "volumes_gib": {
+        "/System/Volumes/Data": 15.052,
+        "/Volumes/PermagentBuilds": 121.963
+      }
+    },
+    {
+      "elapsed_s": 40.26,
+      "free_gib": 15.051,
+      "volumes_gib": {
+        "/System/Volumes/Data": 15.051,
+        "/Volumes/PermagentBuilds": 121.963
+      }
+    },
+    {
+      "elapsed_s": 42.26,
+      "free_gib": 15.051,
+      "volumes_gib": {
+        "/System/Volumes/Data": 15.051,
+        "/Volumes/PermagentBuilds": 121.963
+      }
+    },
+    {
+      "elapsed_s": 44.27,
+      "free_gib": 15.051,
+      "volumes_gib": {
+        "/System/Volumes/Data": 15.051,
+        "/Volumes/PermagentBuilds": 121.963
+      }
+    },
+    {
+      "elapsed_s": 46.27,
+      "free_gib": 15.051,
+      "volumes_gib": {
+        "/System/Volumes/Data": 15.051,
+        "/Volumes/PermagentBuilds": 121.963
+      }
+    },
+    {
+      "elapsed_s": 48.28,
+      "free_gib": 15.05,
+      "volumes_gib": {
+        "/System/Volumes/Data": 15.05,
+        "/Volumes/PermagentBuilds": 121.963
+      }
+    },
+    {
+      "elapsed_s": 50.28,
+      "free_gib": 18.02,
+      "volumes_gib": {
+        "/System/Volumes/Data": 18.02,
+        "/Volumes/PermagentBuilds": 121.963
+      }
+    },
+    {
+      "elapsed_s": 52.29,
+      "free_gib": 18.02,
+      "volumes_gib": {
+        "/System/Volumes/Data": 18.02,
+        "/Volumes/PermagentBuilds": 121.963
+      }
+    },
+    {
+      "elapsed_s": 54.29,
+      "free_gib": 17.02,
+      "volumes_gib": {
+        "/System/Volumes/Data": 17.02,
+        "/Volumes/PermagentBuilds": 121.963
+      }
+    },
+    {
+      "elapsed_s": 56.29,
+      "free_gib": 16.016,
+      "volumes_gib": {
+        "/System/Volumes/Data": 16.016,
+        "/Volumes/PermagentBuilds": 121.963
+      }
+    },
+    {
+      "elapsed_s": 58.3,
+      "free_gib": 16.002,
+      "volumes_gib": {
+        "/System/Volumes/Data": 16.002,
+        "/Volumes/PermagentBuilds": 121.963
+      }
+    },
+    {
+      "elapsed_s": 60.31,
+      "free_gib": 15.984,
+      "volumes_gib": {
+        "/System/Volumes/Data": 15.984,
+        "/Volumes/PermagentBuilds": 121.963
+      }
+    },
+    {
+      "elapsed_s": 62.31,
+      "free_gib": 14.977,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.977,
+        "/Volumes/PermagentBuilds": 121.963
+      }
+    },
+    {
+      "elapsed_s": 64.32,
+      "free_gib": 14.954,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.954,
+        "/Volumes/PermagentBuilds": 121.963
+      }
+    },
+    {
+      "elapsed_s": 66.32,
+      "free_gib": 14.994,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.994,
+        "/Volumes/PermagentBuilds": 121.963
+      }
+    },
+    {
+      "elapsed_s": 68.32,
+      "free_gib": 14.989,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.989,
+        "/Volumes/PermagentBuilds": 121.963
+      }
+    },
+    {
+      "elapsed_s": 70.33,
+      "free_gib": 14.989,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.989,
+        "/Volumes/PermagentBuilds": 121.963
+      }
+    },
+    {
+      "elapsed_s": 72.33,
+      "free_gib": 14.988,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.988,
+        "/Volumes/PermagentBuilds": 121.963
+      }
+    },
+    {
+      "elapsed_s": 74.34,
+      "free_gib": 14.986,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.986,
+        "/Volumes/PermagentBuilds": 121.963
+      }
+    },
+    {
+      "elapsed_s": 76.34,
+      "free_gib": 14.985,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.985,
+        "/Volumes/PermagentBuilds": 121.963
+      }
+    },
+    {
+      "elapsed_s": 78.35,
+      "free_gib": 14.845,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.845,
+        "/Volumes/PermagentBuilds": 121.963
+      }
+    },
+    {
+      "elapsed_s": 80.35,
+      "free_gib": 14.804,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.804,
+        "/Volumes/PermagentBuilds": 121.963
+      }
+    },
+    {
+      "elapsed_s": 82.35,
+      "free_gib": 14.79,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.79,
+        "/Volumes/PermagentBuilds": 121.963
+      }
+    },
+    {
+      "elapsed_s": 84.36,
+      "free_gib": 14.786,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.786,
+        "/Volumes/PermagentBuilds": 121.963
+      }
+    },
+    {
+      "elapsed_s": 86.36,
+      "free_gib": 14.755,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.755,
+        "/Volumes/PermagentBuilds": 121.963
+      }
+    },
+    {
+      "elapsed_s": 88.37,
+      "free_gib": 14.702,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.702,
+        "/Volumes/PermagentBuilds": 121.963
+      }
+    },
+    {
+      "elapsed_s": 90.37,
+      "free_gib": 14.703,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.703,
+        "/Volumes/PermagentBuilds": 121.963
+      }
+    },
+    {
+      "elapsed_s": 92.38,
+      "free_gib": 14.654,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.654,
+        "/Volumes/PermagentBuilds": 121.622
+      }
+    },
+    {
+      "elapsed_s": 94.38,
+      "free_gib": 14.65,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.65,
+        "/Volumes/PermagentBuilds": 121.626
+      }
+    },
+    {
+      "elapsed_s": 96.39,
+      "free_gib": 14.667,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.667,
+        "/Volumes/PermagentBuilds": 121.626
+      }
+    },
+    {
+      "elapsed_s": 98.4,
+      "free_gib": 14.648,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.648,
+        "/Volumes/PermagentBuilds": 121.626
+      }
+    },
+    {
+      "elapsed_s": 100.4,
+      "free_gib": 14.699,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.699,
+        "/Volumes/PermagentBuilds": 121.626
+      }
+    },
+    {
+      "elapsed_s": 102.41,
+      "free_gib": 14.698,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.698,
+        "/Volumes/PermagentBuilds": 121.626
+      }
+    },
+    {
+      "elapsed_s": 104.41,
+      "free_gib": 14.698,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.698,
+        "/Volumes/PermagentBuilds": 121.626
+      }
+    },
+    {
+      "elapsed_s": 106.41,
+      "free_gib": 14.698,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.698,
+        "/Volumes/PermagentBuilds": 121.626
+      }
+    },
+    {
+      "elapsed_s": 108.42,
+      "free_gib": 14.698,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.698,
+        "/Volumes/PermagentBuilds": 121.626
+      }
+    },
+    {
+      "elapsed_s": 110.42,
+      "free_gib": 14.678,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.678,
+        "/Volumes/PermagentBuilds": 121.626
+      }
+    },
+    {
+      "elapsed_s": 112.43,
+      "free_gib": 14.677,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.677,
+        "/Volumes/PermagentBuilds": 121.626
+      }
+    },
+    {
+      "elapsed_s": 114.43,
+      "free_gib": 14.677,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.677,
+        "/Volumes/PermagentBuilds": 121.626
+      }
+    },
+    {
+      "elapsed_s": 116.43,
+      "free_gib": 14.676,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.676,
+        "/Volumes/PermagentBuilds": 121.626
+      }
+    },
+    {
+      "elapsed_s": 118.44,
+      "free_gib": 14.677,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.677,
+        "/Volumes/PermagentBuilds": 121.626
+      }
+    },
+    {
+      "elapsed_s": 120.45,
+      "free_gib": 14.671,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.671,
+        "/Volumes/PermagentBuilds": 121.626
+      }
+    },
+    {
+      "elapsed_s": 122.45,
+      "free_gib": 14.806,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.806,
+        "/Volumes/PermagentBuilds": 121.626
+      }
+    },
+    {
+      "elapsed_s": 124.45,
+      "free_gib": 14.806,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.806,
+        "/Volumes/PermagentBuilds": 121.626
+      }
+    },
+    {
+      "elapsed_s": 126.46,
+      "free_gib": 14.812,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.812,
+        "/Volumes/PermagentBuilds": 121.626
+      }
+    },
+    {
+      "elapsed_s": 128.46,
+      "free_gib": 14.816,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.816,
+        "/Volumes/PermagentBuilds": 121.626
+      }
+    },
+    {
+      "elapsed_s": 130.47,
+      "free_gib": 14.818,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.818,
+        "/Volumes/PermagentBuilds": 121.626
+      }
+    },
+    {
+      "elapsed_s": 132.47,
+      "free_gib": 14.822,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.822,
+        "/Volumes/PermagentBuilds": 121.626
+      }
+    },
+    {
+      "elapsed_s": 134.48,
+      "free_gib": 14.831,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.831,
+        "/Volumes/PermagentBuilds": 121.626
+      }
+    },
+    {
+      "elapsed_s": 136.48,
+      "free_gib": 14.832,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.832,
+        "/Volumes/PermagentBuilds": 121.626
+      }
+    },
+    {
+      "elapsed_s": 138.48,
+      "free_gib": 14.848,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.848,
+        "/Volumes/PermagentBuilds": 121.626
+      }
+    },
+    {
+      "elapsed_s": 140.49,
+      "free_gib": 14.85,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.85,
+        "/Volumes/PermagentBuilds": 121.626
+      }
+    },
+    {
+      "elapsed_s": 142.49,
+      "free_gib": 14.856,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.856,
+        "/Volumes/PermagentBuilds": 121.626
+      }
+    },
+    {
+      "elapsed_s": 144.5,
+      "free_gib": 14.872,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.872,
+        "/Volumes/PermagentBuilds": 121.626
+      }
+    },
+    {
+      "elapsed_s": 146.5,
+      "free_gib": 14.881,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.881,
+        "/Volumes/PermagentBuilds": 121.626
+      }
+    },
+    {
+      "elapsed_s": 148.51,
+      "free_gib": 14.883,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.883,
+        "/Volumes/PermagentBuilds": 121.626
+      }
+    },
+    {
+      "elapsed_s": 150.51,
+      "free_gib": 14.883,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.883,
+        "/Volumes/PermagentBuilds": 121.626
+      }
+    },
+    {
+      "elapsed_s": 152.51,
+      "free_gib": 14.864,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.864,
+        "/Volumes/PermagentBuilds": 121.626
+      }
+    },
+    {
+      "elapsed_s": 154.52,
+      "free_gib": 14.859,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.859,
+        "/Volumes/PermagentBuilds": 121.626
+      }
+    },
+    {
+      "elapsed_s": 156.53,
+      "free_gib": 14.862,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.862,
+        "/Volumes/PermagentBuilds": 121.626
+      }
+    },
+    {
+      "elapsed_s": 158.53,
+      "free_gib": 14.872,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.872,
+        "/Volumes/PermagentBuilds": 121.626
+      }
+    },
+    {
+      "elapsed_s": 160.53,
+      "free_gib": 14.834,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.834,
+        "/Volumes/PermagentBuilds": 121.625
+      }
+    },
+    {
+      "elapsed_s": 162.54,
+      "free_gib": 14.807,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.807,
+        "/Volumes/PermagentBuilds": 121.625
+      }
+    },
+    {
+      "elapsed_s": 164.54,
+      "free_gib": 14.81,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.81,
+        "/Volumes/PermagentBuilds": 121.625
+      }
+    },
+    {
+      "elapsed_s": 166.55,
+      "free_gib": 14.811,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.811,
+        "/Volumes/PermagentBuilds": 121.625
+      }
+    },
+    {
+      "elapsed_s": 168.55,
+      "free_gib": 14.795,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.795,
+        "/Volumes/PermagentBuilds": 121.625
+      }
+    },
+    {
+      "elapsed_s": 170.56,
+      "free_gib": 14.798,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.798,
+        "/Volumes/PermagentBuilds": 121.625
+      }
+    },
+    {
+      "elapsed_s": 172.56,
+      "free_gib": 14.805,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.805,
+        "/Volumes/PermagentBuilds": 121.625
+      }
+    },
+    {
+      "elapsed_s": 174.57,
+      "free_gib": 14.81,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.81,
+        "/Volumes/PermagentBuilds": 121.625
+      }
+    },
+    {
+      "elapsed_s": 176.57,
+      "free_gib": 14.821,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.821,
+        "/Volumes/PermagentBuilds": 121.625
+      }
+    },
+    {
+      "elapsed_s": 178.58,
+      "free_gib": 14.835,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.835,
+        "/Volumes/PermagentBuilds": 121.625
+      }
+    },
+    {
+      "elapsed_s": 180.58,
+      "free_gib": 18.806,
+      "volumes_gib": {
+        "/System/Volumes/Data": 18.806,
+        "/Volumes/PermagentBuilds": 121.625
+      }
+    },
+    {
+      "elapsed_s": 182.61,
+      "free_gib": 18.805,
+      "volumes_gib": {
+        "/System/Volumes/Data": 18.805,
+        "/Volumes/PermagentBuilds": 121.625
+      }
+    },
+    {
+      "elapsed_s": 184.62,
+      "free_gib": 16.836,
+      "volumes_gib": {
+        "/System/Volumes/Data": 16.836,
+        "/Volumes/PermagentBuilds": 121.625
+      }
+    },
+    {
+      "elapsed_s": 186.62,
+      "free_gib": 15.835,
+      "volumes_gib": {
+        "/System/Volumes/Data": 15.835,
+        "/Volumes/PermagentBuilds": 121.624
+      }
+    },
+    {
+      "elapsed_s": 188.62,
+      "free_gib": 15.836,
+      "volumes_gib": {
+        "/System/Volumes/Data": 15.836,
+        "/Volumes/PermagentBuilds": 121.624
+      }
+    },
+    {
+      "elapsed_s": 190.63,
+      "free_gib": 14.835,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.835,
+        "/Volumes/PermagentBuilds": 121.624
+      }
+    },
+    {
+      "elapsed_s": 192.63,
+      "free_gib": 14.838,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.838,
+        "/Volumes/PermagentBuilds": 121.624
+      }
+    },
+    {
+      "elapsed_s": 194.64,
+      "free_gib": 14.836,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.836,
+        "/Volumes/PermagentBuilds": 121.624
+      }
+    },
+    {
+      "elapsed_s": 196.65,
+      "free_gib": 14.835,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.835,
+        "/Volumes/PermagentBuilds": 121.624
+      }
+    },
+    {
+      "elapsed_s": 198.65,
+      "free_gib": 14.838,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.838,
+        "/Volumes/PermagentBuilds": 121.624
+      }
+    },
+    {
+      "elapsed_s": 200.66,
+      "free_gib": 14.838,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.838,
+        "/Volumes/PermagentBuilds": 121.624
+      }
+    },
+    {
+      "elapsed_s": 202.66,
+      "free_gib": 14.838,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.838,
+        "/Volumes/PermagentBuilds": 121.624
+      }
+    },
+    {
+      "elapsed_s": 204.67,
+      "free_gib": 14.835,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.835,
+        "/Volumes/PermagentBuilds": 121.624
+      }
+    },
+    {
+      "elapsed_s": 206.67,
+      "free_gib": 14.807,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.807,
+        "/Volumes/PermagentBuilds": 121.624
+      }
+    },
+    {
+      "elapsed_s": 208.68,
+      "free_gib": 14.81,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.81,
+        "/Volumes/PermagentBuilds": 121.624
+      }
+    },
+    {
+      "elapsed_s": 210.69,
+      "free_gib": 14.81,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.81,
+        "/Volumes/PermagentBuilds": 121.624
+      }
+    },
+    {
+      "elapsed_s": 212.69,
+      "free_gib": 14.81,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.81,
+        "/Volumes/PermagentBuilds": 121.624
+      }
+    },
+    {
+      "elapsed_s": 214.69,
+      "free_gib": 14.81,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.81,
+        "/Volumes/PermagentBuilds": 121.62
+      }
+    },
+    {
+      "elapsed_s": 216.7,
+      "free_gib": 14.808,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.808,
+        "/Volumes/PermagentBuilds": 121.62
+      }
+    },
+    {
+      "elapsed_s": 218.7,
+      "free_gib": 14.808,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.808,
+        "/Volumes/PermagentBuilds": 121.62
+      }
+    },
+    {
+      "elapsed_s": 220.71,
+      "free_gib": 14.826,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.826,
+        "/Volumes/PermagentBuilds": 121.62
+      }
+    },
+    {
+      "elapsed_s": 222.72,
+      "free_gib": 14.825,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.825,
+        "/Volumes/PermagentBuilds": 121.535
+      }
+    },
+    {
+      "elapsed_s": 224.72,
+      "free_gib": 14.825,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.825,
+        "/Volumes/PermagentBuilds": 121.529
+      }
+    },
+    {
+      "elapsed_s": 226.72,
+      "free_gib": 14.857,
+      "volumes_gib": {
+        "/System/Volumes/Data": 14.857,
+        "/Volumes/PermagentBuilds": 121.518
+      }
+    },
+    {
+      "elapsed_s": 228.73,
+      "free_gib": 15.857,
+      "volumes_gib": {
+        "/System/Volumes/Data": 15.857,
+        "/Volumes/PermagentBuilds": 121.517
+      }
+    },
+    {
+      "elapsed_s": 230.74,
+      "free_gib": 17.856,
+      "volumes_gib": {
+        "/System/Volumes/Data": 17.856,
+        "/Volumes/PermagentBuilds": 121.517
+      }
+    },
+    {
+      "elapsed_s": 232.74,
+      "free_gib": 17.855,
+      "volumes_gib": {
+        "/System/Volumes/Data": 17.855,
+        "/Volumes/PermagentBuilds": 121.511
+      }
+    },
+    {
+      "elapsed_s": 234.75,
+      "free_gib": 17.854,
+      "volumes_gib": {
+        "/System/Volumes/Data": 17.854,
+        "/Volumes/PermagentBuilds": 121.511
+      }
+    },
+    {
+      "elapsed_s": 236.75,
+      "free_gib": 17.853,
+      "volumes_gib": {
+        "/System/Volumes/Data": 17.853,
+        "/Volumes/PermagentBuilds": 121.511
+      }
+    },
+    {
+      "elapsed_s": 238.76,
+      "free_gib": 17.852,
+      "volumes_gib": {
+        "/System/Volumes/Data": 17.852,
+        "/Volumes/PermagentBuilds": 121.511
+      }
+    },
+    {
+      "elapsed_s": 240.76,
+      "free_gib": 17.825,
+      "volumes_gib": {
+        "/System/Volumes/Data": 17.825,
+        "/Volumes/PermagentBuilds": 121.511
+      }
+    },
+    {
+      "elapsed_s": 242.77,
+      "free_gib": 17.825,
+      "volumes_gib": {
+        "/System/Volumes/Data": 17.825,
+        "/Volumes/PermagentBuilds": 121.395
+      }
+    },
+    {
+      "elapsed_s": 244.77,
+      "free_gib": 17.821,
+      "volumes_gib": {
+        "/System/Volumes/Data": 17.821,
+        "/Volumes/PermagentBuilds": 121.281
+      }
+    },
+    {
+      "elapsed_s": 246.78,
+      "free_gib": 17.82,
+      "volumes_gib": {
+        "/System/Volumes/Data": 17.82,
+        "/Volumes/PermagentBuilds": 121.483
+      }
+    },
+    {
+      "elapsed_s": 248.78,
+      "free_gib": 17.812,
+      "volumes_gib": {
+        "/System/Volumes/Data": 17.812,
+        "/Volumes/PermagentBuilds": 121.613
+      }
+    },
+    {
+      "elapsed_s": 250.79,
+      "free_gib": 17.812,
+      "volumes_gib": {
+        "/System/Volumes/Data": 17.812,
+        "/Volumes/PermagentBuilds": 121.613
+      }
+    }
+  ],
+  "minimum_free_by_volume_gib": {
+    "/System/Volumes/Data": 14.648,
+    "/Volumes/PermagentBuilds": 121.281
+  },
+  "startup_minimum_gib": 12,
+  "continuous_floor_gib": 8,
+  "volume_guards_gib": {
+    "/System/Volumes/Data": {
+      "start": 12,
+      "floor": 8
+    },
+    "/Volumes/PermagentBuilds": {
+      "start": 25,
+      "floor": 20
+    }
+  },
+  "timeout_s": 1800,
+  "staged": false,
+  "launched": false,
+  "native_binary_sha256": "22f8c7be3fdbc3c1cc2695251fb5d381598c4086f2a2f87066656a82368b80ce"
+}

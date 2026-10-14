@@ -2,29 +2,29 @@
   {
     "source": "/Applications/Permagent.app/Contents/MacOS/permagentd",
     "destination": "ui/desktop/src-tauri/binaries/permagentd-aarch64-apple-darwin",
-    "bytes": 369375744,
-    "sha256": "fb9695d479c5786dfbb2dbe887577744b97910c0cdde7ac3aac883320a3a1810",
+    "bytes": 366068496,
+    "sha256": "203f1dea2d41bda76761662312d9ff7f2e95d50971acf192dd2ef165f0d4b1fe",
     "copy": "ordinary independent inode"
   },
   {
     "source": "/Applications/Permagent.app/Contents/MacOS/permagent",
     "destination": "ui/desktop/src-tauri/binaries/permagent-aarch64-apple-darwin",
-    "bytes": 280369088,
-    "sha256": "2f0c859330afa5c33b7f043533fd44b10abe29124d10ef6704aa496d03b007d3",
+    "bytes": 275895552,
+    "sha256": "4634e9a19989c1ca048577f96540060fb7996c7942206e13bcb45a05f391d6be",
     "copy": "ordinary independent inode"
   },
   {
     "source": "/Applications/Permagent.app/Contents/Frameworks/libonnxruntime.dylib",
     "destination": "ui/desktop/src-tauri/binaries/libonnxruntime.dylib",
-    "bytes": 28025616,
-    "sha256": "3d28fb9c22ef4c2619692fde27e057f887c40e5dca1fbdab9d35c74865faeea1",
+    "bytes": 28025744,
+    "sha256": "bae70d236183c779433f42e5c5ee00d45e5c76bf40c15abde6fcd5f9ddeee952",
     "copy": "ordinary independent inode"
   },
   {
     "source": "/Applications/Permagent.app/Contents/Frameworks/libsherpa-onnx-c-api.dylib",
     "destination": "ui/desktop/src-tauri/binaries/libsherpa-onnx-c-api.dylib",
-    "bytes": 4102752,
-    "sha256": "93b82888169eaf7cfa4c8b667710fde15eb2e9000a5f5afc7c719646e2919b99",
+    "bytes": 4102896,
+    "sha256": "90a71273a2d707026136b88bda9cf6390498ac736e346269877a004cf9cf13ef",
     "copy": "ordinary independent inode"
   }
 ]
