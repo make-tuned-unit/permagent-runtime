@@ -923,6 +923,15 @@ impl AppPerceptionClient {
     }
 
     async fn observe_people(&self, pool: &Pool<Sqlite>) -> Value {
+        self.observe_people_with(pool, super::get_global_brain().as_ref())
+            .await
+    }
+
+    async fn observe_people_with(
+        &self,
+        pool: &Pool<Sqlite>,
+        brain: Option<&crate::brain_handle::SafeBrain>,
+    ) -> Value {
         let rows = match people::list_people(pool, &people::PeopleFilter::default()).await {
             Ok(rows) => rows,
             Err(e) => return unavailable("people", format!("people query failed: {e}")),
@@ -939,6 +948,11 @@ impl AppPerceptionClient {
             .await
             .unwrap_or_default();
         let mut people = rows;
+        // Role/company/etc. live in the graph (the people columns are cleared
+        // by the HTTP read path too); without this the agent saw them blank.
+        if let Some(brain) = brain {
+            people::overlay_graph_fields(brain, &mut people).await;
+        }
         person_meetings::merge_last_contact(&mut people, &latest_map);
         let now = chrono::Utc::now();
         let mut quiet_items = Vec::new();
@@ -2758,6 +2772,67 @@ mod tests {
             !encoded.contains("entity_uuid"),
             "observe_app people must not return join ids the redactor would blank: {encoded}"
         );
+    }
+
+    #[tokio::test]
+    async fn people_surface_reports_role_and_company_stored_on_the_graph() {
+        use spectral::ingest::FieldSource;
+        let dir = tempfile::tempdir().unwrap();
+        let client = test_client(dir.path().to_path_buf());
+        let pool = memory_pool().await;
+        crate::session::spectral_schema::init_spectral_db(&pool)
+            .await
+            .unwrap();
+        // Same shape POST /api/people leaves behind: identity row with empty
+        // columns, role/company only as graph entity fields.
+        let canonical = "person:maya-chen";
+        let person = crate::people::upsert_person(
+            &pool,
+            canonical,
+            "Maya Chen",
+            &crate::people::PersonAttrs::default(),
+        )
+        .await
+        .unwrap();
+        let hex = crate::identity::canonical::graph_entity_id_hex("person", "Maya Chen");
+        sqlx::query("UPDATE people SET graph_entity_id=? WHERE entity_uuid=?")
+            .bind(&hex)
+            .bind(&person.entity_uuid)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let ontology = temp.path().join("ontology.toml");
+        std::fs::write(
+            &ontology,
+            include_str!("../../../tests/fixtures/ontology.sample.toml"),
+        )
+        .unwrap();
+        let data_dir = temp.path().join("brain");
+        let brain = tokio::task::spawn_blocking(move || {
+            spectral::Brain::builder()
+                .data_dir(data_dir)
+                .ontology_path(&ontology)
+                .device_id(spectral::DeviceId::from_descriptor("people-observe-test"))
+                .build()
+                .unwrap()
+        })
+        .await
+        .unwrap();
+        let brain = crate::brain_handle::SafeBrain::new(brain);
+        let eid: spectral::core::entity_id::EntityId = hex.parse().unwrap();
+        for (name, value) in [("role", "Head of Product"), ("company", "Northstar Studio")] {
+            brain
+                .set_entity_field(eid, name, value, FieldSource::Manual, None)
+                .await
+                .unwrap();
+        }
+        let value = client.observe_people_with(&pool, Some(&brain)).await;
+        let item = &value["data"]["people"]["items"][0];
+        assert_eq!(item["role"], "Head of Product", "{value}");
+        assert_eq!(item["company"], "Northstar Studio", "{value}");
+        let without = client.observe_people_with(&pool, None).await;
+        assert!(without["data"]["people"]["items"][0]["role"].is_null());
     }
 
     #[tokio::test]

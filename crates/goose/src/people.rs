@@ -592,6 +592,49 @@ pub async fn list_people(
     Ok(rows.iter().map(row_to_person).collect())
 }
 
+/// Overlay graph-held attributes (role, company, email, ...) onto people read
+/// from the `people` table, whose columns are NOT the source of truth (the
+/// HTTP read path clears them and reads the graph; `POST /api/people` writes
+/// only graph fields). Only people that actually have graph fields are
+/// touched, so a person with no graph node keeps their column values.
+/// `Enriched` fields apply before `Manual` ones so a manual value wins an
+/// alias collision (`job_title` vs `role`).
+pub async fn overlay_graph_fields(brain: &crate::brain_handle::SafeBrain, people: &mut [Person]) {
+    let mut ids = Vec::new();
+    for p in people.iter() {
+        if let Some(Ok(id)) = p
+            .graph_entity_id
+            .as_deref()
+            .map(|h| h.parse::<spectral::core::entity_id::EntityId>())
+        {
+            ids.push(id);
+        }
+    }
+    if ids.is_empty() {
+        return;
+    }
+    let Ok(mut fields_map) = brain.entity_fields_for(ids).await else {
+        return;
+    };
+    for p in people.iter_mut() {
+        let Some(mut fields) = p
+            .graph_entity_id
+            .as_deref()
+            .and_then(|h| fields_map.remove(h))
+        else {
+            continue;
+        };
+        fields.sort_by_key(|f| match f.source {
+            spectral::ingest::FieldSource::Manual => 1u8,
+            _ => 0u8,
+        });
+        p.clear_attributes();
+        for f in &fields {
+            p.set_attribute(&f.field_name, f.value.clone());
+        }
+    }
+}
+
 // ── Owner/self overlay (dagK owner-identity, 2026-09-26) ────────────────────
 
 /// Whether `person` IS the configured owner's own directory record.
