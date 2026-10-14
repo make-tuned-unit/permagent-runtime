@@ -489,6 +489,26 @@ fn collect_entity_edges(
     edges
 }
 
+/// Graph-view rows for directory people that have a graph node.
+fn runtime_people_entities(
+    people: &[permagent::people::Person],
+) -> Vec<(String, String, String, Option<String>, EntityId)> {
+    people
+        .iter()
+        .filter_map(|p| {
+            let hex = p.graph_entity_id.as_deref()?;
+            let eid = hex.parse::<EntityId>().ok()?;
+            Some((
+                format!("e:{}", hex::encode(eid.as_bytes())),
+                "person".to_string(),
+                p.display_name.clone(),
+                None,
+                eid,
+            ))
+        })
+        .collect()
+}
+
 async fn brain_graph(
     State(state): State<Arc<AppState>>,
     Query(params): Query<GraphQuery>,
@@ -581,6 +601,33 @@ async fn brain_graph(
                             let eid =
                                 spectral::core::entity_id::entity_id(&entity_type, &canonical);
                             picked.push((id_hex, entity_type, canonical, description, eid));
+                        }
+                    }
+                }
+            }
+
+            // Union in runtime-created people (POST /api/people, the bridge,
+            // the agent's own people tools). They are graph nodes but neither
+            // triple-reachable from the self node nor part of the curated
+            // ontology, so a Brain with real contacts still rendered 0
+            // entities until some other job linked them.
+            if picked.len() < 80 {
+                if let Ok(pool) = state.session_manager().pool_clone().await {
+                    if let Ok(people) = permagent::people::list_people(
+                        &pool,
+                        &permagent::people::PeopleFilter::default(),
+                    )
+                    .await
+                    {
+                        for (id_hex, entity_type, name, description, eid) in
+                            runtime_people_entities(&people)
+                        {
+                            if picked.len() >= 80 {
+                                break;
+                            }
+                            if seen.insert(id_hex.clone()) {
+                                picked.push((id_hex, entity_type, name, description, eid));
+                            }
                         }
                     }
                 }
@@ -1603,6 +1650,38 @@ mod tests {
     use super::*;
     use spectral::core::entity_id::entity_id;
     use spectral::graph::graph_store::Triple;
+
+    /// A directory person with a graph node must reach the graph view even
+    /// though no triple or ontology entry mentions them (film staging: three
+    /// contacts, 0 entities).
+    #[tokio::test]
+    async fn runtime_people_become_graph_entities() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        permagent::session::spectral_schema::init_spectral_db(&pool)
+            .await
+            .unwrap();
+        let hex = permagent::identity::canonical::graph_entity_id_hex("person", "Maya Chen");
+        let mut maya = permagent::people::upsert_person(
+            &pool,
+            "person:maya-chen",
+            "Maya Chen",
+            &permagent::people::PersonAttrs::default(),
+        )
+        .await
+        .unwrap();
+        maya.graph_entity_id = Some(hex.clone());
+        let mut orphan = maya.clone();
+        orphan.graph_entity_id = None;
+        let rows = runtime_people_entities(&[maya, orphan]);
+        assert_eq!(rows.len(), 1, "a person without a graph node is skipped");
+        assert_eq!(rows[0].0, format!("e:{hex}"));
+        assert_eq!(rows[0].1, "person");
+        assert_eq!(rows[0].2, "Maya Chen");
+    }
 
     /// GET /api/brain/feed-status's two ingredients: every `brain_feed`
     /// source (even unfed ones, count 0) plus the chat outbox's own pending/
