@@ -604,8 +604,9 @@ struct Availability: Decodable {
 // mapping all live in ChatStream.swift — Foundation-only so the regression
 // tests compile them without the app target.
 
-/// A stable per-install chat session id so the conversation persists across
-/// launches.
+/// The suite-wide CURRENT chat session (the hub owns the id; this install
+/// caches it for offline use) - shared by phone chat, phone voice, the Watch
+/// relay and the Watch voice credential.
 ///
 /// The hub does NOT create sessions lazily — that assumption (in the comment
 /// this replaces) is why chat never worked from the phone. Minting a UUID
@@ -615,96 +616,182 @@ struct Availability: Decodable {
 /// reported as "Couldn't reach Henry" — pointing at the network while the
 /// network was fine (diagnosed from the hub log, 2026-08-04).
 ///
-/// Sessions are created by `POST /api/sessions`, which returns the id. The
-/// phone must ask for one and use what it is given.
+/// The phone must ask the hub for the id and use what it is given.
 enum MobileSession {
-    private static let key = "ai.permagent.ios-chat-session"
+    static let key = "ai.permagent.ios-chat-session"
 
     private struct SessionResponse: Decodable { let id: String }
     private struct CreateBody: Encodable { let workingDir: String }
 
-    /// Adopt an existing hub session as this install's conversation and return
-    /// its history as chat bubbles. Both voice and text follow the adopted id,
-    /// because they deliberately share one thread.
+    /// Load an existing hub session's history as chat bubbles.
+    ///
+    /// This is READ-ONLY with respect to the suite-wide current chat: browsing
+    /// an older conversation must not yank the desktop, the Orb and the Watch
+    /// off the live one. A session becomes current only when the user SENDS in
+    /// it (`makeCurrent`) or starts a new chat (`startNewChat`).
     ///
     /// Tool traffic is dropped: a resumed thread should read the way it read
-    /// when it was live — the user's words and the agent's answers — not a
+    /// when it was live - the user's words and the agent's answers - not a
     /// transcript of every tool call underneath them.
     static func adopt(_ id: String) async throws -> [ChatBubble] {
         struct Session: Decodable { let conversation: [StoredMessage]? }
 
         let session = try await APIClient.shared.get("/api/sessions/\(id)", as: Session.self)
-        UserDefaults.standard.set(id, forKey: key)
-        // The mapping (segment joins, role filtering) is ChatTranscript's —
+        // The mapping (segment joins, role filtering) is ChatTranscript's -
         // pure and regression-tested in ChatStreamTests.
         return ChatTranscript.bubbles(from: session.conversation ?? [])
     }
 
-    /// The persisted conversation id, if any — read-only, never creates.
-    /// Cold launch uses this to put the ongoing conversation back on screen
-    /// (and catch up on any reply that finished while the app was closed).
+    /// The last current-chat id the hub gave us - the offline fallback and the
+    /// id cold launch puts back on screen. Read-only, never creates.
     static var persistedId: String? {
         UserDefaults.standard.string(forKey: key)
     }
 
-    /// Forget the current conversation, so the next turn mints a fresh one.
-    ///
-    /// Voice and text share this id deliberately — a spoken turn lands in the
-    /// same thread — so ending it here ends both. Nothing is deleted on the
-    /// hub: the old session keeps its history and stays browsable there; this
-    /// only stops new turns from joining it.
-    static func endConversation() {
-        UserDefaults.standard.removeObject(forKey: key)
-    }
-
-    /// The hub-created session for this install, creating one if needed.
-    ///
-    /// A cached id is verified against the hub before reuse: sessions can be
-    /// deleted on the desktop, and a stale id fails exactly the same way an
-    /// invented one did. Verification is a cheap GET and only happens once per
-    /// launch, so the cost is a single request against never chatting again.
-    static func chatSessionId() async throws -> String {
-        if let existing = UserDefaults.standard.string(forKey: key) {
-            if (try? await APIClient.shared.send("/api/sessions/\(existing)", method: "GET")) != nil {
-                return existing
-            }
-            UserDefaults.standard.removeObject(forKey: key)
-        }
-        let created: SessionResponse = try await APIClient.shared.post(
-            "/api/sessions",
-            body: CreateBody(workingDir: "/tmp"),
-            as: SessionResponse.self
-        )
-        UserDefaults.standard.set(created.id, forKey: key)
-        return created.id
-    }
-
-    private static let voiceKey = "ai.permagent.ios-voice-home-session"
-
-    private struct VoiceHomeResponse: Decodable {
+    private struct CurrentResponse: Decodable {
         let sessionId: String
         enum CodingKeys: String, CodingKey { case sessionId = "session_id" }
     }
-
-    /// The last voice-home id the hub gave us — offline fallback only.
-    static var cachedVoiceHomeId: String? {
-        UserDefaults.standard.string(forKey: voiceKey)
+    private struct SelectBody: Encodable {
+        let session_id: String?
+        let origin_client: String
     }
 
-    /// The hub's one persistent, non-coding voice conversation, shared by the
-    /// World, the Orb, this phone's voice view and the Watch.
+    private static let transport = CurrentChatTransport(
+        fetchCurrent: { try await fetchCurrentChatId() },
+        startNew: {
+            try await APIClient.shared.post(
+                "/api/chat/current-session/new",
+                body: SelectBody(session_id: nil, origin_client: CurrentChatFollow.origin),
+                as: CurrentResponse.self).sessionId
+        },
+        select: { id in
+            try await APIClient.shared.send(
+                "/api/chat/current-session", method: "POST",
+                body: SelectBody(session_id: id, origin_client: CurrentChatFollow.origin))
+        },
+        legacyCreate: {
+            try await APIClient.shared.post(
+                "/api/sessions", body: CreateBody(workingDir: "/tmp"), as: SessionResponse.self).id
+        },
+        routeMissing: { error in
+            if case APIError.badStatus(let code) = error { return code == 404 || code == 405 }
+            return false
+        })
+
+    /// The hub's current id, straight from the hub (no cache write).
+    static func fetchCurrentChatId() async throws -> String {
+        try await APIClient.shared.get("/api/chat/current-session", as: CurrentResponse.self).sessionId
+    }
+
+    /// The suite-wide CURRENT chat session: what phone text chat, phone voice,
+    /// the Watch relay and the Watch voice credential all use.
     ///
-    /// Asked of the hub on every call (a cheap GET; the hub verifies the session
-    /// still exists and is a plain chat). The cache is used only when the hub
-    /// is unreachable or predates the route. This deliberately never goes
-    /// through `adopt(_:)`, so opening a coding session in the text chat cannot
-    /// redirect voice into it. Text chat keeps `chatSessionId()`.
-    static func voiceHomeSessionId() async throws -> String {
-        try await VoiceHomeResolver.resolve(
-            fetch: { try await APIClient.shared.get("/api/voice/home-session", as: VoiceHomeResponse.self).sessionId },
-            defaults: .standard,
-            key: voiceKey,
-            fallback: { try await chatSessionId() })
+    /// Asked of the hub on every call (a cheap GET). The cached id answers only
+    /// when the hub is unreachable; a hub that predates the route falls back to
+    /// the old per-install session flow. Never mints a local id.
+    static func currentChatSessionId() async throws -> String {
+        try await CurrentChat.resolve(transport, defaults: .standard, key: key)
+    }
+
+    /// Thin alias kept for existing call sites.
+    static func chatSessionId() async throws -> String {
+        try await currentChatSessionId()
+    }
+
+    /// "New chat": the hub creates a fresh plain chat and makes it current for
+    /// every surface. Nothing is deleted - the old thread stays in History.
+    static func startNewChat() async throws -> String {
+        try await CurrentChat.startNew(transport, defaults: .standard, key: key)
+    }
+
+    /// Make an existing chat current (the user sent in it). 404 / 422 (not a
+    /// plain chat) and an old hub are ignored; returns whether it took.
+    @discardableResult
+    static func makeCurrent(_ id: String) async -> Bool {
+        await CurrentChat.makeCurrent(id, transport, defaults: .standard, key: key)
+    }
+}
+
+/// Follows the hub's current chat for the whole app: `current_chat_session_changed`
+/// frames on /events, plus a catch-up on foreground and on voice start (frames
+/// are lost while backgrounded). Views react to `change`; busy sources (a text
+/// reply, a voice turn, a Watch turn) defer the switch until they go quiet.
+@MainActor
+final class CurrentChatMonitor: ObservableObject {
+    static let shared = CurrentChatMonitor()
+
+    struct Change: Equatable {
+        let sessionId: String
+        let revision: Int
+    }
+
+    @Published private(set) var change: Change?
+    /// The id the UI currently treats as the live chat.
+    private(set) var appliedId: String? = MobileSession.persistedId
+
+    private var follow = CurrentChatFollow()
+    private var busySources: Set<String> = []
+    private var loop: Task<Void, Never>?
+    private var revision = 0
+
+    func start() {
+        guard loop == nil else { return }
+        loop = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                if let stream = await APIClient.shared.eventStream() {
+                    await self.refresh()
+                    for await event in stream { self.handle(event) }
+                }
+                try? await Task.sleep(for: .seconds(5))
+            }
+        }
+    }
+
+    /// The UI now shows `id` as the live chat (own new chat, own send in a
+    /// browsed chat, first resolve). Does not publish a change.
+    func noteShown(_ id: String) {
+        appliedId = id
+        follow = CurrentChatFollow()
+    }
+
+    func setBusy(_ source: String, _ isBusy: Bool) {
+        if isBusy {
+            busySources.insert(source)
+        } else if busySources.remove(source) != nil,
+                  let id = follow.released(applied: appliedId, busy: !busySources.isEmpty) {
+            apply(id)
+        }
+    }
+
+    /// Foreground catch-up: ask the hub and switch if it differs.
+    func refresh() async {
+        guard let hub = try? await MobileSession.fetchCurrentChatId() else { return }
+        reconcile(hub: hub)
+    }
+
+    func reconcile(hub: String) {
+        if let id = follow.reconcile(hubCurrent: hub, applied: appliedId, busy: !busySources.isEmpty) {
+            apply(id)
+        }
+    }
+
+    private func handle(_ event: DaemonEvent) {
+        guard event.type == CurrentChatFollow.eventType,
+              let id = event.payload?["session_id"]?.string, !id.isEmpty else { return }
+        let origin = event.payload?["origin_client"]?.string
+        if let apply = follow.receive(sessionId: id, origin: origin, applied: appliedId,
+                                      busy: !busySources.isEmpty) {
+            self.apply(apply)
+        }
+    }
+
+    private func apply(_ id: String) {
+        UserDefaults.standard.set(id, forKey: MobileSession.key)
+        appliedId = id
+        revision += 1
+        change = Change(sessionId: id, revision: revision)
     }
 }
 

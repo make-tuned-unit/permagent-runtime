@@ -235,20 +235,131 @@ final class ChatGreetingTests: XCTestCase {
         XCTAssertEqual(ChatGreeting.forHour(0), "Moonlit chat?")
         XCTAssertEqual(ChatGreeting.forHour(4), "Moonlit chat?")
     }
+}
 
-    func testVoiceHomeResolverPrefersHubThenCacheThenFallback() async throws {
-        struct Down: Error {}
-        let d = UserDefaults(suiteName: "voicehome-test-\(UUID().uuidString)")!
-        let k = "k"
-        // Hub answers: used and cached.
-        var id = try await VoiceHomeResolver.resolve(fetch: { "v1" }, defaults: d, key: k, fallback: { "chat" })
-        XCTAssertEqual(id, "v1")
-        // Hub down: cached id.
-        id = try await VoiceHomeResolver.resolve(fetch: { throw Down() }, defaults: d, key: k, fallback: { "chat" })
-        XCTAssertEqual(id, "v1")
-        // Nothing cached, hub down: legacy fallback.
-        let empty = UserDefaults(suiteName: "voicehome-test-\(UUID().uuidString)")!
-        id = try await VoiceHomeResolver.resolve(fetch: { throw Down() }, defaults: empty, key: k, fallback: { "chat" })
-        XCTAssertEqual(id, "chat")
+private struct Down: Error {}
+private struct RouteGone: Error {}
+
+/// Records the calls a stubbed hub receives.
+private final class StubHub: @unchecked Sendable {
+    private(set) var selected: [String] = []
+    private(set) var created = 0
+    var current: String? = "c1"
+    var selectFails = false
+    var routeMissing = false
+
+    func transport() -> CurrentChatTransport {
+        CurrentChatTransport(
+            fetchCurrent: { [self] in
+                if routeMissing { throw RouteGone() }
+                guard let current else { throw Down() }
+                return current
+            },
+            startNew: { [self] in
+                                created += 1; current = "new\(created)"
+                return current!
+            },
+            select: { [self] id in
+                                if selectFails { throw Down() }
+                selected.append(id); current = id
+            },
+            legacyCreate: { "legacy" },
+            routeMissing: { $0 is RouteGone })
+    }
+}
+
+final class CurrentChatTests: XCTestCase {
+    private func defaults() -> UserDefaults { UserDefaults(suiteName: "current-chat-\(UUID().uuidString)")! }
+
+    // (a) text, voice and the watch relay all resolve through one function.
+    func testResolveReturnsTheHubsCurrentAndCachesIt() async throws {
+        let d = defaults(); let hub = StubHub()
+        let a = try await CurrentChat.resolve(hub.transport(), defaults: d, key: "k")
+        let b = try await CurrentChat.resolve(hub.transport(), defaults: d, key: "k")
+        XCTAssertEqual([a, b], ["c1", "c1"])
+        XCTAssertEqual(d.string(forKey: "k"), "c1")
+        hub.current = "c2" // another surface moved it: the very next call follows
+        let c = try await CurrentChat.resolve(hub.transport(), defaults: d, key: "k")
+        XCTAssertEqual(c, "c2")
+    }
+
+    // (g) failure with cache returns the cache; without cache it throws.
+    func testHubDownReturnsCacheOtherwiseThrowsAndNeverMints() async throws {
+        let hub = StubHub(); hub.current = nil
+        let cached = defaults(); cached.set("c9", forKey: "k")
+        let id = try await CurrentChat.resolve(hub.transport(), defaults: cached, key: "k")
+        XCTAssertEqual(id, "c9")
+        do {
+            _ = try await CurrentChat.resolve(hub.transport(), defaults: defaults(), key: "k")
+            XCTFail("should throw")
+        } catch is Down {}
+        XCTAssertEqual(hub.created, 0)
+    }
+
+    func testHubWithoutTheRouteFallsBackToTheLegacySession() async throws {
+        let hub = StubHub(); hub.routeMissing = true
+        let d = defaults()
+        let id = try await CurrentChat.resolve(hub.transport(), defaults: d, key: "k")
+        XCTAssertEqual(id, "legacy")
+        XCTAssertEqual(d.string(forKey: "k"), "legacy")
+    }
+
+    // (e) startNew caches and returns the new id.
+    func testStartNewCachesAndReturnsTheNewId() async throws {
+        let hub = StubHub(); let d = defaults()
+        let id = try await CurrentChat.startNew(hub.transport(), defaults: d, key: "k")
+        XCTAssertEqual(id, "new1")
+        XCTAssertEqual(d.string(forKey: "k"), "new1")
+        XCTAssertEqual(hub.current, "new1")
+    }
+
+    // (f) browsing never POSTs (nothing here calls select); sending does, and a refusal is ignored.
+    func testMakeCurrentPostsOnceAndIgnoresRefusal() async {
+        let hub = StubHub(); let d = defaults()
+        let ok = await CurrentChat.makeCurrent("c5", hub.transport(), defaults: d, key: "k")
+        XCTAssertTrue(ok)
+        XCTAssertEqual(hub.selected, ["c5"])
+        XCTAssertEqual(d.string(forKey: "k"), "c5")
+        hub.selectFails = true
+        let refused = await CurrentChat.makeCurrent("coding", hub.transport(), defaults: d, key: "k")
+        XCTAssertFalse(refused)
+        XCTAssertEqual(d.string(forKey: "k"), "c5", "a refused selection leaves the cache alone")
+    }
+
+    // (b) a desktop frame switches; no makeCurrent is involved in following.
+    func testFrameFromAnotherSurfaceSwitches() {
+        var f = CurrentChatFollow()
+        XCTAssertEqual(f.receive(sessionId: "c2", origin: "desktop", applied: "c1", busy: false), "c2")
+        XCTAssertNil(f.pending)
+    }
+
+    // (c) our own echo is ignored, and so is the id already applied.
+    func testOwnOriginAndAlreadyAppliedAreIgnored() {
+        var f = CurrentChatFollow()
+        XCTAssertNil(f.receive(sessionId: "c2", origin: "ios", applied: "c1", busy: false))
+        XCTAssertNil(f.receive(sessionId: "c1", origin: "desktop", applied: "c1", busy: false))
+        XCTAssertNil(f.pending)
+    }
+
+    // (d) mid-reply: parked, released when the turn ends; the latest frame wins.
+    func testBusyDefersUntilReleased() {
+        var f = CurrentChatFollow()
+        XCTAssertNil(f.receive(sessionId: "c2", origin: "desktop", applied: "c1", busy: true))
+        XCTAssertNil(f.receive(sessionId: "c3", origin: "world", applied: "c1", busy: true))
+        XCTAssertEqual(f.pending, "c3")
+        XCTAssertNil(f.released(applied: "c1", busy: true), "another source still busy")
+        XCTAssertEqual(f.released(applied: "c1", busy: false), "c3")
+        XCTAssertNil(f.pending)
+        XCTAssertNil(f.released(applied: "c3", busy: false))
+    }
+
+    // Foreground catch-up applies the same rules.
+    func testReconcileSwitchesOrDefersLikeAFrame() {
+        var f = CurrentChatFollow()
+        XCTAssertEqual(f.reconcile(hubCurrent: "c2", applied: "c1", busy: false), "c2")
+        XCTAssertNil(f.reconcile(hubCurrent: "c4", applied: "c2", busy: true))
+        XCTAssertEqual(f.pending, "c4")
+        XCTAssertNil(f.reconcile(hubCurrent: "c2", applied: "c2", busy: true), "hub back on applied clears the park")
+        XCTAssertNil(f.pending)
     }
 }

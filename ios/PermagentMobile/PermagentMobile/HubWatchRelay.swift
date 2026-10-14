@@ -9,17 +9,27 @@
 import Foundation
 import UIKit
 import WatchConnectivity
+import Combine
 
 @MainActor
 final class HubWatchRelay: NSObject, WCSessionDelegate {
     static let shared = HubWatchRelay()
     private var processingFiles: Set<URL> = []
 
+    private var followCurrentChat: AnyCancellable?
+
     func start() {
         guard WCSession.isSupported() else { return }
         let session = WCSession.default
         session.delegate = self
         session.activate()
+        // The suite's current chat moved: clear the watch transcript and mint
+        // the standalone voice credential against the new conversation.
+        CurrentChatMonitor.shared.start()
+        followCurrentChat = CurrentChatMonitor.shared.$change.compactMap { $0 }.sink { [weak self] _ in
+            self?.send(WatchResponse.ack(UUID().uuidString, op: "chatReset"))
+            WatchVoiceProvisioner.shared.currentChatChanged()
+        }
         Task { await drainPendingFiles() }
     }
 
@@ -216,10 +226,12 @@ final class HubWatchRelay: NSObject, WCSessionDelegate {
             NotificationCenter.default.post(name: .watchTurnChanged, object: nil,
                                             userInfo: ["finished": true])
         }
+        CurrentChatMonitor.shared.setBusy("watch", true)
+        defer { CurrentChatMonitor.shared.setBusy("watch", false) }
         do {
-            // Watch chat joins the hub's voice-home thread (shared with the
-            // phone voice view, the World and the Orb), never the text-chat id.
-            let sid = try await MobileSession.voiceHomeSessionId()
+            // Watch chat joins the suite-wide current chat (shared with the
+            // phone chat and voice views, the desktop and the Orb).
+            let sid = try await MobileSession.currentChatSessionId()
             var acc = AssistantAccumulator()
             var lastSent = Date.distantPast
             for try await delta in APIClient.shared.replyStream(text, sessionId: sid) {

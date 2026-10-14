@@ -667,26 +667,42 @@ struct ChatView: View {
     /// send button's row — reported 2026-08-05.
     @FocusState private var composerFocused: Bool
     @State private var decisionTick = 0
+    @ObservedObject private var currentChat = CurrentChatMonitor.shared
+    /// True while the open thread was picked from History and is NOT the
+    /// suite's current chat. Browsing changes nothing; the first SEND in it
+    /// makes it current for every surface.
+    @State private var browsingNonCurrent = false
 
-    /// Start fresh. The old thread is NOT deleted — it stays on the hub and
+    /// Start fresh: the hub creates a new plain chat and makes it current for
+    /// every surface. The old thread is NOT deleted - it stays on the hub and
     /// is one tap away in Conversations, which is why this needs no
-    /// confirmation. The next send resolves a new session.
+    /// confirmation.
     private func newConversation() {
-        MobileSession.endConversation()
-        sessionId = nil
-        sessionError = nil
         composerFocused = false
-        withAnimation(Motion.ease) { messages = [] }
+        Task {
+            do {
+                let id = try await MobileSession.startNewChat()
+                currentChat.noteShown(id)
+                sessionId = id
+                browsingNonCurrent = false
+                sessionError = nil
+                withAnimation(Motion.ease) { messages = [] }
+            } catch {
+                sessionError = Self.describeChatFailure(error)
+            }
+        }
     }
 
-    /// Open a past conversation: adopt its id and render its history. The hub
-    /// stays the source of truth — nothing is reconstructed on device.
+    /// Open a past conversation: render its history. The hub stays the source
+    /// of truth - nothing is reconstructed on device - and opening does NOT
+    /// change the suite's current chat (sending in it does).
     private func openSession(_ id: String) async {
         composerFocused = false
         showHistory = false
         do {
             let loaded = try await MobileSession.adopt(id)
             sessionId = id
+            browsingNonCurrent = id != currentChat.appliedId
             sessionError = nil
             withAnimation(Motion.spring) { messages = loaded }
         } catch {
@@ -694,12 +710,26 @@ struct ChatView: View {
         }
     }
 
-    /// The hub session for this chat, resolved once and reused.
+    /// The current hub chat for this screen, resolved once and reused.
     private func resolveSession() async throws -> String {
         if let sessionId { return sessionId }
-        let id = try await MobileSession.chatSessionId()
+        let id = try await MobileSession.currentChatSessionId()
+        currentChat.noteShown(id)
         sessionId = id
         return id
+    }
+
+    /// Another surface (or a foreground catch-up) moved the current chat:
+    /// show it. The history load never calls makeCurrent.
+    private func followCurrent(_ id: String) async {
+        guard id != sessionId || browsingNonCurrent else { return }
+        composerFocused = false
+        sessionId = id
+        browsingNonCurrent = false
+        sessionError = nil
+        hubTurnLive = false
+        let loaded = (try? await MobileSession.adopt(id)) ?? []
+        withAnimation(Motion.ease) { messages = loaded }
     }
 
     /// Name the failure. One catch-all string ("Couldn't reach …") sent Jesse
@@ -806,16 +836,31 @@ struct ChatView: View {
             // hub's stored transcript rather than trusting whatever half of
             // the stream made it here.
             .onChange(of: scenePhase) { _, phase in
-                if phase == .active && hubTurnLive {
-                    Task { await catchUpFromHub() }
-                }
+                guard phase == .active else { return }
+                if hubTurnLive { Task { await catchUpFromHub() } }
+                // Frames are lost while backgrounded: ask the hub which chat
+                // is current and follow it if it moved.
+                Task { await currentChat.refresh() }
+            }
+            .onChange(of: currentChat.change) { _, change in
+                guard let change else { return }
+                Task { await followCurrent(change.sessionId) }
+            }
+            // A text reply in flight defers any switch to the end of the turn.
+            .onChange(of: sending) { _, _ in
+                currentChat.setBusy("chat", sending || hubTurnLive)
+            }
+            .onChange(of: hubTurnLive) { _, _ in
+                currentChat.setBusy("chat", sending || hubTurnLive)
             }
             // Cold launch: put the ongoing conversation back on screen. A
             // reply that finished while the app was closed is simply THERE —
             // and one still running shows the catching-up row until it lands.
             .task {
+                currentChat.start()
                 await modelSelection.refresh(scope: .chat)
                 await initialRestore()
+                await currentChat.refresh()
             }
             // A Watch turn runs through this phone into the same hub session.
             // Refresh the open chat when it starts and again when it lands.
@@ -1129,6 +1174,13 @@ struct ChatView: View {
             var acc = AssistantAccumulator()
             do {
                 let sid = try await resolveSession()
+                if browsingNonCurrent {
+                    // First send in a thread picked from History: it becomes
+                    // the suite's current chat (best-effort; a coding session
+                    // is refused with 422 and simply stays local).
+                    browsingNonCurrent = false
+                    if await MobileSession.makeCurrent(sid) { currentChat.noteShown(sid) }
+                }
                 for try await delta in APIClient.shared.replyStream(text, sessionId: sid) {
                     if idx < messages.count {
                         if showingApprovalNotice && (!delta.text.isEmpty || !delta.thinking.isEmpty) {

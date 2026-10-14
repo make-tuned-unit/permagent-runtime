@@ -245,6 +245,13 @@ final class WatchRelay: NSObject, ObservableObject, WCSessionDelegate {
                 chatBusy = false
                 chatThinking = false
             }
+        case "chatReset":
+            // The suite's current chat changed on the phone: the old
+            // exchange no longer belongs to the live thread.
+            guard !chatBusy else { return }
+            chatText = ""
+            chatUserText = ""
+            chatThinking = false
         case "chatTranscript":
             if !finishedChatIds.contains(reply.id), let text = reply.text { chatUserText = text }
         case "chatDelta":

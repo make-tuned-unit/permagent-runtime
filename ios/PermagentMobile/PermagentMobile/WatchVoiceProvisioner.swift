@@ -51,6 +51,14 @@ final class WatchVoiceProvisioner {
 
     /// Called whenever the phone pushes watch status (pairing, activation,
     /// watch state change). Cheap when nothing is due.
+    /// The suite's current chat moved: the watch credential is bound to a
+    /// conversation, so mint again now rather than at the weekly refresh.
+    func currentChatChanged() {
+        UserDefaults.standard.removeObject(forKey: Self.lastMintKey)
+        nextAttempt = nil
+        refreshIfNeeded()
+    }
+
     func refreshIfNeeded() {
         guard !inFlight, WCSession.isSupported() else { return }
         let session = WCSession.default
@@ -70,7 +78,7 @@ final class WatchVoiceProvisioner {
             defer { self.inFlight = false }
             guard await APIClient.shared.isPaired else { return }
             do {
-                let conversation = try await MobileSession.voiceHomeSessionId()
+                let conversation = try await MobileSession.currentChatSessionId()
                 let data = try await APIClient.shared.postData(
                     "/api/devices/\(deviceId)/watch-credential",
                     body: MintBody(conversation_id: conversation))

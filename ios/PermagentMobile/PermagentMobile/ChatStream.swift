@@ -279,21 +279,98 @@ enum ChatGreeting {
     }
 }
 
-/// Voice-home session resolution, Foundation-only so it is unit-tested without
-/// a hub. The hub's answer wins; the cached id is an offline fallback; the
-/// legacy fallback (the text-chat session) is the last resort for old hubs.
-enum VoiceHomeResolver {
-    static func resolve(
-        fetch: () async throws -> String,
-        defaults: UserDefaults,
-        key: String,
-        fallback: () async throws -> String
-    ) async throws -> String {
-        if let fresh = try? await fetch(), !fresh.isEmpty {
-            defaults.set(fresh, forKey: key)
-            return fresh
+/// The hub's suite-wide CURRENT chat session, resolved without a hub in the
+/// loop so every rule is unit-tested. The transport is injected; `MobileSession`
+/// supplies the real routes.
+///
+/// - `resolve`: the hub's answer wins and is cached; the cache is an offline
+///   fallback; only a hub that predates the route (`routeMissing`) gets the
+///   legacy "create a session" flow. A hub that is merely unreachable, with
+///   nothing cached, THROWS - a locally invented id is exactly the bug that
+///   once made every chat fail with `Session not found`.
+/// - `startNew` / `makeCurrent`: the phone's two ways to change the current
+///   chat. Selecting is best-effort (404 unknown, 422 not a plain chat).
+struct CurrentChatTransport: Sendable {
+    var fetchCurrent: @Sendable () async throws -> String
+    var startNew: @Sendable () async throws -> String
+    var select: @Sendable (String) async throws -> Void
+    var legacyCreate: @Sendable () async throws -> String
+    var routeMissing: @Sendable (Error) -> Bool
+}
+
+enum CurrentChat {
+    static func resolve(_ t: CurrentChatTransport, defaults: UserDefaults, key: String) async throws -> String {
+        do {
+            let fresh = try await t.fetchCurrent()
+            if !fresh.isEmpty {
+                defaults.set(fresh, forKey: key)
+                return fresh
+            }
+        } catch {
+            if let cached = defaults.string(forKey: key), !cached.isEmpty { return cached }
+            if t.routeMissing(error) {
+                let created = try await t.legacyCreate()
+                defaults.set(created, forKey: key)
+                return created
+            }
+            throw error
         }
         if let cached = defaults.string(forKey: key), !cached.isEmpty { return cached }
-        return try await fallback()
+        throw URLError(.badServerResponse)
+    }
+
+    static func startNew(_ t: CurrentChatTransport, defaults: UserDefaults, key: String) async throws -> String {
+        let id = try await t.startNew()
+        defaults.set(id, forKey: key)
+        return id
+    }
+
+    /// True when the hub accepted the selection (and the cache now holds it).
+    @discardableResult
+    static func makeCurrent(_ id: String, _ t: CurrentChatTransport, defaults: UserDefaults, key: String) async -> Bool {
+        do {
+            try await t.select(id)
+            defaults.set(id, forKey: key)
+            return true
+        } catch {
+            return false
+        }
+    }
+}
+
+/// Decides when a `current_chat_session_changed` frame (or a foreground
+/// catch-up) switches the UI. A switch never lands while a text reply, a voice
+/// turn or a Watch turn is in flight: the id is parked and released when the
+/// last busy source goes quiet.
+struct CurrentChatFollow: Equatable, Sendable {
+    static let eventType = "current_chat_session_changed"
+    /// This client's `origin_client` tag; its own echoes are ignored.
+    static let origin = "ios"
+
+    private(set) var pending: String?
+
+    /// A frame from /events. Returns the id to switch to NOW, if any.
+    mutating func receive(sessionId: String, origin: String?, applied: String?, busy: Bool) -> String? {
+        if origin == Self.origin { return nil }
+        return consider(sessionId, applied: applied, busy: busy)
+    }
+
+    /// The hub's current id from a foreground / voice-start catch-up.
+    mutating func reconcile(hubCurrent: String, applied: String?, busy: Bool) -> String? {
+        consider(hubCurrent, applied: applied, busy: busy)
+    }
+
+    /// A busy source went quiet.
+    mutating func released(applied: String?, busy: Bool) -> String? {
+        guard let pending else { return nil }
+        return consider(pending, applied: applied, busy: busy)
+    }
+
+    private mutating func consider(_ id: String, applied: String?, busy: Bool) -> String? {
+        if id.isEmpty { return nil }
+        if id == applied { pending = nil; return nil }
+        if busy { pending = id; return nil }
+        pending = nil
+        return id
     }
 }

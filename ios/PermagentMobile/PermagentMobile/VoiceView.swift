@@ -44,6 +44,7 @@ import AVFoundation
 import UIKit
 import QuartzCore
 import OSLog
+import Combine
 
 // MARK: - Voice transcript/playback protocol helpers
 
@@ -252,7 +253,18 @@ final class VoiceEngine: ObservableObject {
         case failed(String)  // fatal (no pairing / mic denied / audio init)
     }
 
-    @Published private(set) var state: ConvState = .idle
+    @Published private(set) var state: ConvState = .idle {
+        didSet {
+            // A turn in progress defers the suite's current-chat switch.
+            let turn: Bool
+            switch state {
+            case .listening, .thinking, .speaking, .feedback: turn = true
+            default: turn = false
+            }
+            CurrentChatMonitor.shared.setBusy("voice", turn)
+        }
+    }
+    private var followCurrentChat: AnyCancellable?
     @Published private(set) var transcript = ""
     /// Provisional STT text while the hub is still decoding the capture.
     /// `transcript` supersedes this as soon as the final frame arrives.
@@ -422,7 +434,7 @@ final class VoiceEngine: ObservableObject {
         // and the wait becomes the slower of the two rather than the total.
         async let sessionTask: String? = {
             if let provided { return provided }
-            return try? await MobileSession.voiceHomeSessionId()
+            return try? await MobileSession.currentChatSessionId()
         }()
         async let micGranted = AVAudioApplication.requestRecordPermission()
 
@@ -448,12 +460,23 @@ final class VoiceEngine: ObservableObject {
             return
         }
         self.sessionId = resolved
+        // Every start is a foreground catch-up: if the hub's current chat is
+        // not what the chat screen shows, it follows (before `active`, so this
+        // engine's own subscriber ignores it).
+        let monitor = CurrentChatMonitor.shared
+        monitor.start()
+        if provided == nil { monitor.reconcile(hub: resolved) }
+        followCurrentChat = monitor.$change.compactMap { $0 }.sink { [weak self] change in
+            self?.rebindIfIdle(to: change.sessionId)
+        }
         active = true
         await connect()
     }
 
     func stop() {
         endCaptureMetrics(reason: "stop")
+        followCurrentChat = nil
+        CurrentChatMonitor.shared.setBusy("voice", false)
         active = false
         captureCapTask?.cancel()
         captureCapTask = nil
@@ -1351,6 +1374,15 @@ final class VoiceEngine: ObservableObject {
             level = 0
             reconnect(reason: "explicit_interrupt")
         }
+    }
+
+    /// The suite's current chat moved. The monitor only publishes when no turn
+    /// is in flight, so it is safe to re-point the socket at the new session
+    /// here (between turns, never mid-sentence).
+    private func rebindIfIdle(to id: String) {
+        guard active, id != sessionId else { return }
+        sessionId = id
+        reconnect(reason: "current_chat_changed")
     }
 
     private func reconnect(reason: String) {
