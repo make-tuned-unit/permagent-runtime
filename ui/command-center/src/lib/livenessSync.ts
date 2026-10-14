@@ -141,6 +141,12 @@ function toCodingSpend(payload: unknown): CodingSpend | null {
 /** The liveness event kinds whose PAYLOAD is applied directly to the store,
  *  with no debounce — see the module doc comment for why this lane exists. */
 const APPLY_BY_TYPE: Record<string, (payload: unknown) => void> = {
+  // The suite-wide current chat changed (new chat / selected chat on any
+  // surface). The payload IS the point: apply it directly, no refetch.
+  current_chat_session_changed: (payload) => {
+    const id = (payload as { session_id?: unknown } | null)?.session_id;
+    if (typeof id === 'string' && id) useCommandCenter.getState().applyCurrentChatSession(id);
+  },
   session_spend_changed: (payload) => {
     const spend = toCodingSpend(payload);
     if (spend) useCommandCenter.getState().setCodingSpend(spend);

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type CSSProperties } from 'react';
-import { api, type PronunciationEntry, type UnresolvedPronunciation } from '../../lib/api';
+import { api, type PronunciationEntry, type UnknownWord } from '../../lib/api';
 import { font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Row, TextInput } from '../settings/atoms';
@@ -25,14 +25,14 @@ const btnVars = (colors: C): CSSProperties => ({
 } as CSSProperties);
 
 /**
- * Teach the speech engine a word once, and review anything it had to guess at.
- * Conversational `save_pronunciation` is the primary path; this is the review
- * queue so a coined name can be fixed before the next demo.
+ * Set how a word sounds, and review words the voice had to guess at.
+ * Spoken turns never ask about pronunciation; this list is where a coined name
+ * gets fixed.
  */
 export function PronunciationSection() {
   const { colors } = useTheme();
   const [saved, setSaved] = useState<Record<string, PronunciationEntry>>({});
-  const [unresolved, setUnresolved] = useState<UnresolvedPronunciation[]>([]);
+  const [unknown, setUnknown] = useState<UnknownWord[]>([]);
   const [word, setWord] = useState('');
   const [soundsLike, setSoundsLike] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -42,10 +42,10 @@ export function PronunciationSection() {
     try {
       const [lex, queue] = await Promise.all([
         api.getPronunciations(),
-        api.getUnresolvedPronunciations(),
+        api.getUnknownWords().catch(() => ({ words: [] as UnknownWord[], max_words: 0 })),
       ]);
       setSaved(lex);
-      setUnresolved(queue.unresolved);
+      setUnknown(queue.words);
     } catch {
       // Voice routes unavailable — section stays empty.
     }
@@ -73,6 +73,16 @@ export function PronunciationSection() {
       return false;
     } finally {
       setBusy(false);
+    }
+  };
+
+  const dismiss = async (w: string) => {
+    setError(null);
+    try {
+      await api.dismissUnknownWord(w);
+      await reload();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not dismiss that word');
     }
   };
 
@@ -105,24 +115,29 @@ export function PronunciationSection() {
           {error && <span style={{ fontSize: textSize.caption, color: colors.danger }}>{error}</span>}
         </div>
       </Row>
-      {unresolved.length > 0 && (
-        <Row
-          label="Needs a reading"
-          hint="Spoken with a guess last time. Teach each once — it's remembered."
-        >
-          <div style={{ display: 'flex', flexDirection: 'column', gap: space.md }}>
-            {unresolved.map(item => (
-              <UnresolvedRow
+      <Row
+        label="Words to check"
+        hint="Henry came across these and said them his own way. Tell him how a word sounds, or dismiss it if it was fine."
+      >
+        {unknown.length === 0 ? (
+          <span style={{ fontSize: textSize.small, fontFamily: font.body, color: colors.textMuted }}>
+            Nothing to check. Words Henry is unsure how to say will show up here.
+          </span>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: space.lg }}>
+            {unknown.map(item => (
+              <UnknownWordRow
                 key={item.word}
                 item={item}
                 colors={colors}
                 busy={busy}
                 onTeach={(like) => teach(item.word, like)}
+                onDismiss={dismiss}
               />
             ))}
           </div>
-        </Row>
-      )}
+        )}
+      </Row>
       {savedWords.length > 0 && (
         <Row label="Saved" hint="Applied on the next spoken sentence.">
           <div style={{ display: 'flex', flexDirection: 'column', gap: space.sm }}>
@@ -150,38 +165,60 @@ export function PronunciationSection() {
   );
 }
 
-function UnresolvedRow({
+function UnknownWordRow({
   item,
   colors,
   busy,
   onTeach,
+  onDismiss,
 }: {
-  item: UnresolvedPronunciation;
+  item: UnknownWord;
   colors: C;
   busy: boolean;
-  /** Returns the save's promise so the button can spin for it and tick only on
-   *  a real save. */
+  /** Returns the save's promise so the button ticks only on a real save. */
   onTeach: (soundsLike: string) => unknown;
+  onDismiss: (word: string) => unknown;
 }) {
   const [like, setLike] = useState('');
+  const [open, setOpen] = useState(false);
   return (
-    <div style={{ display: 'flex', gap: space.md, alignItems: 'center', flexWrap: 'wrap' }}>
-      <span style={{ fontSize: textSize.small, fontFamily: font.body, color: colors.text, minWidth: 80 }}>
-        {item.word}
-      </span>
-      <span style={{ fontSize: textSize.micro, color: colors.textMuted }}>×{item.spelled_out_times}</span>
-      <div style={{ flex: 1, minWidth: 140 }}>
-        <TextInput value={like} onChange={setLike} placeholder="sounds like" />
+    <div style={{ display: 'flex', flexDirection: 'column', gap: space.sm }}>
+      <div style={{ display: 'flex', gap: space.md, alignItems: 'center', flexWrap: 'wrap' }}>
+        <span style={{ fontSize: textSize.small, fontFamily: font.body, color: colors.text, fontWeight: 500 }}>
+          {item.display || item.word}
+        </span>
+        <span style={{ fontSize: textSize.micro, color: colors.textMuted }}>
+          {item.count === 1 ? 'said once' : `said ${item.count} times`}
+        </span>
+        <span style={{ flex: 1 }} />
+        <Button colors={colors} type="button" onClick={() => setOpen(o => !o)} style={btnVars(colors)}>
+          Set pronunciation
+        </Button>
+        <Button colors={colors} type="button" onClick={() => onDismiss(item.word)} style={btnVars(colors)}>
+          Dismiss
+        </Button>
       </div>
-      <Button
-        colors={colors}
-        type="button"
-        disabled={busy || !like.trim()}
-        onClick={() => onTeach(like)}
-        style={btnVars(colors)}
-      >
-        Teach
-      </Button>
+      {item.sentence && (
+        <span style={{ fontSize: textSize.caption, color: colors.textMuted, overflowWrap: 'anywhere' }}>
+          {item.sentence}
+        </span>
+      )}
+      {open && (
+        <div style={{ display: 'flex', gap: space.md, alignItems: 'center', flexWrap: 'wrap' }}>
+          <div style={{ flex: 1, minWidth: 140 }}>
+            <TextInput value={like} onChange={setLike} placeholder="sounds like" />
+          </div>
+          <Button
+            colors={colors}
+            type="button"
+            disabled={busy || !like.trim()}
+            onClick={() => onTeach(like)}
+            style={btnVars(colors)}
+          >
+            Save
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

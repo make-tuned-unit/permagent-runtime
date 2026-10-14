@@ -59,7 +59,6 @@ vi.mock('../../lib/store', () => {
       getMicAnalyser: () => null,
       exit: mocks.exit,
       wakeHint: 'Say "Hey Henry"',
-      teachWord: null,
     },
     chatWindowOpen: false,
   };

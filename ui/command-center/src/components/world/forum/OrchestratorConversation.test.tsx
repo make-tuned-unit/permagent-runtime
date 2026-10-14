@@ -40,3 +40,16 @@ it('keeps the browser preview honest when the app voice host is unavailable', ()
   expect(button('Start voice chat').disabled).toBe(true);
   expect(host.textContent).toContain('Voice is available in the Permagent app.');
 });
+it('the World transcript shows the whole reply, not only the sentences that were spoken', () => {
+  const spoken = 'Your launch is on track.';
+  const full = `${spoken} The invoice run finished at nine. Two customers still owe you money. I drafted both reminders and left them for review.`;
+  act(() => useCommandCenter.setState({ chatMessages: [
+    { id: 'u1', role: 'user', content: 'How is the launch?' },
+    { id: 'a1', role: 'assistant', content: full },
+  ] as never }));
+  act(() => root.render(<OrchestratorConversation name="Ada" onLeave={() => {}} />));
+  act(() => button('Read conversation').click());
+  const shown = host.querySelector('.orchestrator-transcript')?.textContent ?? '';
+  expect(shown).toContain(full);
+  expect(full.length).toBeGreaterThan(spoken.length);
+});

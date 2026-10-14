@@ -1079,6 +1079,17 @@ export interface UnresolvedPronunciation {
   spelled_out_times: number;
 }
 
+/** A word the voice guessed at while speaking, waiting for review in Settings. */
+export interface UnknownWord {
+  word: string;
+  display: string;
+  count: number;
+  first_seen_ms: number;
+  last_seen_ms: number;
+  sentence: string;
+  substitute_ipa: string | null;
+}
+
 /**
  * Synthesize `text` in `voiceId` and return playable WAV audio.
  * Returns the Blob (not JSON) — used for per-voice preview, the picker
@@ -1764,6 +1775,35 @@ export const api = {
       method: 'DELETE',
     }),
 
+  // The ONE persistent, non-coding voice conversation shared by the World,
+  // the Orb, the phone and the watch (decision D1). The daemon creates it on
+  // first use and never returns a session that carries a recipe.
+  getVoiceHomeSession: () =>
+    apiFetch<{ session_id: string; name: string; created: boolean }>('/api/chat/current-session'),
+
+  // The suite-wide CURRENT chat session (same session on the dock, Orb, World
+  // voice, phone and watch). Setting/creating one emits
+  // `current_chat_session_changed` on /events; other surfaces follow it.
+  // set: 404 unknown id, 422 not a plain chat (coding/recipe/sub-agent/...).
+  setCurrentChatSession: (sessionId: string, originClient = 'desktop') =>
+    apiFetch<{ session_id: string; name: string; created: boolean }>('/api/chat/current-session', {
+      method: 'POST',
+      body: JSON.stringify({ session_id: sessionId, origin_client: originClient }),
+    }),
+  newCurrentChatSession: (originClient = 'desktop') =>
+    apiFetch<{ session_id: string; name: string; created: boolean }>('/api/chat/current-session/new', {
+      method: 'POST',
+      body: JSON.stringify({ origin_client: originClient }),
+    }),
+
+  // The on-screen tap for a spoken side-effect (voice_confirm_requested card).
+  // 404 = the confirm expired or is unknown; the caller should dismiss the card.
+  resolveVoiceConfirm: (confirmId: string, sessionId: string, decision: 'approve' | 'deny') =>
+    apiFetch<{ confirm_id: string; outcome: 'approved' | 'denied' }>(
+      `/api/voice/confirm/${encodeURIComponent(confirmId)}`,
+      { method: 'POST', body: JSON.stringify({ decision, session_id: sessionId }) },
+    ),
+
   // Create session — POST /api/sessions. `projectId` is the CANONICAL project
   // id (`project:<slug>`) of the project open/known at creation time, so the
   // daemon can wing-scope memories written in this session. Omitted (not
@@ -1945,6 +1985,16 @@ export const api = {
     apiFetch<{ saved: boolean; total: number; ipa: string }>('/voice/pronunciations', {
       method: 'PUT',
       body: JSON.stringify({ word, sounds_like: soundsLike }),
+    }),
+
+  /** Words the voice had to guess at, most recently heard first. */
+  getUnknownWords: () =>
+    apiFetch<{ words: UnknownWord[]; max_words: number }>('/voice/unknown-words'),
+
+  /** Dismiss one word from the review list. Teaching it (savePronunciation) also clears it. */
+  dismissUnknownWord: (word: string) =>
+    apiFetch<{ removed: boolean }>(`/voice/unknown-words/${encodeURIComponent(word)}`, {
+      method: 'DELETE',
     }),
 
   deletePronunciation: (word: string) =>

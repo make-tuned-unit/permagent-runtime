@@ -16,6 +16,32 @@ import { copyText } from '../lib/clipboard';
 import { getStreamToken } from '../lib/streamToken';
 import { markReplySpoken } from '../lib/speakReplies';
 import { spectrumLooksLikeVoice } from './vadSpectrum';
+import { getAppVersion } from '../lib/version';
+import { useCommandCenter } from '../lib/store';
+import {
+  beginPlayback,
+  clearPlayback,
+  endPlayback,
+  makeSegment,
+  parseWordTimings,
+  rawPlaybackRms,
+  type WordSpan,
+} from '../lib/voicePlaybackClock';
+import {
+  buildHello,
+  createBargeGuard,
+  deriveVoiceSurface,
+  INTERRUPT_ACK_TIMEOUT_MS,
+  interruptMsg,
+  isClippedTransient,
+  isHeadphoneOutputLabel,
+  replyPlaybackCompleteMsg,
+  segmentEndedMsg,
+  segmentStartedMsg,
+  type InterruptReason,
+  type VoiceSurface,
+  type VoiceTrigger,
+} from './voiceClientProtocol';
 
 export type VoiceState =
   | 'idle'          // Voice off — no socket
@@ -46,7 +72,7 @@ export const VOICE_WATCHDOG_MS = 90_000;
  * REACHES `processing` (a 0-sample stop returns straight to `ready`). The
  * 2026-09-01 incident free-ran ~1,430 such cycles at ~7.9 Hz over three
  * minutes without ever tripping VOICE_WATCHDOG_MS. This backstops fix 3a's
- * own teach-specific cap for any OTHER fast loop that captures no audio.
+ * own (now removed) teach-specific cap for any fast loop that captures no audio.
  */
 export const VOICE_ZERO_BYTE_CAPTURE_STREAK_LIMIT = 5;
 
@@ -186,6 +212,8 @@ export type VoiceTurnEndReason =
   | 'user_tap'
   | 'client_error'
   | 'interruption'
+  | 'noise_abort'
+  | 'barge'
   | 'unknown';
 
 /**
@@ -694,36 +722,41 @@ interface UseVoiceOptions {
   onEvent?: (event: VoiceEvent) => void;
 }
 
+/** Build identity for the hello (V-28). Injected by the bundler when available. */
+let cachedAppVersion: string | null = null;
+void getAppVersion().then(v => { cachedAppVersion = v; }).catch(() => {});
+function clientBuild() {
+  return {
+    appVersion: cachedAppVersion,
+    // Literal member access so the bundler's `define` replaces them.
+    buildNumber: import.meta.env.VITE_BUILD_NUMBER ?? null,
+    gitSha: import.meta.env.VITE_GIT_SHA ?? null,
+  };
+}
+
+/** Which view the voice session belongs to right now: the World, or the chat-pane Orb. */
+function currentVoiceSurface(): VoiceSurface {
+  const st = useCommandCenter.getState();
+  const ws = st.workspaces.find(w => w.id === st.activeWorkspaceId);
+  let node = ws?.layoutJson;
+  while (node && node.type === 'split' && node.children.length > 0) node = node.children[0];
+  const activeTool = node && node.type === 'panel' ? node.tool : null;
+  return deriveVoiceSurface({ worldConversationActive: st.worldConversationActive, activeTool });
+}
+
+type SegmentMeta = { segmentId: number; text: string; words: WordSpan[]; durationMs: number };
+
 export function useVoice(options: UseVoiceOptions = {}) {
   const { sessionId, sampleRate = 16000, onEvent } = options;
   const [state, setState] = useState<VoiceState>('idle');
   const [lastTranscript, setLastTranscript] = useState('');
   const [lastReply, setLastReply] = useState('');
-  const [teachWord, setTeachWord] = useState<string | null>(null);
-  const teachWordRef = useRef<string | null>(null);
-  teachWordRef.current = teachWord;
-  // FIX 1: a `teach` frame arrives at synthesis-QUEUE time, well before its
-  // audio (ASK_FIRST/ASK_AGAIN) actually reaches the speaker — applying it
-  // instantly let the pill (and the mic it arms) lead the narration that
-  // announces it by tens of seconds. Held here and applied only once
-  // playback genuinely drains, mirroring pendingNavRef/flushNavIfIdle below.
-  // `{ word }` (vs. bare `string | null`) distinguishes "nothing pending"
-  // from "pending change to null".
-  const pendingTeachRef = useRef<{ word: string | null } | null>(null);
-  // FIX 3a: consecutive teach-driven listens that captured NO audio (server
-  // replied `Idle` for a too-short buffer). Capped so a listen that can never
-  // capture (mic issue, VAD misfire) can't restart forever — see the 'idle'
-  // handler below. Reset whenever a listen actually produces a transcript,
-  // or a fresh teach prompt (word or re-ask) is applied.
-  const teachZeroSampleStreakRef = useRef(0);
-  /** FIX 3a cap — matches MAX_TEACH_ATTEMPTS on the server (voice_pronounce.rs). */
-  const MAX_TEACH_ZERO_SAMPLE_LISTENS = 3;
   const [error, setError] = useState<string | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
   const turnSequenceRef = useRef(0);
   const activeTurnIdRef = useRef<string | null>(null);
-  const activeTurnTriggerRef = useRef<'user_tap' | 'unknown'>('unknown');
+  const activeTurnTriggerRef = useRef<VoiceTrigger>('unknown');
   const activeTurnAudioRevisionRef = useRef(1);
   const activeTurnStartedAtMonotonicRef = useRef<number | null>(null);
   const voiceHelloSentRef = useRef(false);
@@ -744,6 +777,26 @@ export function useVoice(options: UseVoiceOptions = {}) {
   // waveform while the agent speaks. Lives on the playback context; recreated
   // with it, nulled when it closes.
   const analyserRef = useRef<AnalyserNode | null>(null);
+  // ── Playback acknowledgements + in-band interrupt (V-26, V-29) ──
+  /** `audio_segment` metadata awaiting its binary frame (they arrive in pairs, in order). */
+  const pendingSegMetaRef = useRef<SegmentMeta[]>([]);
+  const segMetaRef = useRef(new WeakMap<Float32Array, SegmentMeta>());
+  const currentSegRef = useRef<{ meta: SegmentMeta; startedPerf: number; durationMs: number } | null>(null);
+  const replyAckRef = useRef({ segments: 0, heardMs: 0, queuedMs: 0 });
+  /** Client turn id the reply being played answers. */
+  const replyTurnIdRef = useRef<string | null>(null);
+  const awaitingInterruptAckRef = useRef(false);
+  const interruptTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const surfaceRef = useRef<VoiceSurface>('orb');
+  const bargeGuardRef = useRef(createBargeGuard());
+  const speakerRouteRef = useRef(true);
+  const lastBargeAtRef = useRef(0);
+  const vadVoicedMsRef = useRef(0);
+  const vadPeakRef = useRef(0);
+  const sendJson = useCallback((obj: unknown) => {
+    const w = wsRef.current;
+    if (w && w.readyState === WebSocket.OPEN) w.send(JSON.stringify(obj));
+  }, []);
   const onEventRef = useRef(onEvent);
   onEventRef.current = onEvent;
   const activeRef = useRef(false);
@@ -810,6 +863,35 @@ export function useVoice(options: UseVoiceOptions = {}) {
   const wakeStartPendingRef = useRef(false);
   const syncWakeModeRef = useRef<(() => void) | null>(null);
 
+  // Output route: the barge-in echo guard is stricter on the Mac's speakers.
+  // Defaults to speaker (the conservative answer) when labels are unavailable.
+  useEffect(() => {
+    const md = typeof navigator !== 'undefined' ? navigator.mediaDevices : undefined;
+    if (!md?.enumerateDevices) return;
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const outs = (await md.enumerateDevices()).filter(d => d.kind === 'audiooutput');
+        const def = outs.find(d => d.deviceId === 'default') ?? outs[0];
+        if (!cancelled) speakerRouteRef.current = !(def && isHeadphoneOutputLabel(def.label));
+      } catch { /* keep the conservative default */ }
+    };
+    void refresh();
+    md.addEventListener?.('devicechange', refresh);
+    return () => { cancelled = true; md.removeEventListener?.('devicechange', refresh); };
+  }, []);
+
+  // The same engine serves the World and the chat-pane Orb; if the user moves
+  // between them mid-session, restate the surface to the daemon.
+  useEffect(() => useCommandCenter.subscribe(() => {
+    const next = currentVoiceSurface();
+    if (next === surfaceRef.current) return;
+    surfaceRef.current = next;
+    if (voiceHelloSentRef.current) {
+      sendJson(buildHello({ surface: next, build: clientBuild(), wireSampleRate: sampleRate, revision: 1 }));
+    }
+  }), [sendJson, sampleRate]);
+
   const emit = useCallback((event: VoiceEvent) => {
     onEventRef.current?.(event);
   }, []);
@@ -844,37 +926,45 @@ export function useVoice(options: UseVoiceOptions = {}) {
     }
   }, [fireNav]);
 
-  // FIX 1: apply a deferred `teach` frame only once nothing is left to
-  // play — the same "narration finished" signal flushNavIfIdle uses, so the
-  // pill (and the recording it arms via startRecordingRef) can never land
-  // before the audio that announces it. Safe to call redundantly.
-  //
-  // Updates teachWordRef directly (not just via the `teachWord` render sync
-  // above) so a same-tick `if (teachWordRef.current)` check right after this
-  // call sees the fresh value — React state updates don't land until the
-  // next render.
-  const flushTeachIfIdle = useCallback(() => {
-    if (
-      pendingTeachRef.current &&
-      !playingRef.current &&
-      audioQueueRef.current.length === 0 &&
-      !pendingAudioRef.current
-    ) {
-      const teach = pendingTeachRef.current;
-      pendingTeachRef.current = null;
-      // A fresh prompt (word, or a re-ask of the same word) gets its own
-      // zero-sample-listen budget.
-      teachZeroSampleStreakRef.current = 0;
-      teachWordRef.current = teach.word;
-      setTeachWord(teach.word);
-    }
-  }, []);
-
   const setStateAndEmit = useCallback((newState: VoiceState) => {
     stateRef.current = newState;
     setState(newState);
     emit({ type: 'state_change', state: newState });
   }, [emit]);
+
+  // --- Playback acknowledgements (V-26) ---
+  const finishSegmentRef = useRef<((completed: boolean) => void) | null>(null);
+  const finishReplyRef = useRef<((reason: 'drained' | 'interrupt' | 'halt') => void) | null>(null);
+  finishSegmentRef.current = (completed: boolean) => {
+    const cur = currentSegRef.current;
+    if (!cur) return;
+    currentSegRef.current = null;
+    const played = completed ? cur.durationMs : Math.min(cur.durationMs, performance.now() - cur.startedPerf);
+    replyAckRef.current.heardMs += played;
+    endPlayback(cur.meta.segmentId);
+    sendJson(segmentEndedMsg({
+      segmentId: cur.meta.segmentId,
+      turnId: replyTurnIdRef.current,
+      playedMs: played,
+      durationMs: cur.durationMs,
+      completed,
+      clientMs: Date.now(),
+    }));
+  };
+  finishReplyRef.current = (reason) => {
+    finishSegmentRef.current?.(reason === 'drained');
+    const ack = replyAckRef.current;
+    if (ack.queuedMs === 0 && ack.segments === 0) return;
+    replyAckRef.current = { segments: 0, heardMs: 0, queuedMs: 0 };
+    sendJson(replyPlaybackCompleteMsg({
+      turnId: replyTurnIdRef.current,
+      segments: ack.segments,
+      heardMs: ack.heardMs,
+      queuedMs: ack.queuedMs,
+      reason,
+      clientMs: Date.now(),
+    }));
+  };
 
   // --- Audio playback queue ---
   const playNextChunk = useCallback(() => {
@@ -885,17 +975,11 @@ export function useVoice(options: UseVoiceOptions = {}) {
         playbackCtxRef.current?.close().catch(() => {});
         playbackCtxRef.current = null;
         analyserRef.current = null;
+        finishReplyRef.current?.('drained');
         if (wsRef.current?.readyState === WebSocket.OPEN) {
           setStateAndEmit('ready');
-          // Narration finished playing — release any deferred navigation
-          // and any deferred teach word (FIX 1) now: this is the actual
-          // "nothing left to play" moment, so the pill can never lead the
-          // audio that announces it.
+          // Narration finished playing — release any deferred navigation.
           flushNavIfIdle();
-          flushTeachIfIdle();
-          if (teachWordRef.current) {
-            startRecordingRef.current?.('unknown');
-          }
         }
       }
       return;
@@ -920,22 +1004,43 @@ export function useVoice(options: UseVoiceOptions = {}) {
       // Route through the analyser (a pass-through) so playback is unchanged
       // but we can read live frequency data off it.
       source.connect(analyserRef.current ?? ctx.destination);
+      const meta = segMetaRef.current.get(next);
       source.onended = () => {
+        if (meta && currentSegRef.current?.meta === meta) finishSegmentRef.current?.(true);
         playingRef.current = false;
         playNextChunk();
       };
       source.start();
+      if (meta) {
+        const latencyMs = ((ctx as AudioContext & { outputLatency?: number }).outputLatency ?? ctx.baseLatency ?? 0) * 1000;
+        const startedPerf = performance.now();
+        currentSegRef.current = { meta, startedPerf, durationMs: (next.length / 24000) * 1000 };
+        beginPlayback(makeSegment({
+          segmentId: meta.segmentId,
+          startedAtMs: startedPerf + latencyMs,
+          text: meta.text,
+          words: meta.words,
+          samples: next,
+          sampleRate: 24000,
+          durationMs: meta.durationMs,
+        }));
+        sendJson(segmentStartedMsg({ segmentId: meta.segmentId, turnId: replyTurnIdRef.current, clientMs: Date.now() }));
+        replyAckRef.current.segments += 1;
+      }
     } catch {
       playingRef.current = false;
       pendingAudioRef.current = false;
     }
-  }, [setStateAndEmit, flushNavIfIdle, flushTeachIfIdle]);
+  }, [setStateAndEmit, flushNavIfIdle, sendJson]);
 
   // Halt playback and return to ready WITHOUT touching the socket — the
   // response to a spoken "stop": the daemon already ended (or never had) the
   // turn, so unlike barge-in there is nothing to cancel via reconnect. Any
   // deferred navigation is dropped: the user just asked for the turn to end.
   const haltPlayback = useCallback(() => {
+    finishReplyRef.current?.('halt');
+    clearPlayback();
+    pendingSegMetaRef.current = [];
     playingRef.current = false;
     audioQueueRef.current = [];
     pendingAudioRef.current = false;
@@ -955,28 +1060,42 @@ export function useVoice(options: UseVoiceOptions = {}) {
     if (typeof event.data === 'string') {
       try {
         const msg = JSON.parse(event.data);
+        // After an in-band interrupt the old reply's tail can still be in
+        // flight; the server's `interrupted` marks the cut. Drop it until then.
+        if (awaitingInterruptAckRef.current
+          && ['reply_start', 'audio_segment', 'reply_text', 'reply_end', 'navigate'].includes(msg.type)) {
+          return;
+        }
         switch (msg.type) {
+          case 'audio_segment': {
+            const sid = Number(msg.segment_id);
+            pendingSegMetaRef.current.push({
+              segmentId: Number.isFinite(sid) ? sid : pendingSegMetaRef.current.length,
+              text: typeof msg.text === 'string' ? msg.text : '',
+              words: parseWordTimings(msg.word_timings),
+              durationMs: Number(msg.duration_ms) || 0,
+            });
+            break;
+          }
+          case 'interrupted':
+            awaitingInterruptAckRef.current = false;
+            if (interruptTimerRef.current) {
+              clearTimeout(interruptTimerRef.current);
+              interruptTimerRef.current = null;
+            }
+            pendingSegMetaRef.current = [];
+            if (stateRef.current !== 'recording') setStateAndEmit('ready');
+            break;
           case 'ready':
             setStateAndEmit('ready');
             if (!voiceHelloSentRef.current && wsRef.current?.readyState === WebSocket.OPEN) {
-              wsRef.current.send(JSON.stringify({
-                type: 'hello',
-                protocol_version: 1,
-                client: 'desktop_voice',
-                app_version: null,
-                build_number: null,
-                git_sha: null,
-                git_dirty: null,
-                capabilities: ['hello_v1', 'turn_telemetry_v2'],
-                audio_revision: 1,
-                inputs: null,
-                capture_sample_rate: null,
-                capture_channels: null,
-                wire_sample_rate: sampleRate,
-                wire_channels: 1,
-                wire_encoding: 'pcm_f32le',
-                io_buffer_duration_ms: null,
-              }));
+              surfaceRef.current = currentVoiceSurface();
+              wsRef.current.send(JSON.stringify(buildHello({
+                surface: surfaceRef.current,
+                build: clientBuild(),
+                wireSampleRate: sampleRate,
+                revision: 1,
+              })));
               voiceHelloSentRef.current = true;
             }
             readyResolveRef.current?.();
@@ -1038,7 +1157,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
               // FIX 2: startRecording itself arms the VAD turn clocks now —
               // a single seam every recording start goes through, so there
               // is nothing to duplicate here.
-              startRecordingRef.current?.('unknown');
+              startRecordingRef.current?.('wake');
             } else if (action === 'halt-playback') {
               haltPlayback();
             }
@@ -1054,9 +1173,6 @@ export function useVoice(options: UseVoiceOptions = {}) {
             // transient error (e.g. a prior "No speech detected") so it doesn't
             // stick in the UI while the conversation is in fact succeeding.
             setError(null);
-            // A real capture — the zero-sample-listen budget (FIX 3a) is
-            // about a listen that never captures anything, not one that did.
-            teachZeroSampleStreakRef.current = 0;
             setLastTranscript(msg.text ?? '');
             emit({ type: 'transcript', text: msg.text ?? '' });
             break;
@@ -1069,29 +1185,15 @@ export function useVoice(options: UseVoiceOptions = {}) {
             emit({ type: 'reply_text', text: msg.text ?? '' });
             break;
           case 'reply_start':
+            replyAckRef.current = { segments: 0, heardMs: 0, queuedMs: 0 };
+            pendingSegMetaRef.current = [];
             setStateAndEmit('playing');
-            break;
-          case 'teach':
-            // FIX 1: defer — do not apply instantly. See pendingTeachRef.
-            pendingTeachRef.current = {
-              word: typeof msg.word === 'string' && msg.word ? msg.word : null,
-            };
-            flushTeachIfIdle();
-            break;
-          case 'taught':
-            setTeachWord(null);
             break;
           case 'reply_end':
             pendingAudioRef.current = false;
             if (!playingRef.current && audioQueueRef.current.length === 0) {
+              finishReplyRef.current?.('drained');
               setStateAndEmit('ready');
-              // Covers a teach frame that arrived mid-reply and is only now
-              // safe to apply (FIX 1) — same drain point that starts the
-              // teach-driven recording.
-              flushTeachIfIdle();
-              if (teachWordRef.current) {
-                startRecordingRef.current?.('unknown');
-              }
             }
             // Covers a reply whose audio already drained before reply_end.
             flushNavIfIdle();
@@ -1121,32 +1223,6 @@ export function useVoice(options: UseVoiceOptions = {}) {
           case 'idle':
             setError(null);
             setStateAndEmit('ready');
-            // By the time an 'idle' for a teach-driven listen arrives, any
-            // teach frame that raced it must already have been applied at
-            // the drain point (playNextChunk / reply_end) that started this
-            // recording in the first place — flush defensively anyway, it's
-            // a no-op if nothing is pending.
-            flushTeachIfIdle();
-            if (teachWordRef.current) {
-              // FIX 3a: bound consecutive listens that capture nothing (a
-              // too-short/empty buffer comes back as this same 'idle') —
-              // the old unconditional re-arm free-ran ~1,430 cycles at
-              // ~7.9 Hz over three minutes (2026-09-01 incident) with the
-              // pending word parked forever.
-              teachZeroSampleStreakRef.current += 1;
-              if (teachZeroSampleStreakRef.current >= MAX_TEACH_ZERO_SAMPLE_LISTENS) {
-                teachZeroSampleStreakRef.current = 0;
-                // Give up locally first — the pill can never hang forever
-                // even if the socket send below is slow or lost. The
-                // server's own teach_skip handling (SKIPPED + resume,
-                // mirroring a spoken "skip") reconciles right behind it.
-                teachWordRef.current = null;
-                setTeachWord(null);
-                wsRef.current?.send(JSON.stringify({ type: 'teach_skip' }));
-              } else {
-                startRecordingRef.current?.('unknown');
-              }
-            }
             break;
           case 'error':
             if (isTransientVoiceIdle(msg.message)) {
@@ -1175,7 +1251,11 @@ export function useVoice(options: UseVoiceOptions = {}) {
     } else if (event.data instanceof ArrayBuffer) {
       const buf = event.data as ArrayBuffer;
       if (buf.byteLength > 0) {
+        if (awaitingInterruptAckRef.current) return;
         const samples = new Float32Array(buf);
+        const segMeta = pendingSegMetaRef.current.shift();
+        if (segMeta) segMetaRef.current.set(samples, segMeta);
+        replyAckRef.current.queuedMs += (samples.length / 24000) * 1000;
         pendingAudioRef.current = true;
         setStateAndEmit('playing');
         audioQueueRef.current.push(samples);
@@ -1183,7 +1263,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
         emit({ type: 'reply_audio', audio: { samples, sampleRate: 24000 } });
       }
     }
-  }, [setStateAndEmit, emit, playNextChunk, flushNavIfIdle, flushTeachIfIdle, haltPlayback, sessionId, sampleRate]);
+  }, [setStateAndEmit, emit, playNextChunk, flushNavIfIdle, haltPlayback, sessionId, sampleRate, sendJson]);
 
   // Monotonic connect epoch. Each connectSocket call claims a new epoch; a
   // call that gets superseded while awaiting the daemon token (e.g. the
@@ -1194,11 +1274,29 @@ export function useVoice(options: UseVoiceOptions = {}) {
   // --- Core connect ---
   const connectSocket = useCallback(async (): Promise<void> => {
     const epoch = ++connectEpochRef.current;
-    if (wsRef.current) {
-      wsRef.current.onclose = null;
-      wsRef.current.close();
+    // V-31: the old socket must be fully closed before the new one opens, or
+    // the daemon sees two live epochs. Detach its handlers first so a late
+    // frame cannot reach this hook, then wait (bounded) for the close.
+    const stale = wsRef.current;
+    if (stale) {
+      stale.onclose = null;
+      stale.onmessage = null;
       wsRef.current = null;
+      const canWait = stale.readyState !== WebSocket.CLOSED && typeof stale.addEventListener === 'function';
+      if (canWait) {
+        await new Promise<void>(resolve => {
+          const done = () => { clearTimeout(timer); resolve(); };
+          const timer = setTimeout(resolve, 400);
+          stale.addEventListener('close', done, { once: true });
+          try { stale.close(); } catch { done(); }
+        });
+      } else {
+        try { stale.close(); } catch { /* already closed */ }
+      }
+      if (epoch !== connectEpochRef.current) throw new Error('connect superseded by a newer connect');
     }
+    awaitingInterruptAckRef.current = false;
+    pendingSegMetaRef.current = [];
     voiceHelloSentRef.current = false;
     // A new socket means a new daemon handler with no wake session; the
     // 'ready' handler re-requests it once the connection is up.
@@ -1293,6 +1391,10 @@ export function useVoice(options: UseVoiceOptions = {}) {
   // the guaranteed "Speaking..." reset the watchdog and session-switch use.
   const forceRecover = useCallback((reason: string) => {
     console.warn(`[useVoice] forceRecover: ${reason}`);
+    finishReplyRef.current?.('halt');
+    clearPlayback();
+    pendingSegMetaRef.current = [];
+    awaitingInterruptAckRef.current = false;
     // Tear down playback so a half-played buffer can't hold the busy state.
     playingRef.current = false;
     audioQueueRef.current = [];
@@ -1336,10 +1438,53 @@ export function useVoice(options: UseVoiceOptions = {}) {
   //
   // No-op unless a reply is actually in flight: in 'ready' a Space press means
   // start recording, and there is nothing to interrupt in idle/connecting/error.
-  const interrupt = useCallback(() => {
+  const interrupt = useCallback((arg?: unknown) => {
     if (!isInterruptibleState(stateRef.current)) return;
-    forceRecover('user barge-in — interrupt reply');
-  }, [forceRecover]);
+    const given = (arg && typeof arg === 'object' && 'reason' in (arg as object)) ? (arg as {
+      reason: InterruptReason; micRms?: number; playbackPeak?: number; route?: 'speaker' | 'headphones';
+    }) : null;
+    const reason: InterruptReason = given?.reason ?? 'user_tap';
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      forceRecover('user barge-in — no live socket');
+      return;
+    }
+    // V-29: in-band. Silence locally first, then ask the daemon to cancel the
+    // stream and clear its queue on THIS socket. If it never acknowledges
+    // (older daemon), fall back to the old socket reset.
+    const heardMs = replyAckRef.current.heardMs
+      + (currentSegRef.current ? Math.min(currentSegRef.current.durationMs, performance.now() - currentSegRef.current.startedPerf) : 0);
+    finishReplyRef.current?.('interrupt');
+    clearPlayback();
+    pendingSegMetaRef.current = [];
+    playingRef.current = false;
+    audioQueueRef.current = [];
+    pendingAudioRef.current = false;
+    pendingNavRef.current = null;
+    playbackCtxRef.current?.close().catch(() => {});
+    playbackCtxRef.current = null;
+    analyserRef.current = null;
+    lastActivityRef.current = Date.now();
+    awaitingInterruptAckRef.current = true;
+    ws.send(JSON.stringify(interruptMsg({
+      turnId: replyTurnIdRef.current,
+      reason,
+      heardMs,
+      micRms: given?.micRms,
+      playbackPeak: given?.playbackPeak,
+      route: given?.route,
+      clientMs: Date.now(),
+    })));
+    setStateAndEmit('ready');
+    if (interruptTimerRef.current) clearTimeout(interruptTimerRef.current);
+    interruptTimerRef.current = setTimeout(() => {
+      interruptTimerRef.current = null;
+      if (awaitingInterruptAckRef.current) {
+        awaitingInterruptAckRef.current = false;
+        forceRecover('interrupt not acknowledged — resetting socket');
+      }
+    }, INTERRUPT_ACK_TIMEOUT_MS);
+  }, [forceRecover, setStateAndEmit]);
 
   // Stuck-state watchdog: a daemon that stops emitting terminal events (a hung
   // LLM/TTS stream sends no reply_end/error yet leaves the socket open) would
@@ -1521,6 +1666,9 @@ export function useVoice(options: UseVoiceOptions = {}) {
     mediaStreamRef.current?.getTracks().forEach(t => t.stop());
     mediaStreamRef.current = null;
     // Stop playback
+    finishReplyRef.current?.('halt');
+    clearPlayback();
+    pendingSegMetaRef.current = [];
     playingRef.current = false;
     audioQueueRef.current = [];
     pendingAudioRef.current = false;
@@ -1550,14 +1698,6 @@ export function useVoice(options: UseVoiceOptions = {}) {
     micFaultSurfacedRef.current = false;
     micReacquirePendingRef.current = false;
     micMutedSinceRef.current = 0;
-    // FIX 4: the pill must not survive an explicit "end voice" — otherwise
-    // it sits on screen showing a word nothing is listening for anymore.
-    // The socket close below is what makes the SERVER forget it too
-    // (Message::Close handling in voice.rs).
-    pendingTeachRef.current = null;
-    teachZeroSampleStreakRef.current = 0;
-    teachWordRef.current = null;
-    setTeachWord(null);
     // Close socket
     if (wsRef.current) {
       wsRef.current.onclose = null;
@@ -1572,7 +1712,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
    * Only works when socket is open, state is 'ready', and mic is acquired.
    *
    * FIX 2 (2026-09-01 incident, single seam): every recording start — push-
-   * to-talk, wake word, VAD onset, AND a teach-driven auto-start — arms the
+   * to-talk, wake word, VAD onset, and VAD onset — arms the
    * VAD turn clocks here, unconditionally. Three teach-driven call sites
    * used to call this with the clocks never (re)armed, leaving
    * vadTurnStartRef holding a value up to ~100s stale from a PRIOR turn;
@@ -1583,7 +1723,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
    * one place every start goes through instead of duplicated (and
    * incompletely applied) at each call site.
    */
-  const startRecording = useCallback((trigger: 'user_tap' | 'unknown' = 'user_tap') => {
+  const startRecording = useCallback((trigger: VoiceTrigger = 'user_tap') => {
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     if (stateRef.current !== 'ready') return;
@@ -1612,6 +1752,11 @@ export function useVoice(options: UseVoiceOptions = {}) {
     const turnId = `web-${turnSequenceRef.current}`;
     activeTurnIdRef.current = turnId;
     activeTurnTriggerRef.current = trigger;
+    vadVoicedMsRef.current = trigger === 'vad' || trigger === 'barge' ? 256 : 0;
+    vadPeakRef.current = 0;
+    replyTurnIdRef.current = turnId;
+    // The surface can change between views mid-session; every turn restates it.
+    surfaceRef.current = currentVoiceSurface();
     activeTurnAudioRevisionRef.current = 1;
     activeTurnStartedAtMonotonicRef.current = monotonicNowMs();
     ws.send(JSON.stringify({
@@ -1619,6 +1764,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
       sample_rate: sampleRate,
       turn_id: turnId,
       trigger,
+      surface: surfaceRef.current,
       audio_revision: activeTurnAudioRevisionRef.current,
     }));
     setStateAndEmit('recording');
@@ -1676,7 +1822,9 @@ export function useVoice(options: UseVoiceOptions = {}) {
         vad_onset_rms: null,
         vad_keepalive_rms: null,
         vad_committed: null,
-        vad_voiced_ms: null,
+        vad_voiced_ms: activeTurnTriggerRef.current === 'vad' || activeTurnTriggerRef.current === 'barge'
+          ? Math.round(vadVoicedMsRef.current)
+          : null,
         vad_trailing_silence_ms: null,
         vad_silence_window_ms: null,
         vad_max_turn_ms: null,
@@ -1685,6 +1833,8 @@ export function useVoice(options: UseVoiceOptions = {}) {
       if (captureDurationMs !== null) {
         stopPayload.capture_duration_ms = captureDurationMs;
       }
+      if (endReason === 'noise_abort') stopPayload.client_discard = true;
+      stopPayload.surface = surfaceRef.current;
       ws.send(JSON.stringify(stopPayload));
       // Start the watchdog clock fresh as we enter the busy phase.
       lastActivityRef.current = Date.now();
@@ -1793,7 +1943,6 @@ export function useVoice(options: UseVoiceOptions = {}) {
   // quieter per-buffer but sustained — so the discriminator that works is
   // duration, not level. Onset must hold across several consecutive buffers.
   const VAD_KEEPALIVE = VAD_KEEPALIVE_RMS;
-  const VAD_BARGE = 0.05;
   /** Consecutive ~128ms buffers over onset before a turn starts. A mechanical
    *  keyboard click is a single-buffer transient; speech sustains — this was
    *  tripping recording on every keystroke (empty-transcript chatter in the
@@ -1816,6 +1965,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
     // keyboard click complete it — defeating the debounce entirely.
     vadOnsetStreakRef.current = 0;
     vadBargeStreakRef.current = 0;
+    bargeGuardRef.current.resetAll();
   }, []);
 
   /** True when the current mic spectrum looks like voice rather than a
@@ -1967,7 +2117,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
             vadOnsetStreakRef.current = 0;
             // FIX 2: startRecording itself arms the VAD turn clocks now —
             // single seam, nothing to duplicate here.
-            startRecordingRef.current?.('unknown');
+            startRecordingRef.current?.(Date.now() - lastBargeAtRef.current < 4000 ? 'barge' : 'vad');
           }
         } else {
           // DECAY, don't reset. A hard reset meant one legitimately bright
@@ -1981,28 +2131,57 @@ export function useVoice(options: UseVoiceOptions = {}) {
         if (rms > VAD_KEEPALIVE) {
           vadHeardSpeechRef.current = true;
           vadLastVoiceRef.current = now;
+          vadVoicedMsRef.current += (input.length / sampleRate) * 1000;
         }
-        const endReason = classifyVadTurnEnd({
+        vadPeakRef.current = Math.max(vadPeakRef.current, bufferPeak(input));
+        let endReason = classifyVadTurnEnd({
           heardSpeech: vadHeardSpeechRef.current,
           lastVoiceAt: vadLastVoiceRef.current,
           turnStartedAt: vadTurnStartRef.current,
         }, now, { recordingStartedAt: recordingStartedAtRef.current });
+        // V-18: a knock, click or TTS bleed is not a turn.
+        if (endReason === 'silence' && isClippedTransient({
+          trigger: activeTurnTriggerRef.current,
+          voicedMs: vadVoicedMsRef.current,
+          peak: vadPeakRef.current,
+        })) {
+          console.info(`[useVoice] voice_transient_discarded voiced_ms=${Math.round(vadVoicedMsRef.current)} peak=${vadPeakRef.current.toFixed(2)}`);
+          endReason = 'noise_abort';
+        }
         if (endReason) {
           vadHeardSpeechRef.current = false;
           stopRecordingRef.current?.(endReason);
         }
       } else if (s === 'playing' || s === 'processing') {
-        // Barge-in: demand a sustained loud signal (2 consecutive ~128ms
-        // buffers over the high bar) so TTS bleed can't self-interrupt.
-        if (rms > VAD_BARGE) {
-          vadBargeStreakRef.current += 1;
-          if (vadBargeStreakRef.current >= 2 && s === 'playing' && !teachWordRef.current) {
-            vadBargeStreakRef.current = 0;
+        // Barge-in. D7: stays on for Mac speakers, behind an echo guard that
+        // mirrors the iPhone fix (39ea442b): size the echo floor from the
+        // speaker's 1.5 s peak and need three confirmations within 1.2 s.
+        const guard = bargeGuardRef.current;
+        const nowP = performance.now();
+        guard.notePlayback(nowP, rawPlaybackRms(nowP));
+        if (s === 'playing') {
+          const speakerRoute = speakerRouteRef.current;
+          const verdict = guard.onMicBuffer({
+            nowMs: nowP,
+            micRms: rms,
+            voiceLike: looksLikeVoice(),
+            speakerRoute,
+          });
+          if (verdict === 'pending' && speakerRoute) {
+            console.info(`[useVoice] voice_barge_pending route=speaker mic_rms=${rms.toFixed(3)} playback_peak=${guard.peakNow(nowP).toFixed(3)}`);
+          } else if (verdict === 'confirmed') {
+            console.info(`[useVoice] voice_barge_confirmed route=${speakerRoute ? 'speaker' : 'headphones'} mic_rms=${rms.toFixed(3)} playback_peak=${guard.peakNow(nowP).toFixed(3)}`);
+            lastBargeAtRef.current = Date.now();
             vadHeardSpeechRef.current = false;
-            interruptRef.current?.();
+            interruptRef.current?.({
+              reason: 'barge_in',
+              micRms: rms,
+              playbackPeak: guard.peakNow(nowP),
+              route: speakerRoute ? 'speaker' : 'headphones',
+            });
           }
         } else {
-          vadBargeStreakRef.current = 0;
+          guard.reset();
         }
       }
     };
@@ -2048,9 +2227,9 @@ export function useVoice(options: UseVoiceOptions = {}) {
 
   // Late-bound refs so the monitor callback (created once) always calls the
   // freshest versions without re-wiring the audio graph.
-  const startRecordingRef = useRef<((trigger?: 'user_tap' | 'unknown') => void) | null>(null);
+  const startRecordingRef = useRef<((trigger?: VoiceTrigger) => void) | null>(null);
   const stopRecordingRef = useRef<((reason?: VoiceTurnEndReason) => void) | null>(null);
-  const interruptRef = useRef<(() => void) | null>(null);
+  const interruptRef = useRef<((arg?: unknown) => void) | null>(null);
 
   // ── Mic-input watchdog ───────────────────────────────────────────────────
   // Tear down and rebuild the hands-free listening graph, re-acquiring the
@@ -2300,7 +2479,6 @@ export function useVoice(options: UseVoiceOptions = {}) {
     state,
     lastTranscript,
     lastReply,
-    teachWord,
     error,
     activate,
     deactivate,

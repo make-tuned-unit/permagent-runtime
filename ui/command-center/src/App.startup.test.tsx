@@ -70,6 +70,7 @@ vi.mock('./components/workspaces/WorkspaceSaveErrorChip', () => ({ WorkspaceSave
 vi.mock('./components/chat/ChatLauncher', () => ({ ChatLauncher: () => null }));
 vi.mock('./components/chat/ChatDock', () => ({ ChatDock: () => null }));
 vi.mock('./components/voice/VoiceHost', () => ({ VoiceHost: () => null }));
+vi.mock('./components/voice/VoiceConfirmCard', () => ({ VoiceConfirmCard: () => null }));
 vi.mock('./components/goals/GoalDetailModal', () => ({ GoalDetailModalHost: () => null }));
 vi.mock('./components/projects/PersonDetailModal', () => ({ PersonDetailModalHost: () => null }));
 vi.mock('./components/chat/DropZone', () => ({ DropZone: ({ children }: { children: unknown }) => children }));
@@ -87,6 +88,9 @@ let container: HTMLDivElement;
 let root: Root;
 
 beforeEach(() => {
+  // The boot deadline counts from the page's own origin. A reused test worker's
+  // origin can be minutes old in a full serial run, so start each test fresh.
+  Object.defineProperty(performance, 'timeOrigin', { value: Date.now(), configurable: true });
   mocks.getConfig.mockReset();
   mocks.loadWorkspaces.mockReset();
   mocks.loadSkills.mockReset();

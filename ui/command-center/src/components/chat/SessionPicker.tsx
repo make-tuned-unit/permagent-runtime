@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { FiChevronDown } from 'react-icons/fi';
-import { api } from '../../lib/api';
 import { useCommandCenter } from '../../lib/store';
 import { labelSource, sessionDisplayLabel } from '../../lib/sessionLabel';
 import { font, radius, space, textSize } from '../../styles/tokens';
@@ -59,9 +58,10 @@ export function SessionPicker() {
   const handleNewSession = async () => {
     setCreateError(false);
     try {
-      const session = await api.createSession();
+      // A new chat is the suite's new CURRENT chat (phone, voice, watch follow).
+      const id = await useCommandCenter.getState().startNewCurrentChat();
+      if (!id) throw new Error('new chat failed');
       setOpen(false);
-      await switchToSession(session.id);
       return true;
     } catch {
       // Stay open and say so (R2, NN/g H9 error recovery) instead of closing

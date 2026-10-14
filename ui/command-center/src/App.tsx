@@ -14,6 +14,7 @@ import { BootScreen } from './components/splash/BootScreen';
 import { ChatLauncher } from './components/chat/ChatLauncher';
 import { ChatDock } from './components/chat/ChatDock';
 import { VoiceHost } from './components/voice/VoiceHost';
+import { VoiceConfirmCard } from './components/voice/VoiceConfirmCard';
 import { GoalDetailModalHost } from './components/goals/GoalDetailModal';
 import { PersonDetailModalHost } from './components/projects/PersonDetailModal';
 import { DropZone } from './components/chat/DropZone';
@@ -396,6 +397,7 @@ function App() {
       <WorkspaceSaveErrorChip />
       {/* Per-window voice engine — survives dock close/detach/view switches. */}
       <VoiceHost />
+      <VoiceConfirmCard />
       <VoiceConversationFallback />
     </div>
   );

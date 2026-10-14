@@ -5,9 +5,34 @@
 // no gate executes is a shared package nobody can trust.
 import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
+import { execSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { validateNativeBuildInputs } from './src/lib/nativeBuildInputs';
 
 const isTauri = !!process.env.TAURI_ENV_PLATFORM;
+
+// Build identity for the voice hello. Explicit env wins; otherwise the git
+// short SHA (or 'dev' when git is unavailable) and the package version.
+function gitShortSha(): string {
+  try {
+    return execSync('git rev-parse --short HEAD', { stdio: ['ignore', 'pipe', 'ignore'] })
+      .toString().trim() || 'dev';
+  } catch {
+    return 'dev';
+  }
+}
+function packageVersion(): string | undefined {
+  try {
+    return (JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as { version?: string }).version;
+  } catch {
+    return undefined;
+  }
+}
+const buildNumber = process.env.VITE_BUILD_NUMBER
+  || process.env.BUILD_NUMBER
+  || packageVersion()
+  || 'dev';
+const gitSha = process.env.VITE_GIT_SHA || gitShortSha();
 
 export default defineConfig({
   plugins: [react(), {
@@ -37,6 +62,10 @@ export default defineConfig({
   },
   // Expose only this explicitly non-secret PERMAGENT flag in addition to
   // Vite's normal VITE_* variables.
+  define: {
+    'import.meta.env.VITE_BUILD_NUMBER': JSON.stringify(buildNumber),
+    'import.meta.env.VITE_GIT_SHA': JSON.stringify(gitSha),
+  },
   envPrefix: ['VITE_', 'PERMAGENT_SHORTLIVED_STREAM_TOKEN'],
   base: isTauri ? '/' : '/ui/',
   server: {

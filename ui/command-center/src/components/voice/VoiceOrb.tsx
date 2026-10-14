@@ -2,8 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { orbAmp, orbBands, orbMotionFor, orbSpin } from './orbDrive';
 import { useTheme } from '../../styles/useTheme';
 import type { ThemeColors } from '../../styles/useTheme';
-import { duration, ease, font, radius, space, textSize, type } from '../../styles/tokens';
-import { useGlass } from '../common/Glass';
+import { duration, ease, font, space, textSize } from '../../styles/tokens';
 import { Tooltip } from '../common/Tooltip';
 import { pressableEnterOnly } from '../common/pressable';
 import { useCommandCenter } from '../../lib/store';
@@ -151,20 +150,17 @@ function palette(stops: RGB[], g: number): RGB {
  */
 export function orbLabel({
   state,
-  teachWord,
   wakeHint,
   errorText,
   spotterDeaf,
 }: {
   state: string;
-  teachWord?: string | null;
   wakeHint?: string | null;
   errorText?: string | null;
   spotterDeaf?: boolean;
 }): string {
   const speaking = state === 'playing';
   const thinking = state === 'processing' || state === 'connecting';
-  if (teachWord) return speaking ? 'Placing a word on the Orb' : 'Say the word on the Orb';
   if (speaking) return 'Speaking';
   if (thinking) return 'Thinking…';
   if (state === 'error') return errorText || 'Voice error — click to exit';
@@ -183,7 +179,6 @@ export function VoiceOrb({
   mirrorLevel,
   onExit,
   wakeHint,
-  teachWord,
   footer,
 }: {
   state: string;
@@ -195,8 +190,6 @@ export function VoiceOrb({
   onExit: () => void;
   /** Armed wake gate: what to say to open a turn (e.g. `Say "Hey Henry"`). */
   wakeHint?: string | null;
-  /** Word placed on the Orb for a listen-once pronunciation. Never spoken. */
-  teachWord?: string | null;
   /**
    * Content that must stay READABLE while the takeover is up — today the
    * pending-decision cards.
@@ -255,7 +248,6 @@ export function VoiceOrb({
   // A host-passed hint wins (the main window computes its own from the store);
   // the mirror's host has none to pass.
   const shownWakeHint = wakeHint ?? (mirror ? relayed?.wakeHint ?? null : null);
-  const wordGlass = useGlass('glass');
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rafRef = useRef<number | null>(null);
   const levelRef = useRef(0);
@@ -484,7 +476,7 @@ export function VoiceOrb({
           ? colors.warning
           : colors.cyan;
 
-  const label = orbLabel({ state, teachWord, wakeHint: shownWakeHint, errorText: engineError, spotterDeaf });
+  const label = orbLabel({ state, wakeHint: shownWakeHint, errorText: engineError, spotterDeaf });
 
   return (
     <Tooltip content="Click anywhere to end the conversation">
@@ -531,56 +523,6 @@ export function VoiceOrb({
           aria-hidden
           style={{ width: '100%', height: 'auto', display: 'block' }}
         />
-        {teachWord ? (
-          <div
-            aria-label={`Say ${teachWord}`}
-            style={{
-              position: 'absolute',
-              inset: 0,
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              justifyContent: 'center',
-              pointerEvents: 'none',
-              textAlign: 'center',
-              padding: space.huge,
-            }}
-          >
-            {/* The word-pill is the ONE glass plane on this screen. It floats
-                over the orb canvas, and a canvas is content — so this is the
-                floating control layer sitting on content, which is exactly
-                where Apple puts glass (D1), and there is only one of it, so no
-                glass sits on glass (D2). It was hand-written as a flat
-                `rgba(0,0,0,0.72)` box with `#fff` text: black-on-any-theme,
-                which on the pearl theme is a hole punched in the picture.
-                `radius.glass` because this is a top-level floating surface. */}
-            <div
-              style={{
-                ...type.display,
-                fontFamily: font.display,
-                color: colors.text,
-                ...wordGlass,
-                borderRadius: radius.glass,
-                padding: `${space.xl}px ${space.xxl}px`,
-              }}
-            >
-              {teachWord}
-            </div>
-            <div
-              style={{
-                marginTop: space.md,
-                fontFamily: font.body,
-                fontSize: textSize.micro,
-                fontWeight: 700,
-                letterSpacing: '0.16em',
-                textTransform: 'uppercase',
-                color: colors.textMuted,
-              }}
-            >
-              Say this
-            </div>
-          </div>
-        ) : null}
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: space.md }}>

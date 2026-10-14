@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { resolveCurrentChatSession, setCachedCurrentChatSession } from './voiceHomeSession';
 import { api, apiFetch, extractSystemNotice, extractText, extractThinking, fileToBase64, hasToolActivity, readerIngest } from './api';
 import { getDaemonTokenError, onDaemonTokenError } from './daemonAuth';
 import { emitActivity, type ActivityEventName, type ActivitySourceSurface } from './emitActivity';
@@ -123,6 +124,7 @@ export type PermagentEventType =
   | 'skill_proposed' | 'skill_saved' | 'skill_triggered'
   | 'message_received' | 'stream_chunk'
   | 'integration_connected' | 'integration_error'
+  | 'voice_confirm_requested' | 'voice_confirm_resolved' | 'current_chat_session_changed'
   | 'librarian_describe_started' | 'librarian_describe_token' | 'librarian_describe_retry' | 'librarian_describe_completed';
 
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
@@ -279,6 +281,17 @@ interface CommandCenterStore {
   /** Main-window signal: open the dock once the detached window is gone. */
   chatReturnPending: boolean;
   chatSessionId: string | null;
+  /** The suite-wide CURRENT chat session (daemon-owned; every chat surface
+   *  follows it). `null` until first learned. Browsing History does not move
+   *  it; sending a message in a non-current chat does. */
+  currentChatSessionId: string | null;
+  /** A current-session change the dock has not yet followed (deferred while a
+   *  reply or voice turn is in flight). VoiceHost flushes it when idle. */
+  pendingFollowSessionId: string | null;
+  /** Apply a `current_chat_session_changed` frame (or a fetched value). */
+  applyCurrentChatSession: (sessionId: string) => void;
+  /** Dock "new chat": create a plain chat, make it current suite-wide, show it. */
+  startNewCurrentChat: () => Promise<string | null>;
   /** A saved session names both a provider and model. Restoration can still
       fail, so this is evidence to allow a retry, not proof of readiness. */
   chatSessionRouteEvidence: boolean;
@@ -694,8 +707,6 @@ interface CommandCenterStore {
     exit: () => void;
     /** When the wake gate is armed: the phrase to say (e.g. `Say "Hey Henry"`). */
     wakeHint: string | null;
-    /** Word placed on the Orb for a listen-once pronunciation. */
-    teachWord: string | null;
   } | null;
   setVoiceConversation: (conv: CommandCenterStore['voiceConversation']) => void;
   /** The World table supplies voice controls instead of the chat orb. */
@@ -1175,6 +1186,27 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
     try { return localStorage.getItem('permagent-chat-session-id'); } catch { return null; }
   })(),
   chatSessionRouteEvidence: false,
+  currentChatSessionId: null,
+  pendingFollowSessionId: null,
+  applyCurrentChatSession: (sessionId) => {
+    set({ currentChatSessionId: sessionId });
+    setCachedCurrentChatSession(sessionId);
+    // The surface that made the change already shows it; everyone else follows.
+    // Following is deferred (pending) while a reply is streaming; VoiceHost
+    // flushes it once the reply and any voice turn have ended.
+    if (get().chatSessionId !== sessionId) set({ pendingFollowSessionId: sessionId });
+  },
+  startNewCurrentChat: async () => {
+    try {
+      const created = await api.newCurrentChatSession('desktop');
+      set({ currentChatSessionId: created.session_id, pendingFollowSessionId: null });
+      setCachedCurrentChatSession(created.session_id);
+      await get().switchToSession(created.session_id);
+      return created.session_id;
+    } catch {
+      return null;
+    }
+  },
   sessionLoadError: null,
   daemonAuthError: getDaemonTokenError(),
   chatHistoryLoaded: true,
@@ -1396,9 +1428,10 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
     if (sessionId) return sessionId;
 
     try {
-      const session = await api.createSession();
-      sessionId = session.id;
-      set({ chatSessionId: sessionId, chatSessionRouteEvidence: false });
+      // Adopt the suite's current chat rather than minting an orphan; the
+      // resolver itself falls back to a fresh plain chat if the daemon is old.
+      sessionId = await resolveCurrentChatSession();
+      set({ chatSessionId: sessionId, currentChatSessionId: sessionId, chatSessionRouteEvidence: false });
       try { localStorage.setItem('permagent-chat-session-id', sessionId); } catch { /* */ }
       get().connectSession(sessionId);
       return sessionId;
@@ -1418,6 +1451,17 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
     if (state.isStreaming) return;
 
     const sessionId = await get().ensureSession();
+    // Sending is what commits to a conversation: opening an old chat from
+    // History leaves the suite's current chat alone, but the first message
+    // sent in a non-current chat makes it current (phone, voice and watch
+    // then continue THIS thread). The daemon refuses coding/recipe sessions
+    // (422); that is fine, they just never become current.
+    if (sessionId && get().currentChatSessionId !== sessionId) {
+      set({ currentChatSessionId: sessionId });
+      void Promise.resolve().then(() => api.setCurrentChatSession(sessionId, 'desktop')).catch(() => {
+        set(s => (s.currentChatSessionId === sessionId ? { currentChatSessionId: null } : s));
+      });
+    }
     if (!sessionId) {
       set(s => ({
         chatMessages: [...s.chatMessages, {

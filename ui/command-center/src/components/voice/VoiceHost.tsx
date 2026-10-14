@@ -11,9 +11,10 @@
 // (the orb takeover contract), and the localStorage live feed (state + audio
 // level at ~150ms) that mirror orbs dance to.
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useVoice } from '../../hooks/useVoice';
 import { useCommandCenter } from '../../lib/store';
+import { resolveVoiceHomeSession } from '../../lib/voiceHomeSession';
 import {
   clearLiveConversation,
   consumeVoiceEnd,
@@ -23,7 +24,9 @@ import {
 } from '../../lib/voiceHandoff';
 
 export function VoiceHost() {
-  const chatSessionId = useCommandCenter(s => s.chatSessionId);
+  // Voice speaks into ONE dedicated, persistent, non-coding conversation
+  // (decision D1) — never into whatever chat session the dock happens to be on.
+  const [voiceSessionId, setVoiceSessionId] = useState<string | null>(null);
   const setVoiceEngine = useCommandCenter(s => s.setVoiceEngine);
   const setVoiceConversation = useCommandCenter(s => s.setVoiceConversation);
   const chatWindowOpen = useCommandCenter(s => s.chatWindowOpen);
@@ -41,10 +44,56 @@ export function VoiceHost() {
     handsFree,
     setHandsFree,
     wakeWord,
-    teachWord,
-  } = useVoice({ sessionId: chatSessionId ?? undefined });
+  } = useVoice({ sessionId: voiceSessionId ?? undefined });
+
+  // Resolve the current chat session at mount, retrying until it lands. Until
+  // it does the engine is NOT published: a WebSocket opened without a session
+  // id would let the daemon pick one, which is the bug this binding removes.
+  useEffect(() => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const attempt = () => {
+      resolveVoiceHomeSession().then(
+        id => {
+          if (cancelled) return;
+          setVoiceSessionId(id);
+          // First sight of the current chat this launch: the dock adopts it too.
+          if (!useCommandCenter.getState().currentChatSessionId) {
+            useCommandCenter.getState().applyCurrentChatSession(id);
+          }
+        },
+        () => { if (!cancelled) timer = setTimeout(attempt, 5000); },
+      );
+    };
+    attempt();
+    return () => { cancelled = true; if (timer) clearTimeout(timer); };
+  }, []);
+
+  // Follow the suite's current chat live. A voice turn in flight is never
+  // re-bound mid-sentence (useVoice reconnects on a session change): the new
+  // id is applied once the engine is between turns, and the dock follows after
+  // any streaming reply ends too.
+  const currentChatSessionId = useCommandCenter(s => s.currentChatSessionId);
+  const pendingFollow = useCommandCenter(s => s.pendingFollowSessionId);
+  const isStreaming = useCommandCenter(s => s.isStreaming);
+  const voiceTurnBusy = state === 'recording' || state === 'processing' || state === 'playing';
+  useEffect(() => {
+    if (!currentChatSessionId || currentChatSessionId === voiceSessionId) return;
+    if (voiceSessionId && voiceTurnBusy) return;
+    setVoiceSessionId(currentChatSessionId);
+  }, [currentChatSessionId, voiceSessionId, voiceTurnBusy]);
+  useEffect(() => {
+    if (!pendingFollow || voiceTurnBusy || isStreaming) return;
+    const { chatSessionId, switchToSession } = useCommandCenter.getState();
+    useCommandCenter.setState({ pendingFollowSessionId: null });
+    if (chatSessionId !== pendingFollow) void switchToSession(pendingFollow);
+  }, [pendingFollow, voiceTurnBusy, isStreaming]);
 
   useEffect(() => {
+    if (!voiceSessionId) {
+      setVoiceEngine(null);
+      return;
+    }
     setVoiceEngine({
       state,
       error,
@@ -61,7 +110,7 @@ export function VoiceHost() {
     });
     return () => setVoiceEngine(null);
   }, [
-    state, error, handsFree, wakeWord,
+    voiceSessionId, state, error, handsFree, wakeWord,
     activate, deactivate, startRecording, stopRecording, interrupt,
     getAnalyser, getMicAnalyser, setHandsFree, setVoiceEngine,
   ]);
@@ -70,8 +119,8 @@ export function VoiceHost() {
   handsFreeRef.current = handsFree;
   const stateRef = useRef(state);
   stateRef.current = state;
-  const teachWordRef = useRef(teachWord);
-  teachWordRef.current = teachWord;
+  const voiceSessionRef = useRef(voiceSessionId);
+  voiceSessionRef.current = voiceSessionId;
 
   // ── Live feed for mirror orbs (~150ms heartbeat while hands-free) ──
   useEffect(() => {
@@ -93,7 +142,7 @@ export function VoiceHost() {
         level = (sum / n / 255) * 1.2;
       }
       smoothed = smoothed + (level - smoothed) * (level > smoothed ? 0.6 : 0.25);
-      publishLiveConversation(s, smoothed, teachWordRef.current);
+      publishLiveConversation(s, smoothed);
     }, 150);
     return () => {
       clearInterval(id);
@@ -110,7 +159,7 @@ export function VoiceHost() {
         void setHandsFree(false);
         deactivate();
       }
-      if (consumeVoiceStart() && !handsFreeRef.current) {
+      if (voiceSessionRef.current && consumeVoiceStart() && !handsFreeRef.current) {
         void setHandsFree(true);
       }
       if (consumeVoiceInterrupt()) interrupt();
@@ -164,10 +213,9 @@ export function VoiceHost() {
         wakeWord.active && wakeWord.gated && wakeWord.phrase
           ? `Say "${wakeWord.phrase}"`
           : null,
-      teachWord,
     });
     return () => setVoiceConversation(null);
-  }, [handsFree, state, getAnalyser, getMicAnalyser, setHandsFree, deactivate, setVoiceConversation, wakeWord, teachWord]);
+  }, [handsFree, state, getAnalyser, getMicAnalyser, setHandsFree, deactivate, setVoiceConversation, wakeWord]);
 
   return null;
 }

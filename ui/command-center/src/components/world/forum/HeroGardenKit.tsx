@@ -16,7 +16,8 @@ import { GardenFerns } from './GardenFerns';
 import type { GardenDecorPlacement } from './gardenLayout';
 import { HabitatNameplate } from './HabitatNameplate';
 import { getReduceMotion } from '../../../styles/tokens';
-import { speechOpening, smoothSpeech } from './agentSpeech';
+import { createAnalyserEnergy, createMouthState, sampleMouth, stepMouth } from './agentSpeech';
+import { avatarCue, NO_CUE } from './agentCue';
 import { advanceHabitatAgent, canHabitatWorkReturn, commandHabitatAgent, getHabitatTravel, initializeHabitatAgent } from './habitatMotion';
 import { advanceHabitatSocial, resetHabitatSocial, scheduleHabitatSocialPreparation } from './habitatSocial';
 import { buildHeroRobot, disposeHeroRobot, HERO_KIT_URL, heroProportions, setHeroEyeMaterial } from './heroRobot';
@@ -66,7 +67,7 @@ function HeroRobot({id,index,state,live,selected,hovered,name,conversation,follo
   const {scene}=useGLTF(HERO_KIT_URL,false,false,extendForumLoader),root=useRef<Group>(null),station=stationFor(id);
   const owned=useMemo(()=>buildHeroRobot(scene,id),[scene,id]);
   const pose=useMemo(()=>initializeHabitatAgent(id),[id]);
-  const speech=useRef({opening:0,bins:new Uint8Array(32)});
+  const speech=useRef({mouth:createMouthState(),analyserEnergy:createAnalyserEnergy()});
   const workReturnAt=useRef(0);
   useEffect(()=>()=>disposeHeroRobot(owned),[owned]);
   useEffect(()=>{setHeroEyeMaterial(owned,id,live,state);
@@ -89,10 +90,13 @@ function HeroRobot({id,index,state,live,selected,hovered,name,conversation,follo
     const reduced=getReduceMotion(),working=state==='working'&&live&&!getHabitatTravel(id)?.moving&&Math.hypot(pose.x-station.position[0],pose.z-station.position[2])<.8;
     const seated=conversation&&id==='henry'&&!getHabitatTravel(id)?.moving&&Math.hypot(pose.x-ORCHESTRATOR_TABLE_SEAT[0],pose.z-ORCHESTRATOR_TABLE_SEAT[2])<.25;
     owned.seatedBody.visible=seated;if(seated){pose.heading=0;host.rotation.y=0;}
-    const engine=id==='henry'?useCommandCenter.getState().voiceEngine:null,analyser=engine?.state==='playing'?engine.getAnalyser():null;
-    if(analyser){if(speech.current.bins.length!==analyser.frequencyBinCount)speech.current.bins=new Uint8Array(analyser.frequencyBinCount);analyser.getByteFrequencyData(speech.current.bins);}
-    const opening=speechOpening(engine?.state??'idle',analyser?speech.current.bins:null);speech.current.opening=smoothSpeech(speech.current.opening,opening,dt);
-    owned.mouth.scale.set(.055+speech.current.opening*.005,.004+speech.current.opening*.045,.013);
+    const engine=id==='henry'?useCommandCenter.getState().voiceEngine:null,speaking=engine?.state==='playing',nowMs=performance.now();
+    // Shape comes from the server's word timings on the playback clock; the PCM's own loudness only scales it.
+    const heard=speaking?sampleMouth(nowMs):null;let energy=heard?.energy??0,shape=heard?.shape??null;
+    if(speaking&&!heard?.active){energy=speech.current.analyserEnergy(engine?.getAnalyser()??null);shape=null;}
+    stepMouth(speech.current.mouth,dt,nowMs,{speaking:speaking&&(!!heard?.active||energy>0),shape,energy});
+    owned.mouth.scale.set(speech.current.mouth.w,speech.current.mouth.h,.013);
+    const cue=conversation&&id==='henry'?avatarCue(engine?.state,clock.elapsedTime,reduced):NO_CUE;
     const stride=(pose.strideDistance??0)*7.5,wave=Math.sin(stride),t=clock.elapsedTime;
     owned.limbs.forEach((limb,i)=>{
       if(!limb)return;limb.visible=!seated;
@@ -111,9 +115,9 @@ function HeroRobot({id,index,state,live,selected,hovered,name,conversation,follo
       }
       const ease=1-Math.exp(-dt*12);limb.rotation.x+=(target-limb.rotation.x)*ease;limb.rotation.z+=(spread-limb.rotation.z)*ease;
     });
-    if(owned.head){let targetYaw=0,targetPitch=working?.14:0;if((selected||hovered)&&!pose.walking){targetYaw=Math.max(-.6,Math.min(.6,Math.atan2(camera.position.x-pose.x,camera.position.z-pose.z)-pose.heading));const horizontal=Math.hypot(camera.position.x-pose.x,camera.position.z-pose.z);targetPitch=Math.max(-.28,Math.min(.24,Math.atan2(camera.position.y-(pose.y+1.55),horizontal)));}else if(!reduced&&!working)targetYaw=Math.sin(t*.3+index)*.10;owned.head.rotation.y+=(targetYaw-owned.head.rotation.y)*(1-Math.exp(-dt*4));owned.head.rotation.x+=(targetPitch-owned.head.rotation.x)*(1-Math.exp(-dt*4));}
-    if(reduced)owned.eyes.forEach(eye=>eye.scale.y=1);
-    if(!reduced){if(pose.walking)host.position.y+=Math.abs(wave)*.022;else host.position.y+=Math.sin(t*1.0+index)*.006;const blink=Math.sin(t*.72+index*1.37)>.999?.12:1;owned.eyes.forEach(eye=>eye.scale.y=blink);}
+    if(owned.head){let targetYaw=0,targetPitch=working?.14:0;if((selected||hovered)&&!pose.walking){targetYaw=Math.max(-.6,Math.min(.6,Math.atan2(camera.position.x-pose.x,camera.position.z-pose.z)-pose.heading));const horizontal=Math.hypot(camera.position.x-pose.x,camera.position.z-pose.z);targetPitch=Math.max(-.28,Math.min(.24,Math.atan2(camera.position.y-(pose.y+1.55),horizontal)));}else if(!reduced&&!working)targetYaw=Math.sin(t*.3+index)*.10;owned.head.rotation.y+=(targetYaw+cue.yaw-owned.head.rotation.y)*(1-Math.exp(-dt*4));owned.head.rotation.x+=(targetPitch+cue.pitch-owned.head.rotation.x)*(1-Math.exp(-dt*4));owned.head.rotation.z+=(cue.roll-owned.head.rotation.z)*(1-Math.exp(-dt*4));}
+    if(reduced)owned.eyes.forEach(eye=>eye.scale.y=cue.eyeScaleY);
+    if(!reduced){if(pose.walking)host.position.y+=Math.abs(wave)*.022;else host.position.y+=Math.sin(t*1.0+index)*.006;const blink=Math.sin(t*.72+index*1.37)>.999?.12:1;owned.eyes.forEach(eye=>eye.scale.y=blink*cue.eyeScaleY);}
   });
   const proportions=heroProportions(id);
   return <group ref={root} onClick={e=>{e.stopPropagation();onSelect(id);}} onPointerOver={e=>{e.stopPropagation();onHover(id);}} onPointerOut={()=>onHover(null)}>

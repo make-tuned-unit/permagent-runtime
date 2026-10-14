@@ -143,7 +143,7 @@ describe('VoiceOrb — fault label from the engine', () => {
     expect(container.textContent).toContain(WAKE_DEAF_HINT);
   });
   // The popped-out chat window renders a MIRROR orb (ChatApp's
-  // ChatWindowVoiceOrb passes state, mirrorLevel, onExit and teachWord — no
+  // ChatWindowVoiceOrb passes state, mirrorLevel and onExit — no
   // wake hint, no error). There is no engine in that window's store, so before
   // the relay it said "Voice error — click to exit" over a dead mic, and plain
   // "Listening" both while wake-gated and over a spotter that looks deaf. These render
@@ -170,7 +170,6 @@ describe('VoiceOrb — fault label from the engine', () => {
           getMicAnalyser={noAnalyser}
           mirrorLevel={0}
           onExit={() => {}}
-          teachWord={null}
         />,
       ));
     }

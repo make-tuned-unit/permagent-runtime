@@ -141,7 +141,6 @@ export function ChatView() {
           getMicAnalyser={voiceConversation.getMicAnalyser}
           onExit={voiceConversation.exit}
           wakeHint={voiceConversation.wakeHint}
-          teachWord={voiceConversation.teachWord}
         />
       )}
       </div>

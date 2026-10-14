@@ -26,13 +26,11 @@ export interface LiveConversation {
   state: string;
   /** Smoothed 0..~1 audio level so mirror orbs dance with the real audio. */
   level: number;
-  /** Word placed on the Orb; mirrors must show it too. */
-  teachWord?: string | null;
 }
 
-export function publishLiveConversation(state: string, level: number, teachWord?: string | null): void {
+export function publishLiveConversation(state: string, level: number): void {
   try {
-    localStorage.setItem(LIVE_KEY, JSON.stringify({ state, level, teachWord: teachWord ?? null, at: Date.now() }));
+    localStorage.setItem(LIVE_KEY, JSON.stringify({ state, level, at: Date.now() }));
   } catch { /* private mode */ }
 }
 
@@ -44,13 +42,12 @@ export function readLiveConversation(): LiveConversation | null {
   try {
     const raw = localStorage.getItem(LIVE_KEY);
     if (!raw) return null;
-    const t = JSON.parse(raw) as { state?: string; level?: number; teachWord?: string | null; at?: number };
+    const t = JSON.parse(raw) as { state?: string; level?: number; at?: number };
     if (typeof t.at !== 'number' || Date.now() - t.at > LIVE_FRESH_MS) return null;
     if (typeof t.state !== 'string') return null;
     return {
       state: t.state,
       level: typeof t.level === 'number' ? t.level : 0,
-      teachWord: typeof t.teachWord === 'string' && t.teachWord ? t.teachWord : null,
     };
   } catch {
     return null;
