@@ -422,7 +422,7 @@ pub async fn handle_response_openai_compat(response: Response) -> Result<Value, 
 /// the error text, so a keep-alived-but-otherwise-silent connection reports
 /// two numbers — raw lines received and content chars received — instead of
 /// one that conflates them.
-fn with_raw_line_liveness(
+pub(crate) fn with_raw_line_liveness(
     stream: impl Stream<Item = anyhow::Result<String>> + Unpin + Send + 'static,
     first_byte_window: Option<Duration>,
     stall_window: Option<Duration>,
@@ -553,6 +553,24 @@ pub fn stream_openai_compat(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The Responses-API consumer reuses this wrapper; a connection that never
+    /// sends a line must end in a typed first-byte stall, not wait forever.
+    #[tokio::test]
+    async fn raw_line_liveness_reports_a_silent_connection() {
+        let silent = futures::stream::pending::<anyhow::Result<String>>();
+        let mut guarded = with_raw_line_liveness(
+            silent,
+            Some(Duration::from_millis(30)),
+            Some(Duration::from_millis(30)),
+            Arc::new(AtomicU64::new(0)),
+        );
+        let err = StreamExt::next(&mut guarded)
+            .await
+            .expect("an item")
+            .expect_err("a stall error");
+        assert!(err.downcast_ref::<ProviderError>().is_some(), "{err}");
+    }
     use serde_json::json;
     use test_case::test_case;
 

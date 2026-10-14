@@ -267,6 +267,20 @@ fn should_show_cost(explicit_override: Option<bool>, session_has_recipe: bool) -
     explicit_override.unwrap_or(session_has_recipe)
 }
 
+/// Await `fut` unless the turn is cancelled first. The turn loop's cancellation
+/// arms only run between awaits, so an await INSIDE an event arm that never
+/// completes (a full or abandoned channel to the agent) would otherwise leave
+/// Esc and Ctrl-C with nothing to act on. Returns `None` when cancelled.
+async fn cancellable<F: std::future::Future>(
+    token: &CancellationToken,
+    fut: F,
+) -> Option<F::Output> {
+    tokio::select! {
+        out = fut => Some(out),
+        _ = token.cancelled() => None,
+    }
+}
+
 pub struct CliSession {
     agent: Agent,
     messages: Conversation,
@@ -2189,10 +2203,10 @@ impl CliSession {
                                     if let Some(c) = composer.as_mut() {
                                         c.paint();
                                     }
-                                    self.agent.handle_confirmation(id.clone(), PermissionConfirmation {
+                                    cancellable(&cancel_token_clone, self.agent.handle_confirmation(id.clone(), PermissionConfirmation {
                                         principal_type: PrincipalType::Tool,
                                         permission: Permission::DenyOnce,
-                                    }).await;
+                                    })).await;
                                     let mut response_message = Message::user();
                                     response_message.content.push(MessageContent::tool_response(
                                         id,
@@ -2212,10 +2226,10 @@ impl CliSession {
                                         telemetry.mark_denied();
                                     }
                                 }
-                                self.agent.handle_confirmation(id, PermissionConfirmation {
+                                cancellable(&cancel_token_clone, self.agent.handle_confirmation(id, PermissionConfirmation {
                                     principal_type: PrincipalType::Tool,
                                     permission,
-                                }).await;
+                                })).await;
                             } else if let Some((request_id, arguments)) = find_memory_access_request(&message) {
                                 // Lane R61a: the model asked for memories
                                 // beyond this repo. The agent is parked on the
@@ -2243,14 +2257,16 @@ impl CliSession {
                                         c.resume();
                                     }
                                 }
-                                self.agent
-                                    .handle_tool_result(
+                                cancellable(
+                                    &cancel_token_clone,
+                                    self.agent.handle_tool_result(
                                         request_id,
                                         Ok(rmcp::model::CallToolResult::success(vec![
                                             rmcp::model::Content::text(text),
                                         ])),
-                                    )
-                                    .await;
+                                    ),
+                                )
+                                .await;
                             } else if let Some((elicitation_id, elicitation_message, schema)) = find_elicitation_request(&message) {
                                 if !interactive {
                                     // Non-interactive/headless mode: cannot collect user input
@@ -3462,6 +3478,16 @@ fn format_elapsed_time(duration: std::time::Duration) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn cancellable_returns_none_when_the_turn_is_cancelled_mid_await() {
+        let token = CancellationToken::new();
+        token.cancel();
+        let out = cancellable(&token, std::future::pending::<u8>()).await;
+        assert!(out.is_none());
+        let live = CancellationToken::new();
+        assert_eq!(cancellable(&live, async { 3u8 }).await, Some(3));
+    }
     use permagent::agents::extension::Envs;
     use permagent::agents::AgentRuntimeOutcome;
     use permagent::config::ExtensionConfig;

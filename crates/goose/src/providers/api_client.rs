@@ -323,6 +323,7 @@ impl ApiClient {
     fn rebuild_client(&mut self) -> Result<()> {
         let mut client_builder = Client::builder()
             .timeout(self.timeout)
+            .connect_timeout(CONNECT_TIMEOUT)
             .default_headers(self.default_headers.clone());
 
         // Configure TLS if needed

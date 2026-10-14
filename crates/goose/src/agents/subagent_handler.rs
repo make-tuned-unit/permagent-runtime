@@ -164,6 +164,78 @@ fn build_subagent_agent(config: AgentRunnerConfig) -> Arc<Agent> {
     agent
 }
 
+/// Env var bounding how long a delegated worker may go without yielding ANY
+/// event (message, notification, outcome) before the delegating tool call gives
+/// up. `0` disables. Distinct from the provider's own stream-stall window
+/// (`PERMAGENT_PROVIDER_STREAM_STALL_SECS`), which bounds one model response;
+/// this one backstops everything else the worker awaits (tools, nested calls).
+pub const SUBAGENT_IDLE_SECS_ENV: &str = "PERMAGENT_SUBAGENT_IDLE_SECS";
+const DEFAULT_SUBAGENT_IDLE_SECS: u64 = 1800;
+/// After a cancellation the worker's own stream gets this long to wind down
+/// before the delegate stops waiting for it.
+#[cfg(not(test))]
+const SUBAGENT_CANCEL_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+#[cfg(test)]
+const SUBAGENT_CANCEL_GRACE: std::time::Duration = std::time::Duration::from_millis(50);
+
+fn parse_idle_secs(raw: Option<&str>) -> Option<std::time::Duration> {
+    let secs = raw
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(DEFAULT_SUBAGENT_IDLE_SECS);
+    (secs > 0).then(|| std::time::Duration::from_secs(secs))
+}
+
+fn subagent_idle_window() -> Option<std::time::Duration> {
+    parse_idle_secs(std::env::var(SUBAGENT_IDLE_SECS_ENV).ok().as_deref())
+}
+
+enum SubagentNext<T> {
+    Event(T),
+    End,
+    Cancelled,
+    Idle(std::time::Duration),
+}
+
+/// One `next()` on a worker's event stream that can neither outlive the
+/// delegate's cancellation token nor wait past the idle window.
+async fn next_subagent_event<S>(
+    stream: &mut S,
+    cancellation: Option<&CancellationToken>,
+    idle: Option<std::time::Duration>,
+) -> SubagentNext<S::Item>
+where
+    S: futures::Stream + Unpin,
+{
+    let wait = async {
+        match idle {
+            Some(window) => match tokio::time::timeout(window, stream.next()).await {
+                Ok(Some(event)) => SubagentNext::Event(event),
+                Ok(None) => SubagentNext::End,
+                Err(_) => SubagentNext::Idle(window),
+            },
+            None => match stream.next().await {
+                Some(event) => SubagentNext::Event(event),
+                None => SubagentNext::End,
+            },
+        }
+    };
+    tokio::pin!(wait);
+    let Some(token) = cancellation else {
+        return wait.await;
+    };
+    tokio::select! {
+        out = &mut wait => out,
+        _ = token.cancelled() => {
+            // Give the worker's own cancellation handling a moment to end the
+            // stream cleanly; otherwise stop waiting on it.
+            match tokio::time::timeout(SUBAGENT_CANCEL_GRACE, &mut wait).await {
+                Ok(SubagentNext::Event(_)) | Err(_) => SubagentNext::Cancelled,
+                Ok(other) => other,
+            }
+        }
+    }
+}
+
 fn get_agent_messages(params: SubagentRunParams) -> AgentMessagesFuture {
     Box::pin(async move {
         let SubagentRunParams {
@@ -252,14 +324,35 @@ fn get_agent_messages(params: SubagentRunParams) -> AgentMessagesFuture {
         let mut stream =
             crate::session_context::with_session_id(Some(session_id.to_string()), async {
                 agent
-                    .reply(user_message, session_config, cancellation_token)
+                    .reply(user_message, session_config, cancellation_token.clone())
                     .await
             })
             .await
             .map_err(|e| anyhow!("Failed to get reply from agent: {}", e))?;
 
         let mut runtime_outcome = None;
-        while let Some(message_result) = stream.next().await {
+        let idle_window = subagent_idle_window();
+        loop {
+            let message_result = match next_subagent_event(
+                &mut stream,
+                cancellation_token.as_ref(),
+                idle_window,
+            )
+            .await
+            {
+                SubagentNext::Event(event) => event,
+                SubagentNext::End => break,
+                SubagentNext::Cancelled => return Err(anyhow!("Subagent runtime cancelled")),
+                SubagentNext::Idle(window) => {
+                    return Err(anyhow!(
+                        "Subagent produced no event for {}s, so the run was stopped instead of \
+                         waiting forever on a stuck model request or tool. Raise or disable \
+                         {} (0 = unlimited) if this worker legitimately goes quiet for longer.",
+                        window.as_secs(),
+                        SUBAGENT_IDLE_SECS_ENV
+                    ));
+                }
+            };
             match message_result {
                 Ok(AgentEvent::Message(msg)) => {
                     if let Some(ref callback) = on_message {
@@ -600,6 +693,54 @@ pub fn create_tool_notification(
 
 #[cfg(test)]
 mod tests {
+    use super::{next_subagent_event, parse_idle_secs, SubagentNext, DEFAULT_SUBAGENT_IDLE_SECS};
+
+    #[test]
+    fn idle_window_default_override_and_disable() {
+        assert_eq!(
+            parse_idle_secs(None),
+            Some(std::time::Duration::from_secs(DEFAULT_SUBAGENT_IDLE_SECS))
+        );
+        assert_eq!(
+            parse_idle_secs(Some("45")),
+            Some(std::time::Duration::from_secs(45))
+        );
+        assert_eq!(parse_idle_secs(Some("0")), None);
+        assert_eq!(
+            parse_idle_secs(Some("junk")),
+            Some(std::time::Duration::from_secs(DEFAULT_SUBAGENT_IDLE_SECS))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_silent_worker_stream_hits_the_idle_window() {
+        let mut stream = futures::stream::pending::<u8>();
+        let out =
+            next_subagent_event(&mut stream, None, Some(std::time::Duration::from_millis(30))).await;
+        assert!(matches!(out, SubagentNext::Idle(d) if d.as_millis() == 30));
+    }
+
+    #[tokio::test]
+    async fn cancellation_stops_waiting_on_a_stuck_worker_stream() {
+        let mut stream = futures::stream::pending::<u8>();
+        let token = tokio_util::sync::CancellationToken::new();
+        token.cancel();
+        let out = next_subagent_event(&mut stream, Some(&token), None).await;
+        assert!(matches!(out, SubagentNext::Cancelled));
+    }
+
+    #[tokio::test]
+    async fn a_live_worker_stream_yields_events_then_ends() {
+        let mut stream = futures::stream::iter(vec![7u8]);
+        assert!(matches!(
+            next_subagent_event(&mut stream, None, None).await,
+            SubagentNext::Event(7)
+        ));
+        assert!(matches!(
+            next_subagent_event(&mut stream, None, None).await,
+            SubagentNext::End
+        ));
+    }
     use super::{
         build_subagent_agent, create_tool_notification, preflight_first_request,
         runtime_outcome_error, SUBAGENT_TOOL_REQUEST_TYPE,

@@ -10,7 +10,9 @@ use super::formats::openai_responses::{
 use super::inventory::{config_secret_value, InventoryIdentityInput};
 use super::openai_compatible::{
     handle_response_openai_compat, handle_status_openai_compat, stream_openai_compat,
+    with_raw_line_liveness,
 };
+use super::stream_budget::StreamBudget;
 use super::retry::ProviderRetry;
 use super::utils::ImageFormat;
 use crate::config::declarative_providers::DeclarativeProviderConfig;
@@ -25,6 +27,8 @@ use futures::{StreamExt, TryStreamExt};
 use reqwest::StatusCode;
 use std::collections::HashMap;
 use std::io;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use tokio::pin;
 use tokio_util::codec::{FramedRead, LinesCodec};
 use tokio_util::io::StreamReader;
@@ -686,10 +690,38 @@ impl OpenAiProvider {
                     let stream_reader = StreamReader::new(stream);
                     let framed = FramedRead::new(stream_reader, LinesCodec::new()).map_err(anyhow::Error::from);
 
+                    // The Responses path used to read this stream with no
+                    // liveness bound at all (only the HTTP client's 600 s
+                    // whole-request timeout), so a connection that went
+                    // quiet froze the turn — and the CLI with it — for ten
+                    // minutes. Same first-byte / stall / wall-clock windows
+                    // (and env overrides) as the chat-completions consumer.
+                    let budget_source = StreamBudget::from_env();
+                    let content_chars = Arc::new(AtomicU64::new(0));
+                    let framed = with_raw_line_liveness(
+                        framed,
+                        budget_source.first_byte_window(),
+                        budget_source.stall_window(),
+                        Arc::clone(&content_chars),
+                    );
+
                     let message_stream = responses_api_to_streaming_message(framed);
                     pin!(message_stream);
-                    while let Some(message) = message_stream.next().await {
+                    let mut budget = budget_source;
+                    loop {
+                        let next = match budget.remaining() {
+                            Some(remaining) if !remaining.is_zero() => {
+                                tokio::time::timeout(remaining, message_stream.next())
+                                    .await
+                                    .map_err(|_| budget.wall_clock_error())?
+                            }
+                            Some(_) => Err(budget.wall_clock_error())?,
+                            None => message_stream.next().await,
+                        };
+                        let Some(message) = next else { break };
                         let (message, usage) = message.map_err(ProviderError::from_stream_failure)?;
+                        budget.record(message.as_ref())?;
+                        content_chars.store(budget.chars_so_far(), Ordering::Relaxed);
                         log.write(&message, usage.as_ref().map(|f| f.usage).as_ref())?;
                         yield (message, usage);
                     }
