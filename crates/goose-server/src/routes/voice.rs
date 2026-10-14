@@ -973,8 +973,34 @@ fn voice_origin_from_query(
 async fn voice_ws_handler(
     ws: WebSocketUpgrade,
     State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
     Query(query): Query<VoiceQuery>,
 ) -> Result<impl IntoResponse, axum::http::StatusCode> {
+    // Standalone watch: `Authorization: Bearer <voice_only credential>`. A
+    // bearer that is NOT a voice credential falls through to the ordinary
+    // path below (master / device token via header-less query, unchanged).
+    // Scope, conversation binding and limits live in `voice_gateway`.
+    if let Some(bearer) = crate::middleware::auth::bearer_token(&headers) {
+        let now = chrono::Utc::now();
+        if state.device_registry.verify_voice(bearer, now).is_some() {
+            let admission = crate::voice_gateway::admit_voice_only(
+                &state.device_registry,
+                &crate::voice_gateway::limiter(),
+                bearer,
+                query.client.as_deref(),
+                query.session_id.as_deref(),
+                now,
+            )?;
+            let crate::voice_gateway::Admission {
+                gate,
+                session_id,
+                origin,
+            } = admission;
+            return Ok(ws.on_upgrade(move |socket| {
+                handle_voice_socket(socket, state, Some(session_id), origin, Some(gate))
+            }));
+        }
+    }
     // Manual token validation — WebSocket upgrade can't use Bearer middleware.
     // Shared fail-closed, constant-time core (middleware::auth): a tokenless
     // daemon refuses (503) instead of serving the voice socket anonymously.
@@ -985,7 +1011,7 @@ async fn voice_ws_handler(
     )?;
     let origin = voice_origin_from_query(&state, &query, &principal);
     let session_id = query.session_id;
-    Ok(ws.on_upgrade(move |socket| handle_voice_socket(socket, state, session_id, origin)))
+    Ok(ws.on_upgrade(move |socket| handle_voice_socket(socket, state, session_id, origin, None)))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -2226,6 +2252,9 @@ async fn handle_voice_socket(
     state: Arc<AppState>,
     session_id: Option<String>,
     origin: permagent::events::voice_origin::VoiceOrigin,
+    // `Some` only for a `voice_only` (standalone watch) socket: limits,
+    // revocation checks and the turn-duration clamp. `None` = unchanged.
+    watch_gate: Option<crate::voice_gateway::VoiceSocketGate>,
 ) {
     let socket_epoch = next_voice_socket_epoch();
     // Snapshot the hot-swappable TTS slot once for this session.
@@ -2509,6 +2538,25 @@ async fn handle_voice_socket(
                 break;
             }
         };
+        // `voice_only` socket: cut it the moment its credential is revoked,
+        // expired or orphaned (the phone was revoked).
+        if let Some(g) = &watch_gate {
+            if !g.still_valid(&state.device_registry) {
+                tracing::warn!(
+                    target: "permagentd::voice_gateway",
+                    event = "credential_invalidated",
+                    device = g.device_id(),
+                    "voice credential no longer valid — closing socket"
+                );
+                let _ = socket
+                    .send(send_json(&ServerMessage::Error {
+                        message: "This watch is no longer authorized.".into(),
+                    }))
+                    .await;
+                socket_close_reason = "credential_revoked";
+                break;
+            }
+        }
         match msg {
             Message::Text(text) => {
                 let text_str: &str = &text;
@@ -2559,6 +2607,17 @@ async fn handle_voice_socket(
                         client_hello = Some(hello);
                     }
                     Ok(ClientMessage::Start { payload: start_raw }) => {
+                        if let Some(g) = &watch_gate {
+                            if let Err(reason) = g.allow_turn() {
+                                let _ = socket
+                                    .send(send_json(&ServerMessage::Error {
+                                        message: reason.into(),
+                                    }))
+                                    .await;
+                                let _ = socket.send(send_json(&ServerMessage::Idle)).await;
+                                continue;
+                            }
+                        }
                         let start = sanitize_start(start_raw);
                         spawn_resident_tts_warm(state.as_ref());
                         if note_missing_hello_warning(
@@ -2594,6 +2653,9 @@ async fn handle_voice_socket(
                         capture_sample_budget = sample_budget;
                         let deadline_ms = std::time::Duration::from_millis(cap_ms);
                         recording_deadline = Some(tokio::time::Instant::now() + deadline_ms);
+                        if let Some(g) = &watch_gate {
+                            recording_deadline = recording_deadline.map(|d| g.clamp_deadline(d));
+                        }
                         active_telemetry = Some(VoiceTurnTelemetry::new(
                             turn_id,
                             socket_epoch,
@@ -3682,6 +3744,35 @@ async fn handle_voice_socket(
                     }
                 }
             }
+            Message::Binary(data)
+                if recording
+                    && watch_gate
+                        .as_ref()
+                        .is_some_and(|g| g.charge_audio(data.len()).is_err()) =>
+            {
+                // Per-device audio budget exhausted: end this capture.
+                if let Some(mut telemetry) = active_telemetry.take() {
+                    telemetry.set_stop_reason("rate_limit");
+                    telemetry.record_capture_health(std::mem::take(&mut capture_health));
+                    telemetry.log_outcome("capture_rejected_rate_limit");
+                }
+                recording = false;
+                recording_deadline = None;
+                cancel_streaming_stt_worker(
+                    &mut streaming_command_tx,
+                    &mut streaming_event_rx,
+                    &mut streaming_gate,
+                    &mut pending_stream_partial,
+                );
+                audio_buffer.clear();
+                let _ = socket
+                    .send(send_json(&ServerMessage::Error {
+                        message: crate::voice_gateway::Denied::AudioBytes.message().into(),
+                    }))
+                    .await;
+                let _ = socket.send(send_json(&ServerMessage::Idle)).await;
+                continue;
+            }
             Message::Binary(data) if recording => {
                 // Enforce the capture bound on the server, before allocating
                 // decoded PCM. A missing client stop must not grow memory or
@@ -3883,6 +3974,15 @@ async fn handle_voice_socket(
                         audio_buffer.len() as f32 / client_sample_rate as f32
                     );
                 }
+            }
+            Message::Binary(data)
+                if watch_gate
+                    .as_ref()
+                    .is_some_and(|g| g.charge_audio(data.len()).is_err()) =>
+            {
+                // Idle audio on a voice-only socket is never needed (no wake
+                // word); drop it once the budget is spent.
+                continue;
             }
             Message::Binary(data) => {
                 // Monitor audio while idle: feed the keyword spotter. The int8

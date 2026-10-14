@@ -1757,6 +1757,20 @@ impl Agent {
                 )),
             );
         }
+        // A `voice_only` standalone-watch turn may call only the restricted set.
+        if !crate::events::voice_origin::tool_allowed_for_session(&session.id, &tool_call.name) {
+            return (
+                request_id,
+                Err(ErrorData::new(
+                    ErrorCode::RESOURCE_NOT_FOUND,
+                    format!(
+                        "Tool '{}' is unavailable to a voice-only session",
+                        tool_call.name
+                    ),
+                    None,
+                )),
+            );
+        }
         let input_summary =
             redacted_tool_input_summary(&tool_call.name, tool_call.arguments.as_ref());
         tracing::Span::current().record("input", tracing::field::display(&input_summary));
@@ -2393,6 +2407,11 @@ impl Agent {
 
         if self.config.headless_coding_coordinator {
             prefixed_tools.retain(|tool| headless_coding_coordinator_allows_tool(&tool.name));
+        }
+
+        if crate::events::voice_origin::is_voice_only(session_id) {
+            prefixed_tools
+                .retain(|tool| crate::events::voice_origin::voice_only_tool_allowed(&tool.name));
         }
 
         prefixed_tools

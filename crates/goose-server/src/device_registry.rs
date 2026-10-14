@@ -37,6 +37,23 @@ pub const CLAIM_CODE_TTL: Duration = Duration::from_secs(10 * 60);
 /// Minimum interval between persisted last-seen writes for one device.
 const LAST_SEEN_PERSIST_INTERVAL: Duration = Duration::from_secs(60);
 
+/// What a device credential may do. Absent in pre-watch registries, so serde
+/// defaults old rows to [`DeviceScope::Full`] (the behaviour they always had).
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DeviceScope {
+    /// An ordinary paired device: every bearer-protected route.
+    #[default]
+    Full,
+    /// A standalone-watch credential: the `/voice` socket and nothing else.
+    /// It is NEVER accepted by [`DeviceRegistry::verify`], so no other route
+    /// (HTTP, SSE, `/events`) can be reached with it.
+    VoiceOnly,
+}
+
+/// Lifetime of a minted watch credential.
+pub const VOICE_CREDENTIAL_TTL_DAYS: i64 = 30;
+
 /// A persisted device record. `token_hash` is the SHA-256 (hex) of the bearer
 /// token — the raw token is never stored anywhere.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,6 +66,18 @@ pub struct DeviceRecord {
     /// RFC 3339 timestamp of the most recent authenticated request, if any.
     pub last_seen: Option<String>,
     pub revoked: bool,
+    #[serde(default)]
+    pub scope: DeviceScope,
+    /// RFC 3339 expiry; `None` = does not expire (ordinary devices).
+    #[serde(default)]
+    pub expires_at: Option<String>,
+    /// `voice_only`: the one shared conversation this credential is bound to.
+    /// `None` until provisioned or first bound.
+    #[serde(default)]
+    pub conversation_id: Option<String>,
+    /// `voice_only`: the full-scope device (the phone) that minted it.
+    #[serde(default)]
+    pub parent_id: Option<String>,
 }
 
 /// The wire-safe projection of a device: everything EXCEPT the token hash.
@@ -60,6 +89,10 @@ pub struct DeviceView {
     pub created: String,
     pub last_seen: Option<String>,
     pub revoked: bool,
+    pub scope: DeviceScope,
+    pub expires_at: Option<String>,
+    pub conversation_id: Option<String>,
+    pub parent_id: Option<String>,
 }
 
 impl From<&DeviceRecord> for DeviceView {
@@ -70,8 +103,20 @@ impl From<&DeviceRecord> for DeviceView {
             created: r.created.clone(),
             last_seen: r.last_seen.clone(),
             revoked: r.revoked,
+            scope: r.scope,
+            expires_at: r.expires_at.clone(),
+            conversation_id: r.conversation_id.clone(),
+            parent_id: r.parent_id.clone(),
         }
     }
+}
+
+/// What `/voice` learns from a valid `voice_only` credential.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VoiceCredential {
+    pub id: String,
+    pub name: String,
+    pub conversation_id: Option<String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -230,6 +275,10 @@ impl DeviceRegistry {
             created: chrono::Utc::now().to_rfc3339(),
             last_seen: None,
             revoked: false,
+            scope: DeviceScope::Full,
+            expires_at: None,
+            conversation_id: None,
+            parent_id: None,
         };
         let view = DeviceView::from(&record);
         let mut devices = self.devices.lock().unwrap();
@@ -276,6 +325,13 @@ impl DeviceRegistry {
         let record = devices.iter_mut().find(|d| d.id == id)?;
         record.revoked = true;
         let view = DeviceView::from(&*record);
+        // A phone's watch credentials die with the phone.
+        for child in devices
+            .iter_mut()
+            .filter(|d| d.parent_id.as_deref() == Some(id))
+        {
+            child.revoked = true;
+        }
         self.persist(&devices);
         Some(view)
     }
@@ -293,11 +349,136 @@ impl DeviceRegistry {
             let eq: bool =
                 subtle::ConstantTimeEq::ct_eq(d.token_hash.as_bytes(), provided_hash.as_bytes())
                     .into();
-            if eq && !d.revoked && matched.is_none() {
+            // Full scope only: a `voice_only` credential must not authenticate
+            // ANY route through this shared core.
+            if eq && !d.revoked && d.scope == DeviceScope::Full && matched.is_none() {
                 matched = Some(d.id.clone());
             }
         }
         matched
+    }
+
+    /// Mint a `voice_only` credential for the watch of full-scope device
+    /// `parent_id` (a phone). Rotation: any earlier active watch credential of
+    /// the same parent is revoked. Returns `(raw_token, view)`; the raw token
+    /// is shown once and only its hash is stored. `None` if the parent is
+    /// unknown, revoked, or not itself full scope (a watch cannot mint).
+    pub fn mint_voice_credential(
+        &self,
+        parent_id: &str,
+        conversation_id: Option<&str>,
+        ttl: chrono::Duration,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Option<(String, DeviceView)> {
+        let mut devices = self.devices.lock().unwrap();
+        let parent = devices
+            .iter()
+            .find(|d| d.id == parent_id && !d.revoked && d.scope == DeviceScope::Full)?;
+        let name = format!("{} Watch", parent.name);
+        for old in devices
+            .iter_mut()
+            .filter(|d| d.parent_id.as_deref() == Some(parent_id) && !d.revoked)
+        {
+            old.revoked = true;
+        }
+        let token = random_hex::<32>();
+        let record = DeviceRecord {
+            id: uuid::Uuid::new_v4().to_string(),
+            name,
+            token_hash: hash_token(&token),
+            created: now.to_rfc3339(),
+            last_seen: None,
+            revoked: false,
+            scope: DeviceScope::VoiceOnly,
+            expires_at: Some((now + ttl).to_rfc3339()),
+            conversation_id: conversation_id
+                .map(str::trim)
+                .filter(|c| !c.is_empty())
+                .map(str::to_string),
+            parent_id: Some(parent_id.to_string()),
+        };
+        let view = DeviceView::from(&record);
+        devices.push(record);
+        self.persist(&devices);
+        Some((token, view))
+    }
+
+    /// Check `provided` against `voice_only` credentials ONLY. Constant-time
+    /// scan (no early exit). Rejects revoked, expired, and orphaned (parent
+    /// revoked or gone) credentials.
+    pub fn verify_voice(
+        &self,
+        provided: &str,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Option<VoiceCredential> {
+        let provided_hash = hash_token(provided);
+        let devices = self.devices.lock().unwrap();
+        let mut matched: Option<&DeviceRecord> = None;
+        for d in devices.iter() {
+            let eq: bool =
+                subtle::ConstantTimeEq::ct_eq(d.token_hash.as_bytes(), provided_hash.as_bytes())
+                    .into();
+            if eq && d.scope == DeviceScope::VoiceOnly && matched.is_none() {
+                matched = Some(d);
+            }
+        }
+        let d = matched?;
+        Self::voice_record_valid(&devices, d, now).then(|| VoiceCredential {
+            id: d.id.clone(),
+            name: d.name.clone(),
+            conversation_id: d.conversation_id.clone(),
+        })
+    }
+
+    /// Is the (already authenticated) voice credential `id` still valid?
+    /// Used to cut live sockets after revocation or expiry.
+    pub fn voice_credential_valid(&self, id: &str, now: chrono::DateTime<chrono::Utc>) -> bool {
+        let devices = self.devices.lock().unwrap();
+        devices
+            .iter()
+            .find(|d| d.id == id && d.scope == DeviceScope::VoiceOnly)
+            .is_some_and(|d| Self::voice_record_valid(&devices, d, now))
+    }
+
+    fn voice_record_valid(
+        devices: &[DeviceRecord],
+        d: &DeviceRecord,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> bool {
+        if d.revoked {
+            return false;
+        }
+        let unexpired = d
+            .expires_at
+            .as_deref()
+            .and_then(|e| chrono::DateTime::parse_from_rfc3339(e).ok())
+            .is_some_and(|e| e.with_timezone(&chrono::Utc) > now);
+        let parent_ok = d.parent_id.as_deref().is_some_and(|pid| {
+            devices
+                .iter()
+                .any(|p| p.id == pid && !p.revoked && p.scope == DeviceScope::Full)
+        });
+        unexpired && parent_ok
+    }
+
+    /// Bind an unbound voice credential to `conversation_id` (first use), or
+    /// confirm it is already bound to exactly that id. Persisted.
+    pub fn bind_conversation(&self, id: &str, conversation_id: &str) -> bool {
+        let mut devices = self.devices.lock().unwrap();
+        let Some(record) = devices
+            .iter_mut()
+            .find(|d| d.id == id && d.scope == DeviceScope::VoiceOnly)
+        else {
+            return false;
+        };
+        match record.conversation_id.as_deref() {
+            Some(bound) => bound == conversation_id,
+            None => {
+                record.conversation_id = Some(conversation_id.to_string());
+                self.persist(&devices);
+                true
+            }
+        }
     }
 
     /// Record an authenticated request from device `id`. In-memory always;
@@ -473,5 +654,134 @@ mod tests {
     fn missing_file_yields_empty_registry() {
         let (_dir, reg) = temp_registry();
         assert!(reg.list().is_empty());
+    }
+
+    fn ttl() -> chrono::Duration {
+        chrono::Duration::days(VOICE_CREDENTIAL_TTL_DAYS)
+    }
+
+    #[test]
+    fn voice_credential_is_a_separate_voice_only_identity() {
+        let (_dir, reg) = temp_registry();
+        let (phone_token, phone) = reg.pair("Jesse iPhone");
+        let now = chrono::Utc::now();
+        let (watch_token, watch) = reg
+            .mint_voice_credential(&phone.id, Some("conv-1"), ttl(), now)
+            .expect("phone may mint");
+        assert_ne!(watch_token, phone_token, "never the phone's token");
+        assert_ne!(watch.id, phone.id);
+        assert_eq!(watch.name, "Jesse iPhone Watch");
+        assert_eq!(watch.scope, DeviceScope::VoiceOnly);
+        assert_eq!(watch.conversation_id.as_deref(), Some("conv-1"));
+        assert_eq!(watch.parent_id.as_deref(), Some(phone.id.as_str()));
+        assert!(watch.expires_at.is_some());
+        // Only the hash is stored.
+        let on_disk = std::fs::read_to_string(&reg.path).unwrap();
+        assert!(!on_disk.contains(&watch_token));
+        // The general auth core refuses it; the voice core accepts it.
+        assert_eq!(reg.verify(&watch_token), None);
+        assert_eq!(reg.verify(&phone_token), Some(phone.id.clone()));
+        let cred = reg.verify_voice(&watch_token, now).expect("valid");
+        assert_eq!(cred.id, watch.id);
+        // And the voice core refuses an ordinary device token.
+        assert!(reg.verify_voice(&phone_token, now).is_none());
+    }
+
+    #[test]
+    fn voice_credential_expires() {
+        let (_dir, reg) = temp_registry();
+        let (_t, phone) = reg.pair("Phone");
+        let now = chrono::Utc::now();
+        let (tok, _) = reg
+            .mint_voice_credential(&phone.id, None, ttl(), now)
+            .unwrap();
+        assert!(reg
+            .verify_voice(&tok, now + chrono::Duration::days(29))
+            .is_some());
+        assert!(reg
+            .verify_voice(&tok, now + chrono::Duration::days(31))
+            .is_none());
+    }
+
+    #[test]
+    fn voice_credential_revocation_direct_cascade_and_rotation() {
+        let (_dir, reg) = temp_registry();
+        let (_t, phone) = reg.pair("Phone");
+        let now = chrono::Utc::now();
+        let (tok1, w1) = reg
+            .mint_voice_credential(&phone.id, None, ttl(), now)
+            .unwrap();
+        // Rotation: minting again revokes the previous watch credential.
+        let (tok2, w2) = reg
+            .mint_voice_credential(&phone.id, None, ttl(), now)
+            .unwrap();
+        assert!(reg.verify_voice(&tok1, now).is_none());
+        assert!(!reg.voice_credential_valid(&w1.id, now));
+        assert!(reg.verify_voice(&tok2, now).is_some());
+        // Direct revocation.
+        reg.revoke(&w2.id).unwrap();
+        assert!(reg.verify_voice(&tok2, now).is_none());
+        // Revoking the phone kills a live watch credential too.
+        let (tok3, w3) = reg
+            .mint_voice_credential(&phone.id, None, ttl(), now)
+            .unwrap();
+        assert!(reg.voice_credential_valid(&w3.id, now));
+        reg.revoke(&phone.id).unwrap();
+        assert!(reg.verify_voice(&tok3, now).is_none());
+        assert!(!reg.voice_credential_valid(&w3.id, now));
+        // A revoked phone cannot mint.
+        assert!(reg
+            .mint_voice_credential(&phone.id, None, ttl(), now)
+            .is_none());
+    }
+
+    #[test]
+    fn a_watch_credential_cannot_mint_and_unknown_parent_cannot_mint() {
+        let (_dir, reg) = temp_registry();
+        let (_t, phone) = reg.pair("Phone");
+        let now = chrono::Utc::now();
+        let (_tok, watch) = reg
+            .mint_voice_credential(&phone.id, None, ttl(), now)
+            .unwrap();
+        assert!(reg
+            .mint_voice_credential(&watch.id, None, ttl(), now)
+            .is_none());
+        assert!(reg
+            .mint_voice_credential("no-such-device", None, ttl(), now)
+            .is_none());
+    }
+
+    #[test]
+    fn conversation_binds_once_and_persists_scope_across_reload() {
+        let (dir, reg) = temp_registry();
+        let (_t, phone) = reg.pair("Phone");
+        let now = chrono::Utc::now();
+        let (tok, watch) = reg
+            .mint_voice_credential(&phone.id, None, ttl(), now)
+            .unwrap();
+        assert!(reg.bind_conversation(&watch.id, "conv-a"));
+        assert!(reg.bind_conversation(&watch.id, "conv-a"));
+        assert!(!reg.bind_conversation(&watch.id, "conv-b"));
+        assert!(
+            !reg.bind_conversation(&phone.id, "conv-a"),
+            "full scope has no binding"
+        );
+        let reloaded = DeviceRegistry::load(dir.path().join("device_tokens.json"));
+        let cred = reloaded.verify_voice(&tok, now).unwrap();
+        assert_eq!(cred.conversation_id.as_deref(), Some("conv-a"));
+        assert_eq!(reloaded.verify(&tok), None);
+    }
+
+    #[test]
+    fn legacy_rows_without_scope_default_to_full() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("device_tokens.json");
+        std::fs::write(
+            &path,
+            r#"{"devices":[{"id":"a","name":"Old","token_hash":"00","created":"2026-01-01T00:00:00Z","last_seen":null,"revoked":false}]}"#,
+        )
+        .unwrap();
+        let reg = DeviceRegistry::load(path);
+        assert_eq!(reg.list()[0].scope, DeviceScope::Full);
     }
 }

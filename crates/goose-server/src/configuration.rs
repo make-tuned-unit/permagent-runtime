@@ -9,6 +9,10 @@ pub struct Settings {
     pub tls: bool,
     pub tls_cert_path: Option<String>,
     pub tls_key_path: Option<String>,
+    /// Opt-in LAN voice-only listener for the standalone watch
+    /// (`daemon.voice_gateway`). Default OFF.
+    #[serde(default)]
+    pub voice_gateway: crate::voice_gateway::GatewaySettings,
 }
 
 impl Settings {
@@ -41,6 +45,7 @@ impl Settings {
             tls: default_tls(),
             tls_cert_path: None,
             tls_key_path: None,
+            voice_gateway: Default::default(),
         };
 
         // ── Layer 1: config.yaml daemon section (PERMAGENT_CONFIG) ──
@@ -56,6 +61,14 @@ impl Settings {
                         }
                         if let Some(t) = daemon.get("tls").and_then(|v| v.as_bool()) {
                             settings.tls = t;
+                        }
+                        if let Some(g) = daemon.get("voice_gateway") {
+                            match serde_yaml::from_value(g.clone()) {
+                                Ok(g) => settings.voice_gateway = g,
+                                Err(e) => tracing::warn!(
+                                    "ignoring invalid daemon.voice_gateway config: {e}"
+                                ),
+                            }
                         }
                     }
                 }
@@ -118,6 +131,7 @@ mod tests {
             tls: false,
             tls_cert_path: None,
             tls_key_path: None,
+            voice_gateway: Default::default(),
         };
         let addr = server_settings.socket_addr();
         assert_eq!(addr.to_string(), "127.0.0.1:3001");

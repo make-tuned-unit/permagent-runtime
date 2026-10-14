@@ -198,6 +198,10 @@ pub async fn run(host: Option<String>, port: Option<u16>) -> Result<()> {
         addr.port().to_string(),
     );
 
+    // Opt-in LAN voice-only listener for the standalone watch (default OFF);
+    // serves `/voice` + `/voice/health` only. See `voice_gateway.rs`.
+    crate::voice_gateway::spawn(app_state.clone(), settings.voice_gateway.clone());
+
     let tunnel_manager = app_state.tunnel_manager.clone();
     tokio::spawn(async move {
         tunnel_manager.check_auto_start().await;

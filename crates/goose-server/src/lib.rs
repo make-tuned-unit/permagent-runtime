@@ -56,6 +56,7 @@ pub mod tls;
 pub mod tunnel;
 pub mod verification;
 pub mod voice;
+pub mod voice_gateway;
 pub mod wal_checkpoint;
 
 // Re-export commonly used items

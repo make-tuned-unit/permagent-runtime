@@ -69,6 +69,11 @@ impl VoiceClient {
 pub struct VoiceOrigin {
     pub client: VoiceClient,
     pub device_name: Option<String>,
+    /// True when the socket was opened with a `voice_only` scoped credential
+    /// (standalone watch). Turns carrying it may call only the tools that
+    /// [`voice_only_tool_allowed`] admits; the agent enforces that in both
+    /// `list_tools` and `dispatch_tool_call`.
+    pub voice_only: bool,
 }
 
 impl VoiceOrigin {
@@ -90,7 +95,14 @@ impl VoiceOrigin {
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .map(str::to_string),
+            voice_only: false,
         }
+    }
+
+    /// Mark this origin as a `voice_only` scoped credential's turn.
+    pub fn with_voice_only(mut self) -> Self {
+        self.voice_only = true;
+        self
     }
 
     /// Short place-name for prompts and tool results ("iPhone", "your watch").
@@ -159,6 +171,35 @@ pub fn current(session_id: &str) -> Option<VoiceOrigin> {
         .lock()
         .ok()
         .and_then(|reg| reg.get(session_id).cloned())
+}
+
+/// Tool names a `voice_only` (standalone watch) session may see or call.
+///
+/// DEFAULT-DENY by extension prefix: platform tools are named
+/// `<extension>__<tool>`, so unprefixed tools (shell, file edit, search),
+/// `Extension Manager`, `configure`, `desktop_control`, `browser`, `summon`,
+/// `orchestrator`, schedules, device or pairing administration, and every
+/// extension not listed here are refused. Cross-session readers (chat recall)
+/// are deliberately absent: the credential is bound to ONE conversation.
+/// Widening this list is a one-line, reviewable change.
+const VOICE_ONLY_TOOL_PREFIXES: &[&str] = &["todo__", "pronunciation__"];
+
+/// Pure predicate behind the `voice_only` tool restriction.
+pub fn voice_only_tool_allowed(tool_name: &str) -> bool {
+    VOICE_ONLY_TOOL_PREFIXES
+        .iter()
+        .any(|prefix| tool_name.starts_with(prefix))
+}
+
+/// Whether the voice turn currently bound to `session_id` is `voice_only`.
+pub fn is_voice_only(session_id: &str) -> bool {
+    current(session_id).is_some_and(|origin| origin.voice_only)
+}
+
+/// The single gate used by the agent: may `tool_name` be listed/dispatched on
+/// `session_id` right now? Unrestricted sessions are unaffected.
+pub fn tool_allowed_for_session(session_id: &str, tool_name: &str) -> bool {
+    !is_voice_only(session_id) || voice_only_tool_allowed(tool_name)
 }
 
 /// Drop the binding. Safe when [`begin`] never ran.
@@ -251,5 +292,47 @@ mod tests {
         assert_eq!(got.client, VoiceClient::Ios);
         end(sid);
         assert!(current(sid).is_none());
+    }
+
+    #[test]
+    fn voice_only_allows_only_the_listed_extensions() {
+        assert!(voice_only_tool_allowed("todo__todo_write"));
+        assert!(voice_only_tool_allowed("pronunciation__teach"));
+        for denied in [
+            "shell",
+            "developer__shell",
+            "edit",
+            "read",
+            "configure__set_config",
+            "Extension Manager__manage_extensions",
+            "desktop_control__click",
+            "browser__navigate",
+            "summon__delegate",
+            "orchestrator__goal_advance",
+            "chatrecall__chatrecall",
+            "platform__manage_schedule",
+            "platform__load_feature_lesson",
+            "",
+        ] {
+            assert!(!voice_only_tool_allowed(denied), "{denied} must be denied");
+        }
+    }
+
+    #[test]
+    fn restriction_applies_only_to_voice_only_turns() {
+        let sid = "origin-voice-only-1";
+        end(sid);
+        // No voice turn bound: unrestricted (text chat unaffected).
+        assert!(tool_allowed_for_session(sid, "shell"));
+        begin(sid, VoiceOrigin::resolve(Some("ios_voice"), Some("iPhone")));
+        assert!(tool_allowed_for_session(sid, "shell"));
+        begin(
+            sid,
+            VoiceOrigin::resolve(Some("watch_voice"), Some("iPhone Watch")).with_voice_only(),
+        );
+        assert!(!tool_allowed_for_session(sid, "shell"));
+        assert!(tool_allowed_for_session(sid, "todo__todo_write"));
+        end(sid);
+        assert!(tool_allowed_for_session(sid, "shell"));
     }
 }
