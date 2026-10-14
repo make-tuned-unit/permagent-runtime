@@ -80,7 +80,7 @@ final class VoiceEnrollTests: XCTestCase {
         var ended = false
         for _ in 0..<12 where !ended {
             t += dt
-            ended = vad.step(rms: 0.001, phase: .listening, now: t) == .endTurn
+            ended = vad.step(rms: 0.001, phase: .listening, now: t) == .endTurn(.silence)
         }
         XCTAssertTrue(ended, "take 1 never endpointed on trailing silence")
 
@@ -109,7 +109,7 @@ final class VoiceEnrollTests: XCTestCase {
         ended = false
         for _ in 0..<12 where !ended {
             t += dt
-            ended = vad.step(rms: 0.001, phase: .listening, now: t) == .endTurn
+            ended = vad.step(rms: 0.001, phase: .listening, now: t) == .endTurn(.silence)
         }
         XCTAssertTrue(ended, "take 2 never endpointed on trailing silence")
     }
@@ -122,7 +122,7 @@ final class VoiceEnrollTests: XCTestCase {
         var vad = VoiceVAD()
         XCTAssertEqual(
             vad.step(rms: 0.05, phase: .listening, now: 1_756_600_000),
-            .endTurn,
+            .endTurn(.maxTurn),
             "an unstamped take is expected to die instantly — that is the bug"
         )
     }

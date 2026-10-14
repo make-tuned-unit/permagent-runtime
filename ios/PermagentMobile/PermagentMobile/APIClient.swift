@@ -678,6 +678,34 @@ enum MobileSession {
         UserDefaults.standard.set(created.id, forKey: key)
         return created.id
     }
+
+    private static let voiceKey = "ai.permagent.ios-voice-home-session"
+
+    private struct VoiceHomeResponse: Decodable {
+        let sessionId: String
+        enum CodingKeys: String, CodingKey { case sessionId = "session_id" }
+    }
+
+    /// The last voice-home id the hub gave us — offline fallback only.
+    static var cachedVoiceHomeId: String? {
+        UserDefaults.standard.string(forKey: voiceKey)
+    }
+
+    /// The hub's one persistent, non-coding voice conversation, shared by the
+    /// World, the Orb, this phone's voice view and the Watch.
+    ///
+    /// Asked of the hub on every call (a cheap GET; the hub verifies the session
+    /// still exists and is a plain chat). The cache is used only when the hub
+    /// is unreachable or predates the route. This deliberately never goes
+    /// through `adopt(_:)`, so opening a coding session in the text chat cannot
+    /// redirect voice into it. Text chat keeps `chatSessionId()`.
+    static func voiceHomeSessionId() async throws -> String {
+        try await VoiceHomeResolver.resolve(
+            fetch: { try await APIClient.shared.get("/api/voice/home-session", as: VoiceHomeResponse.self).sessionId },
+            defaults: .standard,
+            key: voiceKey,
+            fallback: { try await chatSessionId() })
+    }
 }
 
 struct DaemonEvent: Decodable, Sendable {

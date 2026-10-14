@@ -217,7 +217,9 @@ final class HubWatchRelay: NSObject, WCSessionDelegate {
                                             userInfo: ["finished": true])
         }
         do {
-            let sid = try await MobileSession.chatSessionId()
+            // Watch chat joins the hub's voice-home thread (shared with the
+            // phone voice view, the World and the Orb), never the text-chat id.
+            let sid = try await MobileSession.voiceHomeSessionId()
             var acc = AssistantAccumulator()
             var lastSent = Date.distantPast
             for try await delta in APIClient.shared.replyStream(text, sessionId: sid) {

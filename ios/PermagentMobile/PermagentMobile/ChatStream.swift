@@ -278,3 +278,22 @@ enum ChatGreeting {
         }
     }
 }
+
+/// Voice-home session resolution, Foundation-only so it is unit-tested without
+/// a hub. The hub's answer wins; the cached id is an offline fallback; the
+/// legacy fallback (the text-chat session) is the last resort for old hubs.
+enum VoiceHomeResolver {
+    static func resolve(
+        fetch: () async throws -> String,
+        defaults: UserDefaults,
+        key: String,
+        fallback: () async throws -> String
+    ) async throws -> String {
+        if let fresh = try? await fetch(), !fresh.isEmpty {
+            defaults.set(fresh, forKey: key)
+            return fresh
+        }
+        if let cached = defaults.string(forKey: key), !cached.isEmpty { return cached }
+        return try await fallback()
+    }
+}

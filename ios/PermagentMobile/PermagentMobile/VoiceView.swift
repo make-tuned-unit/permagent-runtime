@@ -422,7 +422,7 @@ final class VoiceEngine: ObservableObject {
         // and the wait becomes the slower of the two rather than the total.
         async let sessionTask: String? = {
             if let provided { return provided }
-            return try? await MobileSession.chatSessionId()
+            return try? await MobileSession.voiceHomeSessionId()
         }()
         async let micGranted = AVAudioApplication.requestRecordPermission()
 

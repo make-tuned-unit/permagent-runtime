@@ -70,7 +70,7 @@ final class WatchVoiceProvisioner {
             defer { self.inFlight = false }
             guard await APIClient.shared.isPaired else { return }
             do {
-                let conversation = try await MobileSession.chatSessionId()
+                let conversation = try await MobileSession.voiceHomeSessionId()
                 let data = try await APIClient.shared.postData(
                     "/api/devices/\(deviceId)/watch-credential",
                     body: MintBody(conversation_id: conversation))

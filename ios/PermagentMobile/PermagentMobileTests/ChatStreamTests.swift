@@ -235,4 +235,20 @@ final class ChatGreetingTests: XCTestCase {
         XCTAssertEqual(ChatGreeting.forHour(0), "Moonlit chat?")
         XCTAssertEqual(ChatGreeting.forHour(4), "Moonlit chat?")
     }
+
+    func testVoiceHomeResolverPrefersHubThenCacheThenFallback() async throws {
+        struct Down: Error {}
+        let d = UserDefaults(suiteName: "voicehome-test-\(UUID().uuidString)")!
+        let k = "k"
+        // Hub answers: used and cached.
+        var id = try await VoiceHomeResolver.resolve(fetch: { "v1" }, defaults: d, key: k, fallback: { "chat" })
+        XCTAssertEqual(id, "v1")
+        // Hub down: cached id.
+        id = try await VoiceHomeResolver.resolve(fetch: { throw Down() }, defaults: d, key: k, fallback: { "chat" })
+        XCTAssertEqual(id, "v1")
+        // Nothing cached, hub down: legacy fallback.
+        let empty = UserDefaults(suiteName: "voicehome-test-\(UUID().uuidString)")!
+        id = try await VoiceHomeResolver.resolve(fetch: { throw Down() }, defaults: empty, key: k, fallback: { "chat" })
+        XCTAssertEqual(id, "chat")
+    }
 }
