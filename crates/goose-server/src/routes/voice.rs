@@ -6298,7 +6298,11 @@ pub fn find_speakable_boundary(text: &str, first_chunk: bool) -> Option<(usize, 
             _ => false,
         };
         if is_clause {
-            return Some((i, next_byte));
+            // `end_inclusive` is the LAST byte of the boundary char. Returning
+            // `i` (its first byte) cut a multi-byte em dash in half, so
+            // `text.get(..=i)` was None and the whole clause was silently
+            // skipped (staging 2026-10-15: every clause ending in a dash).
+            return Some((next_byte - 1, next_byte));
         }
     }
 
@@ -8147,6 +8151,61 @@ mod tests {
             !speech.contains("web_search") && !speech.contains('`'),
             "{speech}"
         );
+    }
+
+    /// Staging 2026-10-15: the dash clause of this exact reply never reached
+    /// TTS. Every clause of an ordinary reply must be queued, in order.
+    #[test]
+    fn every_clause_of_an_ordinary_reply_is_queued() {
+        let reply = "Hi. I can help you plan your day, talk through what's on your plate, \
+                     or pick up a thread from before \u{2014} Maya's milestone review and the \
+                     prototype timeline come to mind. What's on your mind this morning?";
+        let mut buf = reply.to_string();
+        let mut queue = std::collections::VecDeque::new();
+        let mut budget = SpokenBudget::new(4, 20, "");
+        enqueue_ready_sentences(&mut buf, &mut queue, &mut budget, true);
+        enqueue_remainder(&mut buf, &mut queue, &mut budget);
+        let spoken: Vec<String> = queue.iter().map(|c| c.speech.clone()).collect();
+        let joined = spoken.join(" ");
+        for part in [
+            "plan your day",
+            "on your plate",
+            "pick up a thread from before",
+            "milestone review",
+            "this morning",
+        ] {
+            assert!(joined.contains(part), "{part:?} missing from {spoken:?}");
+        }
+    }
+
+    /// The same reply arriving word by word, the way the model streams it.
+    #[test]
+    fn every_clause_survives_word_by_word_streaming() {
+        let reply = "Hi. I can help you plan your day, talk through what's on your plate, \
+                     or pick up a thread from before \u{2014} Maya's milestone review and the \
+                     prototype timeline come to mind. What's on your mind this morning?";
+        let mut buf = String::new();
+        let mut queue = std::collections::VecDeque::new();
+        let mut budget = SpokenBudget::new(4, 20, "");
+        let mut first = true;
+        for (i, word) in reply.split(' ').enumerate() {
+            if i > 0 {
+                buf.push(' ');
+            }
+            buf.push_str(word);
+            enqueue_ready_sentences(&mut buf, &mut queue, &mut budget, first);
+            first = first && queue.is_empty();
+        }
+        enqueue_remainder(&mut buf, &mut queue, &mut budget);
+        let spoken: Vec<String> = queue.iter().map(|c| c.speech.clone()).collect();
+        let joined = spoken.join(" ");
+        for part in [
+            "pick up a thread from before",
+            "milestone review",
+            "this morning",
+        ] {
+            assert!(joined.contains(part), "{part:?} missing from {spoken:?}");
+        }
     }
 
     #[test]

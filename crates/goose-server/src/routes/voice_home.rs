@@ -113,6 +113,27 @@ async fn create_current(
             mode,
         )
         .await?;
+    // Load the user's enabled extensions exactly as a chat started from the
+    // dock does (`routes::agent::start_agent`). Without this the session has
+    // no extension state and a voice turn on it saw only the always-on tools
+    // (staging 2026-10-15: four tools, no people/projects/calendar/notes), so
+    // "add Ada to my contacts" could only be refused.
+    let extensions = permagent::config::resolve_extensions_for_new_session(
+        None,
+        None,
+        Some(permagent::config::paths::Paths::data_dir().as_path()),
+    )?;
+    let mut extension_data = session.extension_data.clone();
+    {
+        use permagent::session::ExtensionState as _;
+        permagent::session::EnabledExtensionsState::new(extensions)
+            .to_extension_data(&mut extension_data)?;
+    }
+    manager
+        .update(&session.id)
+        .extension_data(extension_data)
+        .apply()
+        .await?;
     write_stored(path, &session.id)?;
     Ok(HomeSessionResponse {
         session_id: session.id,
@@ -332,6 +353,17 @@ mod tests {
         let session = manager.get_session(&first.session_id, false).await.unwrap();
         assert!(is_plain_chat(&session));
         assert!(session.recipe.is_none());
+        // It carries the enabled-extension state a dock-started chat gets,
+        // or a voice turn on it would see only the always-on tools.
+        {
+            assert!(
+                permagent::session::EnabledExtensionsState::from_extension_data(
+                    &session.extension_data
+                )
+                .is_some(),
+                "current chat was created without its extensions"
+            );
+        }
 
         // Stable across calls (and, via the file, across restarts).
         let again = resolve(manager, &file).await.unwrap();
