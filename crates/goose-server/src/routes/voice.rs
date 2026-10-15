@@ -5112,10 +5112,29 @@ async fn stream_reply_with_tts(
             recognition_ctx,
             recognition_pool,
         );
-        let (_, trace) = tokio::join!(ambient_fut, recall_fut);
-        trace
+        // Spoken turns wait for this before the model starts. Live 2026-10-15
+        // it ranged 57 ms to 1.7 s; past the budget the turn goes ahead
+        // without recall rather than holding the first word.
+        match tokio::time::timeout(VOICE_CONTEXT_BUDGET, async {
+            tokio::join!(ambient_fut, recall_fut).1
+        })
+        .await
+        {
+            Ok(trace) => trace,
+            Err(_) => {
+                tracing::info!(
+                    target: "permagentd::voice",
+                    event = "voice_context_budget_exceeded",
+                    turn_id = ctx.turn_id,
+                    session_id = ctx.session_id.unwrap_or("voice-anon"),
+                    budget_ms = VOICE_CONTEXT_BUDGET.as_millis() as u64,
+                    "voice recall ran past its budget; answering without it"
+                );
+                crate::brain_ops::RecallInjection::default()
+            }
+        }
     } else {
-        ambient_fut.await;
+        let _ = tokio::time::timeout(VOICE_CONTEXT_BUDGET, ambient_fut).await;
         crate::brain_ops::RecallInjection::default()
     };
     let ctx_recall_ms = t_ctx.elapsed().as_millis();
@@ -6276,6 +6295,9 @@ fn enqueue_remainder(
     }
     push_spoken(&remainder, queue, budget);
 }
+
+/// The most a spoken turn waits for ambient context + memory recall.
+const VOICE_CONTEXT_BUDGET: std::time::Duration = std::time::Duration::from_millis(700);
 
 /// Sessions whose enabled extensions this daemon has already loaded for voice.
 static VOICE_EXTENSIONS_READY: std::sync::LazyLock<
