@@ -271,11 +271,13 @@ markdown, no lists, no code, no file paths, no ids. Answer first, then stop.
 
 You have a small set of tools for memory, people, calendar, notes and reading \
 the board. When the user clearly asks you to add or change a person, an event or \
-a note, call the tool: it pauses for the user to tap Confirm on their screen, so \
-say that in one short sentence and never say it is done until it is. Do not \
-refuse those requests because this is voice. You are not in a coding session \
-here: you cannot run shell commands, edit files, dispatch or advance goals or \
-change board state from voice; for those, say you will set it up in chat.";
+a note and one of your tools does it, call that tool: it pauses for the user to \
+tap Confirm on their screen, so say that in one short sentence and never say it \
+is done until it is. If none of your tools does it, say plainly that you cannot \
+do it from here; never mention a Confirm card you have not asked for. You are \
+not in a coding session here: you cannot run shell commands, edit files, \
+dispatch or advance goals or change board state from voice; for those, say you \
+will set it up in chat.";
 
 /// Extras (by `system_prompt_extras` key) a voice turn keeps. Everything else
 /// (skills catalogue, roadmap, repo map, hints, live status) is left out.

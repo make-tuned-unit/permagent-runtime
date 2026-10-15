@@ -5165,6 +5165,10 @@ async fn stream_reply_with_tts(
     // inside the token loop was holding first-audio on every subsequent chunk.
     let mut text_buf = String::new();
     let mut full_reply = String::new();
+    // Streamed deltas of one message share its id; a new id is a new
+    // assistant message (text after a tool call), which needs a separator or
+    // the two run together (staging 2026-10-15: "screen.I actually").
+    let mut last_text_msg_id: Option<String> = None;
     let mut budget =
         SpokenBudget::from_config(surface_copy(ctx.surface, ctx.origin.client).budget_bridge);
     // Henry's speech for this turn: unknown words he says are substituted and
@@ -5491,6 +5495,24 @@ async fn stream_reply_with_tts(
                                         "voice first LLM token"
                                     );
                                     first_token_logged = true;
+                                }
+                                if msg.id.is_some()
+                                    && last_text_msg_id.is_some()
+                                    && msg.id != last_text_msg_id
+                                {
+                                    if !full_reply.is_empty()
+                                        && !full_reply.ends_with(char::is_whitespace)
+                                    {
+                                        full_reply.push_str("\n\n");
+                                    }
+                                    if !text_buf.is_empty()
+                                        && !text_buf.ends_with(char::is_whitespace)
+                                    {
+                                        text_buf.push(' ');
+                                    }
+                                }
+                                if msg.id.is_some() {
+                                    last_text_msg_id = msg.id.clone();
                                 }
                                 text_buf.push_str(&text_content.text);
                                 full_reply.push_str(&text_content.text);
