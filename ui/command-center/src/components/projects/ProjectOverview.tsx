@@ -3,11 +3,12 @@ import { FiLink, FiTerminal, FiTrendingUp } from 'react-icons/fi';
 import { font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
-import { apiFetch, api } from '../../lib/api';
+import { apiFetch } from '../../lib/api';
 import { useGoalEvents } from '../../lib/useGoalEvents';
 import { useBrowserNavigate } from '../../hooks/useBrowserNavigate';
 import { useCommandCenter, navigateToTool } from '../../lib/store';
 import { Panel } from './Panel';
+import { GuardPanel } from './GuardPanel';
 import { StateBlock } from '../common/StateBlock';
 import { ActivityPanel } from './ActivityPanel';
 import { readBrief, readLinks, normalizeUrl, saveProjectSummary, type WorkspaceLink } from './workspaceMeta';
@@ -15,7 +16,6 @@ import { PublishSequencePanel } from './PublishSequencePanel';
 import { CardDetailModal } from './CardDetailModal';
 import type { Project, BoardColumn, Card } from './types';
 import { usePersona } from '../settings/useSettings';
-import { plainText } from '../../lib/plainText';
 import { Chip } from '../common/Chip';
 
 import { Tooltip } from '../common/Tooltip';
@@ -88,7 +88,7 @@ export function ProjectOverview({ project, onProjectUpdated }: {
             ProjectDetails header for the ruled division. */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: space.xxl, minWidth: 0 }}>
           <SummaryPanel project={project} onProjectUpdated={onProjectUpdated} />
-          <StrixFindingsPanel project={project} />
+          <GuardPanel project={project} />
           <WatcherInsightsPanel project={project} />
           <KeyFactsPanel project={project} />
           <ActivityPanel project={project} />
@@ -366,123 +366,6 @@ export function WatcherInsightsPanel({ project }: { project: Project }) {
             </div>
           </div>
         ))}
-      </div>
-    </Panel>
-  );
-}
-
-// ── The Guard's findings ─────────────────────────────────────────────────────
-// The security checklist the Guard's sweep loop keeps on the project
-// (daemon strix loop → metadata_json.strix_findings). Each item carries its
-// severity, CWE, location, and how to fix it. With no findings the panel says
-// WHY there are none — off / never scanned / scanned clean — because silence
-// used to read as "secure" whether or not the Guard had ever run (audit
-// 2026-08-11).
-
-interface StrixFinding {
-  id: string;
-  title: string;
-  severity: string;
-  cwe?: string | null;
-  location?: string | null;
-  remediation?: string | null;
-  found_at: string;
-}
-
-const STRIX_SHOWN = 8;
-
-function readStrixFindings(metadata: Record<string, unknown>): StrixFinding[] {
-  const raw = metadata?.strix_findings;
-  if (!Array.isArray(raw)) return [];
-  return raw.filter((f): f is StrixFinding =>
-    typeof f === 'object' && f !== null &&
-    typeof (f as StrixFinding).id === 'string' &&
-    typeof (f as StrixFinding).title === 'string' &&
-    typeof (f as StrixFinding).severity === 'string');
-}
-
-/** Scanner text arrives as markdown (`**pkg**`, backticks); this panel renders
- * plain text, so the markers would show as literal asterisks. */
-const plainFindingText = plainText;
-const clampLines = (n: number): CSSProperties => ({
-  display: '-webkit-box', WebkitLineClamp: n, WebkitBoxOrient: 'vertical', overflow: 'hidden',
-});
-
-function StrixFindingsPanel({ project }: { project: Project }) {
-  const { colors } = useTheme();
-  const findings = readStrixFindings(project.metadataJson);
-
-  // The honesty gate the HUD uses: `null` = unknown (loading / failed read) —
-  // never claim OFF on a failed read.
-  const [enabled, setEnabled] = useState<boolean | null>(null);
-  useEffect(() => {
-    let active = true;
-    api.readConfig('strix_enabled')
-      .then(r => { if (active) setEnabled(r === true); })
-      .catch(() => { /* unknown stays unknown */ });
-    return () => { active = false; };
-  }, []);
-
-  const rawLastScan = (project.metadataJson as Record<string, unknown>)?.strix_last_scan;
-  const lastScan = typeof rawLastScan === 'string' && rawLastScan ? rawLastScan : null;
-  const rawLastAttempt = (project.metadataJson as Record<string, unknown>)?.strix_last_attempt;
-  const lastAttempt = typeof rawLastAttempt === 'string' && rawLastAttempt ? rawLastAttempt : null;
-
-  if (findings.length === 0) {
-    // Honest empty state: say why there is nothing, instead of nothing.
-    // A newer last_attempt than last_scan means the latest sweep did not
-    // finish — do not call that "scanned, no findings".
-    const attemptFailed = Boolean(
-      lastAttempt && (!lastScan || lastAttempt > lastScan),
-    );
-    const text = attemptFailed
-      ? `Last sweep did not finish (${formatDate(lastAttempt!)})${lastScan ? ` — previous clean scan ${formatDate(lastScan)}` : ' — not a clean scan.'}`
-      : lastScan
-      ? `Scanned ${formatDate(lastScan)} — no open findings.${enabled === false ? ' The Guard is currently off.' : ''}`
-      : enabled === false
-        ? 'The Guard is off — enable security sweeps in Settings → Models to scan this project.'
-        : 'Never scanned — waiting on the Guard’s first sweep of this project.';
-    return (
-      <Panel title="Security — from the Guard">
-        <div style={{ fontSize: textSize.micro, color: colors.textDim, lineHeight: 1.5 }}>{text}</div>
-      </Panel>
-    );
-  }
-  const severityColor = (s: string) =>
-    s === 'high' ? colors.danger : s === 'medium' ? colors.warning : colors.textDim;
-  const shown = findings.slice(0, STRIX_SHOWN);
-  return (
-    <Panel title="Security — from the Guard">
-      <div style={{ display: 'flex', flexDirection: 'column', gap: space.xl }}>
-        {shown.map(f => (
-          <div key={f.id} style={{ display: 'flex', gap: space.lg, alignItems: 'baseline' }}>
-            <span style={{
-              fontSize: 9, fontWeight: 700, letterSpacing: 0.6, flexShrink: 0,
-              textTransform: 'uppercase', color: severityColor(f.severity),
-              lineHeight: '18px', width: 52,
-            }}>
-              {f.severity}
-            </span>
-            <div style={{ minWidth: 0 }}>
-              <div style={{ fontSize: textSize.caption, color: colors.text, lineHeight: 1.5, ...clampLines(2) }}>{plainFindingText(f.title)}</div>
-              <div style={{ fontSize: 10, color: colors.textDim, marginTop: space.xxs, display: 'flex', gap: space.md, flexWrap: 'wrap' }}>
-                {f.cwe && <span>{f.cwe}</span>}
-                {f.location && <span style={{ fontFamily: font.mono }}>{f.location}</span>}
-                <span>{formatDate(f.found_at)}</span>
-              </div>
-              {f.remediation && plainFindingText(f.remediation) !== plainFindingText(f.title) && (
-                <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: space.xxs, lineHeight: 1.5, ...clampLines(3) }}>
-                  {plainFindingText(f.remediation)}
-                </div>
-              )}
-            </div>
-          </div>
-        ))}
-        {findings.length > STRIX_SHOWN && (
-          <div style={{ fontSize: 10, color: colors.textDim }}>
-            +{findings.length - STRIX_SHOWN} more on the checklist
-          </div>
-        )}
       </div>
     </Panel>
   );

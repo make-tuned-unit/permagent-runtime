@@ -1685,6 +1685,76 @@ export interface HarnessRunView {
   budget: BudgetProjection;
 }
 
+// ── The Guard (per-project security findings) ───────────────────────────────
+export type GuardStatus =
+  | 'open' | 'reopened' | 'sent' | 'fix_committed' | 'not_seen' | 'fixed' | 'dismissed';
+
+export interface GuardFinding {
+  id: string;
+  title: string;
+  severity: string;
+  cwe?: string | null;
+  location?: string | null;
+  remediation?: string | null;
+  found_at: string;
+  status?: GuardStatus;
+  status_at?: string | null;
+  first_seen_at?: string | null;
+  last_seen_at?: string | null;
+  sent_at?: string | null;
+  sent_agent?: string | null;
+  fix_commit?: string | null;
+  fix_commit_subject?: string | null;
+  fix_verified_at?: string | null;
+  verify_detail?: string | null;
+  dismissed_reason?: string | null;
+}
+
+export interface GuardCounts {
+  active: number;
+  open: number;
+  sent: number;
+  awaiting_rescan: number;
+  unconfirmed: number;
+  fixed: number;
+  dismissed: number;
+}
+
+export interface GuardSummary {
+  findings: GuardFinding[];
+  counts: GuardCounts;
+  last_scan: string | null;
+  last_attempt: string | null;
+  rescan_requested_at: string | null;
+  enabled: boolean;
+}
+
+export interface GuardCheck {
+  id: string;
+  label: string;
+  passed: boolean;
+  detail: string;
+}
+
+export interface GuardVerifyResult {
+  verified: boolean;
+  finding: GuardFinding;
+  detail: string;
+  commit: string | null;
+  checks: GuardCheck[];
+  rescan_requested: boolean;
+}
+
+export interface GuardRescanResult {
+  queued: boolean;
+  requested_at: string | null;
+  reason: string | null;
+}
+
+const guardPath = (projectId: string, finding?: string, action?: string) =>
+  `/api/projects/${encodeURIComponent(projectId)}/guard`
+  + (finding ? `/findings/${encodeURIComponent(finding)}/${action}` : '');
+
 export const api = {
   // Health
   /** Does the hub answer? `/status` replies with the plain text `ok`, which
@@ -2469,6 +2539,31 @@ export const api = {
       `/api/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(attachmentId)}`,
       { method: 'DELETE' },
     ),
+
+  // ── The Guard: per-project findings, fix loop ─────────────────────────────
+
+  getGuard: (projectId: string) =>
+    apiFetch<GuardSummary>(guardPath(projectId)),
+
+  markGuardFindingSent: (projectId: string, findingId: string, agent: string) =>
+    apiFetch<{ finding: GuardFinding }>(guardPath(projectId, findingId, 'sent'), {
+      method: 'POST', body: JSON.stringify({ agent }),
+    }),
+
+  verifyGuardFinding: (projectId: string, findingId: string) =>
+    apiFetch<GuardVerifyResult>(guardPath(projectId, findingId, 'verify'), { method: 'POST' }),
+
+  setGuardFindingStatus: (
+    projectId: string,
+    findingId: string,
+    body: { status: 'dismissed'; reason: string } | { status: 'open' },
+  ) =>
+    apiFetch<{ finding: GuardFinding }>(guardPath(projectId, findingId, 'status'), {
+      method: 'POST', body: JSON.stringify(body),
+    }),
+
+  requestGuardRescan: (projectId: string) =>
+    apiFetch<GuardRescanResult>(`${guardPath(projectId)}/rescan`, { method: 'POST' }),
 
   // ── Project documents (#471 Layer 2) ──────────────────────────────────────
 

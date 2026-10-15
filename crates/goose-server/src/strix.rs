@@ -31,9 +31,10 @@ use crate::state::AppState;
 use permagent::projects::{self, Project, UpdateProject};
 use permagent::strix;
 use sqlx::{Pool, Sqlite};
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 /// Findings ride `projects.metadata_json.strix_findings` — same
@@ -52,8 +53,41 @@ pub const FAILURE_STREAK_KEY: &str = "strix_failure_streak";
 pub const LAST_FAILURE_KEY: &str = "strix_last_failure";
 /// Why the last scan failed, in the scanner's own words.
 pub const LAST_ERROR_KEY: &str = "strix_last_error";
-/// Keep the most recent findings per project; older ones age out.
-const MAX_KEPT: usize = 40;
+/// Closed findings (fixed or dismissed) kept per project as history; the
+/// oldest closed ones age out. ACTIVE findings are never aged out — the old
+/// 40-item cap on the whole list silently dropped real, unfixed findings once a
+/// project had more than 40 of them.
+const MAX_CLOSED_KEPT: usize = 60;
+/// Set when someone asks for an on-demand rescan of this project (ISO-8601).
+/// The loop takes a requested project first and clears the key when that scan
+/// completes or fails.
+const RESCAN_KEY: &str = "strix_rescan_requested_at";
+/// A project is rescanned on request at most this often: a scan spends real
+/// credits and minutes, and a "Verify" button must not become a way to loop it.
+const RESCAN_MIN_GAP: Duration = Duration::from_secs(30 * 60);
+/// A request the loop could not act on (scanner down, sovereign mode) stops
+/// counting as pending after this, so a stale flag cannot force a preflight
+/// every tick forever.
+const RESCAN_EXPIRES: Duration = Duration::from_secs(6 * 3600);
+/// Wakes the loop the moment a rescan is requested instead of at the next
+/// 15-minute tick. `notify_one` stores a permit, so a request that lands while
+/// a sweep is running is still seen.
+static RESCAN_NOTIFY: tokio::sync::Notify = tokio::sync::Notify::const_new();
+/// One async mutex per project guarding every read-modify-write of the
+/// project's metadata that touches `strix_findings`. A scan can run for
+/// twenty minutes and `update_project` replaces `metadata_json` wholesale, so
+/// without this a "mark sent" click during a scan's write (or two clicks) could
+/// silently revert each other.
+static PROJECT_LOCKS: LazyLock<std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> =
+    LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
+/// The lock for one project (by canonical id, not slug).
+pub fn project_lock(project_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+    let mut map = PROJECT_LOCKS.lock().unwrap_or_else(|e| e.into_inner());
+    map.entry(project_id.to_string())
+        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+        .clone()
+}
 /// How often the loop wakes to check the flag and whether a sweep is due.
 /// Cheap (two config reads), so interval changes take effect within minutes.
 const CHECK_EVERY: Duration = Duration::from_secs(15 * 60);
@@ -87,8 +121,32 @@ const SCAN_TERM_GRACE: Duration = Duration::from_secs(3);
 /// The default bucket is not a project Strix reports on.
 const PERSONAL_PROJECT_ID: &str = "00000000-0000-0000-0000-000000000001";
 
+/// Where a finding is in its life. Old rows carry no status and read as
+/// `Open`; an unrecognised value also reads as `Open` rather than failing the
+/// whole list (`other` must stay the last variant).
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum FindingStatus {
+    Reopened,
+    Sent,
+    FixCommitted,
+    NotSeen,
+    Fixed,
+    Dismissed,
+    #[default]
+    #[serde(other)]
+    Open,
+}
+
+impl FindingStatus {
+    /// Still needs attention: everything except fixed and dismissed.
+    pub fn is_active(self) -> bool {
+        !matches!(self, Self::Fixed | Self::Dismissed)
+    }
+}
+
 /// One finding, as rendered on the project's Overview and in briefings.
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Default)]
 pub struct Finding {
     pub id: String,
     pub title: String,
@@ -97,6 +155,602 @@ pub struct Finding {
     pub location: Option<String>,
     pub remediation: Option<String>,
     pub found_at: String,
+    // Lifecycle. Every field below is optional so metadata written before the
+    // lifecycle existed still reads (as `open`).
+    #[serde(default)]
+    pub status: FindingStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_seen_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_seen_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sent_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sent_agent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fix_commit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fix_commit_subject: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fix_verified_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verify_detail: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dismissed_reason: Option<String>,
+}
+
+impl Finding {
+    /// Fill the defaults the contract promises for rows that predate the
+    /// lifecycle: `first_seen_at` = `found_at`, and a status time.
+    pub fn normalised(mut self) -> Self {
+        if self.first_seen_at.is_none() && !self.found_at.is_empty() {
+            self.first_seen_at = Some(self.found_at.clone());
+        }
+        if self.status_at.is_none() && !self.found_at.is_empty() {
+            self.status_at = Some(self.found_at.clone());
+        }
+        self
+    }
+
+    fn set_status(&mut self, status: FindingStatus, now: &str) {
+        self.status = status;
+        self.status_at = Some(now.to_string());
+    }
+
+    /// Forget everything about a fix attempt: the finding is open again, so
+    /// "sent to an agent" and "fix verified" would now be claims about a
+    /// previous life of it.
+    fn clear_fix_trail(&mut self) {
+        self.sent_at = None;
+        self.sent_agent = None;
+        self.fix_commit = None;
+        self.fix_commit_subject = None;
+        self.fix_verified_at = None;
+        self.verify_detail = None;
+    }
+}
+
+/// What one completed scan did to the stored list.
+#[derive(Debug, Clone, Default)]
+pub struct Reconciled {
+    /// The full list to store.
+    pub findings: Vec<Finding>,
+    /// Never seen before on this project (a dismissed or fixed finding that is
+    /// reported again is NOT fresh).
+    pub fresh: Vec<Finding>,
+    /// Had a verified fix commit and was not reported by this scan.
+    pub confirmed_fixed: Vec<Finding>,
+    /// Was fixed or unconfirmed and is reported again.
+    pub reopened: Vec<Finding>,
+}
+
+/// Fold one COMPLETED scan into the stored findings. Pure.
+///
+/// Call it on every completed scan, including a clean one: a scan that
+/// reports nothing is exactly the evidence that a fix worked, and the old union
+/// merge threw it away. A failed or skipped scan must not call this at all — it
+/// proves nothing about what is fixed.
+pub fn reconcile(existing: &[Finding], incoming: &[Finding], now: &str) -> Reconciled {
+    let mut reported: HashMap<&str, &Finding> = HashMap::new();
+    for f in incoming {
+        reported.entry(f.id.as_str()).or_insert(f);
+    }
+    let known: HashSet<&str> = existing.iter().map(|f| f.id.as_str()).collect();
+
+    let mut out: Vec<Finding> = Vec::with_capacity(existing.len() + incoming.len());
+    let mut placed: HashSet<String> = HashSet::new();
+    let mut confirmed_fixed = Vec::new();
+    let mut reopened = Vec::new();
+
+    for old in existing {
+        if !placed.insert(old.id.clone()) {
+            continue;
+        }
+        let mut f = old.clone().normalised();
+        match reported.get(f.id.as_str()) {
+            Some(new) => {
+                f.last_seen_at = Some(now.to_string());
+                // A dismissed finding stays dismissed however often it is seen:
+                // the person said they accept it, and re-opening it every scan
+                // would make dismissing pointless.
+                if f.status != FindingStatus::Dismissed {
+                    f.title = new.title.clone();
+                    f.severity = new.severity.clone();
+                    f.cwe = new.cwe.clone();
+                    f.location = new.location.clone();
+                    f.remediation = new.remediation.clone();
+                    if matches!(f.status, FindingStatus::Fixed | FindingStatus::NotSeen) {
+                        f.clear_fix_trail();
+                        f.set_status(FindingStatus::Reopened, now);
+                        reopened.push(f.clone());
+                    } else if f.status == FindingStatus::FixCommitted
+                        && f.fix_verified_at.as_deref().is_some_and(|at| at < now)
+                    {
+                        // The commit landed but a scan finished after it still
+                        // reports the problem: the fix did not work. Leaving it
+                        // at fix_committed would hide exactly the failure the
+                        // rescan exists to catch.
+                        let sha = f.fix_commit.clone().unwrap_or_default();
+                        f.clear_fix_trail();
+                        f.verify_detail = Some(format!(
+                            "A scan after fix commit {} still reports this, so the fix did not clear it.",
+                            sha.get(..10).unwrap_or(&sha)
+                        ));
+                        f.set_status(FindingStatus::Reopened, now);
+                        reopened.push(f.clone());
+                    }
+                }
+            }
+            None => match f.status {
+                FindingStatus::FixCommitted => {
+                    f.set_status(FindingStatus::Fixed, now);
+                    confirmed_fixed.push(f.clone());
+                }
+                FindingStatus::Open | FindingStatus::Reopened | FindingStatus::Sent => {
+                    f.set_status(FindingStatus::NotSeen, now);
+                }
+                // Already not_seen, fixed or dismissed: nothing new to say.
+                _ => {}
+            },
+        }
+        out.push(f);
+    }
+
+    let mut fresh = Vec::new();
+    let mut seen_new: HashSet<&str> = HashSet::new();
+    for new in incoming {
+        if known.contains(new.id.as_str()) || !seen_new.insert(new.id.as_str()) {
+            continue;
+        }
+        let mut f = new.clone();
+        f.status = FindingStatus::Open;
+        f.status_at = Some(now.to_string());
+        f.first_seen_at = Some(now.to_string());
+        f.last_seen_at = Some(now.to_string());
+        fresh.push(f);
+    }
+
+    // Newest first, as before; fresh ones lead.
+    let mut findings = fresh.clone();
+    findings.extend(out);
+    cap_closed(&mut findings);
+
+    Reconciled {
+        findings,
+        fresh,
+        confirmed_fixed,
+        reopened,
+    }
+}
+
+/// Keep the newest `MAX_CLOSED_KEPT` closed findings; never touch active ones.
+fn cap_closed(findings: &mut Vec<Finding>) {
+    let mut closed: Vec<usize> = findings
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| !f.status.is_active())
+        .map(|(i, _)| i)
+        .collect();
+    if closed.len() <= MAX_CLOSED_KEPT {
+        return;
+    }
+    // Newest status change first; list position breaks ties deterministically.
+    closed.sort_by(|a, b| {
+        findings[*b]
+            .status_at
+            .cmp(&findings[*a].status_at)
+            .then(a.cmp(b))
+    });
+    let drop: HashSet<usize> = closed[MAX_CLOSED_KEPT..].iter().copied().collect();
+    let mut i = 0usize;
+    findings.retain(|_| {
+        let keep = !drop.contains(&i);
+        i += 1;
+        keep
+    });
+}
+
+/// The counts the Guard panel shows.
+#[derive(serde::Serialize, Debug, Clone, Default, PartialEq, Eq)]
+pub struct Counts {
+    pub active: usize,
+    /// open + reopened: nobody has acted on these yet.
+    pub open: usize,
+    pub sent: usize,
+    /// A fix commit is verified; waiting for a scan to confirm it.
+    pub awaiting_rescan: usize,
+    /// Not seen in the latest scan but no fix commit: unconfirmed.
+    pub unconfirmed: usize,
+    pub fixed: usize,
+    pub dismissed: usize,
+}
+
+pub fn counts(findings: &[Finding]) -> Counts {
+    let mut c = Counts::default();
+    for f in findings {
+        match f.status {
+            FindingStatus::Open | FindingStatus::Reopened => c.open += 1,
+            FindingStatus::Sent => c.sent += 1,
+            FindingStatus::FixCommitted => c.awaiting_rescan += 1,
+            FindingStatus::NotSeen => c.unconfirmed += 1,
+            FindingStatus::Fixed => c.fixed += 1,
+            FindingStatus::Dismissed => c.dismissed += 1,
+        }
+        if f.status.is_active() {
+            c.active += 1;
+        }
+    }
+    c
+}
+
+fn severity_rank(s: &str) -> u8 {
+    match s {
+        "critical" => 0,
+        "high" => 1,
+        "medium" => 2,
+        _ => 3,
+    }
+}
+
+/// Order for display: active first by severity, then closed newest first.
+pub fn display_order(findings: &mut [Finding]) {
+    findings.sort_by(|a, b| {
+        let (aa, ba) = (a.status.is_active(), b.status.is_active());
+        ba.cmp(&aa).then_with(|| {
+            if aa {
+                severity_rank(&a.severity).cmp(&severity_rank(&b.severity))
+            } else {
+                b.status_at.cmp(&a.status_at)
+            }
+        })
+    });
+}
+
+/// Why a status change is refused. The routes turn these into 400/404.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StoreError {
+    NotFound,
+    Rejected(String),
+    Failed(String),
+}
+
+/// The agent label stored on a "sent" finding.
+const MAX_AGENT_CHARS: usize = 80;
+/// Longest reason a dismissal may carry.
+pub const MAX_DISMISS_REASON_CHARS: usize = 280;
+
+/// open/reopened/sent/not_seen -> sent. Sending again (a second agent, or a
+/// retry) is allowed and keeps the FIRST `sent_at`, so verify still counts a
+/// commit made after the first send.
+pub fn apply_sent(f: &mut Finding, agent: &str, now: &str) -> Result<(), StoreError> {
+    let agent = agent.trim();
+    if agent.is_empty() || agent.chars().count() > MAX_AGENT_CHARS {
+        return Err(StoreError::Rejected(format!(
+            "Say which coding agent it was sent to (1 to {MAX_AGENT_CHARS} characters)."
+        )));
+    }
+    if !matches!(
+        f.status,
+        FindingStatus::Open
+            | FindingStatus::Reopened
+            | FindingStatus::Sent
+            | FindingStatus::NotSeen
+    ) {
+        return Err(StoreError::Rejected(format!(
+            "A finding that is {} cannot be sent to an agent; verify or reopen it instead.",
+            status_word(f.status)
+        )));
+    }
+    if f.sent_at.is_none() || !matches!(f.status, FindingStatus::Sent | FindingStatus::NotSeen) {
+        f.sent_at = Some(now.to_string());
+    }
+    f.sent_agent = Some(agent.to_string());
+    f.set_status(FindingStatus::Sent, now);
+    Ok(())
+}
+
+/// open/reopened/sent/not_seen -> fix_committed, after a passing verify.
+/// A finding already `fix_committed` just refreshes its evidence.
+pub fn apply_verified(
+    f: &mut Finding,
+    commit: &str,
+    subject: &str,
+    detail: &str,
+    now: &str,
+) -> Result<(), StoreError> {
+    if !f.status.is_active() {
+        return Err(StoreError::Rejected(format!(
+            "A finding that is {} cannot be verified. Reopen it first.",
+            status_word(f.status)
+        )));
+    }
+    f.fix_commit = Some(commit.to_string());
+    f.fix_commit_subject = Some(subject.to_string());
+    f.fix_verified_at = Some(now.to_string());
+    f.verify_detail = Some(detail.to_string());
+    if f.status != FindingStatus::FixCommitted {
+        f.set_status(FindingStatus::FixCommitted, now);
+    }
+    Ok(())
+}
+
+/// any active -> dismissed (reason required), or fixed/dismissed -> open.
+pub fn apply_status(
+    f: &mut Finding,
+    status: &str,
+    reason: Option<&str>,
+    now: &str,
+) -> Result<(), StoreError> {
+    match status {
+        "dismissed" => {
+            if !f.status.is_active() {
+                return Err(StoreError::Rejected(format!(
+                    "A finding that is {} cannot be dismissed.",
+                    status_word(f.status)
+                )));
+            }
+            let reason = reason.map(str::trim).unwrap_or_default();
+            let len = reason.chars().count();
+            if len == 0 || len > MAX_DISMISS_REASON_CHARS {
+                return Err(StoreError::Rejected(format!(
+                    "Say why you are dismissing it (1 to {MAX_DISMISS_REASON_CHARS} characters)."
+                )));
+            }
+            f.dismissed_reason = Some(reason.to_string());
+            f.set_status(FindingStatus::Dismissed, now);
+            Ok(())
+        }
+        "open" => {
+            if f.status.is_active() {
+                return Err(StoreError::Rejected(format!(
+                    "A finding that is {} is already active; only a fixed or dismissed one can be reopened.",
+                    status_word(f.status)
+                )));
+            }
+            f.dismissed_reason = None;
+            f.clear_fix_trail();
+            f.set_status(FindingStatus::Open, now);
+            Ok(())
+        }
+        other => Err(StoreError::Rejected(format!(
+            "Unknown status \"{other}\"; use \"dismissed\" (with a reason) or \"open\"."
+        ))),
+    }
+}
+
+fn status_word(s: FindingStatus) -> &'static str {
+    match s {
+        FindingStatus::Open => "open",
+        FindingStatus::Reopened => "reopened",
+        FindingStatus::Sent => "sent",
+        FindingStatus::FixCommitted => "fix committed",
+        FindingStatus::NotSeen => "not seen",
+        FindingStatus::Fixed => "fixed",
+        FindingStatus::Dismissed => "dismissed",
+    }
+}
+
+/// The findings stored in a project's metadata, with lifecycle defaults filled.
+pub fn stored_findings(meta: &serde_json::Value) -> Vec<Finding> {
+    meta.as_object()
+        .and_then(|m| m.get(METADATA_KEY))
+        .and_then(|v| serde_json::from_value::<Vec<Finding>>(v.clone()).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .map(Finding::normalised)
+        .collect()
+}
+
+/// The scan stamps the Guard panel shows.
+#[derive(Debug, Clone, Default)]
+pub struct Stamps {
+    pub last_scan: Option<String>,
+    pub last_attempt: Option<String>,
+    pub rescan_requested_at: Option<String>,
+}
+
+pub fn stamps(meta: &serde_json::Value) -> Stamps {
+    let get = |k: &str| {
+        meta.as_object()
+            .and_then(|m| m.get(k))
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+    };
+    Stamps {
+        last_scan: get(LAST_SCAN_KEY),
+        last_attempt: get(LAST_ATTEMPT_KEY),
+        rescan_requested_at: get(RESCAN_KEY),
+    }
+}
+
+/// Read-modify-write the project's findings under the project's lock.
+/// `change` gets the stored list and returns the list to store plus a value.
+/// The project row is re-read INSIDE the lock for the same reason
+/// `write_meta` does: whatever else wrote metadata meanwhile must survive.
+pub async fn update_findings<R>(
+    pool: &Pool<Sqlite>,
+    project: &Project,
+    change: impl FnOnce(Vec<Finding>) -> Result<(Vec<Finding>, R), StoreError>,
+) -> Result<R, StoreError> {
+    let lock = project_lock(&project.id);
+    let _held = lock.lock().await;
+    let fresh = projects::get_project_by_id_or_slug(pool, &project.id)
+        .await
+        .map_err(StoreError::Failed)?
+        .ok_or(StoreError::NotFound)?;
+    let mut meta = fresh.metadata_json.as_object().cloned().unwrap_or_default();
+    let existing = stored_findings(&fresh.metadata_json);
+    let (updated, out) = change(existing)?;
+    meta.insert(
+        METADATA_KEY.to_string(),
+        serde_json::to_value(&updated).map_err(|e| StoreError::Failed(e.to_string()))?,
+    );
+    projects::update_project(
+        pool,
+        &project.id,
+        UpdateProject {
+            metadata_json: Some(serde_json::Value::Object(meta)),
+            ..Default::default()
+        },
+    )
+    .await
+    .map_err(StoreError::Failed)?;
+    Ok(out)
+}
+
+/// Change one finding by id under the project's lock and return it.
+pub async fn mutate_finding(
+    pool: &Pool<Sqlite>,
+    project: &Project,
+    finding_id: &str,
+    change: impl FnOnce(&mut Finding) -> Result<(), StoreError>,
+) -> Result<Finding, StoreError> {
+    update_findings(pool, project, |mut all| {
+        let f = all
+            .iter_mut()
+            .find(|f| f.id == finding_id)
+            .ok_or(StoreError::NotFound)?;
+        change(f)?;
+        let done = f.clone();
+        Ok((all, done))
+    })
+    .await
+}
+
+// ── On-demand rescan ───────────────────────────────────────────────────
+
+fn parse_ts(stamp: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    chrono::DateTime::parse_from_rfc3339(stamp)
+        .ok()
+        .map(|t| t.with_timezone(&chrono::Utc))
+}
+
+/// How long ago `stamp` was; a future stamp (clock skew) reads as just now.
+fn age_of(stamp: Option<&str>, now: chrono::DateTime<chrono::Utc>) -> Option<Duration> {
+    let t = parse_ts(stamp?)?;
+    Some((now - t).to_std().unwrap_or(Duration::ZERO))
+}
+
+/// What the rescan gate needs to know. Plain data so the rules are testable.
+pub struct RescanGate<'a> {
+    pub enabled: bool,
+    pub sovereign: bool,
+    pub has_root: bool,
+    pub requested_at: Option<&'a str>,
+    pub last_attempt: Option<&'a str>,
+}
+
+/// None when a rescan may be queued; otherwise the reason it cannot, in words
+/// the person can act on.
+pub fn rescan_refusal(gate: &RescanGate<'_>, now: chrono::DateTime<chrono::Utc>) -> Option<String> {
+    if !gate.enabled {
+        return Some(
+            "The Guard is turned off. Turn it on in Settings, then ask for a rescan.".into(),
+        );
+    }
+    if gate.sovereign {
+        return Some(
+            "Sovereign mode is on and the scanner uses a cloud model, so no scan will run.".into(),
+        );
+    }
+    if !gate.has_root {
+        return Some("This project has no local folder to scan. Set its folder first.".into());
+    }
+    let gap = RESCAN_MIN_GAP;
+    if let Some(age) = age_of(gate.requested_at, now).filter(|a| *a < gap) {
+        return Some(format!(
+            "A rescan was already requested {} minute(s) ago. The Guard rescans a project at most every {} minutes.",
+            age.as_secs() / 60,
+            gap.as_secs() / 60
+        ));
+    }
+    if let Some(age) = age_of(gate.last_attempt, now).filter(|a| *a < gap) {
+        return Some(format!(
+            "This project was scanned {} minute(s) ago. The Guard rescans a project at most every {} minutes.",
+            age.as_secs() / 60,
+            gap.as_secs() / 60
+        ));
+    }
+    None
+}
+
+/// A rescan request the loop should still act on.
+fn rescan_pending(meta: &serde_json::Value, now: chrono::DateTime<chrono::Utc>) -> bool {
+    age_of(stamps(meta).rescan_requested_at.as_deref(), now).is_some_and(|a| a < RESCAN_EXPIRES)
+}
+
+/// The result of asking for a rescan.
+#[derive(Debug, Clone)]
+pub struct RescanOutcome {
+    pub queued: bool,
+    pub requested_at: Option<String>,
+    pub reason: Option<String>,
+}
+
+/// Queue a rescan of one project, or say why not. Never errors for a refusal.
+pub async fn request_rescan(
+    pool: &Pool<Sqlite>,
+    project: &Project,
+) -> Result<RescanOutcome, String> {
+    let lock = project_lock(&project.id);
+    let _held = lock.lock().await;
+    let fresh = projects::get_project_by_id_or_slug(pool, &project.id)
+        .await?
+        .ok_or_else(|| "unknown project".to_string())?;
+    let st = stamps(&fresh.metadata_json);
+    let gate = RescanGate {
+        enabled: strix::is_enabled(),
+        sovereign: permagent::sovereignty::global_sovereign_mode(),
+        has_root: fresh
+            .root_path
+            .as_deref()
+            .is_some_and(|r| !r.trim().is_empty()),
+        requested_at: st.rescan_requested_at.as_deref(),
+        last_attempt: st.last_attempt.as_deref(),
+    };
+    let now = chrono::Utc::now();
+    if let Some(reason) = rescan_refusal(&gate, now) {
+        return Ok(RescanOutcome {
+            queued: false,
+            requested_at: st.rescan_requested_at,
+            reason: Some(reason),
+        });
+    }
+    let stamp = now.to_rfc3339();
+    write_meta_locked(
+        pool,
+        &fresh,
+        &[(RESCAN_KEY, serde_json::Value::String(stamp.clone()))],
+    )
+    .await?;
+    RESCAN_NOTIFY.notify_one();
+    tracing::info!(
+        target: "permagentd::strix",
+        project = %fresh.name,
+        "rescan requested — the loop takes this project first"
+    );
+    Ok(RescanOutcome {
+        queued: true,
+        requested_at: Some(stamp),
+        reason: None,
+    })
+}
+
+/// True when any active project has a live rescan request.
+async fn any_rescan_pending(state: &Arc<AppState>) -> bool {
+    let Ok(pool) = state.session_manager().pool_clone().await else {
+        return false;
+    };
+    let now = chrono::Utc::now();
+    projects::list_projects(&pool, Some("active"))
+        .await
+        .map(|ps| {
+            ps.iter()
+                .any(|p| p.root_path.is_some() && rescan_pending(&p.metadata_json, now))
+        })
+        .unwrap_or(false)
 }
 
 pub fn spawn(state: Arc<AppState>) {
@@ -144,14 +798,24 @@ pub fn spawn(state: Arc<AppState>) {
             last_sweep = seeded_last_sweep(&state).await;
         }
         loop {
-            let due = last_sweep.is_none_or(|t| t.elapsed() >= sweep_interval());
-            if strix::is_enabled() && due {
-                last_sweep = Some(tokio::time::Instant::now());
+            let interval_due = last_sweep.is_none_or(|t| t.elapsed() >= sweep_interval());
+            // A pending rescan request bypasses ONLY the interval; every other
+            // gate (enabled, sovereign, preflight, scope, egress audit) still
+            // applies inside `sweep_once`.
+            let requested = strix::is_enabled() && any_rescan_pending(&state).await;
+            if strix::is_enabled() && (interval_due || requested) {
+                // A rescan-only sweep must not use up the scheduled sweep's slot.
+                if interval_due {
+                    last_sweep = Some(tokio::time::Instant::now());
+                }
                 if let Err(e) = sweep_once(&state).await {
                     tracing::warn!(target: "permagentd::strix", "sweep skipped: {e}");
                 }
             }
-            tokio::time::sleep(CHECK_EVERY).await;
+            tokio::select! {
+                _ = tokio::time::sleep(CHECK_EVERY) => {}
+                _ = RESCAN_NOTIFY.notified() => {}
+            }
         }
     });
 }
@@ -224,10 +888,25 @@ async fn sweep_once(state: &Arc<AppState>) -> Result<(), String> {
         .iter()
         .filter(|p| p.id != PERSONAL_PROJECT_ID && p.root_path.is_some())
         .collect();
-    candidates.sort_by_key(|p| rotation_stamp(p));
+    // A project someone asked to rescan goes first, whatever the rotation says.
+    let now_utc = chrono::Utc::now();
+    candidates.sort_by_key(|p| {
+        (
+            !rescan_pending(&p.metadata_json, now_utc),
+            rotation_stamp(p),
+        )
+    });
     let Some(project) = candidates.first().copied() else {
         return Ok(());
     };
+    let rescan_requested = rescan_pending(&project.metadata_json, now_utc);
+    if rescan_requested {
+        tracing::info!(
+            target: "permagentd::strix",
+            project = %project.name,
+            "taking the requested rescan first"
+        );
+    }
     let root = project.root_path.clone().unwrap_or_default();
 
     // The scope guard runs even though the target came from our own
@@ -244,6 +923,7 @@ async fn sweep_once(state: &Arc<AppState>) -> Result<(), String> {
             // Stamp the attempt so an unresolvable root cannot pin the rotation,
             // but do not stamp last_scan — Overview must not say this was clean.
             let _ = stamp_last_attempt(&pool, project).await;
+            clear_rescan_request(&pool, project, rescan_requested).await;
             return Ok(());
         }
     };
@@ -276,6 +956,7 @@ async fn sweep_once(state: &Arc<AppState>) -> Result<(), String> {
         if let Err(e) = stamp_last_attempt(&pool, project).await {
             tracing::warn!(target: "permagentd::strix", "last-attempt stamp failed: {e}");
         }
+        clear_rescan_request(&pool, project, rescan_requested).await;
         return Ok(());
     }
 
@@ -287,55 +968,60 @@ async fn sweep_once(state: &Arc<AppState>) -> Result<(), String> {
         tracing::warn!(target: "permagentd::strix", "last-attempt stamp failed: {e}");
     }
     match outcome {
-        Ok(findings) if findings.is_empty() => {
-            if let Err(e) = stamp_last_scan(&pool, project).await {
-                tracing::warn!(target: "permagentd::strix", "last-scan stamp failed: {e}");
-            }
-            tracing::info!(
-                target: "permagentd::strix",
-                project = %project.name,
-                "clean — no findings"
-            );
-            announce("available");
-        }
         Ok(findings) => {
             if let Err(e) = stamp_last_scan(&pool, project).await {
                 tracing::warn!(target: "permagentd::strix", "last-scan stamp failed: {e}");
             }
-            match record_findings(&pool, project, findings).await {
-                Ok(fresh) => {
-                    // The deliverable: a security report note on the project,
-                    // findings plus an ordered fix plan. Notes index into the
-                    // Brain, so "ask Henry to read the Guard's report and
-                    // dispatch a fix goal" works with no extra plumbing.
-                    let current: Vec<Finding> = current_findings(&pool, &project.id).await;
-                    let body = security_report_markdown(&project.name, &current, &fresh);
-                    let title = format!(
-                        "Security report — {} — {}",
-                        project.name,
-                        chrono::Utc::now().format("%Y-%m-%d")
-                    );
-                    if let Err(e) = permagent::project_notes::create_note_indexed(
-                        &pool,
-                        state.brain.as_ref(),
-                        &project.id,
-                        Some(&title),
-                        &body,
-                    )
-                    .await
-                    {
-                        tracing::warn!(
+            let reported = findings.len();
+            // EVERY completed scan reconciles, a clean one included: reporting
+            // nothing is how a fix gets confirmed.
+            match apply_completed_scan(&pool, project, findings).await {
+                Ok(rec) => {
+                    if reported == 0 {
+                        tracing::info!(
                             target: "permagentd::strix",
                             project = %project.name,
-                            "report note not saved: {e}"
+                            confirmed_fixed = rec.confirmed_fixed.len(),
+                            "clean — no findings"
                         );
                     }
-                    brief_new_findings(&pool, project, &fresh).await;
+                    // The deliverable: a security report note on the project,
+                    // findings plus an ordered fix plan. Notes index into the
+                    // Brain, so "ask your agent to read the Guard's report and
+                    // dispatch a fix goal" works with no extra plumbing. A clean
+                    // scan that confirms nothing stays silent.
+                    if reported > 0 || !rec.confirmed_fixed.is_empty() {
+                        let body =
+                            security_report_markdown(&project.name, &rec.findings, &rec.fresh);
+                        let title = format!(
+                            "Security report — {} — {}",
+                            project.name,
+                            chrono::Utc::now().format("%Y-%m-%d")
+                        );
+                        if let Err(e) = permagent::project_notes::create_note_indexed(
+                            &pool,
+                            state.brain.as_ref(),
+                            &project.id,
+                            Some(&title),
+                            &body,
+                        )
+                        .await
+                        {
+                            tracing::warn!(
+                                target: "permagentd::strix",
+                                project = %project.name,
+                                "report note not saved: {e}"
+                            );
+                        }
+                    }
+                    brief_new_findings(&pool, project, &rec.fresh).await;
+                    brief_confirmed_fixed(&pool, project, &rec.confirmed_fixed).await;
+                    brief_reopened(&pool, project, &rec.reopened).await;
                 }
                 Err(e) => tracing::warn!(
                     target: "permagentd::strix",
                     project = %project.name,
-                    "findings not recorded: {e}"
+                    "findings not recorded: {e:?}"
                 ),
             }
             announce("available");
@@ -364,12 +1050,38 @@ async fn sweep_once(state: &Arc<AppState>) -> Result<(), String> {
             announce("error");
         }
     }
+    // Completed, skipped or failed: the request has been served.
+    clear_rescan_request(&pool, project, rescan_requested).await;
     tracing::info!(
         target: "permagentd::strix",
         project = %project.name,
         "sweep complete — next sweep takes the next least-recently-scanned project"
     );
     Ok(())
+}
+
+/// Clear the project's rescan request once its scan has finished or failed.
+async fn clear_rescan_request(pool: &Pool<Sqlite>, project: &Project, requested: bool) {
+    if !requested {
+        return;
+    }
+    if let Err(e) = write_meta(pool, project, &[(RESCAN_KEY, serde_json::Value::Null)]).await {
+        tracing::warn!(target: "permagentd::strix", "rescan flag not cleared: {e}");
+    }
+}
+
+/// Fold a completed scan into the stored findings under the project's lock.
+async fn apply_completed_scan(
+    pool: &Pool<Sqlite>,
+    project: &Project,
+    incoming: Vec<Finding>,
+) -> Result<Reconciled, StoreError> {
+    let now = chrono::Utc::now().to_rfc3339();
+    update_findings(pool, project, |existing| {
+        let rec = reconcile(&existing, &incoming, &now);
+        Ok((rec.findings.clone(), rec))
+    })
+    .await
 }
 
 /// True only when NO active project carries a last-scan stamp — the Guard has
@@ -519,7 +1231,20 @@ async fn write_meta(
     project: &Project,
     entries: &[(&str, serde_json::Value)],
 ) -> Result<(), String> {
-    // Re-read for the same reason `record_findings` does: `project` was
+    // Same lock as the findings writers: this replaces `metadata_json`
+    // wholesale, so an unguarded stamp could revert a finding change.
+    let lock = project_lock(&project.id);
+    let _held = lock.lock().await;
+    write_meta_locked(pool, project, entries).await
+}
+
+/// `write_meta` for callers that already hold the project's lock.
+async fn write_meta_locked(
+    pool: &Pool<Sqlite>,
+    project: &Project,
+    entries: &[(&str, serde_json::Value)],
+) -> Result<(), String> {
+    // Re-read for the same reason `update_findings` does: `project` was
     // snapshotted before a scan that can run for twenty minutes, and
     // `update_project` replaces `metadata_json` wholesale. Writing the stale
     // snapshot back silently reverts every metadata change anything else made
@@ -586,37 +1311,27 @@ async fn brief_scan_failure(pool: &Pool<Sqlite>, project: &Project, error: &str)
     .await;
 }
 
-/// Re-read the project's current (merged) findings after recording.
-async fn current_findings(pool: &Pool<Sqlite>, project_id: &str) -> Vec<Finding> {
-    match projects::get_project_by_id_or_slug(pool, project_id).await {
-        Ok(Some(p)) => p
-            .metadata_json
-            .as_object()
-            .and_then(|m| m.get(METADATA_KEY))
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
-            .unwrap_or_default(),
-        _ => Vec::new(),
-    }
-}
-
-/// The report note: what was found, then a fix plan ordered by severity —
-/// written so Henry can turn it into a dispatchable goal verbatim.
+/// The report note: what is outstanding, then a fix plan ordered by severity —
+/// written so your agent can turn it into a dispatchable goal verbatim. Only
+/// ACTIVE findings are listed and planned; fixed and dismissed ones are
+/// counted, because a fix plan that includes fixed items sends work in circles.
 fn security_report_markdown(project_name: &str, current: &[Finding], fresh: &[Finding]) -> String {
-    let sev_rank = |s: &str| match s {
-        "critical" => 0,
-        "high" => 1,
-        "medium" => 2,
-        _ => 3,
-    };
-    let mut ordered: Vec<&Finding> = current.iter().collect();
-    ordered.sort_by_key(|f| sev_rank(&f.severity));
+    let c = counts(current);
+    let mut ordered: Vec<&Finding> = current.iter().filter(|f| f.status.is_active()).collect();
+    ordered.sort_by_key(|f| severity_rank(&f.severity));
 
     let mut out = format!(
-        "The Guard scanned **{project_name}** and found {} open finding{} ({} new this scan).\n\n## Findings\n\n",
-        current.len(),
-        if current.len() == 1 { "" } else { "s" },
+        "The Guard scanned **{project_name}**: {} active ({} awaiting a confirming rescan, {} unconfirmed), {} fixed, {} dismissed. {} new this scan.\n\n## Findings\n\n",
+        c.active,
+        c.awaiting_rescan,
+        c.unconfirmed,
+        c.fixed,
+        c.dismissed,
         fresh.len(),
     );
+    if ordered.is_empty() {
+        out.push_str("Nothing active.\n");
+    }
     for f in &ordered {
         let new_tag = if fresh.iter().any(|n| n.id == f.id) {
             " · NEW"
@@ -1609,74 +2324,11 @@ pub fn parse_sarif(raw: &str) -> Result<Vec<Finding>, String> {
                 location,
                 remediation,
                 found_at: now.clone(),
+                ..Default::default()
             });
         }
     }
     Ok(out)
-}
-
-/// The findings that were not already on the checklist. Briefing on these —
-/// and only these — is what stops the same medium finding re-alerting Henry
-/// every six hours forever.
-fn fresh_findings(existing: &[Finding], incoming: &[Finding]) -> Vec<Finding> {
-    incoming
-        .iter()
-        .filter(|f| !existing.iter().any(|old| old.id == f.id))
-        .cloned()
-        .collect()
-}
-
-/// Merge findings into the project's metadata, newest first, deduped on id so
-/// a finding that persists across sweeps does not multiply. Returns the
-/// findings that are new this sweep.
-async fn record_findings(
-    pool: &Pool<Sqlite>,
-    project: &Project,
-    findings: Vec<Finding>,
-) -> Result<Vec<Finding>, String> {
-    // Re-read: `project` was captured BEFORE the last-scan stamp was written,
-    // so writing its metadata back would erase the stamp and pin the rotation
-    // to this project forever — it would be least-recently-scanned every tick.
-    let fresh = projects::get_project_by_id_or_slug(pool, &project.id)
-        .await
-        .ok()
-        .flatten();
-    let mut meta = fresh
-        .as_ref()
-        .unwrap_or(project)
-        .metadata_json
-        .as_object()
-        .cloned()
-        .unwrap_or_default();
-    let existing: Vec<Finding> = meta
-        .get(METADATA_KEY)
-        .and_then(|v| serde_json::from_value(v.clone()).ok())
-        .unwrap_or_default();
-
-    let fresh = fresh_findings(&existing, &findings);
-
-    let mut merged = findings;
-    for old in existing {
-        if !merged.iter().any(|f| f.id == old.id) {
-            merged.push(old);
-        }
-    }
-    merged.truncate(MAX_KEPT);
-
-    meta.insert(
-        METADATA_KEY.to_string(),
-        serde_json::to_value(&merged).map_err(|e| e.to_string())?,
-    );
-    projects::update_project(
-        pool,
-        &project.id,
-        UpdateProject {
-            metadata_json: Some(serde_json::Value::Object(meta)),
-            ..Default::default()
-        },
-    )
-    .await
-    .map(|_| fresh)
 }
 
 /// Tell Henry only when it matters: new findings at medium severity or above.
@@ -1707,6 +2359,71 @@ async fn brief_new_findings(pool: &Pool<Sqlite>, project: &Project, fresh: &[Fin
         },
     )
     .await;
+}
+
+/// One briefing when a rescan confirms fixes — the payoff of the whole loop.
+async fn brief_confirmed_fixed(pool: &Pool<Sqlite>, project: &Project, fixed: &[Finding]) {
+    if fixed.is_empty() {
+        return;
+    }
+    let n = fixed.len();
+    permagent::briefings::file_briefing(
+        pool,
+        permagent::briefings::NewBriefing {
+            from_agent: strix::STRIX_FEATURE_ID.to_string(),
+            kind: "security_fixed".to_string(),
+            severity: permagent::briefings::Severity::Info,
+            summary: format!(
+                "{n} security finding{} confirmed fixed on {}",
+                if n == 1 { "" } else { "s" },
+                project.name
+            ),
+            detail: Some(format!(
+                "Each had a verified fix commit and was absent from the latest scan: {}.",
+                finding_titles(fixed)
+            )),
+            ref_kind: Some("project".to_string()),
+            ref_id: Some(project.id.clone()),
+        },
+    )
+    .await;
+}
+
+/// One briefing when findings that were fixed or unconfirmed are reported again.
+async fn brief_reopened(pool: &Pool<Sqlite>, project: &Project, reopened: &[Finding]) {
+    if reopened.is_empty() {
+        return;
+    }
+    let n = reopened.len();
+    permagent::briefings::file_briefing(
+        pool,
+        permagent::briefings::NewBriefing {
+            from_agent: strix::STRIX_FEATURE_ID.to_string(),
+            kind: "security_reopened".to_string(),
+            severity: permagent::briefings::Severity::Attention,
+            summary: format!(
+                "{n} security finding{} came back on {}",
+                if n == 1 { "" } else { "s" },
+                project.name
+            ),
+            detail: Some(format!(
+                "The latest scan reported these again after they had been fixed or left \
+                 unconfirmed: {}.",
+                finding_titles(reopened)
+            )),
+            ref_kind: Some("project".to_string()),
+            ref_id: Some(project.id.clone()),
+        },
+    )
+    .await;
+}
+
+fn finding_titles(findings: &[Finding]) -> String {
+    let mut titles: Vec<&str> = findings.iter().take(5).map(|f| f.title.as_str()).collect();
+    if findings.len() > 5 {
+        titles.push("and more");
+    }
+    titles.join("; ")
 }
 
 #[cfg(test)]
@@ -1756,6 +2473,7 @@ mod tests {
             location: None,
             remediation: None,
             found_at: "2026-08-05T00:00:00Z".to_string(),
+            ..Default::default()
         }
     }
 
@@ -1946,20 +2664,6 @@ Some progress line
 
         assert!(report_preflight_failure(&pool, stamp.as_deref(), "strix missing").await);
         assert_eq!(permagent::briefings::unacknowledged_count(&pool).await, 2);
-    }
-
-    #[test]
-    fn only_genuinely_new_findings_are_fresh() {
-        let existing = vec![finding("CWE-89:src/db.rs", "high")];
-        let incoming = vec![
-            finding("CWE-89:src/db.rs", "high"),
-            finding("CWE-79:src/ui.rs", "medium"),
-        ];
-        let fresh = fresh_findings(&existing, &incoming);
-        assert_eq!(fresh.len(), 1);
-        assert_eq!(fresh[0].id, "CWE-79:src/ui.rs");
-        // An unchanged set is entirely stale — this is the re-brief suppressor.
-        assert!(fresh_findings(&existing, &existing).is_empty());
     }
 
     /// A timed-out scan must take its whole tree with it. Tokio keeps a spawned
@@ -2260,5 +2964,449 @@ Some progress line
         assert!(summary.contains("Atlas Atlantic"), "{summary}");
         assert!(summary.contains("empty model input"), "{summary}");
         assert_eq!(ref_id.as_deref(), Some("p1"));
+    }
+
+    // ── Lifecycle ──────────────────────────────────────────────────────
+
+    const T0: &str = "2026-10-01T00:00:00+00:00";
+    const T1: &str = "2026-10-02T00:00:00+00:00";
+
+    fn with_status(id: &str, status: FindingStatus) -> Finding {
+        let mut f = finding(id, "high").normalised();
+        f.status = status;
+        f.status_at = Some(T0.to_string());
+        f
+    }
+
+    fn status_of(rec: &Reconciled, id: &str) -> FindingStatus {
+        rec.findings.iter().find(|f| f.id == id).unwrap().status
+    }
+
+    #[test]
+    fn a_new_finding_is_fresh_and_open() {
+        let rec = reconcile(&[], &[finding("a", "high")], T1);
+        assert_eq!(rec.fresh.len(), 1);
+        let f = &rec.findings[0];
+        assert_eq!(f.status, FindingStatus::Open);
+        assert_eq!(f.first_seen_at.as_deref(), Some(T1));
+        assert_eq!(f.last_seen_at.as_deref(), Some(T1));
+    }
+
+    #[test]
+    fn a_finding_still_reported_keeps_its_status_and_updates_last_seen() {
+        for status in [
+            FindingStatus::Open,
+            FindingStatus::Reopened,
+            FindingStatus::Sent,
+            FindingStatus::FixCommitted,
+        ] {
+            let rec = reconcile(&[with_status("a", status)], &[finding("a", "high")], T1);
+            assert_eq!(status_of(&rec, "a"), status);
+            assert_eq!(rec.findings[0].last_seen_at.as_deref(), Some(T1));
+            assert!(rec.fresh.is_empty() && rec.reopened.is_empty());
+            assert!(rec.confirmed_fixed.is_empty());
+        }
+    }
+
+    #[test]
+    fn a_fix_commit_that_a_later_scan_still_reports_is_reopened() {
+        let mut f = with_status("a", FindingStatus::FixCommitted);
+        f.fix_commit = Some("0123456789abcdef".to_string());
+        f.fix_verified_at = Some(T0.to_string());
+        let rec = reconcile(&[f], &[finding("a", "high")], T1);
+        assert_eq!(status_of(&rec, "a"), FindingStatus::Reopened);
+        assert_eq!(rec.reopened.len(), 1);
+        let got = &rec.findings[0];
+        assert!(got.fix_commit.is_none());
+        assert!(got.verify_detail.as_deref().unwrap().contains("0123456789"));
+    }
+
+    #[test]
+    fn an_unreported_finding_without_a_fix_commit_is_unconfirmed_not_fixed() {
+        for status in [
+            FindingStatus::Open,
+            FindingStatus::Reopened,
+            FindingStatus::Sent,
+        ] {
+            let rec = reconcile(&[with_status("a", status)], &[], T1);
+            assert_eq!(status_of(&rec, "a"), FindingStatus::NotSeen);
+            assert!(rec.confirmed_fixed.is_empty());
+        }
+    }
+
+    #[test]
+    fn a_clean_scan_confirms_a_verified_fix() {
+        let rec = reconcile(&[with_status("a", FindingStatus::FixCommitted)], &[], T1);
+        assert_eq!(status_of(&rec, "a"), FindingStatus::Fixed);
+        assert_eq!(rec.confirmed_fixed.len(), 1);
+        assert_eq!(rec.findings[0].status_at.as_deref(), Some(T1));
+    }
+
+    #[test]
+    fn closed_and_unconfirmed_findings_are_stable_when_unreported() {
+        for status in [
+            FindingStatus::NotSeen,
+            FindingStatus::Fixed,
+            FindingStatus::Dismissed,
+        ] {
+            let rec = reconcile(&[with_status("a", status)], &[], T1);
+            assert_eq!(status_of(&rec, "a"), status);
+            assert_eq!(rec.findings[0].status_at.as_deref(), Some(T0));
+            assert!(rec.confirmed_fixed.is_empty());
+        }
+    }
+
+    #[test]
+    fn a_reported_fixed_or_unconfirmed_finding_reopens_and_forgets_its_fix() {
+        for status in [FindingStatus::Fixed, FindingStatus::NotSeen] {
+            let mut old = with_status("a", status);
+            old.sent_at = Some(T0.into());
+            old.sent_agent = Some("agent".into());
+            old.fix_commit = Some("abc".into());
+            old.verify_detail = Some("x".into());
+            let rec = reconcile(&[old], &[finding("a", "high")], T1);
+            assert_eq!(status_of(&rec, "a"), FindingStatus::Reopened);
+            assert_eq!(rec.reopened.len(), 1);
+            assert!(rec.fresh.is_empty(), "a known finding is never fresh");
+            let f = &rec.findings[0];
+            assert!(f.sent_at.is_none() && f.fix_commit.is_none() && f.verify_detail.is_none());
+        }
+    }
+
+    #[test]
+    fn a_dismissed_finding_stays_dismissed_and_is_never_fresh() {
+        let mut old = with_status("a", FindingStatus::Dismissed);
+        old.dismissed_reason = Some("accepted risk".into());
+        let rec = reconcile(&[old], &[finding("a", "critical")], T1);
+        assert_eq!(status_of(&rec, "a"), FindingStatus::Dismissed);
+        assert!(rec.fresh.is_empty() && rec.reopened.is_empty());
+        let f = &rec.findings[0];
+        assert_eq!(f.last_seen_at.as_deref(), Some(T1));
+        assert_eq!(f.status_at.as_deref(), Some(T0));
+        assert_eq!(f.dismissed_reason.as_deref(), Some("accepted risk"));
+    }
+
+    #[test]
+    fn a_clean_scan_over_an_empty_list_changes_nothing() {
+        let rec = reconcile(&[], &[], T1);
+        assert!(rec.findings.is_empty() && rec.fresh.is_empty());
+    }
+
+    #[test]
+    fn duplicate_ids_in_a_scan_make_one_finding() {
+        let rec = reconcile(&[], &[finding("a", "high"), finding("a", "high")], T1);
+        assert_eq!(rec.findings.len(), 1);
+        assert_eq!(rec.fresh.len(), 1);
+    }
+
+    #[test]
+    fn active_findings_are_never_dropped_and_only_closed_history_is_capped() {
+        let mut existing: Vec<Finding> = (0..100)
+            .map(|i| with_status(&format!("active-{i}"), FindingStatus::Open))
+            .collect();
+        for i in 0..70 {
+            let mut f = with_status(&format!("closed-{i}"), FindingStatus::Fixed);
+            // closed-69 is the newest.
+            f.status_at = Some(format!("2026-09-01T00:00:{i:02}+00:00"));
+            existing.push(f);
+        }
+        // Everything active is still reported, so nothing changes status.
+        let incoming: Vec<Finding> = (0..100)
+            .map(|i| finding(&format!("active-{i}"), "high"))
+            .collect();
+        let rec = reconcile(&existing, &incoming, T1);
+        let active = rec.findings.iter().filter(|f| f.status.is_active()).count();
+        let closed: Vec<&Finding> = rec
+            .findings
+            .iter()
+            .filter(|f| !f.status.is_active())
+            .collect();
+        assert_eq!(active, 100);
+        assert_eq!(closed.len(), MAX_CLOSED_KEPT);
+        assert!(closed.iter().any(|f| f.id == "closed-69"), "newest kept");
+        assert!(closed.iter().all(|f| f.id != "closed-0"), "oldest aged out");
+    }
+
+    #[test]
+    fn counts_split_the_list_the_way_the_panel_shows_it() {
+        let list = vec![
+            with_status("1", FindingStatus::Open),
+            with_status("2", FindingStatus::Reopened),
+            with_status("3", FindingStatus::Sent),
+            with_status("4", FindingStatus::FixCommitted),
+            with_status("5", FindingStatus::NotSeen),
+            with_status("6", FindingStatus::Fixed),
+            with_status("7", FindingStatus::Dismissed),
+        ];
+        let c = counts(&list);
+        assert_eq!(
+            c,
+            Counts {
+                active: 5,
+                open: 2,
+                sent: 1,
+                awaiting_rescan: 1,
+                unconfirmed: 1,
+                fixed: 1,
+                dismissed: 1
+            }
+        );
+    }
+
+    #[test]
+    fn display_order_is_active_by_severity_then_closed_newest_first() {
+        let mut low = with_status("low", FindingStatus::Open);
+        low.severity = "low".into();
+        let mut crit = with_status("crit", FindingStatus::Sent);
+        crit.severity = "critical".into();
+        let mut old = with_status("old", FindingStatus::Fixed);
+        old.status_at = Some("2026-09-01T00:00:00+00:00".into());
+        let mut new = with_status("new", FindingStatus::Dismissed);
+        new.status_at = Some("2026-09-30T00:00:00+00:00".into());
+        let mut list = vec![old, low, new, crit];
+        display_order(&mut list);
+        let ids: Vec<&str> = list.iter().map(|f| f.id.as_str()).collect();
+        assert_eq!(ids, ["crit", "low", "new", "old"]);
+    }
+
+    #[test]
+    fn metadata_from_before_the_lifecycle_reads_as_open() {
+        let meta = serde_json::json!({ "strix_findings": [{
+            "id": "CWE-89:src/db.rs", "title": "SQL injection", "severity": "high",
+            "cwe": "CWE-89", "location": "src/db.rs", "remediation": null,
+            "found_at": "2026-08-05T00:00:00Z"
+        }]});
+        let list = stored_findings(&meta);
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].status, FindingStatus::Open);
+        assert_eq!(
+            list[0].first_seen_at.as_deref(),
+            Some("2026-08-05T00:00:00Z")
+        );
+        // Unset lifecycle fields are omitted, not written as nulls.
+        let json = serde_json::to_value(&list[0]).unwrap();
+        assert!(json.get("sent_at").is_none());
+        assert_eq!(json["status"], "open");
+    }
+
+    #[test]
+    fn an_unknown_status_reads_as_open_instead_of_losing_the_list() {
+        let f: Finding = serde_json::from_value(serde_json::json!({
+            "id": "a", "title": "t", "severity": "low", "cwe": null,
+            "location": null, "remediation": null, "found_at": "x", "status": "mystery"
+        }))
+        .unwrap();
+        assert_eq!(f.status, FindingStatus::Open);
+    }
+
+    fn rejected(r: Result<(), StoreError>) -> String {
+        match r {
+            Err(StoreError::Rejected(m)) => m,
+            other => panic!("expected a rejection, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sent_is_for_active_unfixed_findings_and_needs_an_agent() {
+        let mut f = with_status("a", FindingStatus::Open);
+        assert!(apply_sent(&mut f, "  ", T1).is_err());
+        assert!(apply_sent(&mut f, &"x".repeat(81), T1).is_err());
+        apply_sent(&mut f, "coding agent", T1).unwrap();
+        assert_eq!(f.status, FindingStatus::Sent);
+        assert_eq!(f.sent_agent.as_deref(), Some("coding agent"));
+        assert_eq!(f.sent_at.as_deref(), Some(T1));
+        // Sending again keeps the first sent_at.
+        apply_sent(&mut f, "another agent", "2026-10-03T00:00:00+00:00").unwrap();
+        assert_eq!(f.sent_at.as_deref(), Some(T1));
+        assert_eq!(f.sent_agent.as_deref(), Some("another agent"));
+        let mut n = with_status("a", FindingStatus::NotSeen);
+        apply_sent(&mut n, "agent", T1).unwrap();
+        assert_eq!(n.status, FindingStatus::Sent);
+        for status in [
+            FindingStatus::FixCommitted,
+            FindingStatus::Fixed,
+            FindingStatus::Dismissed,
+        ] {
+            let mut f = with_status("a", status);
+            rejected(apply_sent(&mut f, "agent", T1));
+            assert_eq!(
+                f.status, status,
+                "a refused change leaves the finding alone"
+            );
+        }
+        let mut r = with_status("a", FindingStatus::Reopened);
+        apply_sent(&mut r, "agent", T1).unwrap();
+    }
+
+    #[test]
+    fn verify_moves_active_findings_to_fix_committed_and_refuses_closed_ones() {
+        for status in [
+            FindingStatus::Open,
+            FindingStatus::Reopened,
+            FindingStatus::Sent,
+            FindingStatus::NotSeen,
+            FindingStatus::FixCommitted,
+        ] {
+            let mut f = with_status("a", status);
+            apply_verified(&mut f, "abc123", "Fix it", "detail", T1).unwrap();
+            assert_eq!(f.status, FindingStatus::FixCommitted);
+            assert_eq!(f.fix_commit.as_deref(), Some("abc123"));
+            assert_eq!(f.fix_commit_subject.as_deref(), Some("Fix it"));
+            assert_eq!(f.fix_verified_at.as_deref(), Some(T1));
+            assert_eq!(f.verify_detail.as_deref(), Some("detail"));
+        }
+        for status in [FindingStatus::Fixed, FindingStatus::Dismissed] {
+            let mut f = with_status("a", status);
+            rejected(apply_verified(&mut f, "abc", "s", "d", T1));
+        }
+    }
+
+    #[test]
+    fn dismissing_needs_a_reason_of_one_to_280_characters() {
+        let mut f = with_status("a", FindingStatus::Sent);
+        rejected(apply_status(&mut f, "dismissed", None, T1));
+        rejected(apply_status(&mut f, "dismissed", Some("   "), T1));
+        rejected(apply_status(
+            &mut f,
+            "dismissed",
+            Some(&"x".repeat(281)),
+            T1,
+        ));
+        assert_eq!(f.status, FindingStatus::Sent);
+        apply_status(&mut f, "dismissed", Some(&"x".repeat(280)), T1).unwrap();
+        assert_eq!(f.status, FindingStatus::Dismissed);
+        assert_eq!(f.dismissed_reason.as_deref().map(str::len), Some(280));
+        // Closed findings cannot be dismissed again.
+        rejected(apply_status(&mut f, "dismissed", Some("again"), T1));
+    }
+
+    #[test]
+    fn reopening_only_works_on_closed_findings_and_clears_the_reason() {
+        let mut f = with_status("a", FindingStatus::Open);
+        rejected(apply_status(&mut f, "open", None, T1));
+        let mut d = with_status("a", FindingStatus::Dismissed);
+        d.dismissed_reason = Some("accepted".into());
+        apply_status(&mut d, "open", None, T1).unwrap();
+        assert_eq!(d.status, FindingStatus::Open);
+        assert!(d.dismissed_reason.is_none());
+        let mut x = with_status("a", FindingStatus::Fixed);
+        x.fix_commit = Some("abc".into());
+        apply_status(&mut x, "open", None, T1).unwrap();
+        assert!(x.fix_commit.is_none());
+        rejected(apply_status(&mut x, "fixed", None, T1));
+    }
+
+    fn gate<'a>(requested: Option<&'a str>, attempt: Option<&'a str>) -> RescanGate<'a> {
+        RescanGate {
+            enabled: true,
+            sovereign: false,
+            has_root: true,
+            requested_at: requested,
+            last_attempt: attempt,
+        }
+    }
+
+    fn at(s: &str) -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::parse_from_rfc3339(s)
+            .unwrap()
+            .with_timezone(&chrono::Utc)
+    }
+
+    #[test]
+    fn a_rescan_is_refused_when_the_guard_is_off_sovereign_or_has_no_folder() {
+        let now = at("2026-10-14T12:00:00+00:00");
+        assert!(rescan_refusal(&gate(None, None), now).is_none());
+        let mut g = gate(None, None);
+        g.enabled = false;
+        assert!(rescan_refusal(&g, now).unwrap().contains("turned off"));
+        let mut g = gate(None, None);
+        g.sovereign = true;
+        assert!(rescan_refusal(&g, now).unwrap().contains("Sovereign"));
+        let mut g = gate(None, None);
+        g.has_root = false;
+        assert!(rescan_refusal(&g, now).unwrap().contains("no local folder"));
+    }
+
+    #[test]
+    fn a_rescan_is_refused_within_thirty_minutes_of_the_last_request_or_scan() {
+        let now = at("2026-10-14T12:00:00+00:00");
+        let recent = "2026-10-14T11:45:00+00:00";
+        let old = "2026-10-14T11:20:00+00:00";
+        assert!(rescan_refusal(&gate(Some(recent), None), now)
+            .unwrap()
+            .contains("already requested 15 minute"));
+        assert!(rescan_refusal(&gate(None, Some(recent)), now)
+            .unwrap()
+            .contains("scanned 15 minute"));
+        assert!(rescan_refusal(&gate(Some(old), Some(old)), now).is_none());
+        // A stamp in the future (clock skew) counts as just now.
+        assert!(rescan_refusal(&gate(None, Some("2026-10-14T13:00:00+00:00")), now).is_some());
+        // An unparseable stamp must not block forever.
+        assert!(rescan_refusal(&gate(Some("junk"), Some("junk")), now).is_none());
+    }
+
+    #[test]
+    fn a_stale_rescan_request_stops_counting_as_pending() {
+        let now = at("2026-10-14T12:00:00+00:00");
+        let meta = |t: &str| serde_json::json!({ "strix_rescan_requested_at": t });
+        assert!(rescan_pending(&meta("2026-10-14T11:00:00+00:00"), now));
+        assert!(!rescan_pending(&meta("2026-10-14T05:00:00+00:00"), now));
+        assert!(!rescan_pending(&serde_json::json!({}), now));
+    }
+
+    #[test]
+    fn the_report_lists_and_plans_active_findings_only() {
+        let mut fixed = with_status("fixed-one", FindingStatus::Fixed);
+        fixed.title = "Already fixed thing".into();
+        let mut gone = with_status("dismissed-one", FindingStatus::Dismissed);
+        gone.title = "Dismissed thing".into();
+        let mut live = with_status("live-one", FindingStatus::FixCommitted);
+        live.title = "Live thing".into();
+        let mut stale = with_status("stale-one", FindingStatus::NotSeen);
+        stale.title = "Stale thing".into();
+        let md = security_report_markdown("Atlas", &[fixed, gone, live, stale], &[]);
+        assert!(
+            md.contains(
+                "2 active (1 awaiting a confirming rescan, 1 unconfirmed), 1 fixed, 1 dismissed"
+            ),
+            "{md}"
+        );
+        assert!(md.contains("Live thing") && md.contains("Stale thing"));
+        assert!(!md.contains("Already fixed thing") && !md.contains("Dismissed thing"));
+    }
+
+    #[tokio::test]
+    async fn confirmed_fix_and_reopen_briefings_name_the_project() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        permagent::session::spectral_schema::apply_briefings_schema(&pool)
+            .await
+            .unwrap();
+        let project = fake_project("Atlas Atlantic");
+        brief_confirmed_fixed(&pool, &project, &[]).await;
+        brief_reopened(&pool, &project, &[]).await;
+        let none: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM agent_briefings")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(none, 0, "nothing to say, nothing filed");
+
+        brief_confirmed_fixed(&pool, &project, &[finding("a", "high")]).await;
+        brief_reopened(&pool, &project, &[finding("b", "high")]).await;
+        let rows: Vec<(String, String)> =
+            sqlx::query_as("SELECT kind, summary FROM agent_briefings ORDER BY kind")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].0, "security_fixed");
+        assert!(rows[0]
+            .1
+            .contains("1 security finding confirmed fixed on Atlas Atlantic"));
+        assert_eq!(rows[1].0, "security_reopened");
+        assert!(rows[1].1.contains("came back on Atlas Atlantic"));
     }
 }

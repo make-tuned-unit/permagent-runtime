@@ -41,7 +41,7 @@ pub struct VerifyOutcome {
     pub checks: Vec<Check>,
 }
 
-fn pass(id: &'static str, label: &'static str, detail: impl Into<String>) -> Check {
+pub(crate) fn pass(id: &'static str, label: &'static str, detail: impl Into<String>) -> Check {
     Check {
         id,
         label,
@@ -50,7 +50,7 @@ fn pass(id: &'static str, label: &'static str, detail: impl Into<String>) -> Che
     }
 }
 
-fn fail(id: &'static str, label: &'static str, detail: impl Into<String>) -> Check {
+pub(crate) fn fail(id: &'static str, label: &'static str, detail: impl Into<String>) -> Check {
     Check {
         id,
         label,
@@ -67,7 +67,7 @@ fn fail(id: &'static str, label: &'static str, detail: impl Into<String>) -> Che
 /// found". A non-zero exit means "could not check", and the two must not render
 /// the same way (mirrors `steward::hygiene::git_checked`, which is
 /// `pub(crate)` to the permagent crate and so not reachable from here).
-async fn git(dir: &Path, args: &[&str]) -> Option<String> {
+pub(crate) async fn git(dir: &Path, args: &[&str]) -> Option<String> {
     let out = tokio::process::Command::new("git")
         .arg("-C")
         .arg(dir)

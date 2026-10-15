@@ -49,6 +49,7 @@ pub mod picker_close_scan;
 pub mod routes;
 pub mod session_event_bus;
 pub mod state;
+pub mod strix;
 #[cfg(test)]
 mod test_support;
 #[cfg(any(feature = "rustls-tls", feature = "native-tls"))]

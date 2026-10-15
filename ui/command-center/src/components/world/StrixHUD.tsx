@@ -73,7 +73,7 @@ export function StrixHUD({ visible, onClose }: StrixHUDProps) {
         <span style={{ fontSize: textSize.micro, color: colors.textMuted, lineHeight: 1.5 }}>
           {enabled === false
             ? 'Standing by — sweeps disabled; enable in Settings → Models. When on, the Guard probes your own projects the way an attacker would, on its own cadence. Born of the Strix pentest engine.'
-            : 'Your own projects, probed the way an attacker would — on its own cadence, so security review happens without anyone remembering to ask. It reports; it never fixes. Born of the Strix pentest engine.'}
+            : 'Your own projects, probed the way an attacker would — on its own cadence, so security review happens without anyone remembering to ask. The Guard never edits your code: you send a finding to your coding agent, and it checks the commit and rescans to confirm. Born of the Strix pentest engine.'}
         </span>
       </div>
 
