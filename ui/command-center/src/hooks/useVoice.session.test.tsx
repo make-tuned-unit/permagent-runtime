@@ -84,6 +84,8 @@ class MockWebSocket {
 
 // ── Audio mocks (mic + AudioContext) ────────────────────────────────────────
 
+const createdProcessors: Array<{ disconnect: ReturnType<typeof vi.fn> }> = [];
+
 class MockAudioContext {
   state = 'running';
   destination = {};
@@ -91,7 +93,9 @@ class MockAudioContext {
     return { connect: vi.fn() };
   }
   createScriptProcessor() {
-    return { connect: vi.fn(), disconnect: vi.fn(), onaudioprocess: null };
+    const proc = { connect: vi.fn(), disconnect: vi.fn(), onaudioprocess: null };
+    createdProcessors.push(proc);
+    return proc;
   }
   createAnalyser() {
     return { connect: vi.fn(), fftSize: 0, smoothingTimeConstant: 0 };
@@ -280,6 +284,27 @@ describe('useVoice — session rebinding', () => {
     act(() => ws2.serverReady());
     await flush();
     expect(hook.current!.state).toBe('ready');
+  });
+
+  it('tears the capture down when the server ends it, so processors never stack', async () => {
+    // Live 2026-10-15: after the server hit its 15 s cap (error + idle) the
+    // processor kept streaming, each new VAD start added another, and every
+    // capture hit the cap sooner (7.5 s, 5.0 s, ... 1.3 s).
+    const ws = await activateTo('session-A');
+    createdProcessors.length = 0;
+    act(() => hook.current!.startRecording('vad'));
+    expect(hook.current!.state).toBe('recording');
+    const first = createdProcessors[createdProcessors.length - 1];
+    act(() => {
+      ws.onmessage?.({ data: JSON.stringify({ type: 'error', message: 'This recording is too long.' }) });
+      ws.onmessage?.({ data: JSON.stringify({ type: 'idle' }) });
+    });
+    await flush();
+    expect(first.disconnect).toHaveBeenCalled();
+    expect(hook.current!.state).toBe('ready');
+    act(() => hook.current!.startRecording('vad'));
+    const recordingProcessors = createdProcessors.filter(p => !p.disconnect.mock.calls.length);
+    expect(recordingProcessors.length).toBeLessThanOrEqual(1);
   });
 
   it('drops an in-flight recording on session switch — never sends stop to the old session', async () => {

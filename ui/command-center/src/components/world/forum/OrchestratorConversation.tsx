@@ -2,6 +2,22 @@ import { useEffect, useState } from 'react';
 import { useCommandCenter } from '../../../lib/store';
 import { useHabitatTravel } from './habitatMotion';
 import { stripVoiceDeliveryTags } from '../../../lib/voiceDeliveryTags';
+import { api, extractText } from '../../../lib/api';
+import { resolveCurrentChatSession } from '../../../lib/voiceHomeSession';
+
+type TranscriptLine = { id: string; role: 'user' | 'assistant'; content: string };
+
+/** The suite-wide current chat, which is what this voice conversation talks to.
+ *  The dock's `chatMessages` belong to whatever chat the dock has open, so a
+ *  long reply's "rest is on screen" text never showed here (live 2026-10-15). */
+async function loadCurrentChatTranscript(): Promise<TranscriptLine[]> {
+  const id = await resolveCurrentChatSession();
+  const session = await api.getSession(id);
+  return (session.conversation ?? [])
+    .filter(m => m.metadata?.userVisible !== false)
+    .map((m, i) => ({ id: m.id ?? `${i}`, role: m.role, content: extractText(m) }))
+    .filter(m => m.content.trim().length > 0);
+}
 
 export function OrchestratorConversation({ name, onLeave }: { name: string; onLeave: () => void }) {
   const engine = useCommandCenter(s => s.voiceEngine);
@@ -10,6 +26,18 @@ export function OrchestratorConversation({ name, onLeave }: { name: string; onLe
   const travel = useHabitatTravel('henry');
   const [transcript, setTranscript] = useState(false);
   const [startError, setStartError] = useState('');
+  const [voiceLines, setVoiceLines] = useState<TranscriptLine[] | null>(null);
+  // Reload when the transcript opens and after every turn (each turn moves
+  // the engine through processing/playing back to ready).
+  useEffect(() => {
+    if (!transcript) return;
+    let alive = true;
+    loadCurrentChatTranscript()
+      .then(lines => { if (alive) setVoiceLines(lines); })
+      .catch(() => { /* keep the last good transcript */ });
+    return () => { alive = false; };
+  }, [transcript, engine?.state]);
+  const lines: Array<{ id: string; role: string; content: string }> = voiceLines ?? messages;
   const active = !!engine && (engine.handsFree || !['idle', 'error'].includes(engine.state));
   const status = engine?.state === 'playing' ? 'Speaking' : engine?.state === 'recording' ? 'Listening to you' : engine?.state === 'processing' ? 'Thinking' : engine?.state === 'connecting' ? 'Connecting voice…' : active ? conversation?.wakeHint || 'Ready to listen' : 'A moment, face to face';
   const end = () => { if (engine) { void engine.setHandsFree(false); engine.deactivate(); } };
@@ -24,6 +52,6 @@ export function OrchestratorConversation({ name, onLeave }: { name: string; onLe
     </div>
     {!engine && <small>Voice is available in the Permagent app.</small>}
     {(engine?.error || startError) && <p role="alert">{engine?.error || startError}</p>}
-    {transcript && <div className="orchestrator-transcript" aria-live="polite">{messages.length ? messages.slice(-8).map(m => <div key={m.id}><b>{m.role === 'user' ? 'You' : name}</b><p>{stripVoiceDeliveryTags(m.content)}</p></div>) : <p>Your conversation will appear here.</p>}</div>}
+    {transcript && <div className="orchestrator-transcript" aria-live="polite">{lines.length ? lines.slice(-8).map(m => <div key={m.id}><b>{m.role === 'user' ? 'You' : name}</b><p>{stripVoiceDeliveryTags(m.content)}</p></div>) : <p>Your conversation will appear here.</p>}</div>}
   </section>;
 }

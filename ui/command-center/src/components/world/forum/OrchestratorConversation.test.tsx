@@ -5,6 +5,12 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { useCommandCenter } from '../../../lib/store';
 import { OrchestratorConversation } from './OrchestratorConversation';
 vi.mock('./habitatMotion', () => ({ useHabitatTravel: () => null }));
+const transcriptMocks = vi.hoisted(() => ({ resolve: vi.fn(), getSession: vi.fn() }));
+vi.mock('../../../lib/voiceHomeSession', () => ({ resolveCurrentChatSession: transcriptMocks.resolve }));
+vi.mock('../../../lib/api', async (orig) => {
+  const real = await orig<typeof import('../../../lib/api')>();
+  return { ...real, api: { ...real.api, getSession: transcriptMocks.getSession } };
+});
 let host: HTMLDivElement, root: Root;
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 const controls = { setHandsFree: vi.fn(), deactivate: vi.fn(), interrupt: vi.fn() };
@@ -52,4 +58,23 @@ it('the World transcript shows the whole reply, not only the sentences that were
   const shown = host.querySelector('.orchestrator-transcript')?.textContent ?? '';
   expect(shown).toContain(full);
   expect(full.length).toBeGreaterThan(spoken.length);
+});
+
+it('reads the current chat, not the dock, so a long reply\'s text-only remainder is there', async () => {
+  // Live 2026-10-15: "the rest is on screen", but Read conversation showed the
+  // dock's chat. The current chat holds the full reply.
+  const story = 'The lighthouse stood on black rock. ' + 'He kept the light for years. '.repeat(12) + 'And the storm finally broke.';
+  transcriptMocks.resolve.mockResolvedValue('current-chat');
+  transcriptMocks.getSession.mockResolvedValue({ id: 'current-chat', conversation: [
+    { id: 'u1', role: 'user', created: 1, content: [{ type: 'text', text: 'Tell me a long story.' }], metadata: { userVisible: true, agentVisible: true } },
+    { id: 'a1', role: 'assistant', created: 2, content: [{ type: 'text', text: '[pause] ' + story }], metadata: { userVisible: true, agentVisible: true } },
+  ] });
+  useCommandCenter.setState({ chatMessages: [{ id: 'dock', role: 'user', content: 'a different chat' }] as never });
+  act(() => root.render(<OrchestratorConversation name="Ada" onLeave={() => {}} />));
+  await act(async () => { button('Read conversation').click(); await Promise.resolve(); await Promise.resolve(); });
+  expect(transcriptMocks.getSession).toHaveBeenCalledWith('current-chat');
+  const text = host.querySelector('.orchestrator-transcript')?.textContent ?? '';
+  expect(text).toContain('And the storm finally broke.');
+  expect(text).not.toContain('[pause]');
+  expect(text).not.toContain('a different chat');
 });

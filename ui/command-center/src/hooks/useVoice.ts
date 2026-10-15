@@ -1221,10 +1221,12 @@ export function useVoice(options: UseVoiceOptions = {}) {
             });
             break;
           case 'idle':
+            if (stateRef.current === 'recording') teardownCaptureRef.current?.();
             setError(null);
             setStateAndEmit('ready');
             break;
           case 'error':
+            if (stateRef.current === 'recording') teardownCaptureRef.current?.();
             if (isTransientVoiceIdle(msg.message)) {
               setError(null);
               setStateAndEmit('ready');
@@ -1723,10 +1725,26 @@ export function useVoice(options: UseVoiceOptions = {}) {
    * one place every start goes through instead of duplicated (and
    * incompletely applied) at each call site.
    */
+  /** Stop the capture processor and its AudioContext. Every exit from a
+   *  recording must go through this: when the server ended a capture itself
+   *  (`idle` / `error`, e.g. the 15 s cap) the state went back to ready but the
+   *  processor kept streaming, the next VAD start added a second one, and each
+   *  round hit the cap sooner (live 2026-10-15: 7.5 s, 5.0 s, ... 1.3 s). */
+  const teardownCapture = useCallback(() => {
+    processorRef.current?.disconnect();
+    processorRef.current = null;
+    audioCtxRef.current?.close().catch(() => {});
+    audioCtxRef.current = null;
+    frameCountRef.current = 0;
+  }, []);
+
   const startRecording = useCallback((trigger: VoiceTrigger = 'user_tap') => {
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     if (stateRef.current !== 'ready') return;
+    // Never stack processors: a capture the server ended on its own may
+    // still be streaming.
+    if (processorRef.current) teardownCapture();
 
     const stream = mediaStreamRef.current;
     if (!stream) {
@@ -2228,6 +2246,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
   // Late-bound refs so the monitor callback (created once) always calls the
   // freshest versions without re-wiring the audio graph.
   const startRecordingRef = useRef<((trigger?: VoiceTrigger) => void) | null>(null);
+  const teardownCaptureRef = useRef<(() => void) | null>(null);
   const stopRecordingRef = useRef<((reason?: VoiceTurnEndReason) => void) | null>(null);
   const interruptRef = useRef<((arg?: unknown) => void) | null>(null);
 
@@ -2438,6 +2457,7 @@ export function useVoice(options: UseVoiceOptions = {}) {
 
   // Keep the VAD monitor's late-bound refs fresh + tear it down on unmount.
   startRecordingRef.current = startRecording;
+  teardownCaptureRef.current = teardownCapture;
   stopRecordingRef.current = stopRecording;
   interruptRef.current = interrupt;
   useEffect(() => stopVadMonitor, [stopVadMonitor]);
