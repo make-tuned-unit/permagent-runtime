@@ -4,6 +4,7 @@ import { CodeBlock } from './CodeBlock';
 import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { useBrowserNavigate } from '../../hooks/useBrowserNavigate';
+import { stripVoiceDeliveryTags } from '../../lib/voiceDeliveryTags';
 
 export function MarkdownContent({ content }: { content: string }) {
   const { colors } = useTheme();
@@ -95,7 +96,7 @@ export function MarkdownContent({ content }: { content: string }) {
         },
       }}
     >
-      {content}
+      {stripVoiceDeliveryTags(content)}
     </ReactMarkdown>
   );
 }

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useCommandCenter } from '../../../lib/store';
 import { useHabitatTravel } from './habitatMotion';
+import { stripVoiceDeliveryTags } from '../../../lib/voiceDeliveryTags';
 
 export function OrchestratorConversation({ name, onLeave }: { name: string; onLeave: () => void }) {
   const engine = useCommandCenter(s => s.voiceEngine);
@@ -23,6 +24,6 @@ export function OrchestratorConversation({ name, onLeave }: { name: string; onLe
     </div>
     {!engine && <small>Voice is available in the Permagent app.</small>}
     {(engine?.error || startError) && <p role="alert">{engine?.error || startError}</p>}
-    {transcript && <div className="orchestrator-transcript" aria-live="polite">{messages.length ? messages.slice(-8).map(m => <div key={m.id}><b>{m.role === 'user' ? 'You' : name}</b><p>{m.content}</p></div>) : <p>Your conversation will appear here.</p>}</div>}
+    {transcript && <div className="orchestrator-transcript" aria-live="polite">{messages.length ? messages.slice(-8).map(m => <div key={m.id}><b>{m.role === 'user' ? 'You' : name}</b><p>{stripVoiceDeliveryTags(m.content)}</p></div>) : <p>Your conversation will appear here.</p>}</div>}
   </section>;
 }

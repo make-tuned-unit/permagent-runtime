@@ -278,6 +278,70 @@ struct ConfirmBody {
 struct ConfirmResponse {
     confirm_id: String,
     outcome: &'static str,
+    /// The held tool call ran because of this tap.
+    ran: bool,
+    /// The tool's own words (first text block), or why it could not run.
+    detail: Option<String>,
+    is_error: bool,
+}
+
+/// Run the approved, held call on the session's agent, once. The voice turn
+/// that asked for it has already ended, so this tap is the only thing that can
+/// carry it out.
+async fn run_approved_call(
+    state: &AppState,
+    session_id: &str,
+    tool: String,
+    args: serde_json::Value,
+) -> (bool, Option<String>, bool) {
+    let agent = match state.get_agent(session_id.to_string()).await {
+        Ok(agent) => agent,
+        Err(e) => {
+            return (
+                false,
+                Some(format!("The agent for this chat is not available: {e}")),
+                true,
+            )
+        }
+    };
+    let mut params = rmcp::model::CallToolRequestParams::new(tool.clone());
+    if let serde_json::Value::Object(map) = args {
+        params = params.with_arguments(map);
+    }
+    let ctx = permagent::agents::ToolCallContext::new(session_id.to_string(), None, None);
+    let dispatched = agent
+        .extension_manager
+        .dispatch_tool_call(&ctx, params, tokio_util::sync::CancellationToken::default())
+        .await;
+    let outcome = match dispatched {
+        Ok(call) => call.result.await,
+        Err(e) => {
+            tracing::warn!(target: "permagentd::voice", tool = %tool, "confirmed voice call not dispatched: {e}");
+            return (false, Some(format!("{tool} could not be started.")), true);
+        }
+    };
+    match outcome {
+        Ok(result) => {
+            let text = result.content.iter().find_map(|c| {
+                c.as_text()
+                    .map(|t| t.text.chars().take(400).collect::<String>())
+            });
+            let is_error = result.is_error.unwrap_or(false);
+            tracing::info!(
+                target: "permagentd::voice",
+                event = "voice_confirmed_call_ran",
+                session_id,
+                tool = %tool,
+                is_error,
+                "confirmed voice call ran"
+            );
+            (true, text, is_error)
+        }
+        Err(e) => {
+            tracing::warn!(target: "permagentd::voice", tool = %tool, "confirmed voice call failed: {e}");
+            (true, Some(format!("{tool} failed: {e}")), true)
+        }
+    }
 }
 
 /// Apply the user's tap to the L2 gate. `None` = unknown, expired or foreign id.
@@ -291,11 +355,19 @@ fn apply_decision(decision: &Decision, session_id: &str, confirm_id: &str) -> Op
 
 /// POST /api/voice/confirm/{confirm_id}: the on-screen Confirm / Dismiss tap.
 async fn resolve_confirm(
+    State(state): State<Arc<AppState>>,
     AxPath(confirm_id): AxPath<String>,
     Json(body): Json<ConfirmBody>,
 ) -> Result<Json<ConfirmResponse>, StatusCode> {
     let outcome = apply_decision(&body.decision, &body.session_id, &confirm_id)
         .ok_or(StatusCode::NOT_FOUND)?;
+    let (ran, detail, is_error) =
+        match permagent::events::voice_origin::take_approved_call(&body.session_id, &confirm_id) {
+            Some((tool, args)) if outcome == "approved" => {
+                run_approved_call(&state, &body.session_id, tool, args).await
+            }
+            _ => (false, None, false),
+        };
     permagent::events::emit(permagent::events::voice_confirm_resolved(
         &body.session_id,
         &confirm_id,
@@ -304,6 +376,9 @@ async fn resolve_confirm(
     Ok(Json(ConfirmResponse {
         confirm_id,
         outcome,
+        ran,
+        detail,
+        is_error,
     }))
 }
 

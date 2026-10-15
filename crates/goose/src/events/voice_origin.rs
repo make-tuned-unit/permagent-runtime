@@ -437,6 +437,8 @@ struct Pending {
     session_id: String,
     tool: String,
     args_key: String,
+    /// The exact arguments, so an approval can run the held call itself.
+    args: serde_json::Value,
     expires_at: i64,
     approved: bool,
 }
@@ -522,6 +524,7 @@ pub fn gate_tool_call(session_id: &str, tool_name: &str, args: &serde_json::Valu
                             session_id: session_id.to_string(),
                             tool: tool_name.to_string(),
                             args_key: key,
+                            args: args.clone(),
                             expires_at,
                             approved: false,
                         },
@@ -563,6 +566,24 @@ pub fn approve_confirmation(session_id: &str, confirm_id: &str) -> bool {
         }
         _ => false,
     }
+}
+
+/// Remove an APPROVED confirmation and hand back the held call, so the
+/// confirm route can run it exactly once. Tapping Confirm used to only mark the
+/// request approved: the voice turn had already ended, so nothing ran until the
+/// user spoke again and the model happened to call the tool a second time.
+pub fn take_approved_call(
+    session_id: &str,
+    confirm_id: &str,
+) -> Option<(String, serde_json::Value)> {
+    let mut pending = PENDING.lock().ok()?;
+    let ready = pending
+        .get(confirm_id)
+        .is_some_and(|p| p.session_id == session_id && p.approved);
+    if !ready {
+        return None;
+    }
+    pending.remove(confirm_id).map(|p| (p.tool, p.args))
 }
 
 /// The user dismissed the card.
@@ -921,6 +942,30 @@ mod tests {
             gate_tool_call(sid, "create_person", &args),
             VoiceGate::NeedsConfirmation(_)
         ));
+        end(sid);
+    }
+
+    #[test]
+    fn an_approved_call_is_handed_back_once_with_its_arguments() {
+        let sid = "gate-take-1";
+        bind_voice(sid);
+        let args = serde_json::json!({"display_name": "Ada Lovelace"});
+        let VoiceGate::NeedsConfirmation(req) = gate_tool_call(sid, "create_person", &args) else {
+            panic!("expected confirm")
+        };
+        assert!(
+            take_approved_call(sid, &req.confirm_id).is_none(),
+            "not approved yet"
+        );
+        assert!(approve_confirmation(sid, &req.confirm_id));
+        assert!(take_approved_call("other", &req.confirm_id).is_none());
+        let (tool, got) = take_approved_call(sid, &req.confirm_id).expect("approved call");
+        assert_eq!(tool, "create_person");
+        assert_eq!(got, args);
+        assert!(
+            take_approved_call(sid, &req.confirm_id).is_none(),
+            "runs once"
+        );
         end(sid);
     }
 
