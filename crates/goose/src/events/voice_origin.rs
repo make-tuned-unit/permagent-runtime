@@ -220,30 +220,39 @@ pub fn is_voice_turn(session_id: &str) -> bool {
 /// surface is a one-line change here. Keep the live total at or under
 /// [`VOICE_MAX_TOOLS`].
 pub const VOICE_TOOL_ALLOWLIST: &[&str] = &[
+    // Bare names match the tool on its own OR after any `<extension>__`
+    // prefix: most platform tools are exposed UNPREFIXED (`create_person`,
+    // `card_list`, `navigate_app`), so the old `people__*` style entries
+    // matched nothing and a voice turn saw four tools (staging 2026-10-15).
     // recall / reading
-    "chatrecall__chatrecall",
-    "inbox__list_pending_decisions",
-    "dashboard__read_dashboard",
-    "projectmanager__project_list",
-    "projectmanager__card_list",
-    "projectmanager__card_due_list",
-    "projectmanager__board_summary",
-    "orchestrator__goal_list",
-    "orchestrator__goal_status",
-    "orchestrator__check_worker",
-    // people, calendar, notes (writes in these still pass the confirm gate)
-    "people__*",
+    "chatrecall",
+    "search_memory",
+    "get_memory",
+    "list_pending_decisions",
+    "read_dashboard",
+    "project_list",
+    "card_list",
+    "card_due_list",
+    "board_summary",
+    "goal_list",
+    "goal_status",
+    "check_worker",
+    // people (writes still pass the on-screen confirm gate)
+    "create_person",
+    "enrich_person",
+    "log_person_meeting",
+    "associate_person_with_project",
+    // calendar and notes servers, when installed
     "calendar__*",
     "notes__*",
     "note__*",
     // scratch list + the one web read a quick factual question needs
-    "todo__todo_write",
-    "browser__read_webpage",
-    "public_apis__*",
+    "todo_write",
+    "read_webpage",
     // moving the user's view / clipboard (the origin block governs phones)
-    "app_conductor__navigate_app",
-    "app_conductor__open_item",
-    "app_conductor__copy_to_clipboard",
+    "navigate_app",
+    "open_item",
+    "copy_to_clipboard",
 ];
 
 /// The most tools a voice turn should ever expose.
@@ -252,7 +261,13 @@ pub const VOICE_MAX_TOOLS: usize = 25;
 fn pattern_matches(pattern: &str, name: &str) -> bool {
     match pattern.strip_suffix('*') {
         Some(prefix) => name.starts_with(prefix),
-        None => name == pattern,
+        // A bare name matches itself or `<any extension>__<name>`.
+        None => {
+            name == pattern
+                || name
+                    .rsplit_once("__")
+                    .is_some_and(|(_, tool)| tool == pattern)
+        }
     }
 }
 
@@ -864,6 +879,49 @@ mod tests {
         );
         assert_eq!(confirm_summary("shell"), "Allow shell from voice?");
         assert_eq!(confirm_summary("__"), "Allow this action from voice?");
+    }
+
+    /// Staging 2026-10-15: most platform tools are exposed unprefixed, so the
+    /// voice set must match the real names, and a people write still needs
+    /// the on-screen confirm.
+    #[test]
+    fn unprefixed_platform_tools_are_matched_and_coding_tools_are_not() {
+        for allowed in [
+            "create_person",
+            "card_list",
+            "project_list",
+            "read_dashboard",
+            "navigate_app",
+            "list_pending_decisions",
+            "extensionmanager__search_memory",
+            "chatrecall__chatrecall",
+        ] {
+            assert!(voice_slim_tool_allowed(allowed), "{allowed}");
+        }
+        for denied in [
+            "shell",
+            "edit",
+            "write",
+            "read",
+            "search",
+            "delete_person",
+            "merge_people",
+            "card_move",
+            "project_delete",
+            "delegate",
+            "run_recipe",
+            "configure_set",
+        ] {
+            assert!(!voice_slim_tool_allowed(denied), "{denied}");
+        }
+        let sid = "gate-unprefixed-1";
+        bind_voice(sid);
+        let args = serde_json::json!({"name": "Ada Lovelace"});
+        assert!(matches!(
+            gate_tool_call(sid, "create_person", &args),
+            VoiceGate::NeedsConfirmation(_)
+        ));
+        end(sid);
     }
 
     #[test]
