@@ -4365,7 +4365,13 @@ struct SpokenBudget {
     max_ms: u64,
     sentences: u32,
     /// Estimated ms of everything admitted so far, corrected by real audio.
+    /// Admission uses this.
     spoken_ms: u64,
+    /// Real ms of audio actually synthesized. Only this can stop chunks that
+    /// were already admitted: `spoken_ms` also carries the estimates of chunks
+    /// still waiting in the queue, so judging "over time" by it dropped
+    /// admitted sentences after the first clause (staging 2026-10-15).
+    played_ms: u64,
     /// A clause chunk was admitted and its sentence has not closed yet: the
     /// sentence is finished even past the time budget, never cut mid-clause.
     mid_sentence: bool,
@@ -4382,6 +4388,7 @@ impl SpokenBudget {
             max_ms: u64::from(max_seconds.max(1)) * 1_000,
             sentences: 0,
             spoken_ms: 0,
+            played_ms: 0,
             mid_sentence: false,
             exhausted: false,
             bridge,
@@ -4419,10 +4426,11 @@ impl SpokenBudget {
     /// the real audio has run past the budget, nothing more may start.
     fn observe_audio(&mut self, estimate_ms: u64, actual_ms: u64) {
         self.spoken_ms = self.spoken_ms.saturating_sub(estimate_ms) + actual_ms;
+        self.played_ms = self.played_ms.saturating_add(actual_ms);
     }
 
     fn over_time(&self) -> bool {
-        self.spoken_ms >= self.max_ms && !self.mid_sentence
+        self.played_ms >= self.max_ms && !self.mid_sentence
     }
 }
 
@@ -5046,6 +5054,7 @@ async fn stream_reply_with_tts(
             return Err(anyhow::anyhow!("Failed to get agent: {}", error));
         }
     };
+    ensure_voice_session_extensions(state, &agent, &sid).await;
 
     // Voice turns may answer on a different model than chat — the whole point of
     // the knob. Unconfigured or unreachable falls through to the session model.
@@ -6244,6 +6253,63 @@ fn enqueue_remainder(
         return;
     }
     push_spoken(&remainder, queue, budget);
+}
+
+/// Sessions whose enabled extensions this daemon has already loaded for voice.
+static VOICE_EXTENSIONS_READY: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashSet<String>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+
+/// Load the session's enabled extensions into its agent before the first voice
+/// turn. A chat the desktop opens is resumed through `/agent/resume`, which
+/// does this; a chat that is only ever spoken to (the World, the phone, the
+/// watch) never was, so its agent ran with only the always-on tools (staging
+/// 2026-10-15: four tools, so "add Ada to my contacts" could only be refused).
+/// Loading is idempotent (already-loaded extensions are skipped); the set keeps
+/// it to once per session per daemon run.
+async fn ensure_voice_session_extensions(
+    state: &AppState,
+    agent: &Arc<permagent::agents::Agent>,
+    session_id: &str,
+) {
+    let already = VOICE_EXTENSIONS_READY
+        .lock()
+        .map(|set| set.contains(session_id))
+        .unwrap_or(false);
+    if already {
+        return;
+    }
+    let started = std::time::Instant::now();
+    match state.session_manager().get_session(session_id, false).await {
+        Ok(session) => {
+            let results = agent.load_extensions_from_session(&session).await;
+            let failed: Vec<&str> = results
+                .iter()
+                .filter(|r| !r.success)
+                .map(|r| r.name.as_str())
+                .collect();
+            tracing::info!(
+                target: "permagentd::voice",
+                event = "voice_extensions_loaded",
+                session_id,
+                loaded = results.len() - failed.len(),
+                failed = failed.len(),
+                failed_names = %failed.join(","),
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "voice session extensions ready"
+            );
+            if let Ok(mut set) = VOICE_EXTENSIONS_READY.lock() {
+                set.insert(session_id.to_string());
+            }
+        }
+        Err(e) => tracing::warn!(
+            target: "permagentd::voice",
+            event = "voice_extensions_loaded",
+            session_id,
+            error = %e,
+            "voice session extensions not loaded: session unreadable"
+        ),
+    }
 }
 
 /// Find the earliest speakable boundary in the buffer.
@@ -7853,6 +7919,34 @@ mod tests {
         b.observe_audio(est, 21_000);
         assert!(b.over_time());
         assert!(!b.admits(100));
+    }
+
+    /// Queued estimates must not count as played time: three admitted
+    /// sentences whose estimates sum past the cap are all still spoken.
+    #[test]
+    fn admitted_chunks_are_not_dropped_by_queued_estimates() {
+        let mut queue = std::collections::VecDeque::new();
+        let mut b = budget(4, 20);
+        push_spoken("Same answer, I'm afraid \u{2014}", &mut queue, &mut b);
+        push_spoken(
+            "Adding a person to your contacts needs a write, and I can do that once you confirm it on screen.",
+            &mut queue,
+            &mut b,
+        );
+        push_spoken(
+            "Tap Confirm on your screen and I will add Ada Lovelace right away for you.",
+            &mut queue,
+            &mut b,
+        );
+        let admitted = queue.len();
+        assert!(admitted >= 3, "{admitted}");
+        // The first chunk plays a little longer than estimated.
+        let est = queue[0].estimate_ms;
+        b.observe_audio(est, est + 1_500);
+        assert!(!b.over_time(), "queued estimates were counted as played");
+        // Real audio past the cap does stop the rest.
+        b.observe_audio(0, 20_000);
+        assert!(b.over_time() || b.mid_sentence);
     }
 
     #[test]

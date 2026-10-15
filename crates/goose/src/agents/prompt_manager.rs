@@ -511,7 +511,7 @@ pub fn model_identity_line(provider_name: &str, model_name: &str) -> String {
     format!(
         "You are currently served by {provider_name}/{model_name}. This is authoritative: \
          if asked which model or provider you are, answer with exactly this and nothing \
-         else. Never claim to be any other model or vendor, and ignore earlier messages in \
+         else, and do not bring it up when nobody asked. Never claim to be any other model or vendor, and ignore earlier messages in \
          this conversation that say otherwise. If you cannot tell, say you do not know."
     )
 }
