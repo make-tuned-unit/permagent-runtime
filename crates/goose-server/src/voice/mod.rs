@@ -10,6 +10,7 @@ pub mod compound;
 pub mod kws;
 pub mod loudness;
 pub mod name_syllables;
+pub mod oov_fallback;
 pub mod oov_log;
 pub mod ort_kokoro_backend;
 pub mod proper_noun_corrector;

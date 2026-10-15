@@ -1109,6 +1109,15 @@ impl Agent {
         for frontend_tool in frontend_tools.values() {
             tools.push(frontend_tool.tool.clone());
         }
+        drop(frontend_tools);
+
+        // V-13: a voice turn gets the slim voice tool set and the short voice
+        // prompt, not the coding surface. Keyed on the bound voice origin, so
+        // text-chat turns on the same session are unaffected.
+        let voice_turn = crate::events::voice_origin::is_voice_turn(session_id);
+        if voice_turn {
+            tools.retain(|t| crate::events::voice_origin::voice_slim_tool_allowed(&t.name));
+        }
 
         #[cfg(feature = "code-mode")]
         let code_execution_active = use_code_execution_for_role(
@@ -1331,6 +1340,7 @@ impl Agent {
             .with_dispatchable_workers(dispatchable_workers)
             .with_agent_briefings(agent_briefings)
             .with_declared_extensions(declared_extensions)
+            .with_voice_profile(voice_turn)
             // Tool-calling discipline is a per-family concern, so the family
             // that will actually answer picks its own short overlay rather than
             // every model paying for the weakest reader's patches.

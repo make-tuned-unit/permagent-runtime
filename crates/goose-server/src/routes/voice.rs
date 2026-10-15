@@ -94,9 +94,10 @@ pub const VOICE_REPLY_STYLE: &str =
     "The user is speaking to you by voice. Reply in natural conversational speech: \
      short sentences, contractions, concise and direct. No markdown, no bullet points, \
      no numbered lists, no code blocks. Keep replies brief — 1-3 sentences for simple \
-     questions. For a story or a longer ask, keep going — do not stop at three \
-     sentences to ask if they want more. Never say 'do you want me to continue', \
-     'shall I go on', or any mid-reply continue offer; if there is more, say it. \
+     questions. Only the first few sentences of a reply are spoken aloud; anything \
+     longer is shown to the user as text and never read out, so put the answer \
+     itself in your first sentence. Never say 'do you want me to continue', \
+     'shall I go on', or any mid-reply continue offer. \
      Complete the answer or action they actually asked for before offering any \
      optional adjacent detail. Never replace the conclusion with a generic \
      'there is more' cue. Use standard spoken spellings, not eye dialect such \
@@ -115,12 +116,13 @@ pub const VOICE_REPLY_STYLE: &str =
      You may prefix a sentence with ONE delivery tag: [warm] [excited] [calm] \
      [gentle] [serious] [thoughtful] [playful]. Insert [pause] for a beat. Never \
      say the tag names or the brackets aloud; most sentences need no tag. \
-     NEVER spell a word letter by letter. If you do not already know how a name \
-     will sound, STOP. Say you will place it on the Orb and listen. Do not say \
-     the word. Then call save_pronunciation with the word and what they said — \
-     one time, then it is saved forever. Do not guess a respelling and keep going. \
+     NEVER spell a word letter by letter. Say unusual names normally — the voice \
+     handles unfamiliar words on its own. Never stop to ask how a word is \
+     pronounced and never suggest respellings. \
      Verbalize outcomes, not interface mechanics: don't read out UI labels, button names, \
-     menu paths, file paths, URLs, or settings keys, and don't narrate the individual \
+     menu paths, file paths, URLs, settings keys, code identifiers, tool names, branch \
+     names or ids — summarize them instead ('four branches in that repo'), and don't \
+     put anything in backticks. Don't narrate the individual \
      steps you take to do something. Say what happened or what the user should do in plain \
      spoken terms — e.g. 'I turned on web search' rather than 'I clicked the Search and \
      tools toggle in Settings'. If a literal name, path, or value is essential, give just \
@@ -285,17 +287,45 @@ async fn list_pronunciations(
     Json(crate::voice::user_lexicon::all())
 }
 
-/// GET /voice/pronunciations/unresolved — words synthesis had to spell out.
-///
-/// The review queue: every word that missed the dictionary, the lexicon AND the
-/// compound splitter, so it was spelled letter by letter. Ordered most-frequent
-/// first, which is the order worth teaching them in.
+/// GET /voice/pronunciations/unresolved — legacy shape of the review queue,
+/// kept for the existing Settings pronunciation panel. New clients read
+/// `GET /voice/unknown-words`.
 async fn unresolved_pronunciations() -> Json<serde_json::Value> {
     let items: Vec<serde_json::Value> = crate::voice::oov_log::snapshot()
         .into_iter()
-        .map(|(word, count)| serde_json::json!({ "word": word, "spelled_out_times": count }))
+        .map(|e| serde_json::json!({ "word": e.word, "spelled_out_times": e.count }))
         .collect();
     Json(serde_json::json!({ "unresolved": items }))
+}
+
+/// GET /voice/unknown-words — the Settings review list (D5).
+///
+/// Words Henry had to SAY that speech did not know. Each was spoken with a
+/// best-guess reading (never letter-spelled, never a halted reply) and queued
+/// here. Words that only appeared in the user's transcript are never listed:
+/// those are mishears, not vocabulary. Most recently heard first.
+async fn list_unknown_words() -> Json<serde_json::Value> {
+    let words = crate::voice::oov_log::snapshot();
+    Json(serde_json::json!({
+        "words": words,
+        "max_words": crate::voice::oov_log::MAX_WORDS,
+    }))
+}
+
+/// DELETE /voice/unknown-words/{word} — dismiss one word from the review
+/// list. Teaching it (`PUT /voice/pronunciations`) also removes it.
+async fn dismiss_unknown_word(
+    axum::extract::Path(word): axum::extract::Path<String>,
+) -> Json<serde_json::Value> {
+    let removed = crate::voice::oov_log::forget(&word);
+    tracing::info!(
+        target: "permagentd::voice",
+        event = "voice_unknown_word_dismissed",
+        word_hash = %crate::voice::oov_log::word_hash(&word),
+        removed,
+        "unknown word dismissed from review"
+    );
+    Json(serde_json::json!({ "removed": removed }))
 }
 
 /// PUT /voice/pronunciations — upsert one; effective on the very next
@@ -346,8 +376,8 @@ async fn save_pronunciation_route(
         },
     )
     .map_err(ErrorResponse::bad_request)?;
-    // Taught — drop it from the outstanding queue.
-    crate::voice::oov_log::forget(&req.word);
+    // Taught — drop it from the review queue.
+    let _ = crate::voice::oov_log::forget(&req.word);
     tracing::info!(
         target: "permagentd::voice",
         derived, "pronunciation saved"
@@ -428,6 +458,11 @@ pub fn http_routes(state: Arc<AppState>) -> Router {
         .route(
             "/voice/pronunciations/{word}",
             axum::routing::delete(delete_pronunciation),
+        )
+        .route("/voice/unknown-words", get(list_unknown_words))
+        .route(
+            "/voice/unknown-words/{word}",
+            axum::routing::delete(dismiss_unknown_word),
         )
         .route("/api/voices", get(get_voices))
         .with_state(state)
@@ -1020,6 +1055,9 @@ enum VoiceTurnTrigger {
     UserTap,
     Vad,
     Barge,
+    /// Opened by the wake phrase ("hey Henry"): hands-free but deliberate.
+    Wake,
+    /// Anything else, including the retired `teach` listen (D5).
     #[serde(other)]
     Unknown,
 }
@@ -1030,6 +1068,7 @@ impl VoiceTurnTrigger {
             Self::UserTap => "user_tap",
             Self::Vad => "vad",
             Self::Barge => "barge",
+            Self::Wake => "wake",
             Self::Unknown => "unknown",
         }
     }
@@ -1090,6 +1129,11 @@ struct VoiceClientHello {
     wire_channels: Option<u32>,
     wire_encoding: Option<String>,
     io_buffer_duration_ms: Option<u32>,
+    /// The visual surface the conversation is on (`orb`, `world`, …). Absent
+    /// on every client that predates it: those are all Orb surfaces (the
+    /// desktop chat-pane voice, iOS, watch). See [`VoiceSurface`].
+    #[serde(default)]
+    surface: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1122,6 +1166,10 @@ struct VoiceClientStop {
     dropped_input_samples: Option<u64>,
     wire_samples_sent: Option<u64>,
     send_failures: Option<u64>,
+    /// The client judged the capture to be noise (`end_reason: noise_abort`)
+    /// and asks the server to discard it: no STT, no reply, just `idle`.
+    #[serde(default)]
+    client_discard: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1156,15 +1204,259 @@ enum ClientMessage {
     EnrollSkip,
     #[serde(rename = "enroll_clear")]
     EnrollClear,
-    /// Client gave up on a parked teach word (zero-sample listen cap hit —
-    /// see useVoice.ts's MAX_TEACH_ZERO_SAMPLE_LISTENS) without ever
-    /// capturing usable audio to send as a transcript. Reuses the spoken
-    /// "skip" path so the server-side SKIPPED + resume flow is the same
-    /// whichever side gave up first.
+    /// Legacy: older clients send this when their teach listen gives up.
+    /// Live teaching is gone (D5) and the server never sends `teach` any
+    /// more; the frame is accepted and ignored so those clients keep working.
     #[serde(rename = "teach_skip")]
     TeachSkip,
     #[serde(rename = "feedback_cancel")]
     FeedbackCancel { turn_id: Option<String> },
+    /// In-band barge-in (V-29): cancel the reply in flight, keep the socket.
+    #[serde(rename = "interrupt")]
+    Interrupt {
+        #[serde(flatten)]
+        payload: VoiceClientInterrupt,
+    },
+    /// Playback acks (V-26). Only clients that declared `playback_ack_v1`
+    /// send them; they never change turn state, only what the logs can say
+    /// about what was actually heard.
+    #[serde(rename = "segment_started")]
+    SegmentStarted {
+        #[serde(flatten)]
+        payload: VoicePlaybackAck,
+    },
+    #[serde(rename = "segment_ended")]
+    SegmentEnded {
+        #[serde(flatten)]
+        payload: VoicePlaybackAck,
+    },
+    #[serde(rename = "reply_playback_complete")]
+    ReplyPlaybackComplete {
+        #[serde(flatten)]
+        payload: VoicePlaybackComplete,
+    },
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+struct VoiceClientInterrupt {
+    turn_id: Option<String>,
+    /// `barge_in` | `user_tap` | `watchdog`.
+    reason: Option<String>,
+    heard_ms: Option<u64>,
+    mic_rms: Option<f64>,
+    playback_peak: Option<f64>,
+    /// `speaker` | `headphones`.
+    route: Option<String>,
+    client_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+struct VoicePlaybackAck {
+    segment_id: Option<u64>,
+    turn_id: Option<String>,
+    played_ms: Option<u64>,
+    duration_ms: Option<u64>,
+    completed: Option<bool>,
+    client_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+struct VoicePlaybackComplete {
+    turn_id: Option<String>,
+    segments: Option<u32>,
+    heard_ms: Option<u64>,
+    queued_ms: Option<u64>,
+    completed: Option<bool>,
+    /// `drained` | `interrupt` | `halt`.
+    reason: Option<String>,
+    client_ms: Option<i64>,
+}
+
+fn sanitize_interrupt(mut interrupt: VoiceClientInterrupt) -> VoiceClientInterrupt {
+    interrupt.turn_id = bounded_string(interrupt.turn_id, TURN_ID_MAX_CHARS);
+    interrupt.reason = bounded_string(interrupt.reason, HELLO_MAX_STRING_CHARS);
+    interrupt.route = bounded_string(interrupt.route, HELLO_MAX_STRING_CHARS);
+    interrupt
+}
+
+/// Is this stop the client discarding a noise capture (V-18)?
+fn client_discarded_noise(stop: &VoiceClientStop) -> bool {
+    stop.end_reason == Some(VoiceTurnEndReason::NoiseAbort) && stop.client_discard == Some(true)
+}
+
+// ── Playback ledger (V-26) ───────────────────────────────────────────────────
+//
+// Acks arrive after the server has already logged its turn summary (the
+// server finishes sending long before the client finishes playing), so what
+// was heard is reported in its own `voice_playback_observed` line, keyed by
+// the server turn id the reply registered here.
+
+const PLAYBACK_LEDGER_MAX: usize = 32;
+
+#[derive(Debug, Clone, Default, PartialEq)]
+struct PlaybackRecord {
+    client_turn_id: String,
+    server_turn_id: Option<u64>,
+    socket_epoch: Option<u64>,
+    server_queued_ms: Option<u64>,
+    segments_started: u32,
+    segments_ended: u32,
+    played_ms: u64,
+}
+
+/// What `reply_playback_complete` lets the server say about one reply.
+#[derive(Debug, Clone, PartialEq)]
+struct PlaybackObserved {
+    record: PlaybackRecord,
+    client_heard_ms: u64,
+    client_queued_ms: Option<u64>,
+    segments: Option<u32>,
+    completed: bool,
+    reason: String,
+}
+
+#[derive(Debug, Default)]
+struct PlaybackLedger {
+    records: std::collections::VecDeque<PlaybackRecord>,
+}
+
+impl PlaybackLedger {
+    fn entry(&mut self, client_turn_id: &str) -> &mut PlaybackRecord {
+        if let Some(idx) = self
+            .records
+            .iter()
+            .position(|r| r.client_turn_id == client_turn_id)
+        {
+            return &mut self.records[idx];
+        }
+        if self.records.len() >= PLAYBACK_LEDGER_MAX {
+            self.records.pop_front();
+        }
+        self.records.push_back(PlaybackRecord {
+            client_turn_id: client_turn_id.to_string(),
+            ..PlaybackRecord::default()
+        });
+        self.records.back_mut().expect("just pushed")
+    }
+
+    fn register_reply(
+        &mut self,
+        client_turn_id: &str,
+        server_turn_id: u64,
+        socket_epoch: u64,
+        server_queued_ms: u64,
+    ) {
+        let record = self.entry(client_turn_id);
+        record.server_turn_id = Some(server_turn_id);
+        record.socket_epoch = Some(socket_epoch);
+        record.server_queued_ms = Some(server_queued_ms);
+    }
+
+    fn segment_started(&mut self, ack: &VoicePlaybackAck) {
+        if let Some(turn) = ack.turn_id.as_deref() {
+            let record = self.entry(turn);
+            record.segments_started = record.segments_started.saturating_add(1);
+        }
+    }
+
+    fn segment_ended(&mut self, ack: &VoicePlaybackAck) {
+        if let Some(turn) = ack.turn_id.as_deref() {
+            let record = self.entry(turn);
+            record.segments_ended = record.segments_ended.saturating_add(1);
+            record.played_ms = record.played_ms.saturating_add(ack.played_ms.unwrap_or(0));
+        }
+    }
+
+    /// Close one reply's record and report what was heard.
+    fn complete(&mut self, done: &VoicePlaybackComplete) -> Option<PlaybackObserved> {
+        let turn = done.turn_id.as_deref()?;
+        let record = self.entry(turn).clone();
+        self.records.retain(|r| r.client_turn_id != turn);
+        Some(PlaybackObserved {
+            client_heard_ms: done.heard_ms.unwrap_or(record.played_ms),
+            client_queued_ms: done.queued_ms,
+            segments: done.segments,
+            completed: done.completed.unwrap_or(false),
+            reason: done.reason.clone().unwrap_or_else(|| "unknown".to_string()),
+            record,
+        })
+    }
+}
+
+static PLAYBACK_LEDGER: std::sync::LazyLock<std::sync::Mutex<PlaybackLedger>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(PlaybackLedger::default()));
+
+fn with_playback_ledger<R>(f: impl FnOnce(&mut PlaybackLedger) -> R) -> R {
+    let mut guard = PLAYBACK_LEDGER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    f(&mut guard)
+}
+
+fn log_playback_observed(observed: &PlaybackObserved) {
+    tracing::info!(
+        target: "permagentd::voice",
+        event = "voice_playback_observed",
+        playback_observed = true,
+        turn_id = observed.record.server_turn_id,
+        socket_epoch = observed.record.socket_epoch,
+        client_turn_id = observed.record.client_turn_id.as_str(),
+        heard_ms = observed.client_heard_ms,
+        client_queued_ms = observed.client_queued_ms,
+        server_queued_ms = observed.record.server_queued_ms,
+        segments = observed.segments,
+        segments_started = observed.record.segments_started,
+        segments_ended = observed.record.segments_ended,
+        completed = observed.completed,
+        reason = observed.reason.as_str(),
+        "voice playback observed by the client"
+    );
+}
+
+/// Record a playback ack wherever it arrives (main loop, mid-reply, STT
+/// wait, feedback playback). Returns true when `msg` was an ack.
+fn record_playback_frame(msg: &ClientMessage) -> bool {
+    match msg {
+        ClientMessage::SegmentStarted { payload } => {
+            with_playback_ledger(|l| l.segment_started(payload));
+            true
+        }
+        ClientMessage::SegmentEnded { payload } => {
+            with_playback_ledger(|l| l.segment_ended(payload));
+            true
+        }
+        ClientMessage::ReplyPlaybackComplete { payload } => {
+            if let Some(observed) = with_playback_ledger(|l| l.complete(payload)) {
+                log_playback_observed(&observed);
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Structured log of a client interrupt (V-27: the barge reason reaches the
+/// daemon). `context` says what the server was doing when it arrived.
+fn log_interrupt(
+    interrupt: &VoiceClientInterrupt,
+    context: &'static str,
+    server_turn_id: Option<u64>,
+    socket_epoch: Option<u64>,
+) {
+    tracing::info!(
+        target: "permagentd::voice",
+        event = "voice_interrupt",
+        context,
+        turn_id = server_turn_id,
+        socket_epoch,
+        client_turn_id = interrupt.turn_id.as_deref().unwrap_or("unknown"),
+        reason = interrupt.reason.as_deref().unwrap_or("unknown"),
+        route = interrupt.route.as_deref().unwrap_or("unknown"),
+        heard_ms = interrupt.heard_ms,
+        mic_rms = interrupt.mic_rms,
+        playback_peak = interrupt.playback_peak,
+        "client interrupted playback"
+    );
 }
 
 const HELLO_MAX_STRING_CHARS: usize = 256;
@@ -1301,6 +1593,7 @@ fn sanitize_hello(mut hello: VoiceClientHello) -> VoiceClientHello {
     );
     hello.inputs = bounded_hello_inputs(hello.inputs);
     hello.wire_encoding = bounded_string(hello.wire_encoding, HELLO_MAX_STRING_CHARS);
+    hello.surface = bounded_string(hello.surface, HELLO_MAX_STRING_CHARS);
     hello
 }
 
@@ -1330,7 +1623,9 @@ fn client_supports_feedback_playback(hello: Option<&VoiceClientHello>) -> bool {
 
 fn capture_cap_ms_for_trigger(trigger: Option<VoiceTurnTrigger>) -> u64 {
     match trigger {
-        Some(VoiceTurnTrigger::Vad) | Some(VoiceTurnTrigger::Barge) => AUTOMATIC_CAPTURE_CAP_MS,
+        Some(VoiceTurnTrigger::Vad | VoiceTurnTrigger::Barge | VoiceTurnTrigger::Wake) => {
+            AUTOMATIC_CAPTURE_CAP_MS
+        }
         Some(VoiceTurnTrigger::UserTap) | Some(VoiceTurnTrigger::Unknown) => USER_CAPTURE_CAP_MS,
         None => LEGACY_CAPTURE_CAP_MS,
     }
@@ -1586,12 +1881,10 @@ enum ServerMessage {
     /// audio is coming for this turn.
     #[serde(rename = "stopped")]
     Stopped,
-    /// Show this word on the Orb. Never spoken — the user reads it and says it.
-    #[serde(rename = "teach")]
-    Teach { word: String },
-    /// The word was stored (or skipped). Clear the Orb placement.
-    #[serde(rename = "taught")]
-    Taught { word: String },
+    /// Reply to an in-band `interrupt`: the cancelled turn sends nothing
+    /// after this frame. The socket, session and epoch are unchanged.
+    #[serde(rename = "interrupted")]
+    Interrupted { turn_id: Option<String> },
     #[serde(rename = "voice_print")]
     VoicePrint {
         enrolled: bool,
@@ -1757,7 +2050,9 @@ async fn evaluate_empty_feedback_policy_at(
         };
     };
     match trigger {
-        VoiceTurnTrigger::UserTap => {
+        // A wake phrase is the user deliberately addressing Henry: an empty
+        // capture after it deserves the same spoken recovery as a tap.
+        VoiceTurnTrigger::UserTap | VoiceTurnTrigger::Wake => {
             return EmptyFeedbackDecision { should_speak: true };
         }
         VoiceTurnTrigger::Unknown => {
@@ -1836,6 +2131,10 @@ enum SttWaitDisposition {
     KeepWaiting,
     Deferred(Message),
     Disconnected,
+    /// An in-band interrupt while STT runs: nothing of a reply is in flight
+    /// yet, so the caller only acknowledges it (`interrupted`) and keeps
+    /// waiting. The capture being transcribed is the user's NEW turn.
+    Interrupt(VoiceClientInterrupt),
 }
 
 /// Controls which arrive while native STT is running must not turn into a
@@ -1847,22 +2146,27 @@ fn classify_stt_wait_message(message: Message) -> SttWaitDisposition {
     match message {
         Message::Close(_) => SttWaitDisposition::Disconnected,
         Message::Text(text) => {
-            let replacement = serde_json::from_str::<ClientMessage>(&text)
-                .ok()
-                .is_some_and(|message| {
-                    matches!(
-                        message,
-                        ClientMessage::Start { .. }
-                            | ClientMessage::Hello { .. }
-                            | ClientMessage::FeedbackCancel { .. }
-                            | ClientMessage::WakeStart { .. }
-                            | ClientMessage::WakeStop
-                            | ClientMessage::EnrollStart
-                            | ClientMessage::EnrollDone
-                            | ClientMessage::EnrollSkip
-                            | ClientMessage::EnrollClear
-                    )
-                });
+            let parsed = serde_json::from_str::<ClientMessage>(&text).ok();
+            if let Some(ClientMessage::Interrupt { payload }) = parsed {
+                return SttWaitDisposition::Interrupt(sanitize_interrupt(payload));
+            }
+            if parsed.as_ref().is_some_and(record_playback_frame) {
+                return SttWaitDisposition::KeepWaiting;
+            }
+            let replacement = parsed.is_some_and(|message| {
+                matches!(
+                    message,
+                    ClientMessage::Start { .. }
+                        | ClientMessage::Hello { .. }
+                        | ClientMessage::FeedbackCancel { .. }
+                        | ClientMessage::WakeStart { .. }
+                        | ClientMessage::WakeStop
+                        | ClientMessage::EnrollStart
+                        | ClientMessage::EnrollDone
+                        | ClientMessage::EnrollSkip
+                        | ClientMessage::EnrollClear
+                )
+            });
             if replacement {
                 SttWaitDisposition::Deferred(Message::Text(text))
             } else {
@@ -1959,6 +2263,14 @@ async fn finish_streaming_stt(
                         Some(Ok(message)) => {
                             match classify_stt_wait_message(message) {
                                 SttWaitDisposition::KeepWaiting => {}
+                                SttWaitDisposition::Interrupt(interrupt) => {
+                                    log_interrupt(&interrupt, "stt_wait", None, None);
+                                    let _ = socket
+                                        .send(send_json(&ServerMessage::Interrupted {
+                                            turn_id: interrupt.turn_id,
+                                        }))
+                                        .await;
+                                }
                                 SttWaitDisposition::Deferred(message) => {
                                     return StreamFinalResult::Deferred(message);
                                 }
@@ -2017,6 +2329,14 @@ async fn transcribe_batch_with_socket(
                     Some(Ok(message)) => {
                         match classify_stt_wait_message(message) {
                             SttWaitDisposition::KeepWaiting => {}
+                            SttWaitDisposition::Interrupt(interrupt) => {
+                                log_interrupt(&interrupt, "stt_wait", None, None);
+                                let _ = socket
+                                    .send(send_json(&ServerMessage::Interrupted {
+                                        turn_id: interrupt.turn_id,
+                                    }))
+                                    .await;
+                            }
                             SttWaitDisposition::Deferred(message) => {
                                 // `spawn_blocking` native work cannot be hard
                                 // cancelled. Retain the handle so a deferred
@@ -2192,28 +2512,6 @@ fn early_speaker_gate_ready(
         && samples >= sample_rate as usize * 2
 }
 
-/// Re-place a parked word after reconnect. iOS barge-in closes the socket
-/// (this morning: teach at 11:14:29, close 1001 at 11:14:34) and the new
-/// socket used to never send `teach` again — the agent still spoke ASK_FIRST
-/// on the dying socket, then the orb came back empty.
-fn pending_teach_msg(session_id: &str) -> Option<ServerMessage> {
-    let pending = permagent::events::voice_pronounce::peek(session_id)?;
-    Some(ServerMessage::Teach {
-        word: permagent::events::voice_pronounce::display_word(&pending.word),
-    })
-}
-
-/// FIX 4 (2026-09-01 incident): the user explicitly ending a session (a
-/// client-sent Close frame — "click anywhere to end") must forget any word
-/// parked for it. Before this, nothing in the socket lifecycle ever called
-/// `voice_pronounce::clear()` outside of tests, so `pending_teach_msg` would
-/// replay the pill to the very next connect on the same session id.
-/// Extracted to a named seam so the contract is testable without a live
-/// socket.
-fn handle_client_initiated_close(session_id: &str) {
-    permagent::events::voice_pronounce::clear(session_id);
-}
-
 /// Push any captured clipboard bodies down this socket NOW. The caller
 /// still shows them on `reply_text` at turn end.
 async fn flush_voice_clipboard(
@@ -2320,13 +2618,6 @@ async fn handle_voice_socket(
     spawn_resident_tts_warm(state.as_ref());
     let _ = socket.send(send_json(&voice_print_msg(&state).await)).await;
     let remainder_key = session_id.as_deref().unwrap_or("voice-anon");
-    if let Some(teach) = pending_teach_msg(remainder_key) {
-        tracing::info!(
-            target: "permagentd::voice",
-            "replaying pending teach after connect"
-        );
-        let _ = socket.send(send_json(&teach)).await;
-    }
 
     // Load proper-noun dictionary from Brain for post-STT correction.
     let entity_dict = if let Some(ref brain) = state.brain {
@@ -2585,6 +2876,7 @@ async fn handle_voice_socket(
                             wire_sample_rate = hello.wire_sample_rate,
                             wire_channels = hello.wire_channels,
                             wire_encoding = hello.wire_encoding.as_deref().unwrap_or("unknown"),
+                            surface = VoiceSurface::parse(hello.surface.as_deref()).as_str(),
                             input_count = hello.inputs.as_ref().map(std::vec::Vec::len).unwrap_or(0),
                             capability_count = hello
                                 .capabilities
@@ -2824,6 +3116,35 @@ async fn handle_voice_socket(
                                 VoiceTurnOutcomeReason::MalformedPcm,
                             )
                             .await;
+                            continue;
+                        }
+
+                        // V-18: the client judged this capture to be a knock,
+                        // click or speaker bleed and discarded it. No STT, no
+                        // reply, no spoken feedback: just `idle`, and the same
+                        // quiet re-arm a noise abort always earned.
+                        if client_discarded_noise(&stop) {
+                            tracing::info!(
+                                target: "permagentd::voice",
+                                event = "voice_latency_stage",
+                                stage = "capture_discarded_by_client",
+                                turn_id,
+                                socket_epoch,
+                                session_id = session_id.as_deref().unwrap_or("voice-anon"),
+                                capture_samples = audio_buffer.len(),
+                                "client discarded a noise capture — skipping STT"
+                            );
+                            telemetry.log_outcome("client_noise_discard");
+                            audio_buffer.clear();
+                            recording_hello_snapshot = None;
+                            if socket.send(send_json(&ServerMessage::Idle)).await.is_err() {
+                                socket_close_reason = "idle_send_disconnected";
+                                break 'voice_loop;
+                            }
+                            quiet_rearm_until = Some(
+                                std::time::Instant::now()
+                                    + std::time::Duration::from_millis(AUTOMATIC_REARM_QUIET_MS),
+                            );
                             continue;
                         }
 
@@ -3256,6 +3577,24 @@ async fn handle_voice_socket(
                                     continue 'voice_loop;
                                 }
                                 SttWaitDisposition::KeepWaiting => {}
+                                SttWaitDisposition::Interrupt(interrupt) => {
+                                    log_interrupt(
+                                        &interrupt,
+                                        "reply_setup",
+                                        Some(turn_id),
+                                        Some(socket_epoch),
+                                    );
+                                    if socket
+                                        .send(send_json(&ServerMessage::Interrupted {
+                                            turn_id: interrupt.turn_id,
+                                        }))
+                                        .await
+                                        .is_err()
+                                    {
+                                        socket_close_reason = "reply_generation_disconnected";
+                                        break 'voice_loop;
+                                    }
+                                }
                                 SttWaitDisposition::Disconnected => {
                                     socket_close_reason = "reply_generation_disconnected";
                                     break 'voice_loop;
@@ -3274,111 +3613,11 @@ async fn handle_voice_socket(
                             return;
                         }
 
-                        // Unspoken leftover from a spoken-budget cut. "Continue."
-                        // last night started a cold agent turn and lost the story.
-
-                        // Listen-once: we asked how a name is said. This turn
-                        // is the pronunciation, not a new story beat.
-                        if permagent::events::voice_pronounce::peek(remainder_key).is_some() {
-                            let resume = handle_pronunciation_listen(
-                                &state,
-                                tts.clone(),
-                                &mut socket,
-                                remainder_key,
-                                &transcript,
-                                cancelled.clone(),
-                                origin.client,
-                            )
-                            .await;
-                            if let Some(held) = resume {
-                                if socket
-                                    .send(send_json(&ServerMessage::ReplyStart))
-                                    .await
-                                    .is_err()
-                                {
-                                    telemetry.log_outcome("reply_start_disconnected");
-                                    return;
-                                }
-                                let mut reply_ctx = VoiceReplyCtx {
-                                    state: &state,
-                                    transcript: &held,
-                                    telemetry,
-                                    turn_id,
-                                    session_id: session_id.as_deref(),
-                                    tts: &tts,
-                                    pipeline_start,
-                                    stt_ms,
-                                    cancelled: cancelled.clone(),
-                                    wake: wake.as_ref(),
-                                    sample_rate: client_sample_rate,
-                                    origin: &origin,
-                                };
-                                if let Err(e) =
-                                    stream_reply_with_tts(&mut reply_ctx, &mut socket).await
-                                {
-                                    reply_ctx.telemetry.log_outcome("reply_error");
-                                    let _ = socket
-                                        .send(send_json(&ServerMessage::Error {
-                                            message: format!("Voice reply failed: {}", e),
-                                        }))
-                                        .await;
-                                }
-                            }
-                            continue;
-                        }
-
-                        // User just said a name speech cannot say. Stop and ask
-                        // — do not start the story and spell it.
-                        if let Some(word) = first_unknown_name(tts.as_ref(), &transcript) {
-                            tracing::info!(
-                                target: "permagentd::voice",
-                                "unknown name — asking how to say it before the reply"
-                            );
-                            permagent::events::voice_pronounce::begin(
-                                remainder_key,
-                                &word,
-                                Some(transcript.clone()),
-                            );
-                            let shown = permagent::events::voice_pronounce::display_form(
-                                &transcript,
-                                &word,
-                            );
-                            let _ = socket
-                                .send(send_json(&ServerMessage::Teach { word: shown }))
-                                .await;
-                            let _ = speak_canned_reply(
-                                &state,
-                                tts.clone(),
-                                &mut socket,
-                                permagent::events::voice_pronounce::ASK_FIRST,
-                                cancelled.clone(),
-                            )
-                            .await;
-                            continue;
-                        }
-
-                        if permagent::events::voice_remainder::is_continue_cue(&transcript) {
-                            if let Some(rest) =
-                                permagent::events::voice_remainder::take(remainder_key)
-                            {
-                                tracing::info!(
-                                    target: "permagentd::voice",
-                                    "continue cue — speaking leftover ({} chars), not a new agent turn",
-                                    rest.len()
-                                );
-                                speak_remainder(
-                                    &state,
-                                    tts.clone(),
-                                    &mut socket,
-                                    remainder_key,
-                                    &rest,
-                                    cancelled.clone(),
-                                    origin.client,
-                                )
-                                .await;
-                                continue;
-                            }
-                        }
+                        // D5 (2026-10-14): no pronunciation teach on the
+                        // user's transcript, and no spoken "continue" replay
+                        // of a budget remainder (D3: the remainder is text
+                        // only). The transcript goes straight to the agent;
+                        // an STT mishear is never treated as a word to teach.
 
                         // Spoken yes/no while a decision is waiting: STAGE it
                         // instead of sending the transcript to the agent (which
@@ -3460,9 +3699,12 @@ async fn handle_voice_socket(
                             wake: wake.as_ref(),
                             sample_rate: client_sample_rate,
                             origin: &origin,
+                            surface: VoiceSurface::parse(
+                                client_hello.as_ref().and_then(|h| h.surface.as_deref()),
+                            ),
                         };
-                        // A new ask replaces any leftover — only a continue cue
-                        // (handled above) is allowed to replay it.
+                        // Nothing is ever replayed from an earlier reply (D3);
+                        // clear any stash an older build left behind.
                         permagent::events::voice_remainder::clear(remainder_key);
                         let stream_result =
                             stream_reply_with_tts(&mut reply_ctx, &mut socket).await;
@@ -3478,6 +3720,26 @@ async fn handle_voice_socket(
                     }
                     Ok(ClientMessage::Stop { .. }) => {} // Not recording, ignore
                     Ok(ClientMessage::FeedbackCancel { .. }) => {}
+                    Ok(ClientMessage::Interrupt { payload }) => {
+                        // Nothing is streaming (a mid-reply interrupt is
+                        // handled inside the reply): the client is cutting
+                        // its own playback of a finished reply. Acknowledge
+                        // in-band; the socket, session and epoch stay.
+                        let interrupt = sanitize_interrupt(payload);
+                        log_interrupt(&interrupt, "idle", None, Some(socket_epoch));
+                        let _ = socket
+                            .send(send_json(&ServerMessage::Interrupted {
+                                turn_id: interrupt.turn_id,
+                            }))
+                            .await;
+                    }
+                    Ok(
+                        msg @ (ClientMessage::SegmentStarted { .. }
+                        | ClientMessage::SegmentEnded { .. }
+                        | ClientMessage::ReplyPlaybackComplete { .. }),
+                    ) => {
+                        record_playback_frame(&msg);
+                    }
                     Ok(ClientMessage::WakeStart { sample_rate }) => {
                         if let Some(sr) = sample_rate {
                             client_sample_rate = sr;
@@ -3669,75 +3931,15 @@ async fn handle_voice_socket(
                         let _ = socket.send(send_json(&voice_print_msg(&state).await)).await;
                     }
                     Ok(ClientMessage::TeachSkip) => {
-                        // The client hit its own zero-sample-listen cap
-                        // without ever capturing audio to run STT on — there
-                        // is no transcript to send. Reuse the exact spoken
-                        // "skip" path (is_skip_cue) so the outcome — Taught
-                        // pill clear, SKIPPED, resume leftover/held — is
-                        // identical whichever side gives up first.
-                        if permagent::events::voice_pronounce::peek(remainder_key).is_some() {
-                            let resume = handle_pronunciation_listen(
-                                &state,
-                                tts.clone(),
-                                &mut socket,
-                                remainder_key,
-                                "skip",
-                                cancelled.clone(),
-                                origin.client,
-                            )
-                            .await;
-                            if let Some(held) = resume {
-                                if socket
-                                    .send(send_json(&ServerMessage::ReplyStart))
-                                    .await
-                                    .is_err()
-                                {
-                                    return;
-                                }
-                                // This resume path arrived with main's
-                                // pronounce-drill work, which predates the
-                                // turn-telemetry rework: every other reply
-                                // carries a turn id and a telemetry record,
-                                // and `stream_reply_with_tts` now writes into
-                                // it. A held remainder IS a turn from the
-                                // user's side — they spoke, they get spoken
-                                // back to — so it gets its own id rather than
-                                // being left out of the record, which would
-                                // make a drill-resumed reply invisible to
-                                // every latency metric.
-                                let turn_started_at = std::time::Instant::now();
-                                let turn_id = next_voice_turn_id();
-                                let telemetry = VoiceTurnTelemetry::new(
-                                    turn_id,
-                                    socket_epoch,
-                                    session_id.as_deref(),
-                                    turn_started_at,
-                                );
-                                let mut reply_ctx = VoiceReplyCtx {
-                                    state: &state,
-                                    transcript: &held,
-                                    telemetry,
-                                    turn_id,
-                                    session_id: session_id.as_deref(),
-                                    tts: &tts,
-                                    pipeline_start: turn_started_at,
-                                    stt_ms: 0,
-                                    cancelled: cancelled.clone(),
-                                    wake: wake.as_ref(),
-                                    sample_rate: client_sample_rate,
-                                    origin: &origin,
-                                };
-                                if let Err(e) =
-                                    stream_reply_with_tts(&mut reply_ctx, &mut socket).await
-                                {
-                                    let _ = socket
-                                        .send(send_json(&ServerMessage::Error {
-                                            message: format!("Voice reply failed: {}", e),
-                                        }))
-                                        .await;
-                                }
-                            }
-                        }
+                        // Older clients still send this when their teach
+                        // listen gives up. Live teaching is gone (D5), so
+                        // there is nothing parked to skip: accept and ignore.
+                        tracing::debug!(
+                            target: "permagentd::voice",
+                            event = "voice_teach_skip_ignored",
+                            socket_epoch,
+                            "teach_skip ignored — live pronunciation teaching is off"
+                        );
                     }
                     Err(e) => {
                         tracing::warn!(target: "permagentd::voice", "Invalid voice message: {}", e);
@@ -4025,14 +4227,6 @@ async fn handle_voice_socket(
                     socket_epoch,
                     "Client sent Close frame"
                 );
-                // FIX 4 (2026-09-01 incident): a client-initiated close is
-                // the user explicitly ending the session ("click anywhere to
-                // end") — the process-lifetime registry must not outlive it,
-                // or the next connect on this session replays a stale pill
-                // (pending_teach_msg above). A dropped connection (recv
-                // error, below) is NOT treated the same way: that may be a
-                // network blip mid-drill we want a reconnect to resume.
-                handle_client_initiated_close(remainder_key);
                 break;
             }
             Message::Ping(_) => {
@@ -4067,18 +4261,170 @@ async fn handle_voice_socket(
     );
 }
 
-/// Emergency cap on how many sentences are spoken in one turn.
-///
-/// Voice replies are prompted to be concise and the listener can barge in.
-/// Cutting an otherwise complete answer at eight sentences made the runtime
-/// announce "there's more" before it had delivered its conclusion. A very
-/// high guard still bounds a pathological model loop without shaping ordinary
-/// conversation; its cue remains origin-aware.
-const DEFAULT_MAX_SPOKEN_SENTENCES: u32 = 100;
+/// Spoken budget per reply (D3, Jesse 2026-10-14): at most this many
+/// sentences are spoken; the rest of the reply reaches the client only as
+/// text (`reply_text`) and is never read aloud. The 2026-10-14 World session
+/// answered a one-word utterance with 38.7 s of speech (audit V-23).
+const DEFAULT_MAX_SPOKEN_SENTENCES: u32 = 4;
 
-/// Config key (`~/.permagent/config.yaml`) overriding the spoken-length budget.
+/// Config key (`~/.permagent/config.yaml`) overriding the sentence budget.
 /// Clamped to [1, 100]; 0 would mute replies entirely, which is never intended.
 const MAX_SPOKEN_SENTENCES_KEY: &str = "voice_max_spoken_sentences";
+
+/// Spoken budget in seconds of audio per reply (D3: about 20 s).
+const DEFAULT_MAX_SPOKEN_SECONDS: u32 = 20;
+
+/// Config key overriding the seconds budget. Clamped to [5, 600].
+const MAX_SPOKEN_SECONDS_KEY: &str = "voice_max_spoken_seconds";
+
+/// Speaking-rate estimate used to keep the budget BEFORE audio exists, so a
+/// long sentence is not synthesized only to be cut. Kokoro at speed 1.0 runs
+/// about 150 words a minute; the measured duration of every sent segment then
+/// corrects the estimate (see [`SpokenBudget::observe_audio`]).
+const ESTIMATED_MS_PER_WORD: u64 = 400;
+
+/// The visual surface a voice conversation is on, declared by the client in
+/// `hello.surface`. Only the World has no Orb; every client that predates the
+/// field (desktop chat-pane voice, iOS, watch) is an Orb surface, so a missing
+/// or unknown value means [`VoiceSurface::Orb`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VoiceSurface {
+    Orb,
+    World,
+}
+
+impl VoiceSurface {
+    pub fn parse(raw: Option<&str>) -> Self {
+        match raw.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
+            Some("world") => Self::World,
+            _ => Self::Orb,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Orb => "orb",
+            Self::World => "world",
+        }
+    }
+}
+
+/// Every spoken or prompted line that depends on the surface, in ONE place
+/// (V-03). Add a surface here, not at a call site. The World must never hear
+/// or be told about "the Orb"; Orb surfaces may.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SurfaceCopy {
+    /// Spoken once when the spoken budget is reached. A short bridge, never a
+    /// question and never a promise to keep talking: the rest is text.
+    pub budget_bridge: &'static str,
+    /// Appended to the voice reply style on this surface (`None`: nothing).
+    pub prompt_note: Option<&'static str>,
+}
+
+pub fn surface_copy(
+    surface: VoiceSurface,
+    client: permagent::events::voice_origin::VoiceClient,
+) -> SurfaceCopy {
+    use permagent::events::voice_origin::VoiceClient;
+    match (surface, client) {
+        (VoiceSurface::World, _) => SurfaceCopy {
+            budget_bridge: "The rest is on screen.",
+            prompt_note: Some(
+                "The user is talking with you in the World view, seated with your avatar. \
+                 Anything past your first few sentences appears in the World transcript as \
+                 text. Do not send them to another tab unless they ask.",
+            ),
+        },
+        (VoiceSurface::Orb, VoiceClient::Desktop) => SurfaceCopy {
+            budget_bridge: "The rest is in the transcript.",
+            prompt_note: None,
+        },
+        (VoiceSurface::Orb, _) => SurfaceCopy {
+            budget_bridge: "The rest is written out for you.",
+            prompt_note: None,
+        },
+    }
+}
+
+/// The voice style plus the surface's note, as ONE prompt extra
+/// (`voice_reply_style`) so it survives the voice prompt's extra-key filter.
+fn voice_style_for(
+    surface: VoiceSurface,
+    client: permagent::events::voice_origin::VoiceClient,
+) -> String {
+    match surface_copy(surface, client).prompt_note {
+        Some(note) => format!("{VOICE_REPLY_STYLE} {note}"),
+        None => VOICE_REPLY_STYLE.to_string(),
+    }
+}
+
+/// Per-reply spoken budget state: sentences and estimated/measured audio.
+#[derive(Debug, Clone)]
+struct SpokenBudget {
+    max_sentences: u32,
+    max_ms: u64,
+    sentences: u32,
+    /// Estimated ms of everything admitted so far, corrected by real audio.
+    spoken_ms: u64,
+    /// A clause chunk was admitted and its sentence has not closed yet: the
+    /// sentence is finished even past the time budget, never cut mid-clause.
+    mid_sentence: bool,
+    exhausted: bool,
+    bridge: &'static str,
+    /// Characters of reply that went to text only (logged, never spoken).
+    text_only_chars: usize,
+}
+
+impl SpokenBudget {
+    fn new(max_sentences: u32, max_seconds: u32, bridge: &'static str) -> Self {
+        Self {
+            max_sentences: max_sentences.max(1),
+            max_ms: u64::from(max_seconds.max(1)) * 1_000,
+            sentences: 0,
+            spoken_ms: 0,
+            mid_sentence: false,
+            exhausted: false,
+            bridge,
+            text_only_chars: 0,
+        }
+    }
+
+    fn from_config(bridge: &'static str) -> Self {
+        Self::new(max_spoken_sentences(), max_spoken_seconds(), bridge)
+    }
+
+    fn estimate_ms(speech: &str, speed: f32) -> u64 {
+        let words = speech.split_whitespace().count() as u64;
+        let speed = if speed.is_finite() && speed > 0.1 {
+            speed
+        } else {
+            1.0
+        };
+        ((words * ESTIMATED_MS_PER_WORD) as f32 / speed) as u64
+    }
+
+    /// Can this chunk still be spoken?
+    fn admits(&self, estimate_ms: u64) -> bool {
+        if self.exhausted {
+            return false;
+        }
+        if self.mid_sentence {
+            return true;
+        }
+        self.sentences < self.max_sentences
+            && (self.spoken_ms == 0 || self.spoken_ms + estimate_ms <= self.max_ms)
+    }
+
+    /// Replace an admitted chunk's estimate with its measured duration. When
+    /// the real audio has run past the budget, nothing more may start.
+    fn observe_audio(&mut self, estimate_ms: u64, actual_ms: u64) {
+        self.spoken_ms = self.spoken_ms.saturating_sub(estimate_ms) + actual_ms;
+    }
+
+    fn over_time(&self) -> bool {
+        self.spoken_ms >= self.max_ms && !self.mid_sentence
+    }
+}
 
 static NEXT_VOICE_TURN_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 static NEXT_VOICE_SOCKET_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -4489,6 +4835,13 @@ fn max_spoken_sentences() -> u32 {
         .clamp(1, 100)
 }
 
+fn max_spoken_seconds() -> u32 {
+    permagent::config::Config::global()
+        .get_param::<u32>(MAX_SPOKEN_SECONDS_KEY)
+        .unwrap_or(DEFAULT_MAX_SPOKEN_SECONDS)
+        .clamp(5, 600)
+}
+
 /// Context for a voice reply exchange (reduces arg count for stream_reply_with_tts).
 struct VoiceReplyCtx<'a> {
     state: &'a AppState,
@@ -4509,12 +4862,18 @@ struct VoiceReplyCtx<'a> {
     )>,
     sample_rate: u32,
     origin: &'a permagent::events::voice_origin::VoiceOrigin,
+    /// Declared visual surface (hello `surface`); picks surface copy (V-03).
+    surface: VoiceSurface,
 }
 
 /// Outcome of a non-blocking drain of queued client messages mid-reply.
 enum DrainOutcome {
     /// Nothing actionable — keep streaming.
     Continue,
+    /// The client sent an in-band `interrupt` (V-29): cancel this reply,
+    /// keep the socket. Frames queued after it stay on the socket for the
+    /// main loop (a `start` right behind it is the user's next turn).
+    Interrupted(VoiceClientInterrupt),
     /// A spoken stop phrase landed — end the turn now.
     SpokenStop,
     /// The socket is gone — abandon the turn (cancelled flag already set).
@@ -4551,11 +4910,74 @@ fn drain_client_messages(socket: &mut WebSocket, ctx: &VoiceReplyCtx<'_>) -> Dra
                     }
                 }
             }
-            // Text (a stray stop/start) and pings are ignored mid-turn, as
-            // they always have been while the handler streams a reply.
+            Some(Some(Ok(Message::Text(text)))) => {
+                match serde_json::from_str::<ClientMessage>(&text) {
+                    Ok(ClientMessage::Interrupt { payload }) => {
+                        return DrainOutcome::Interrupted(sanitize_interrupt(payload));
+                    }
+                    Ok(msg) => {
+                        // Playback acks for the segments already sent are
+                        // recorded; any other text (a stray stop/start) is
+                        // ignored mid-turn, as it always has been.
+                        record_playback_frame(&msg);
+                    }
+                    Err(_) => {}
+                }
+            }
+            // Pings are ignored mid-turn, as they always have been.
             Some(Some(Ok(_))) => {}
         }
     }
+}
+
+/// Tie the client's turn id to this server turn so later playback acks can
+/// be reported against it (V-26).
+fn register_reply_playback(ctx: &VoiceReplyCtx<'_>) {
+    if let Some(client_turn) = ctx.telemetry.client_turn_id.as_deref() {
+        with_playback_ledger(|l| {
+            l.register_reply(
+                client_turn,
+                ctx.turn_id,
+                ctx.telemetry.socket_epoch,
+                ctx.telemetry.playback_estimate_ms,
+            )
+        });
+    }
+}
+
+/// End a reply the client interrupted in-band (V-29): the LLM stream and
+/// synthesis are already dropped by the caller; send `interrupted` and
+/// NOTHING else for this turn — no `reply_text`, `reply_end`, `navigate` or
+/// audio. The socket, session and `socket_epoch` are untouched.
+async fn finish_interrupted_reply(
+    ctx: &mut VoiceReplyCtx<'_>,
+    socket: &mut WebSocket,
+    interrupt: &VoiceClientInterrupt,
+) -> anyhow::Result<()> {
+    log_interrupt(
+        interrupt,
+        "reply_streaming",
+        Some(ctx.turn_id),
+        Some(ctx.telemetry.socket_epoch),
+    );
+    register_reply_playback(ctx);
+    if let Some(sid) = ctx.session_id {
+        permagent::events::voice_remainder::clear(sid);
+    }
+    let turn_id = interrupt
+        .turn_id
+        .clone()
+        .or_else(|| ctx.telemetry.client_turn_id.clone());
+    if socket
+        .send(send_json(&ServerMessage::Interrupted { turn_id }))
+        .await
+        .is_err()
+    {
+        ctx.telemetry.log_outcome("interrupted_send_disconnected");
+        return Ok(());
+    }
+    ctx.telemetry.log_outcome("interrupted");
+    Ok(())
 }
 
 /// Stream the LLM reply, synthesize each sentence as it completes, and send
@@ -4656,7 +5078,7 @@ async fn stream_reply_with_tts(
     agent
         .extend_system_prompt(
             "voice_reply_style".to_string(),
-            VOICE_REPLY_STYLE.to_string(),
+            voice_style_for(ctx.surface, ctx.origin.client),
         )
         .await;
     agent
@@ -4666,15 +5088,12 @@ async fn stream_reply_with_tts(
     let setup_ms = t_setup.elapsed().as_millis();
     ctx.telemetry.log_stage("agent_setup", t_setup);
 
-    // Ambient, recall, and a G2P scan of the user's words are independent —
-    // run them together so pronunciation coaching does not add a serial wait.
+    // Ambient and recall are independent — run them together. (The G2P scan
+    // of the user's transcript that used to run here is gone: it turned STT
+    // mishears into "unknown words" and a standing prompt, audit V-01/V-02.)
     let t_ctx = std::time::Instant::now();
-    let tts_for_scan = tts.clone();
-    let transcript_for_scan = transcript.to_string();
-    let oov_fut =
-        tokio::task::spawn_blocking(move || tts_for_scan.unresolved_words(&transcript_for_scan));
     let ambient_fut = crate::brain_ops::inject_ambient_context(state, &agent);
-    let (recall_trace, transcript_oov) = if let Some(ref brain) = state.brain {
+    let recall_trace = if let Some(ref brain) = state.brain {
         let recognition_ctx = state.build_recognition_context(Some(&sid));
         let recognition_pool = state.session_manager().pool_clone().await.ok();
         let recall_fut = crate::brain_ops::inject_recall(
@@ -4684,14 +5103,11 @@ async fn stream_reply_with_tts(
             recognition_ctx,
             recognition_pool,
         );
-        let (_, trace, oov) = tokio::join!(ambient_fut, recall_fut, oov_fut);
-        (trace, oov.unwrap_or_default())
+        let (_, trace) = tokio::join!(ambient_fut, recall_fut);
+        trace
     } else {
-        let (_, oov) = tokio::join!(ambient_fut, oov_fut);
-        (
-            crate::brain_ops::RecallInjection::default(),
-            oov.unwrap_or_default(),
-        )
+        ambient_fut.await;
+        crate::brain_ops::RecallInjection::default()
     };
     let ctx_recall_ms = t_ctx.elapsed().as_millis();
     ctx.telemetry.log_stage("context_recall", t_ctx);
@@ -4704,12 +5120,6 @@ async fn stream_reply_with_tts(
         recall_hits = recall_trace.count,
         "voice context prepared"
     );
-
-    if let Some(coaching) = pronunciation_coaching(&transcript_oov) {
-        agent
-            .extend_system_prompt("voice_pronunciation".to_string(), coaching)
-            .await;
-    }
 
     let session_config = SessionConfig {
         id: sid.clone(),
@@ -4746,12 +5156,16 @@ async fn stream_reply_with_tts(
     // inside the token loop was holding first-audio on every subsequent chunk.
     let mut text_buf = String::new();
     let mut full_reply = String::new();
-    let mut sentence_num = 0u32;
-    let max_spoken = max_spoken_sentences();
-    let spoken_cue = permagent::events::voice_origin::budget_notice(ctx.origin.client);
-    let mut budget_notice_spoken = false;
-    let mut leftover = String::new();
-    let mut pronounce_hold = false;
+    let mut budget =
+        SpokenBudget::from_config(surface_copy(ctx.surface, ctx.origin.client).budget_bridge);
+    // Henry's speech for this turn: unknown words he says are substituted and
+    // queued for review; words from the user's transcript never are (V-01).
+    let synth_scope = crate::voice::oov_log::ReplyScope::new(
+        Some(ctx.turn_id),
+        ctx.session_id,
+        "reply",
+        transcript,
+    );
     let mut total_tts_ms: u128 = 0;
     let mut first_audio_sent = false;
     let mut first_tts_enqueue_at: Option<std::time::Instant> = None;
@@ -4759,13 +5173,8 @@ async fn stream_reply_with_tts(
     let mut first_token_logged = false;
     let mut spoken_stop = false;
     let stream_start = std::time::Instant::now();
-    let mut queue: std::collections::VecDeque<(String, f32)> = std::collections::VecDeque::new();
-    let mut inflight: Option<(
-        tokio::task::JoinHandle<anyhow::Result<AudioOutput>>,
-        std::time::Instant,
-        String,
-        u64,
-    )> = None;
+    let mut queue: std::collections::VecDeque<SpokenChunk> = std::collections::VecDeque::new();
+    let mut inflight: Option<InflightSynth> = None;
     let mut stream_ended = false;
     let mut sent_clips: Vec<permagent::events::clipboard_intercept::ClipboardIntent> = Vec::new();
     let mut clip_tick = tokio::time::interval(std::time::Duration::from_millis(50));
@@ -4780,31 +5189,38 @@ async fn stream_reply_with_tts(
         flush_voice_clipboard(socket, &sid, &mut sent_clips).await;
         match drain_client_messages(socket, ctx) {
             DrainOutcome::Continue => {}
+            DrainOutcome::Interrupted(interrupt) => {
+                if let Some(running) = inflight.take() {
+                    running.handle.abort();
+                }
+                queue.clear();
+                return finish_interrupted_reply(ctx, socket, &interrupt).await;
+            }
             DrainOutcome::SpokenStop => {
-                if let Some((handle, ..)) = inflight.take() {
-                    handle.abort();
+                if let Some(running) = inflight.take() {
+                    running.handle.abort();
                 }
                 spoken_stop = true;
                 break;
             }
             DrainOutcome::Disconnected => {
-                if let Some((handle, ..)) = inflight.take() {
-                    handle.abort();
+                if let Some(running) = inflight.take() {
+                    running.handle.abort();
                 }
                 ctx.telemetry.log_outcome("disconnected");
                 return Ok(());
             }
         }
         if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
-            if let Some((handle, ..)) = inflight.take() {
-                handle.abort();
+            if let Some(running) = inflight.take() {
+                running.handle.abort();
             }
             ctx.telemetry.log_outcome("cancelled");
             return Ok(());
         }
 
         if inflight.is_none() {
-            if let Some((speech, speed)) = queue.pop_front() {
+            if let Some(chunk) = queue.pop_front() {
                 let segment_id = next_segment_id;
                 next_segment_id = next_segment_id.saturating_add(1);
                 ctx.telemetry.tts_enqueued = ctx.telemetry.tts_enqueued.saturating_add(1);
@@ -4814,50 +5230,23 @@ async fn stream_reply_with_tts(
                 }
                 ctx.telemetry
                     .log_stage("tts_enqueue", tts_enqueue_started_at);
-                // Never spell an unknown name. Stop this reply, ask, listen.
-                if let Some(word) = first_unknown_name(tts.as_ref(), &speech) {
-                    tracing::info!(
-                        target: "permagentd::voice",
-                        "unknown name in reply — stopping to ask"
-                    );
-                    permagent::events::voice_remainder::append_sentence(&mut leftover, &speech);
-                    while let Some((rest, _)) = queue.pop_front() {
-                        permagent::events::voice_remainder::append_sentence(&mut leftover, &rest);
-                    }
-                    permagent::events::voice_pronounce::begin(&sid, &word, None);
-                    pronounce_hold = true;
-                    let shown = permagent::events::voice_pronounce::display_form(&speech, &word);
-                    let _ = socket
-                        .send(send_json(&ServerMessage::Teach { word: shown }))
-                        .await;
-                    let ask = permagent::events::voice_pronounce::ASK_FIRST.to_string();
-                    inflight = Some((
-                        spawn_synth(
-                            tts.clone(),
-                            ask.clone(),
-                            voice_id.clone(),
-                            1.0,
-                            cancelled.clone(),
-                        ),
-                        std::time::Instant::now(),
-                        ask,
-                        segment_id,
-                    ));
-                } else {
-                    let preview = speech.clone();
-                    inflight = Some((
-                        spawn_synth(
-                            tts.clone(),
-                            speech,
-                            voice_id.clone(),
-                            speed,
-                            cancelled.clone(),
-                        ),
-                        std::time::Instant::now(),
-                        preview,
-                        segment_id,
-                    ));
-                }
+                // No unknown-word stop here any more (D5, V-09): the TTS
+                // layer substitutes a best-guess reading and the reply
+                // keeps going.
+                inflight = Some(InflightSynth {
+                    handle: spawn_synth(
+                        tts.clone(),
+                        chunk.speech.clone(),
+                        voice_id.clone(),
+                        chunk.speed,
+                        cancelled.clone(),
+                        Some(synth_scope.clone()),
+                    ),
+                    started: std::time::Instant::now(),
+                    chunk,
+                    segment_id,
+                    retried: false,
+                });
             } else if stream_ended {
                 break;
             }
@@ -4870,16 +5259,24 @@ async fn stream_reply_with_tts(
 
             result = std::future::poll_fn(|cx| {
                 use std::future::Future;
-                let handle = &mut inflight.as_mut().expect("guarded by if").0;
+                let handle = &mut inflight.as_mut().expect("guarded by if").handle;
                 std::pin::Pin::new(handle).poll(cx)
             }), if inflight.is_some() => {
-                let (_, started, preview, segment_id) = inflight.take().expect("guarded");
+                let InflightSynth { started, chunk, segment_id, retried, .. } =
+                    inflight.take().expect("guarded");
+                let preview = chunk.speech.clone();
                 let chunk_tts_ms = started.elapsed().as_millis();
                 total_tts_ms += chunk_tts_ms;
                 ctx.telemetry.tts_total_ms = ctx.telemetry.tts_total_ms.saturating_add(chunk_tts_ms);
                 ctx.telemetry.log_stage("tts_synthesis", started);
                 match drain_client_messages(socket, ctx) {
                     DrainOutcome::Continue => {}
+                    DrainOutcome::Interrupted(interrupt) => {
+                        // The just-synthesized segment is discarded: nothing
+                        // of this turn may follow `interrupted`.
+                        queue.clear();
+                        return finish_interrupted_reply(ctx, socket, &interrupt).await;
+                    }
                     DrainOutcome::SpokenStop => {
                         spoken_stop = true;
                         break;
@@ -4901,7 +5298,8 @@ async fn stream_reply_with_tts(
                             target: "permagentd::voice",
                             turn_id = ctx.turn_id,
                             session_id = ctx.session_id.unwrap_or("voice-anon"),
-                            sentence = sentence_num,
+                            spoken_sentences = budget.sentences,
+                            bridge = chunk.bridge,
                             chars = preview.len(),
                             tts_ms = chunk_tts_ms,
                             audio_seconds = dur,
@@ -4962,6 +5360,33 @@ async fn stream_reply_with_tts(
                             .telemetry
                             .audio_segments_sent
                             .saturating_add(1);
+                        if !chunk.bridge {
+                            budget.observe_audio(chunk.estimate_ms, duration_ms);
+                            if budget.over_time() && !budget.exhausted {
+                                // Real audio ran past the budget before the
+                                // estimate did: nothing else starts. What is
+                                // queued becomes text only.
+                                budget.exhausted = true;
+                                let mut dropped = 0usize;
+                                queue.retain(|c| {
+                                    if c.bridge {
+                                        true
+                                    } else {
+                                        dropped += c.speech.len();
+                                        false
+                                    }
+                                });
+                                budget.text_only_chars += dropped;
+                                log_budget_reached(ctx.turn_id, ctx.session_id, &budget, "audio_seconds");
+                                if stream_ended {
+                                    // The end-of-stream check already ran:
+                                    // offer the bridge here instead.
+                                    if let Some(bridge) = budget.bridge_if_natural() {
+                                        queue.push_back(SpokenChunk::bridge(bridge));
+                                    }
+                                }
+                            }
+                        }
                     }
                     Ok(Err(e)) if e.to_string() == "cancelled" => {
                         tracing::info!(target: "permagentd::voice", "TTS cancelled (pre-mutex)");
@@ -4969,8 +5394,57 @@ async fn stream_reply_with_tts(
                         return Ok(());
                     }
                     Ok(Err(e)) => {
-                        ctx.telemetry.log_outcome("tts_error");
-                        return Err(e);
+                        // V-07: a sentence the TTS refuses is never dropped
+                        // silently and never ends the reply. Retry once with
+                        // a plain-text rendering; if that fails too, log why
+                        // and move on — the words still reach the client in
+                        // `reply_text`.
+                        let reason = e.to_string();
+                        if !retried {
+                            if let Some(plain) = plain_speech_fallback(&chunk.speech) {
+                                tracing::warn!(
+                                    target: "permagentd::voice",
+                                    event = "voice_tts_segment_retry",
+                                    turn_id = ctx.turn_id,
+                                    session_id = ctx.session_id.unwrap_or("voice-anon"),
+                                    source = "reply",
+                                    segment_id,
+                                    chars = chunk.speech.len(),
+                                    error_kind = tts_error_kind(&reason),
+                                    reason = %reason,
+                                    "TTS refused a reply sentence — retrying as plain speech"
+                                );
+                                let retry_chunk = SpokenChunk { speech: plain, ..chunk };
+                                inflight = Some(InflightSynth {
+                                    handle: spawn_synth(
+                                        tts.clone(),
+                                        retry_chunk.speech.clone(),
+                                        voice_id.clone(),
+                                        retry_chunk.speed,
+                                        cancelled.clone(),
+                                        Some(synth_scope.clone()),
+                                    ),
+                                    started: std::time::Instant::now(),
+                                    chunk: retry_chunk,
+                                    segment_id,
+                                    retried: true,
+                                });
+                                continue;
+                            }
+                        }
+                        tracing::warn!(
+                            target: "permagentd::voice",
+                            event = "voice_tts_segment_failed",
+                            turn_id = ctx.turn_id,
+                            session_id = ctx.session_id.unwrap_or("voice-anon"),
+                            source = "reply",
+                            segment_id,
+                            chars = chunk.speech.len(),
+                            retried,
+                            error_kind = tts_error_kind(&reason),
+                            reason = %reason,
+                            "TTS could not speak a reply sentence — it stays in the text reply"
+                        );
                     }
                     Err(e) => {
                         ctx.telemetry.log_outcome("tts_task_panic");
@@ -4983,22 +5457,10 @@ async fn stream_reply_with_tts(
                 match event {
                     None => {
                         stream_ended = true;
-                        if pronounce_hold {
-                            permagent::events::voice_remainder::append_sentence(
-                                &mut leftover,
-                                &text_buf,
-                            );
-                            text_buf.clear();
-                        } else {
-                            enqueue_remainder(
-                                &mut text_buf,
-                                &mut queue,
-                                &mut sentence_num,
-                                max_spoken,
-                                &mut budget_notice_spoken,
-                                spoken_cue,
-                                &mut leftover,
-                            );
+                        enqueue_remainder(&mut text_buf, &mut queue, &mut budget);
+                        if let Some(bridge) = budget.bridge_if_natural() {
+                            log_budget_reached(ctx.turn_id, ctx.session_id, &budget, "reply_end");
+                            queue.push_back(SpokenChunk::bridge(bridge));
                         }
                     }
                     Some(Ok(AgentEvent::Message(msg)))
@@ -5023,24 +5485,12 @@ async fn stream_reply_with_tts(
                                 }
                                 text_buf.push_str(&text_content.text);
                                 full_reply.push_str(&text_content.text);
-                                if pronounce_hold {
-                                    permagent::events::voice_remainder::append_sentence(
-                                        &mut leftover,
-                                        &text_buf,
-                                    );
-                                    text_buf.clear();
-                                } else {
-                                    enqueue_ready_sentences(
-                                        &mut text_buf,
-                                        &mut queue,
-                                        &mut sentence_num,
-                                        max_spoken,
-                                        &mut budget_notice_spoken,
-                                        spoken_cue,
-                                        first_chunk,
-                                        &mut leftover,
-                                    );
-                                }
+                                enqueue_ready_sentences(
+                                    &mut text_buf,
+                                    &mut queue,
+                                    &mut budget,
+                                    first_chunk,
+                                );
                             }
                         }
                     }
@@ -5067,7 +5517,7 @@ async fn stream_reply_with_tts(
         tracing::info!(
             target: "permagentd::voice",
             "spoken stop ended the turn after {} sentences",
-            sentence_num
+            budget.sentences
         );
         permagent::events::voice_remainder::clear(&sid);
         if socket
@@ -5078,15 +5528,22 @@ async fn stream_reply_with_tts(
             ctx.telemetry.log_outcome("stopped_send_disconnected");
             return Ok(());
         }
-    } else if leftover.trim().is_empty() {
-        permagent::events::voice_remainder::clear(&sid);
     } else {
-        tracing::info!(
-            target: "permagentd::voice",
-            "stashing unspoken leftover ({} chars) for continue",
-            leftover.len()
-        );
-        permagent::events::voice_remainder::stash(&sid, leftover);
+        // D3: what was not spoken is text only (it rides `reply_text` below)
+        // and is never stashed for a spoken "continue".
+        permagent::events::voice_remainder::clear(&sid);
+        if budget.text_only_chars > 0 {
+            tracing::info!(
+                target: "permagentd::voice",
+                event = "voice_reply_text_only",
+                turn_id = ctx.turn_id,
+                session_id = ctx.session_id.unwrap_or("voice-anon"),
+                source = "reply",
+                text_only_chars = budget.text_only_chars,
+                spoken_sentences = budget.sentences,
+                "reply remainder delivered as text only"
+            );
+        }
     }
 
     // Any capture that raced the last loop turn. Then unregister so the
@@ -5171,6 +5628,8 @@ async fn stream_reply_with_tts(
         return Ok(());
     }
 
+    register_reply_playback(ctx);
+
     let total_ms = pipeline_start.elapsed().as_millis();
     tracing::info!(
         target: "permagentd::voice",
@@ -5180,7 +5639,7 @@ async fn stream_reply_with_tts(
         stt_ms,
         reply_ms,
         tts_total_ms = total_tts_ms,
-        sentences = sentence_num,
+        sentences = budget.sentences,
         "voice turn timing"
     );
     // `reply_sent` means all frames were accepted by this socket. It is not a
@@ -5233,15 +5692,11 @@ async fn stream_reply_with_tts(
 
 /// Strip delivery tags, drop unspeakable junk, pick Kokoro speed.
 fn prepare_spoken(sentence: &str) -> Option<(String, f32)> {
-    let plan = crate::voice::prosody::plan(sentence);
+    // Screen-only material first (links, code spans, URLs, paths, ids):
+    // prosody would otherwise drop `[link text]` as an unknown delivery tag.
+    let screen_free = crate::voice::speakable::strip_screen_only(sentence);
+    let plan = crate::voice::prosody::plan(&screen_free);
     crate::voice::speakable::speakable(&plan.speech).map(|speech| (speech, plan.speed))
-}
-
-fn pronunciation_coaching(transcript_oov: &[String]) -> Option<String> {
-    if !transcript_oov.is_empty() {
-        crate::voice::oov_log::record(transcript_oov);
-    }
-    crate::voice::oov_log::coaching_prompt()
 }
 
 /// The Spectral pool, or `None` when it cannot be reached. The voice socket
@@ -5277,155 +5732,6 @@ async fn pick_spoken_decision(state: &Arc<AppState>, session_id: Option<&str>) -
     None
 }
 
-fn first_unknown_name(tts: &dyn crate::voice::TextToSpeech, text: &str) -> Option<String> {
-    let oov = tts.unresolved_words(text);
-    let word = permagent::events::voice_pronounce::first_teachable(&oov)?;
-    if crate::voice::user_lexicon::known(&word) {
-        return None;
-    }
-    Some(word)
-}
-
-fn try_save_heard(
-    tts: &dyn crate::voice::TextToSpeech,
-    word: &str,
-    transcript: &str,
-) -> Option<String> {
-    for sounds_like in permagent::events::voice_pronounce::save_candidates(word, transcript) {
-        let Ok(ipa) = tts.phonemize_text(&sounds_like) else {
-            continue;
-        };
-        if crate::voice::user_lexicon::save(
-            word,
-            crate::voice::user_lexicon::PronunciationEntry {
-                ipa,
-                sounds_like: sounds_like.clone(),
-            },
-        )
-        .is_err()
-        {
-            continue;
-        }
-        crate::voice::oov_log::forget(word);
-        tracing::info!(
-            target: "permagentd::voice",
-            "pronunciation saved from listen"
-        );
-        return Some(sounds_like);
-    }
-    None
-}
-
-/// Consume a listen turn. Returns a held user request to resume, if any.
-async fn handle_pronunciation_listen(
-    state: &Arc<AppState>,
-    tts: Arc<dyn crate::voice::TextToSpeech>,
-    socket: &mut WebSocket,
-    session_id: &str,
-    transcript: &str,
-    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    client: permagent::events::voice_origin::VoiceClient,
-) -> Option<String> {
-    let pending = permagent::events::voice_pronounce::take(session_id)?;
-
-    if permagent::events::voice_pronounce::is_skip_cue(transcript) {
-        let _ = socket
-            .send(send_json(&ServerMessage::Taught {
-                word: permagent::events::voice_pronounce::display_word(&pending.word),
-            }))
-            .await;
-        let _ = speak_canned_reply(
-            state,
-            tts.clone(),
-            socket,
-            permagent::events::voice_pronounce::SKIPPED,
-            cancelled.clone(),
-        )
-        .await;
-        if let Some(rest) = permagent::events::voice_remainder::take(session_id) {
-            speak_remainder(state, tts, socket, session_id, &rest, cancelled, client).await;
-            return None;
-        }
-        return pending.held_transcript;
-    }
-
-    if try_save_heard(tts.as_ref(), &pending.word, transcript).is_some() {
-        let shown = permagent::events::voice_pronounce::display_word(&pending.word);
-        let _ = socket
-            .send(send_json(&ServerMessage::Taught { word: shown }))
-            .await;
-        let said = permagent::events::voice_pronounce::saved_confirmation(&pending.word);
-        let _ = speak_canned_reply(state, tts.clone(), socket, &said, cancelled.clone()).await;
-        if let Some(rest) = permagent::events::voice_remainder::take(session_id) {
-            speak_remainder(state, tts, socket, session_id, &rest, cancelled, client).await;
-            return None;
-        }
-        if let Some(held) = pending.held_transcript {
-            if let Some(next) = first_unknown_name(tts.as_ref(), &held) {
-                permagent::events::voice_pronounce::begin(session_id, &next, Some(held.clone()));
-                let shown = permagent::events::voice_pronounce::display_form(&held, &next);
-                let _ = socket
-                    .send(send_json(&ServerMessage::Teach { word: shown }))
-                    .await;
-                let _ = speak_canned_reply(
-                    state,
-                    tts,
-                    socket,
-                    permagent::events::voice_pronounce::ASK_FIRST,
-                    cancelled,
-                )
-                .await;
-                return None;
-            }
-            return Some(held);
-        }
-        return None;
-    }
-
-    // Nothing savable came out of this listen. Cap how many more times we
-    // ask before giving up — an unbounded ASK_AGAIN loop (2026-09-01
-    // incident) was the server-side half of the runaway-restart bug.
-    match permagent::events::voice_pronounce::record_retry(session_id, pending) {
-        permagent::events::voice_pronounce::RetryOutcome::AskAgain(p) => {
-            let shown = permagent::events::voice_pronounce::display_word(&p.word);
-            let _ = socket
-                .send(send_json(&ServerMessage::Teach { word: shown }))
-                .await;
-            let _ = speak_canned_reply(
-                state,
-                tts,
-                socket,
-                permagent::events::voice_pronounce::ASK_AGAIN,
-                cancelled,
-            )
-            .await;
-            None
-        }
-        permagent::events::voice_pronounce::RetryOutcome::GiveUp(p) => {
-            // Attempts exhausted — identical outcome to a spoken "skip":
-            // clear the pill, say SKIPPED, resume whatever was held.
-            let _ = socket
-                .send(send_json(&ServerMessage::Taught {
-                    word: permagent::events::voice_pronounce::display_word(&p.word),
-                }))
-                .await;
-            let _ = speak_canned_reply(
-                state,
-                tts.clone(),
-                socket,
-                permagent::events::voice_pronounce::SKIPPED,
-                cancelled.clone(),
-            )
-            .await;
-            if let Some(rest) = permagent::events::voice_remainder::take(session_id) {
-                speak_remainder(state, tts, socket, session_id, &rest, cancelled, client).await;
-                return None;
-            }
-            p.held_transcript
-        }
-    }
-}
-
 async fn speak_canned_reply(
     state: &Arc<AppState>,
     tts: Arc<dyn crate::voice::TextToSpeech>,
@@ -5448,14 +5754,42 @@ async fn speak_canned_reply(
     let speech =
         crate::voice::speakable::speakable(&plan.speech).unwrap_or_else(|| text.to_string());
     let metadata_text = speech.clone();
-    match spawn_synth(tts.clone(), speech, voice_id, plan.speed, cancelled.clone()).await {
+    let scope = crate::voice::oov_log::ReplyScope::new(None, None, "canned", "");
+    match spawn_synth(
+        tts.clone(),
+        speech,
+        voice_id,
+        plan.speed,
+        cancelled.clone(),
+        Some(scope),
+    )
+    .await
+    {
         Ok(Ok(audio)) => {
             if !send_tts_segment(socket, &audio, metadata_text, 0, cancelled.as_ref()).await {
                 return;
             }
         }
-        Ok(Err(_)) => tracing::warn!(target: "permagentd::voice", "canned TTS failed"),
-        Err(_) => tracing::warn!(target: "permagentd::voice", "canned TTS task panicked"),
+        Ok(Err(e)) => {
+            let reason = e.to_string();
+            tracing::warn!(
+                target: "permagentd::voice",
+                event = "voice_tts_segment_failed",
+                source = "canned",
+                chars = text.len(),
+                error_kind = tts_error_kind(&reason),
+                reason = %reason,
+                "canned TTS failed — the line is still sent as text"
+            );
+        }
+        Err(e) => tracing::warn!(
+            target: "permagentd::voice",
+            event = "voice_tts_segment_failed",
+            source = "canned",
+            error_kind = "task_panic",
+            reason = %e,
+            "canned TTS task panicked"
+        ),
     }
     if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
         return;
@@ -5529,8 +5863,14 @@ async fn maybe_send_feedback_playback(
     let synth_audio = if let Some(hit) = cached_hit.take() {
         Some(hit.audio)
     } else {
-        let mut synth_task =
-            spawn_synth(tts.clone(), speech, voice_id, plan.speed, cancelled.clone());
+        let mut synth_task = spawn_synth(
+            tts.clone(),
+            speech,
+            voice_id,
+            plan.speed,
+            cancelled.clone(),
+            None,
+        );
         loop {
             tokio::select! {
                 result = &mut synth_task => {
@@ -5585,11 +5925,17 @@ async fn maybe_send_feedback_playback(
                                     | ClientMessage::EnrollDone
                                     | ClientMessage::EnrollSkip
                                     | ClientMessage::EnrollClear
-                                    | ClientMessage::TeachSkip => {
+                                    | ClientMessage::TeachSkip
+                                    | ClientMessage::Interrupt { .. } => {
                                         playback_cancelled = true;
                                         deferred_message = Some(Message::Text(text));
                                         synth_task.abort();
                                         break None;
+                                    }
+                                    ref ack @ (ClientMessage::SegmentStarted { .. }
+                                    | ClientMessage::SegmentEnded { .. }
+                                    | ClientMessage::ReplyPlaybackComplete { .. }) => {
+                                        record_playback_frame(ack);
                                     }
                                     ClientMessage::Stop { .. } => {}
                                 }
@@ -5648,10 +5994,16 @@ async fn maybe_send_feedback_playback(
                         | ClientMessage::EnrollDone
                         | ClientMessage::EnrollSkip
                         | ClientMessage::EnrollClear
-                        | ClientMessage::TeachSkip => {
+                        | ClientMessage::TeachSkip
+                        | ClientMessage::Interrupt { .. } => {
                             playback_cancelled = true;
                             deferred_message = Some(Message::Text(text));
                             break;
+                        }
+                        ref ack @ (ClientMessage::SegmentStarted { .. }
+                        | ClientMessage::SegmentEnded { .. }
+                        | ClientMessage::ReplyPlaybackComplete { .. }) => {
+                            record_playback_frame(ack);
                         }
                         ClientMessage::Stop { .. } => {}
                     }
@@ -5683,32 +6035,144 @@ fn spawn_synth(
     voice_id: Option<String>,
     speed: f32,
     cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    scope: Option<crate::voice::oov_log::ReplyScope>,
 ) -> tokio::task::JoinHandle<anyhow::Result<AudioOutput>> {
     tokio::task::spawn_blocking(move || {
         if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
             return Err(anyhow::anyhow!("cancelled"));
         }
-        let mut audio = tts.synthesize(
-            &text,
-            &TtsConfig {
-                voice_id,
-                speed,
-                lexicon: crate::voice::user_lexicon::current(),
-            },
-        )?;
+        let config = TtsConfig {
+            voice_id,
+            speed,
+            lexicon: crate::voice::user_lexicon::current(),
+        };
+        // The scope tells the TTS layer whose speech this is, so substituted
+        // unknown words are queued for review (and transcript words are not).
+        let mut audio = match scope {
+            Some(scope) => {
+                crate::voice::oov_log::with_scope(scope, || tts.synthesize(&text, &config))?
+            }
+            None => tts.synthesize(&text, &config)?,
+        };
         crate::voice::loudness::master(&mut audio.samples, audio.sample_rate, &text);
         Ok(audio)
     })
 }
 
+/// One sentence (or clause) queued for synthesis.
+#[derive(Debug, Clone, PartialEq)]
+struct SpokenChunk {
+    speech: String,
+    speed: f32,
+    /// Budget estimate charged when it was admitted.
+    estimate_ms: u64,
+    /// The spoken-budget bridge line, not reply content.
+    bridge: bool,
+}
+
+impl SpokenChunk {
+    fn bridge(line: &'static str) -> Self {
+        Self {
+            speech: line.to_string(),
+            speed: 1.0,
+            estimate_ms: 0,
+            bridge: true,
+        }
+    }
+}
+
+/// The synthesis currently running for a reply.
+struct InflightSynth {
+    handle: tokio::task::JoinHandle<anyhow::Result<AudioOutput>>,
+    started: std::time::Instant,
+    chunk: SpokenChunk,
+    segment_id: u64,
+    /// Already retried as plain speech once (V-07).
+    retried: bool,
+}
+
+/// Remainder smaller than this is not worth a spoken bridge: "The rest is on
+/// screen." after four words of leftover sounds broken.
+const MIN_TEXT_ONLY_CHARS_FOR_BRIDGE: usize = 40;
+
+impl SpokenBudget {
+    /// The bridge line, once, only when the budget actually held back a
+    /// meaningful amount of the reply.
+    fn bridge_if_natural(&mut self) -> Option<&'static str> {
+        if !self.exhausted || self.text_only_chars < MIN_TEXT_ONLY_CHARS_FOR_BRIDGE {
+            return None;
+        }
+        if self.bridge.is_empty() {
+            return None;
+        }
+        let line = self.bridge;
+        // Spend it: a second call must not repeat the bridge.
+        self.bridge = "";
+        Some(line)
+    }
+}
+
+fn log_budget_reached(
+    turn_id: u64,
+    session_id: Option<&str>,
+    budget: &SpokenBudget,
+    trigger: &'static str,
+) {
+    tracing::info!(
+        target: "permagentd::voice",
+        event = "voice_spoken_budget_reached",
+        turn_id,
+        session_id = session_id.unwrap_or("voice-anon"),
+        trigger,
+        spoken_sentences = budget.sentences,
+        spoken_ms = budget.spoken_ms,
+        max_sentences = budget.max_sentences,
+        max_ms = budget.max_ms,
+        text_only_chars = budget.text_only_chars,
+        "spoken budget reached — the rest of the reply is text only"
+    );
+}
+
+/// Classify a TTS error for logs without its free text.
+fn tts_error_kind(reason: &str) -> &'static str {
+    if reason.contains("G2P") || reason.contains("phonem") {
+        "g2p"
+    } else if reason.contains("ort") || reason.contains("tensor") || reason.contains("Session") {
+        "inference"
+    } else if reason.contains("style") || reason.contains("voice") {
+        "voice_style"
+    } else {
+        "other"
+    }
+}
+
+/// A last-resort rendering for a sentence the TTS refused: letters, digits,
+/// spaces and basic punctuation only. `None` when nothing speakable is left.
+fn plain_speech_fallback(speech: &str) -> Option<String> {
+    let plain: String = speech
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, ' ' | ',' | '.' | '?' | '!' | '\'') {
+                c
+            } else {
+                ' '
+            }
+        })
+        .collect();
+    let plain = plain.split_whitespace().collect::<Vec<_>>().join(" ");
+    if plain.chars().filter(|c| c.is_ascii_alphabetic()).count() < 2 || plain == speech {
+        None
+    } else {
+        Some(plain)
+    }
+}
+
+/// Admit one chunk of reply text to the spoken queue, or account it as
+/// text-only once the spoken budget (D3) is spent.
 fn push_spoken(
     sentence: &str,
-    queue: &mut std::collections::VecDeque<(String, f32)>,
-    sentence_num: &mut u32,
-    max_spoken: u32,
-    budget_notice_spoken: &mut bool,
-    spoken_cue: &'static str,
-    leftover: &mut String,
+    queue: &mut std::collections::VecDeque<SpokenChunk>,
+    budget: &mut SpokenBudget,
 ) {
     let Some((speech, speed)) = prepare_spoken(sentence) else {
         tracing::debug!(
@@ -5717,27 +6181,27 @@ fn push_spoken(
         );
         return;
     };
-    if *sentence_num >= max_spoken {
-        if !*budget_notice_spoken {
-            *budget_notice_spoken = true;
-            tracing::info!(
-                target: "permagentd::voice",
-                "spoken budget reached ({} sentences) — remaining reply is leftover for continue",
-                max_spoken
-            );
-            queue.push_back((spoken_cue.to_string(), 1.0));
-        }
-        permagent::events::voice_remainder::append_sentence(leftover, &speech);
+    let estimate_ms = SpokenBudget::estimate_ms(&speech, speed);
+    if !budget.admits(estimate_ms) {
+        budget.exhausted = true;
+        budget.text_only_chars += speech.len();
         return;
     }
     // Clause chunks (comma, dash) stream for first-audio, but they are not
-    // sentences. Counting them as the budget cut him mid-thought last night.
-    // Only a .!? close consumes a spoken-sentence slot — he finishes the
-    // sentence unless the user barges in.
-    if closes_a_sentence(&speech) {
-        *sentence_num += 1;
+    // sentences. Only a .!? close consumes a sentence slot, and a sentence
+    // that has started is always finished.
+    let closes = closes_a_sentence(&speech);
+    if closes {
+        budget.sentences += 1;
     }
-    queue.push_back((speech, speed));
+    budget.mid_sentence = !closes;
+    budget.spoken_ms += estimate_ms;
+    queue.push_back(SpokenChunk {
+        speech,
+        speed,
+        estimate_ms,
+        bridge: false,
+    });
 }
 
 fn closes_a_sentence(text: &str) -> bool {
@@ -5747,22 +6211,11 @@ fn closes_a_sentence(text: &str) -> bool {
     )
 }
 
-// Eight parameters, all of them distinct state this streaming step mutates in
-// place: the buffer, the outbound queue, the sentence counter, the spoken
-// budget and its one-shot notice, the cue text, whether this is the first
-// chunk, and the leftover tail. Bundling them into a struct would only move
-// the same eight fields behind one name. Same call the rest of this crate makes
-// (see verification/mod.rs, routes/analytics_verify.rs).
-#[allow(clippy::too_many_arguments)]
 fn enqueue_ready_sentences(
     text_buf: &mut String,
-    queue: &mut std::collections::VecDeque<(String, f32)>,
-    sentence_num: &mut u32,
-    max_spoken: u32,
-    budget_notice_spoken: &mut bool,
-    spoken_cue: &'static str,
+    queue: &mut std::collections::VecDeque<SpokenChunk>,
+    budget: &mut SpokenBudget,
     first_chunk: bool,
-    leftover: &mut String,
 ) {
     let mut aggressive = first_chunk;
     while let Some((end_inclusive, next_start)) = find_speakable_boundary(text_buf, aggressive) {
@@ -5775,158 +6228,22 @@ fn enqueue_ready_sentences(
         if sentence.is_empty() {
             continue;
         }
-        push_spoken(
-            &sentence,
-            queue,
-            sentence_num,
-            max_spoken,
-            budget_notice_spoken,
-            spoken_cue,
-            leftover,
-        );
+        push_spoken(&sentence, queue, budget);
         aggressive = false;
     }
 }
 
 fn enqueue_remainder(
     text_buf: &mut String,
-    queue: &mut std::collections::VecDeque<(String, f32)>,
-    sentence_num: &mut u32,
-    max_spoken: u32,
-    budget_notice_spoken: &mut bool,
-    spoken_cue: &'static str,
-    leftover: &mut String,
+    queue: &mut std::collections::VecDeque<SpokenChunk>,
+    budget: &mut SpokenBudget,
 ) {
     let remainder = text_buf.trim().to_string();
     text_buf.clear();
     if remainder.is_empty() {
         return;
     }
-    push_spoken(
-        &remainder,
-        queue,
-        sentence_num,
-        max_spoken,
-        budget_notice_spoken,
-        spoken_cue,
-        leftover,
-    );
-}
-
-/// Replay leftover prose on a continue cue — no new agent turn.
-async fn speak_remainder(
-    state: &Arc<AppState>,
-    tts: Arc<dyn crate::voice::TextToSpeech>,
-    socket: &mut WebSocket,
-    session_id: &str,
-    leftover: &str,
-    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    client: permagent::events::voice_origin::VoiceClient,
-) {
-    if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
-        permagent::events::voice_remainder::stash(session_id, leftover.to_string());
-        return;
-    }
-    if socket
-        .send(send_json(&ServerMessage::ReplyStart))
-        .await
-        .is_err()
-    {
-        permagent::events::voice_remainder::stash(session_id, leftover.to_string());
-        return;
-    }
-
-    let voice_id = state.persona.read().await.voice_id.clone();
-    let spoken_cue = permagent::events::voice_origin::budget_notice(client);
-    let max_spoken = max_spoken_sentences();
-    let mut queue: std::collections::VecDeque<(String, f32)> = std::collections::VecDeque::new();
-    let mut sentence_num = 0u32;
-    let mut budget_notice_spoken = false;
-    let mut still_left = String::new();
-    let mut text_buf = leftover.to_string();
-    let mut next_segment_id = 0u64;
-    enqueue_ready_sentences(
-        &mut text_buf,
-        &mut queue,
-        &mut sentence_num,
-        max_spoken,
-        &mut budget_notice_spoken,
-        spoken_cue,
-        true,
-        &mut still_left,
-    );
-    enqueue_remainder(
-        &mut text_buf,
-        &mut queue,
-        &mut sentence_num,
-        max_spoken,
-        &mut budget_notice_spoken,
-        spoken_cue,
-        &mut still_left,
-    );
-
-    let mut spoken_text = String::new();
-    while let Some((speech, speed)) = queue.pop_front() {
-        if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
-            permagent::events::voice_remainder::stash(session_id, leftover.to_string());
-            return;
-        }
-        if speech != spoken_cue {
-            if !spoken_text.is_empty() {
-                spoken_text.push(' ');
-            }
-            spoken_text.push_str(&speech);
-        }
-        let metadata_text = speech.clone();
-        match spawn_synth(
-            tts.clone(),
-            speech,
-            voice_id.clone(),
-            speed,
-            cancelled.clone(),
-        )
-        .await
-        {
-            Ok(Ok(audio)) => {
-                let segment_id = next_segment_id;
-                next_segment_id = next_segment_id.saturating_add(1);
-                if !send_tts_segment(
-                    socket,
-                    &audio,
-                    metadata_text,
-                    segment_id,
-                    cancelled.as_ref(),
-                )
-                .await
-                {
-                    permagent::events::voice_remainder::stash(session_id, leftover.to_string());
-                    return;
-                }
-            }
-            Ok(Err(_)) => tracing::warn!(target: "permagentd::voice", "remainder TTS failed"),
-            Err(_) => tracing::warn!(target: "permagentd::voice", "remainder TTS task panicked"),
-        }
-    }
-
-    if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
-        permagent::events::voice_remainder::stash(session_id, leftover.to_string());
-        return;
-    }
-
-    if still_left.trim().is_empty() {
-        permagent::events::voice_remainder::clear(session_id);
-    } else {
-        permagent::events::voice_remainder::stash(session_id, still_left);
-    }
-
-    let _ = socket
-        .send(send_json(&ServerMessage::ReplyText { text: spoken_text }))
-        .await;
-    let _ = socket
-        .send(send_json(&ServerMessage::ReplyEnd {
-            sample_rate: tts.sample_rate(),
-        }))
-        .await;
+    push_spoken(&remainder, queue, budget);
 }
 
 /// Find the earliest speakable boundary in the buffer.
@@ -6325,6 +6642,7 @@ mod tests {
             dropped_input_samples: None,
             wire_samples_sent: Some(0),
             send_failures: Some(0),
+            client_discard: None,
         }
     }
 
@@ -6404,6 +6722,7 @@ mod tests {
             wire_channels: None,
             wire_encoding: None,
             io_buffer_duration_ms: None,
+            surface: None,
         };
         let updated = super::VoiceClientHello {
             capabilities: Some(vec![super::FEEDBACK_PLAYBACK_CAPABILITY.to_string()]),
@@ -6653,6 +6972,7 @@ mod tests {
                 wire_channels: None,
                 wire_encoding: None,
                 io_buffer_duration_ms: None,
+                surface: None,
             },
         );
         by_revision.insert(
@@ -6883,54 +7203,29 @@ mod tests {
         assert_eq!(speed, 0.95);
     }
 
+    /// D5: the server never sends `teach` / `taught` any more, but an older
+    /// client's `teach_skip` must still decode (and is ignored) rather than
+    /// failing as an invalid message.
     #[test]
-    fn teach_frame_places_the_word_and_never_spells() {
-        let teach = serde_json::to_value(ServerMessage::Teach {
-            word: "Elspeth".into(),
-        })
-        .unwrap();
-        assert_eq!(teach["type"], "teach");
-        assert_eq!(teach["word"], "Elspeth");
-        let taught = serde_json::to_value(ServerMessage::Taught {
-            word: "Elspeth".into(),
-        })
-        .unwrap();
-        assert_eq!(taught["type"], "taught");
-    }
-
-    #[test]
-    fn reconnect_replays_a_parked_teach_word() {
-        let sid = "teach-replay-test";
-        permagent::events::voice_pronounce::clear(sid);
-        permagent::events::voice_pronounce::begin(sid, "Elspeth", None);
-        let msg = pending_teach_msg(sid).expect("parked teach");
-        let v = serde_json::to_value(msg).unwrap();
-        assert_eq!(v["type"], "teach");
-        assert_eq!(v["word"], "Elspeth");
-        permagent::events::voice_pronounce::clear(sid);
-        assert!(pending_teach_msg(sid).is_none());
-    }
-
-    /// FIX 4 (2026-09-01 incident): "click anywhere to end" didn't clear the
-    /// server's pending-teach registry, so the next connect on the same
-    /// session id replayed the pill. `handle_client_initiated_close` is the
-    /// exact call the `Message::Close` arm makes; this locks down that
-    /// begin → close → reconnect leaves nothing to replay.
-    #[test]
-    fn client_initiated_close_clears_a_parked_teach_word() {
-        let sid = "teach-close-clears-test";
-        permagent::events::voice_pronounce::clear(sid);
-        permagent::events::voice_pronounce::begin(sid, "Teenity", None);
+    fn legacy_teach_skip_still_decodes_and_teach_frames_are_gone() {
+        let raw = r#"{"type":"teach_skip"}"#;
+        assert!(matches!(
+            serde_json::from_str::<ClientMessage>(raw),
+            Ok(ClientMessage::TeachSkip)
+        ));
+        let src = include_str!("voice.rs");
+        let code = src.split("#[cfg(test)]\nmod tests").next().unwrap();
         assert!(
-            pending_teach_msg(sid).is_some(),
-            "parked before the close frame arrives"
+            !code.contains("rename = \"teach\""),
+            "teach frame came back"
         );
-
-        handle_client_initiated_close(sid);
-
         assert!(
-            pending_teach_msg(sid).is_none(),
-            "a client-initiated close must clear the parked word — reconnect must not replay it"
+            !code.contains("voice_pronounce::begin"),
+            "live teach came back"
+        );
+        assert!(
+            !code.contains("first_unknown_name"),
+            "transcript teach came back"
         );
     }
 
@@ -7310,6 +7605,7 @@ mod tests {
             dropped_input_samples: None,
             wire_samples_sent: Some(412_800),
             send_failures: Some(0),
+            client_discard: None,
         };
         let mut telemetry =
             VoiceTurnTelemetry::new(11, 7, Some("voice-anon"), std::time::Instant::now());
@@ -7385,6 +7681,7 @@ mod tests {
             dropped_input_samples: None,
             wire_samples_sent: None,
             send_failures: None,
+            client_discard: None,
         };
         let mut telemetry =
             VoiceTurnTelemetry::new(12, 7, Some("voice-anon"), std::time::Instant::now());
@@ -7418,11 +7715,13 @@ mod tests {
             wire_channels: None,
             wire_encoding: None,
             io_buffer_duration_ms: None,
+            surface: Some("world\nforged".into()),
         });
         assert_eq!(
             sanitized_hello.client.as_deref(),
             Some("ios_voiceforged_field=1")
         );
+        assert_eq!(sanitized_hello.surface.as_deref(), Some("worldforged"));
         let sanitized_stop = sanitize_stop(VoiceClientStop {
             turn_id: Some("ios_voice\nforged_field=1".into()),
             audio_revision: None,
@@ -7444,6 +7743,7 @@ mod tests {
             dropped_input_samples: None,
             wire_samples_sent: None,
             send_failures: None,
+            client_discard: None,
         });
         assert_eq!(
             sanitized_stop.turn_id.as_deref(),
@@ -7488,68 +7788,365 @@ mod tests {
         assert_eq!(malformed.trailing_bytes, 3);
     }
 
-    /// Last night: eight spoken sentences, leftover dropped, Continue lost.
+    fn budget(max_sentences: u32, max_seconds: u32) -> SpokenBudget {
+        SpokenBudget::new(max_sentences, max_seconds, "The rest is on screen.")
+    }
+
+    /// D3 / V-23: at most N sentences are spoken; the rest is text only, and
+    /// nothing is stashed for a spoken "continue".
     #[test]
-    fn spoken_budget_stashes_unspoken_sentences() {
+    fn spoken_budget_caps_sentences_and_the_rest_is_text_only() {
         let mut queue = std::collections::VecDeque::new();
-        let mut n = 0u32;
-        let mut cue = false;
-        let mut leftover = String::new();
+        let mut b = budget(4, 600);
         for i in 1..=12 {
             push_spoken(
-                &format!("Sentence number {i} of the Rowan story."),
+                &format!("Sentence number {i} of the tide answer."),
                 &mut queue,
-                &mut n,
-                8,
-                &mut cue,
-                "There's more when you want it.",
-                &mut leftover,
+                &mut b,
             );
         }
-        assert_eq!(n, 8);
-        assert!(cue);
-        assert!(
-            leftover.contains("Sentence number 9"),
-            "leftover lost sentence 9: {leftover}"
-        );
-        assert!(leftover.contains("Sentence number 12"));
-        assert!(
-            !leftover.contains("Sentence number 8"),
-            "spoken sentence leaked into leftover: {leftover}"
-        );
-        let spoken: Vec<_> = queue.iter().map(|(s, _)| s.as_str()).collect();
-        assert!(spoken.iter().any(|s| s.contains("There's more")));
-        assert!(!spoken.iter().any(|s| s.contains("Sentence number 9")));
+        assert_eq!(b.sentences, 4);
+        assert!(b.exhausted);
+        assert_eq!(queue.len(), 4, "only four sentences are queued for speech");
+        assert!(queue.iter().all(|c| !c.speech.contains("number 5")));
+        assert!(b.text_only_chars > 0);
+        assert_eq!(b.bridge_if_natural(), Some("The rest is on screen."));
+        assert_eq!(b.bridge_if_natural(), None, "the bridge is spoken once");
+    }
+
+    /// 2026-10-14 turn 2: one word in, 38.7 s out. The seconds budget holds
+    /// even when no sentence closes early.
+    #[test]
+    fn spoken_budget_caps_estimated_seconds() {
+        let mut queue = std::collections::VecDeque::new();
+        let mut b = budget(100, 20);
+        let long = "This sentence has exactly twelve words in it for the estimate.";
+        for _ in 0..10 {
+            push_spoken(long, &mut queue, &mut b);
+        }
+        let est_total: u64 = queue.iter().map(|c| c.estimate_ms).sum();
+        assert!(est_total <= 20_000, "{est_total} ms queued");
+        assert!(queue.len() >= 1, "the first sentence is always spoken");
+        assert!(b.exhausted);
+    }
+
+    #[test]
+    fn the_first_sentence_is_spoken_even_if_it_alone_is_long() {
+        let mut queue = std::collections::VecDeque::new();
+        let mut b = budget(4, 5);
+        let long = "word ".repeat(40).trim().replace("word word", "word, word");
+        push_spoken(&long, &mut queue, &mut b);
+        push_spoken("Short one.", &mut queue, &mut b);
+        assert!(!queue.is_empty());
+    }
+
+    #[test]
+    fn measured_audio_corrects_the_estimate() {
+        let mut b = budget(100, 20);
+        let mut queue = std::collections::VecDeque::new();
+        push_spoken("One two three.", &mut queue, &mut b);
+        let est = queue[0].estimate_ms;
+        b.observe_audio(est, 21_000);
+        assert!(b.over_time());
+        assert!(!b.admits(100));
+    }
+
+    #[test]
+    fn a_tiny_remainder_gets_no_bridge() {
+        let mut queue = std::collections::VecDeque::new();
+        let mut b = budget(1, 600);
+        push_spoken("The tide is low at noon.", &mut queue, &mut b);
+        push_spoken("Bye.", &mut queue, &mut b);
+        assert!(b.exhausted);
+        assert_eq!(b.bridge_if_natural(), None);
     }
 
     #[test]
     fn clauses_do_not_consume_the_spoken_budget() {
         let mut queue = std::collections::VecDeque::new();
-        let mut n = 0u32;
-        let mut cue = false;
-        let mut leftover = String::new();
+        let mut b = budget(1, 600);
+        push_spoken("Once upon a time, ", &mut queue, &mut b);
+        push_spoken("there was a girl called Elspeth.", &mut queue, &mut b);
+        assert_eq!(b.sentences, 1, "only the period should consume the budget");
+        assert!(
+            !b.exhausted,
+            "finishing one sentence must not cut him mid-thought"
+        );
+        assert!(queue.iter().any(|c| c.speech.contains("Once upon a time")));
+        assert!(queue.iter().any(|c| c.speech.contains("Elspeth")));
+    }
+
+    #[test]
+    fn a_started_sentence_finishes_past_the_time_budget() {
+        let mut queue = std::collections::VecDeque::new();
+        let mut b = budget(100, 5);
         push_spoken(
-            "Once upon a time, ",
+            "One two three four five six seven eight,",
             &mut queue,
-            &mut n,
-            1,
-            &mut cue,
-            "There's more when you want it.",
-            &mut leftover,
+            &mut b,
         );
         push_spoken(
-            "there was a girl called Elspeth.",
+            "nine ten eleven twelve thirteen fourteen fifteen.",
             &mut queue,
-            &mut n,
-            1,
-            &mut cue,
-            "There's more when you want it.",
-            &mut leftover,
+            &mut b,
         );
-        assert_eq!(n, 1, "only the period should consume the budget");
-        assert!(!cue, "finishing one sentence must not cut him mid-thought");
-        assert!(queue.iter().any(|(s, _)| s.contains("Once upon a time")));
-        assert!(queue.iter().any(|(s, _)| s.contains("Elspeth")));
+        assert_eq!(queue.len(), 2, "the sentence in progress is completed");
+        push_spoken("Another full sentence here.", &mut queue, &mut b);
+        assert_eq!(queue.len(), 2);
+    }
+
+    #[test]
+    fn budget_defaults_follow_d3() {
+        assert_eq!(DEFAULT_MAX_SPOKEN_SENTENCES, 4);
+        assert_eq!(DEFAULT_MAX_SPOKEN_SECONDS, 20);
+    }
+
+    // ── L4 protocol: triggers, noise discard, interrupt, playback acks ──────
+
+    #[test]
+    fn wake_trigger_decodes_and_teach_folds_to_unknown() {
+        let start: VoiceClientStart =
+            serde_json::from_str(r#"{"trigger":"wake","turn_id":"web-1"}"#).unwrap();
+        assert_eq!(start.trigger, Some(VoiceTurnTrigger::Wake));
+        assert_eq!(VoiceTurnTrigger::Wake.as_str(), "wake");
+        let start: VoiceClientStart = serde_json::from_str(r#"{"trigger":"teach"}"#).unwrap();
+        assert_eq!(start.trigger, Some(VoiceTurnTrigger::Unknown));
+        assert_eq!(
+            capture_cap_ms_for_trigger(Some(VoiceTurnTrigger::Wake)),
+            AUTOMATIC_CAPTURE_CAP_MS
+        );
+    }
+
+    #[test]
+    fn noise_abort_with_client_discard_skips_stt() {
+        let raw =
+            r#"{"type":"stop","turn_id":"web-4","end_reason":"noise_abort","client_discard":true}"#;
+        let Ok(ClientMessage::Stop { payload }) = serde_json::from_str::<ClientMessage>(raw) else {
+            panic!("stop should decode");
+        };
+        assert!(client_discarded_noise(&payload));
+        let raw = r#"{"type":"stop","end_reason":"noise_abort"}"#;
+        let Ok(ClientMessage::Stop { payload }) = serde_json::from_str::<ClientMessage>(raw) else {
+            panic!("stop should decode");
+        };
+        assert!(
+            !client_discarded_noise(&payload),
+            "no discard flag: keep the old path"
+        );
+        let raw = r#"{"type":"stop","end_reason":"silence","client_discard":true}"#;
+        let Ok(ClientMessage::Stop { payload }) = serde_json::from_str::<ClientMessage>(raw) else {
+            panic!("stop should decode");
+        };
+        assert!(
+            !client_discarded_noise(&payload),
+            "only a noise abort is discarded"
+        );
+    }
+
+    #[test]
+    fn interrupt_frame_decodes_and_interrupted_encodes() {
+        let raw = r#"{"type":"interrupt","turn_id":"web-3","reason":"barge_in","heard_ms":1200,"mic_rms":0.08,"playback_peak":null,"route":"speaker","client_ms":1760000000000}"#;
+        let Ok(ClientMessage::Interrupt { payload }) = serde_json::from_str::<ClientMessage>(raw)
+        else {
+            panic!("interrupt should decode");
+        };
+        assert_eq!(payload.turn_id.as_deref(), Some("web-3"));
+        assert_eq!(payload.reason.as_deref(), Some("barge_in"));
+        assert_eq!(payload.heard_ms, Some(1200));
+        assert_eq!(payload.route.as_deref(), Some("speaker"));
+        let out = serde_json::to_value(ServerMessage::Interrupted {
+            turn_id: Some("web-3".into()),
+        })
+        .unwrap();
+        assert_eq!(out["type"], "interrupted");
+        assert_eq!(out["turn_id"], "web-3");
+        let clean = sanitize_interrupt(VoiceClientInterrupt {
+            turn_id: Some("web-3\nx".into()),
+            ..VoiceClientInterrupt::default()
+        });
+        assert_eq!(clean.turn_id.as_deref(), Some("web-3x"));
+    }
+
+    /// An interrupt while STT runs is acknowledged, not treated as a new
+    /// capture (that would cancel the user's next turn); acks keep waiting.
+    #[test]
+    fn stt_wait_acknowledges_interrupt_and_records_acks() {
+        assert!(matches!(
+            classify_stt_wait_message(Message::Text(
+                r#"{"type":"interrupt","turn_id":"web-9","reason":"user_tap"}"#.into()
+            )),
+            SttWaitDisposition::Interrupt(VoiceClientInterrupt { turn_id: Some(ref t), .. }) if t == "web-9"
+        ));
+        assert!(matches!(
+            classify_stt_wait_message(Message::Text(
+                r#"{"type":"segment_started","segment_id":0,"turn_id":"stt-wait-ack"}"#.into()
+            )),
+            SttWaitDisposition::KeepWaiting
+        ));
+    }
+
+    #[test]
+    fn playback_ledger_reports_heard_vs_queued() {
+        let mut ledger = PlaybackLedger::default();
+        let ack = |seg: u64, played: Option<u64>| VoicePlaybackAck {
+            segment_id: Some(seg),
+            turn_id: Some("web-3".into()),
+            played_ms: played,
+            duration_ms: Some(2000),
+            completed: Some(true),
+            client_ms: None,
+        };
+        // Acks for the first segments arrive while the reply still streams,
+        // before the server registers the reply.
+        ledger.segment_started(&ack(0, None));
+        ledger.segment_ended(&ack(0, Some(2000)));
+        ledger.register_reply("web-3", 41, 2, 9_000);
+        ledger.segment_started(&ack(1, None));
+        ledger.segment_ended(&ack(1, Some(1500)));
+        let observed = ledger
+            .complete(&VoicePlaybackComplete {
+                turn_id: Some("web-3".into()),
+                segments: Some(2),
+                heard_ms: Some(3500),
+                queued_ms: Some(4000),
+                completed: Some(false),
+                reason: Some("interrupt".into()),
+                client_ms: None,
+            })
+            .expect("observed");
+        assert_eq!(observed.record.server_turn_id, Some(41));
+        assert_eq!(observed.record.socket_epoch, Some(2));
+        assert_eq!(observed.record.server_queued_ms, Some(9_000));
+        assert_eq!(observed.record.segments_started, 2);
+        assert_eq!(observed.record.segments_ended, 2);
+        assert_eq!(observed.record.played_ms, 3500);
+        assert_eq!(observed.client_heard_ms, 3500);
+        assert_eq!(observed.client_queued_ms, Some(4000));
+        assert!(!observed.completed);
+        assert_eq!(observed.reason, "interrupt");
+        assert!(ledger.records.is_empty(), "a completed reply is forgotten");
+    }
+
+    #[test]
+    fn playback_ledger_is_bounded() {
+        let mut ledger = PlaybackLedger::default();
+        for i in 0..(PLAYBACK_LEDGER_MAX + 10) {
+            ledger.register_reply(&format!("web-{i}"), i as u64, 1, 0);
+        }
+        assert_eq!(ledger.records.len(), PLAYBACK_LEDGER_MAX);
+        assert!(ledger.records.iter().all(|r| r.client_turn_id != "web-0"));
+    }
+
+    #[test]
+    fn playback_frames_are_recognised_and_other_frames_are_not() {
+        for raw in [
+            r#"{"type":"segment_started","segment_id":0,"turn_id":"ack-test-1","client_ms":1}"#,
+            r#"{"type":"segment_ended","segment_id":0,"turn_id":"ack-test-1","played_ms":900,"duration_ms":1000,"completed":true}"#,
+            r#"{"type":"reply_playback_complete","turn_id":"ack-test-1","segments":1,"heard_ms":900,"queued_ms":1000,"completed":true,"reason":"drained"}"#,
+        ] {
+            let msg =
+                serde_json::from_str::<ClientMessage>(raw).unwrap_or_else(|e| panic!("{raw}: {e}"));
+            assert!(record_playback_frame(&msg), "{raw}");
+        }
+        let stop = serde_json::from_str::<ClientMessage>(r#"{"type":"stop"}"#).unwrap();
+        assert!(!record_playback_frame(&stop));
+    }
+
+    /// V-29: after `interrupted` the cancelled turn sends nothing else. The
+    /// helper that ends an interrupted reply may only send that one frame.
+    #[test]
+    fn interrupted_reply_sends_only_the_interrupted_frame() {
+        let src = include_str!("voice.rs");
+        let start = src
+            .find("async fn finish_interrupted_reply(")
+            .expect("helper exists");
+        let body = &src[start..];
+        let body = &body[..body.find("\n}\n").expect("end of fn")];
+        assert!(body.contains("ServerMessage::Interrupted"));
+        for forbidden in [
+            "ReplyText",
+            "ReplyEnd",
+            "Navigate",
+            "send_tts_segment",
+            "AudioSegment",
+        ] {
+            assert!(!body.contains(forbidden), "{forbidden} after interrupted");
+        }
+        assert_eq!(body.matches(".send(").count(), 1, "exactly one frame");
+    }
+
+    // ── Surface-aware copy (V-03) ────────────────────────────────────────────
+
+    #[test]
+    fn surface_defaults_to_orb_for_older_clients() {
+        assert_eq!(VoiceSurface::parse(None), VoiceSurface::Orb);
+        assert_eq!(VoiceSurface::parse(Some("orb")), VoiceSurface::Orb);
+        assert_eq!(VoiceSurface::parse(Some("chat-dock")), VoiceSurface::Orb);
+        assert_eq!(VoiceSurface::parse(Some(" World ")), VoiceSurface::World);
+    }
+
+    /// The World never hears or is told about an Orb; Orb surfaces get copy
+    /// of their own. Every client is covered for both surfaces.
+    #[test]
+    fn world_copy_never_mentions_the_orb() {
+        use permagent::events::voice_origin::VoiceClient;
+        for client in [VoiceClient::Desktop, VoiceClient::Ios, VoiceClient::Watch] {
+            let world = surface_copy(VoiceSurface::World, client);
+            assert!(!world.budget_bridge.to_ascii_lowercase().contains("orb"));
+            let note = world.prompt_note.expect("the World has a prompt note");
+            assert!(!note.to_ascii_lowercase().contains("orb"), "{note}");
+            assert!(note.contains("World"));
+            let style = voice_style_for(VoiceSurface::World, client);
+            assert!(!style.to_ascii_lowercase().contains(" orb"), "{style}");
+
+            let orb = surface_copy(VoiceSurface::Orb, client);
+            assert!(!orb.budget_bridge.is_empty());
+            assert!(
+                !orb.budget_bridge.contains('?'),
+                "a bridge is not a question"
+            );
+            assert_eq!(
+                voice_style_for(VoiceSurface::Orb, client),
+                VOICE_REPLY_STYLE
+            );
+        }
+    }
+
+    /// V-02/V-06: no prompt teaches the model to stop and teach a word, or to
+    /// call save_pronunciation from a voice turn.
+    #[test]
+    fn the_voice_style_has_no_teach_or_orb_coaching() {
+        let lower = VOICE_REPLY_STYLE.to_ascii_lowercase();
+        assert!(!lower.contains("orb"));
+        assert!(!lower.contains("save_pronunciation"));
+        assert!(!lower.contains("place it on"));
+        assert!(lower.contains("never stop to ask how a word is"));
+    }
+
+    #[test]
+    fn plain_fallback_keeps_words_and_drops_symbols() {
+        assert_eq!(
+            plain_speech_fallback("Tide's at 3:15 — check “Riverside” ✓."),
+            Some("Tide's at 3 15 check Riverside .".to_string())
+        );
+        assert_eq!(plain_speech_fallback("— ✓ —"), None);
+        assert_eq!(
+            plain_speech_fallback("Plain words."),
+            None,
+            "unchanged text is no retry"
+        );
+    }
+
+    #[test]
+    fn prepare_spoken_keeps_link_text_and_drops_code() {
+        let (speech, _) =
+            prepare_spoken("Read [the tide table](https://x.example/t) now.").unwrap();
+        assert_eq!(speech, "Read the tide table now.");
+        let (speech, _) = prepare_spoken("I don't have a `web_search` tool.").unwrap();
+        assert!(
+            !speech.contains("web_search") && !speech.contains('`'),
+            "{speech}"
+        );
     }
 
     #[test]
@@ -7579,25 +8176,6 @@ mod tests {
             "a second Continue must not invent a new leftover"
         );
         permagent::events::voice_remainder::clear(sid);
-    }
-
-    #[test]
-    fn last_night_stt_fragments_are_not_a_teach_ask() {
-        // 23:44: "Princess L Spith" produced spith/spyth — not a name to teach.
-        assert!(permagent::events::voice_pronounce::first_teachable(&[
-            "spith".into(),
-            "spyth".into(),
-            "peth".into(),
-        ])
-        .is_none());
-        assert_eq!(
-            permagent::events::voice_pronounce::first_teachable(&[
-                "elspeth".into(),
-                "speth".into(),
-            ])
-            .as_deref(),
-            Some("elspeth")
-        );
     }
 
     /// The pinned Kokoro asset URLs must satisfy the DownloadManager's strict

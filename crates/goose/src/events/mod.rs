@@ -315,6 +315,17 @@ pub enum PermagentEventType {
     /// The decision is still open and still unanswered — this only tells the
     /// confirm surface there is something to offer in one tap (D29).
     DecisionStaged,
+    /// A voice turn tried a side-effecting tool (shell, file write, goal
+    /// advance/dispatch, board change, decision creation, ...). It did NOT run.
+    /// Payload is a `VoiceConfirmRequest`; the UI renders a Confirm / Dismiss
+    /// card and answers through the voice confirm route.
+    VoiceConfirmRequested,
+    /// A pending voice confirm was approved, denied or lapsed.
+    VoiceConfirmResolved,
+    /// The suite-wide CURRENT chat session changed (Jesse 2026-10-14: a new
+    /// or selected chat applies to every chat surface: desktop dock, Orb,
+    /// World voice, phone, watch). Payload: `{session_id, name, origin_client}`.
+    CurrentChatSessionChanged,
     DecisionResolved,
     // Agent runtime state
     AgentStateChanged,
@@ -645,6 +656,45 @@ pub fn decision_staged(
             "answer": answer,
             "staged_via": staged_via,
             "tier": tier,
+        }),
+    )
+}
+
+/// Emitted when a voice turn is stopped at a side-effecting tool and needs an
+/// on-screen confirm. See [`voice_origin::VoiceConfirmRequest`] for the payload.
+pub fn voice_confirm_requested(req: &voice_origin::VoiceConfirmRequest) -> PermagentEvent {
+    PermagentEvent::new(
+        PermagentEventType::VoiceConfirmRequested,
+        serde_json::to_value(req).unwrap_or(Value::Null),
+    )
+}
+
+/// The current chat session moved. `origin_client` names the surface that
+/// asked (so it can skip re-switching itself); other surfaces follow.
+pub fn current_chat_session_changed(
+    session_id: &str,
+    name: &str,
+    origin_client: &str,
+) -> PermagentEvent {
+    PermagentEvent::new(
+        PermagentEventType::CurrentChatSessionChanged,
+        serde_json::json!({
+            "session_id": session_id,
+            "name": name,
+            "origin_client": origin_client,
+        }),
+    )
+}
+
+/// Emitted when a pending voice confirm is resolved (`outcome`: approved,
+/// denied, expired).
+pub fn voice_confirm_resolved(session_id: &str, confirm_id: &str, outcome: &str) -> PermagentEvent {
+    PermagentEvent::new(
+        PermagentEventType::VoiceConfirmResolved,
+        serde_json::json!({
+            "session_id": session_id,
+            "confirm_id": confirm_id,
+            "outcome": outcome,
         }),
     )
 }

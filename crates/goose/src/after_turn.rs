@@ -109,6 +109,15 @@ impl AfterTurnManager {
     /// runs every hook and folds; there is no short-circuit, so a later hook's
     /// `Park` is never hidden by an earlier hook's `Allow`.
     pub async fn after_turn(&self, ctx: &AfterTurnContext<'_>) -> AfterTurnAction {
+        // V-11: every hook here is a coding-harness rule (verify before done,
+        // roadmap, Rule 5 question escalation, reviewer mandate...). A voice
+        // turn is conversation: nothing may hold it, continue it, or turn its
+        // closing question into a Decision-Inbox row. The 2026-10-14 World
+        // session minted a decision from "Delete." and advanced a goal from a
+        // tide question through exactly this path.
+        if crate::events::voice_origin::is_voice_turn(ctx.session_id) {
+            return AfterTurnAction::Allow;
+        }
         let mut decision = AfterTurnAction::Allow;
         for hook in &self.hooks {
             if !hook.is_enabled() {
@@ -2944,6 +2953,11 @@ impl AfterTurn for Rule5HonestFailureGuard {
     }
 
     async fn after_turn(&self, ctx: &AfterTurnContext<'_>) -> AfterTurnAction {
+        // V-11 defense in depth (the manager already skips voice turns): the
+        // end-of-turn-question escalation never runs on a voice turn.
+        if crate::events::voice_origin::is_voice_turn(ctx.session_id) {
+            return AfterTurnAction::Allow;
+        }
         // Cheapest gates first, transcript-only, so the overwhelmingly common
         // case (a turn that ended with SOME tool call, or an escalate) costs
         // no session read and no DB round trip.
@@ -3766,6 +3780,64 @@ mod tests {
     }
 
     // ── the manager's fold ──────────────────────────────────────────────────
+
+    fn voice_ctx<'a>(messages: &'a [Message], session_id: &'a str) -> AfterTurnContext<'a> {
+        AfterTurnContext {
+            session_id,
+            messages,
+            prior_holds: 0,
+            delegate_tool_available: true,
+        }
+    }
+
+    /// V-11: a voice turn ending in a question is never held, continued or
+    /// escalated, whatever the registered coding hooks would say.
+    #[tokio::test]
+    async fn voice_turns_skip_every_coding_after_turn_hook() {
+        let sid = "after-turn-voice-1";
+        crate::events::voice_origin::end(sid);
+        let messages =
+            vec![Message::assistant().with_text("Do you want me to delete the old branches?")];
+        assert!(final_message_reads_as_question(&messages));
+
+        let mut m = AfterTurnManager::new();
+        m.add_hook(Box::new(Fixed(
+            AfterTurnAction::Continue {
+                inject: "rule 5".into(),
+            },
+            "rule5_like",
+        )));
+        m.add_hook(Box::new(Fixed(
+            AfterTurnAction::Park {
+                reason: "escalate".into(),
+            },
+            "park_like",
+        )));
+
+        // Text chat: the hooks still bite.
+        assert_ne!(
+            m.after_turn(&voice_ctx(&messages, sid)).await,
+            AfterTurnAction::Allow
+        );
+
+        // Voice: nothing holds the turn.
+        crate::events::voice_origin::begin(
+            sid,
+            crate::events::voice_origin::VoiceOrigin::resolve(Some("desktop_voice"), None),
+        );
+        assert_eq!(
+            m.after_turn(&voice_ctx(&messages, sid)).await,
+            AfterTurnAction::Allow
+        );
+        // The Rule 5 guard itself also refuses to act (no decision, no continue).
+        assert_eq!(
+            Rule5HonestFailureGuard::new()
+                .after_turn(&voice_ctx(&messages, sid))
+                .await,
+            AfterTurnAction::Allow
+        );
+        crate::events::voice_origin::end(sid);
+    }
 
     struct Fixed(AfterTurnAction, &'static str);
 

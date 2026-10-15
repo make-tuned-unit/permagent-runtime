@@ -371,20 +371,21 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 unprefixed_tools: true,
                 hidden: false,
                 why_it_matters:
-                    "THE RULE: never spell a word out loud. If you are unsure how a name will \
-                     sound — or the user winces at your pronunciation — stop and ask them to \
-                     say it, then listen. Teaching you a pronunciation REQUIRES a save_pronunciation call in \
-                     that same turn: pass the word and what they said (a sounds-like of real \
-                     English words, never IPA — the engine derives the phonemes itself). \
-                     Answering that you will remember it, without the call, stores nothing. \
-                     Then read back what the tool confirms and say it aloud. Saved once, \
-                     spoken right forever.",
+                    "THE RULE: never spell a word out loud, and never stop a conversation to \
+                     ask how a word is said — speech substitutes a best guess for unknown \
+                     words and queues them for the user to review in Settings. Only when the \
+                     USER tells you how a word is pronounced, or corrects you, that \
+                     requires a save_pronunciation call in that same turn: pass the word and \
+                     the respelling they actually gave (a sounds-like of real English words, \
+                     never IPA). Never invent a respelling yourself. Answering that you will \
+                     remember it, without the call, stores nothing. Then read back what the \
+                     tool confirms. Not available on voice turns.",
                 required_secrets: &[],
                 teaching: &[crate::agents::self_knowledge::TeachingStep {
                     title: "Teach me your words",
-                    body: "Invite the user to say any name you might mangle — their company, \
-                           their dog, their product. Save each with save_pronunciation and \
-                           repeat it back in your voice so they hear it stick.",
+                    body: "Point the user at Settings → Voice, where words the voice had \
+                           to guess at are listed for review. When they type how one is \
+                           said, save it with save_pronunciation and read it back.",
                     open_surface: None,
                     confirm: None,
                 }],

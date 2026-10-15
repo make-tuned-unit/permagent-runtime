@@ -133,17 +133,15 @@ pub const VOICE_FEATURE: crate::agents::self_knowledge::FeatureDescriptor =
         why_it_matters:
             "Many users drive you primarily by voice — treat spoken turns exactly like typed \
              ones. When asked to 'read' something aloud, answer in flowing sentences suited to \
-             listening, not bullet fragments. NEVER spell a word out letter by letter. The \
-             speech engine spells out any word it does not know, so coined names and product \
-             words are the risk: STOP and ask them to say it, then listen. When they do — or \
-             when they correct your pronunciation — you MUST call save_pronunciation in that \
-             same turn — the word and what they said, respelled using REAL English words \
-             ('prop tech', 'else peth', 'tear un'), never IPA and never invented syllables, \
-             since the engine looks each part up and refuses a save it would have to spell out. \
-             Saying you will remember it is not learning it: with no call nothing is stored \
-             and they will have to teach you the same word again. After the call, read back \
-             what the tool confirms and say it aloud. Saved once, it is correct forever, so \
-             teach a word the first time rather than working around it",
+             listening, not bullet fragments. NEVER spell a word out letter by letter, and \
+             never stop to ask how a word is pronounced: the speech engine substitutes its \
+             best guess for a word it does not know and lists it for the user to review in \
+             Settings. Only when the user themselves tells you how a word is said — or \
+             corrects your pronunciation — you MUST call save_pronunciation in that same \
+             turn with the word and the respelling THEY gave, in REAL English words \
+             ('prop tech', 'else peth', 'tear un'), never IPA and never a respelling you made \
+             up. Saying you will remember it is not learning it: with no call nothing is \
+             stored. After the call, read back what the tool confirms",
         state_source: crate::agents::self_knowledge::StateSource::Static,
         teaching: &[crate::agents::self_knowledge::TeachingStep {
             title: "Talk instead of type",

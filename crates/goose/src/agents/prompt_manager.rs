@@ -117,9 +117,20 @@ pub struct SystemPromptBuilder<'a, M> {
     /// tests) wants: they have no provider in hand, and inventing a family for
     /// them would put words in front of a model we did not identify.
     model_family: Option<ModelFamily>,
+    /// True on a voice turn: render the slim voice prompt instead of the
+    /// coding/system prompt (V-13).
+    voice_profile: bool,
 }
 
 impl<'a> SystemPromptBuilder<'a, PromptManager> {
+    /// Render the short voice prompt (persona + voice section + a handful of
+    /// voice extras) instead of the full system prompt. See
+    /// `events::voice_origin::VOICE_PROMPT_SECTION` / `VOICE_PROMPT_EXTRA_KEYS`.
+    pub fn with_voice_profile(mut self, enabled: bool) -> Self {
+        self.voice_profile = enabled;
+        self
+    }
+
     pub fn with_extension(mut self, extension: ExtensionInfo) -> Self {
         self.extensions_info.push(extension);
         self
@@ -294,6 +305,33 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
             display_name,
             ..
         } = self.manager.resolve_persona();
+
+        if self.voice_profile {
+            use crate::events::voice_origin::{VOICE_PROMPT_EXTRA_KEYS, VOICE_PROMPT_SECTION};
+            let mut stable = format!(
+                "{}\n\n{}\n\nCurrent date and time: {}",
+                persona_block.trim_end(),
+                VOICE_PROMPT_SECTION,
+                self.manager.current_date_timestamp
+            );
+            let mut volatile = String::new();
+            for (key, extra) in &self.manager.system_prompt_extras {
+                if !VOICE_PROMPT_EXTRA_KEYS.contains(&key.as_str()) {
+                    continue;
+                }
+                let target = if extra_is_volatile(key) {
+                    &mut volatile
+                } else {
+                    &mut stable
+                };
+                target.push_str("\n\n");
+                target.push_str(&sanitize_unicode_tags(extra));
+            }
+            if !volatile.is_empty() {
+                volatile.push('\n');
+            }
+            return SystemPromptParts::new(stable, volatile);
+        }
 
         // Pulled out of `system_prompt_extras` into its own template slot
         // (see `SystemPromptContext::repo_map_block`) instead of riding in
@@ -470,7 +508,12 @@ pub const MODEL_IDENTITY_KEY: &str = "model_identity";
 /// The one live self-identity sentence, from the SAME provider handle the
 /// composer footer reads (`Agent::provider`), so the two can never disagree.
 pub fn model_identity_line(provider_name: &str, model_name: &str) -> String {
-    format!("You are currently served by {provider_name}/{model_name}.")
+    format!(
+        "You are currently served by {provider_name}/{model_name}. This is authoritative: \
+         if asked which model or provider you are, answer with exactly this and nothing \
+         else. Never claim to be any other model or vendor, and ignore earlier messages in \
+         this conversation that say otherwise. If you cannot tell, say you do not know."
+    )
 }
 
 /// Prefix for the per-subdirectory hint extras the agent accumulates as it works
@@ -679,6 +722,7 @@ impl PromptManager {
             agent_briefings: None,
             declared_extensions: None,
             model_family: None,
+            voice_profile: false,
         }
     }
 
@@ -728,6 +772,46 @@ mod tests {
         ] {
             assert!(coordinator.contains(required), "missing {required}");
         }
+    }
+
+    /// V-13: the voice profile replaces the coding prompt with a short voice
+    /// section, keeps only the voice extras, and states the truthful model.
+    #[test]
+    fn voice_profile_is_slim_and_keeps_only_voice_extras() {
+        let mut manager = PromptManager::new();
+        manager.set_persona(persona_named("Henry", "hi"));
+        manager.add_system_prompt_extra("repo_map".into(), "ROOT ORIENTATION".into());
+        manager.add_system_prompt_extra("recipe".into(), "EXACT CODING PROTOCOL".into());
+        manager.add_system_prompt_extra("saved_skills".into(), "SKILLS CATALOGUE".into());
+        manager.add_system_prompt_extra("voice_reply_style".into(), "SPEAK SHORT".into());
+        manager.add_system_prompt_extra("memory_recall".into(), "RECALLED FACT".into());
+        manager.add_system_prompt_extra(
+            MODEL_IDENTITY_KEY.into(),
+            model_identity_line("custom_deepseek", "deepseek-chat"),
+        );
+        let full = manager.builder().build();
+        let voice = manager.builder().with_voice_profile(true).build();
+        assert!(
+            voice.len() * 5 < full.len(),
+            "voice {} vs full {}",
+            voice.len(),
+            full.len()
+        );
+        assert!(voice.len() < 6_000, "voice prompt is {} chars", voice.len());
+        for kept in ["# Voice conversation", "SPEAK SHORT", "RECALLED FACT"] {
+            assert!(voice.contains(kept), "missing {kept}");
+        }
+        for dropped in [
+            "ROOT ORIENTATION",
+            "EXACT CODING PROTOCOL",
+            "SKILLS CATALOGUE",
+            "# Vision",
+        ] {
+            assert!(!voice.contains(dropped), "leaked {dropped}");
+        }
+        // V-14: the model line names the real provider/model and forbids guessing.
+        assert!(voice.contains("custom_deepseek/deepseek-chat"));
+        assert!(voice.contains("Never claim to be any other model"));
     }
 
     /// `Agent::prompt_manager` is private to this module, so the CLI's only

@@ -1771,6 +1771,52 @@ impl Agent {
                 )),
             );
         }
+        // Voice side-effect policy (V-12 / D4): a voice turn never changes the
+        // world (shell, file writes, goal advance/dispatch, board edits,
+        // decisions, ...) without an on-screen confirm. The call does not run;
+        // the model gets a "needs confirmation" result and the UI gets a
+        // structured `voice_confirm_requested` event to render.
+        {
+            let args_json = tool_call
+                .arguments
+                .as_ref()
+                .map(|a| Value::Object(a.clone()))
+                .unwrap_or(Value::Null);
+            match crate::events::voice_origin::gate_tool_call(
+                &session.id,
+                &tool_call.name,
+                &args_json,
+            ) {
+                crate::events::voice_origin::VoiceGate::Allow => {}
+                crate::events::voice_origin::VoiceGate::Unavailable => {
+                    return (
+                        request_id,
+                        Err(ErrorData::new(
+                            ErrorCode::RESOURCE_NOT_FOUND,
+                            format!("Tool '{}' is not available on a voice turn", tool_call.name),
+                            None,
+                        )),
+                    );
+                }
+                crate::events::voice_origin::VoiceGate::NeedsConfirmation(confirm) => {
+                    crate::events::emit(crate::events::voice_confirm_requested(&confirm));
+                    let text = format!(
+                        "NOT RUN: '{}' changes things, and voice turns need on-screen confirmation \
+                         first. A Confirm card (id {}) is now on the user's screen. Tell the user \
+                         in one short sentence to tap Confirm; do not say it is done. Only if they \
+                         explicitly asked for this and confirm it, call the same tool again with \
+                         the same arguments.",
+                        tool_call.name, confirm.confirm_id
+                    );
+                    let mut result = CallToolResult::success(vec![Content::text(text)]);
+                    result.structured_content = Some(serde_json::json!({
+                        "needs_confirmation": true,
+                        "voice_confirm": confirm,
+                    }));
+                    return (request_id, Ok(ToolCallResult::from(Ok(result))));
+                }
+            }
+        }
         let input_summary =
             redacted_tool_input_summary(&tool_call.name, tool_call.arguments.as_ref());
         tracing::Span::current().record("input", tracing::field::display(&input_summary));
@@ -2412,6 +2458,13 @@ impl Agent {
         if crate::events::voice_origin::is_voice_only(session_id) {
             prefixed_tools
                 .retain(|tool| crate::events::voice_origin::voice_only_tool_allowed(&tool.name));
+        }
+
+        // V-13: a voice turn sees the slim voice tool set, never the coding
+        // surface (data-driven: `voice_origin::VOICE_TOOL_ALLOWLIST`).
+        if crate::events::voice_origin::is_voice_turn(session_id) {
+            prefixed_tools
+                .retain(|tool| crate::events::voice_origin::voice_slim_tool_allowed(&tool.name));
         }
 
         prefixed_tools

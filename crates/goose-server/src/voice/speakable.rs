@@ -92,6 +92,99 @@ static MD_HEADING: LazyLock<Regex> =
 static MD_BULLET: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?m)^[-*]\s+").expect("MD_BULLET regex is valid"));
 
+/// `[link text](target)` → `link text`. Runs before anything else: prosody
+/// would otherwise drop `[link text]` as an unknown delivery tag.
+static MD_LINK: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"!?\[([^\]\n]*)\]\([^)\s]*\)").expect("MD_LINK regex is valid"));
+
+/// A backticked code span. Never spoken: a tool name, a path or a snippet is
+/// screen material (2026-10-14: "I don't have a `web" was read aloud).
+static CODE_SPAN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"```[^`]*(?:```|$)|`[^`\n]*(?:`|$)").expect("CODE_SPAN regex is valid")
+});
+
+/// Bare URLs and `www.` hosts.
+static URL: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b(?:https?://|www\.)[^\s)>\]]+").expect("URL regex is valid")
+});
+
+/// File-system paths: `~/x`, `./x`, `/a/b`, `a/b/c`, and bare file names with
+/// a source/config extension (`voice.rs`, `README.md`).
+static PATH_LIKE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)(?:~|\.{1,2})/[\w.\-]+(?:/[\w.\-]+)*/?|/[\w.\-]+(?:/[\w.\-]+)+/?|\b[\w.\-]+(?:/[\w.\-]+){2,}|\b[\w\-]+\.(?:rs|ts|tsx|jsx|py|toml|json|ya?ml|swift|md|sh|lock|sql|css|html)\b",
+    )
+    .expect("PATH_LIKE regex is valid")
+});
+
+/// Code identifiers: `snake_case`, `module::path`, `call()`.
+static CODE_IDENT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+\b|\b\w+(?:::\w+)+|\b\w+\(\)")
+        .expect("CODE_IDENT regex is valid")
+});
+
+/// Branch-like slugs: hyphen-joined tokens carrying a date or a digit-bearing
+/// segment, e.g. `ui-polish-2026-09`, `review3-fixes-2026-09`. Ordinary
+/// hyphenated prose (`state-of-the-art`, `twenty-one`) has no digits.
+static BRANCH_SLUG: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b[a-z0-9]+(?:-[a-z0-9]+)+\b").expect("BRANCH_SLUG regex is valid")
+});
+
+fn is_branch_slug(token: &str) -> bool {
+    let segments: Vec<&str> = token.split('-').collect();
+    let digit_segments = segments
+        .iter()
+        .filter(|s| s.chars().any(|c| c.is_ascii_digit()))
+        .count();
+    let has_alpha = token.chars().any(|c| c.is_ascii_alphabetic());
+    // A date-ish tail or a digit-bearing word segment marks a slug; a plain
+    // range like "10-12" (no letters) is a quantity and stays.
+    has_alpha && segments.len() >= 3 && digit_segments >= 1
+}
+
+/// Parentheses emptied by the removals above: `( , , )`.
+static EMPTY_PARENS: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\(\s*[,;:\s]*\)").expect("EMPTY_PARENS regex is valid"));
+
+/// Numbered list markers at the start of a line (`1. `, `2) `) and `+ `.
+static MD_NUMBERED: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?m)^\s*(?:\d{1,2}[.)]|\+)\s+").expect("MD_NUMBERED regex is valid")
+});
+
+/// Token-spaced punctuation (V-25): `word ,` / `it 's` / `do n't`.
+static SPACE_BEFORE_PUNCT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(\S)\s+([,.;:!?])").expect("SPACE_BEFORE_PUNCT regex is valid"));
+static SPACED_CLITIC: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)([a-z])\s+('(?:s|re|ve|ll|d|m)|n't)\b").expect("SPACED_CLITIC regex is valid")
+});
+
+/// Remove what must never reach a speaker and was written for a screen:
+/// links keep their text; code spans, URLs, paths, code identifiers and
+/// branch slugs are omitted. Public so the voice route can run it BEFORE the
+/// prosody pass (which treats `[text]` as a delivery tag).
+pub fn strip_screen_only(text: &str) -> String {
+    let out = MD_LINK.replace_all(text, "$1");
+    let out = CODE_SPAN.replace_all(&out, " ");
+    let out = URL.replace_all(&out, " ");
+    let out = PATH_LIKE.replace_all(&out, " ");
+    let out = CODE_IDENT.replace_all(&out, " ");
+    let out = BRANCH_SLUG.replace_all(&out, |caps: &regex::Captures| {
+        if is_branch_slug(&caps[0]) {
+            " ".to_string()
+        } else {
+            caps[0].to_string()
+        }
+    });
+    let out = EMPTY_PARENS.replace_all(&out, " ");
+    out.into_owned()
+}
+
+/// Re-join tokens a tokenizer spaced apart (`if it 's up , try`).
+fn collapse_token_spacing(text: &str) -> String {
+    let out = SPACED_CLITIC.replace_all(text, "$1$2");
+    SPACE_BEFORE_PUNCT.replace_all(&out, "$1$2").into_owned()
+}
+
 /// Minimum run of letters for a fragment to be worth speaking. Two letters
 /// keeps "OK" and "no"; anything shorter is punctuation noise.
 const MIN_ALPHA_RUN: usize = 2;
@@ -101,11 +194,13 @@ const MIN_ALPHA_RUN: usize = 2;
 /// Returns `None` when nothing speakable remains — the caller skips synthesis
 /// entirely rather than voicing leftover punctuation.
 pub fn speakable(text: &str) -> Option<String> {
-    let folded = crate::voice::speech_normalize::for_speech(text);
+    let screen_free = strip_screen_only(text);
+    let folded = crate::voice::speech_normalize::for_speech(&screen_free);
     let stripped = MD_EMPHASIS.replace_all(&folded, "");
     let stripped = MD_ITALIC.replace_all(&stripped, "$1");
     let stripped = MD_HEADING.replace_all(&stripped, "");
     let stripped = MD_BULLET.replace_all(&stripped, "");
+    let stripped = MD_NUMBERED.replace_all(&stripped, "");
     let stripped = ID_LIKE.replace_all(&stripped, " ");
     let stripped = LONG_HEX.replace_all(&stripped, " ");
     let stripped = HEXISH.replace_all(&stripped, |caps: &regex::Captures| {
@@ -118,6 +213,9 @@ pub fn speakable(text: &str) -> Option<String> {
     let stripped = JSON_KEY.replace_all(&stripped, " ");
     let stripped = STRUCTURAL.replace_all(&stripped, " ");
     let stripped = ORPHAN_SEPARATORS.replace_all(&stripped, ", ");
+    let stripped = WHITESPACE.replace_all(&stripped, " ");
+    let stripped = collapse_token_spacing(&stripped);
+    let stripped = EMPTY_PARENS.replace_all(&stripped, " ");
     let stripped = WHITESPACE.replace_all(&stripped, " ");
 
     let cleaned = stripped
@@ -258,6 +356,81 @@ mod tests {
         assert!(out.contains("Elspeth,"));
         assert!(out.contains("EL speth"));
         assert!(out.contains("PRID ayn"));
+    }
+
+    /// V-24, 2026-10-14 live: a parenthesised list of dated branch slugs was
+    /// read aloud, a bullet list was read with its markers, and a reply began
+    /// "I don't have a `web".
+    #[test]
+    fn branch_slugs_backticks_paths_and_urls_are_not_spoken() {
+        let out = speakable(
+            "You have four branches (ui-polish-2026-09, review3-fixes-2026-09, wq-2026-10-01) in ringsocial.",
+        )
+        .unwrap();
+        assert!(!out.contains("2026"), "slug survived: {out}");
+        assert!(!out.contains('('), "empty parens survived: {out}");
+        assert!(out.contains("You have four branches"));
+        assert!(out.contains("in ringsocial"));
+
+        let out = speakable("I don't have a `web_search` tool here.").unwrap();
+        assert!(!out.contains('`') && !out.contains("web_search"), "{out}");
+        assert!(out.contains("I don't have a"));
+        assert_eq!(
+            speakable("I don't have a `web"),
+            Some("I don't have a".into())
+        );
+
+        let out = speakable("It lives in crates/goose-server/src/routes/voice.rs now.").unwrap();
+        assert!(!out.contains('/') && !out.contains("voice.rs"), "{out}");
+        assert!(out.contains("now"));
+
+        let out = speakable("See https://example.com/a?b=c for details.").unwrap();
+        assert!(!out.contains("http") && !out.contains("example"), "{out}");
+        assert!(out.contains("for details"));
+
+        let out = speakable("Call stream_reply_with_tts() via voice::speakable first.").unwrap();
+        assert!(!out.contains('_') && !out.contains("::"), "{out}");
+    }
+
+    #[test]
+    fn markdown_links_keep_their_text_and_lists_lose_markers() {
+        assert_eq!(
+            speakable("Read [the tide table](https://tides.example/halifax) first."),
+            Some("Read the tide table first.".into())
+        );
+        assert_eq!(speakable("- Buy milk."), Some("Buy milk.".into()));
+        assert_eq!(speakable("2. Then bread."), Some("Then bread.".into()));
+        assert_eq!(speakable("## Tides today"), Some("Tides today".into()));
+        assert_eq!(
+            speakable("**Low tide** is at noon."),
+            Some("Low tide is at noon.".into())
+        );
+    }
+
+    /// V-25: "For instance , if it 's up , try" reached TTS token-spaced.
+    #[test]
+    fn token_spaced_text_is_collapsed() {
+        assert_eq!(
+            speakable("For instance , if it 's late , we do n't wait ."),
+            Some("For instance, if it's late, we don't wait.".into())
+        );
+    }
+
+    #[test]
+    fn product_names_and_hyphenated_prose_survive() {
+        for prose in [
+            "DeepSeek and MiniMax both answered on the iPhone.",
+            "A state-of-the-art twenty-one gun salute.",
+            "Low tide is between 10-12 today.",
+            "We use Node.js and e.g. the U.S. grid.",
+            "Open 24/7, and/or by appointment.",
+        ] {
+            assert_eq!(
+                speakable(prose),
+                Some(prose.to_string()),
+                "mangled: {prose}"
+            );
+        }
     }
 
     #[test]

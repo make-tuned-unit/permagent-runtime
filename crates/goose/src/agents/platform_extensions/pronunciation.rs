@@ -130,9 +130,10 @@ fn rejected_save_message(status: u16, body: &str) -> String {
     };
     format!(
         "NOT SAVED — pronunciation save rejected ({status}): {detail}. \
-         Tell the user the exact part that failed and a respelling made of \
-         ordinary English words that sound the same (e.g. 'else peth' not \
-         'el speth', 'pride in' not 'pride ayn'). Do not claim it was learned."
+         Tell the user in one short sentence that it was not saved. Do not \
+         coach them through respellings unless they ask; if they do, a \
+         respelling made of ordinary English words saves (e.g. 'else peth' not \
+         'el speth'). Do not claim it was learned."
     )
 }
 
@@ -164,23 +165,34 @@ impl PronunciationClient {
 
         vec![Tool::new(
             "save_pronunciation".to_string(),
-            "Save how a word is pronounced so speech says it correctly forever. CALLING THIS IS \
-             REQUIRED, NOT OPTIONAL: the moment the user says the name, tells you how a word \
-             is said, corrects your pronunciation, or winces at it, you MUST call this tool in \
-             that same turn, before you write your reply. If you do not know a name, STOP and \
-             ask them to say it, then listen — their next words are sounds_like. Replying \
-             \"I'll remember that\" without calling it saves NOTHING — the correction dies \
-             with the turn and the user has to teach you the same word again, which is exactly \
-             what a promise-only answer feels like to them. A pronunciation is only learned \
-             once this tool returns. THE RULE: never spell a word out letter by letter. Give \
+            "Save how a word is pronounced so speech says it correctly forever. Use ONLY a \
+             respelling the user actually gave you: when the user tells you how a word is \
+             said, or corrects your pronunciation, CALLING THIS IS REQUIRED, NOT OPTIONAL — \
+             you MUST call this tool in that same turn, before you write your reply, with \
+             the word and their respelling as sounds_like. Never invent a respelling, never \
+             guess one from a transcript, and never stop a conversation to ask the user how \
+             a word is said: unknown words are substituted automatically and listed for \
+             review in Settings. Replying \"I'll remember that\" without calling it saves \
+             NOTHING. A pronunciation is only learned once this tool returns. Give \
              `sounds_like` only — never IPA; the speech engine derives the phonemes itself. \
-             Then READ BACK the respelling this tool confirms and say the word aloud so they \
-             hear that it stuck. A refused save means one of your parts is not a real word: \
-             swap it for one that sounds the same and retry."
+             Then READ BACK the respelling this tool confirms. Not available on voice turns."
                 .to_string(),
             schema,
         )]
     }
+}
+
+/// V-06 (2026-10-14): a voice turn never saves a pronunciation. Live teaching
+/// is gone (D5), and on the live session the model saved its own STT mishear
+/// ("upneen" → "up neen") with no user respelling at all. Spoken turns cannot
+/// prove the user gave a respelling, so the tool refuses there; typed chat and
+/// the Settings review list remain the ways to teach a word.
+const VOICE_TURN_REFUSAL: &str = "NOT SAVED — pronunciations are not saved from voice \
+    conversations. Do not mention this to the user and do not ask them how the word is \
+    said; unknown words are already listed for review in Settings.";
+
+fn is_voice_turn(session_id: &str) -> bool {
+    crate::events::voice_origin::current(session_id).is_some()
 }
 
 #[async_trait]
@@ -204,7 +216,7 @@ impl McpClientTrait for PronunciationClient {
 
     async fn call_tool(
         &self,
-        _ctx: &ToolCallContext,
+        ctx: &ToolCallContext,
         name: &str,
         arguments: Option<JsonObject>,
         _cancel_token: CancellationToken,
@@ -218,6 +230,9 @@ impl McpClientTrait for PronunciationClient {
                 .to_string()
         };
         match name {
+            "save_pronunciation" if is_voice_turn(&ctx.session_id) => Ok(CallToolResult::error(
+                vec![Content::text(VOICE_TURN_REFUSAL.to_string())],
+            )),
             "save_pronunciation" => {
                 match self.handle_save(&arg("word"), &arg("sounds_like")).await {
                     Ok(content) => Ok(CallToolResult::success(content)),
@@ -360,6 +375,29 @@ mod tests {
             msg.contains("NOT SAVED"),
             "must still forbid claiming the word was learned: {msg}"
         );
+    }
+
+    #[test]
+    fn voice_turns_cannot_save_and_guidance_never_elicits_teaching() {
+        let sid = "pronunciation-voice-turn-test";
+        assert!(!is_voice_turn(sid));
+        crate::events::voice_origin::begin(
+            sid,
+            crate::events::voice_origin::VoiceOrigin::resolve(Some("desktop_voice"), None),
+        );
+        assert!(is_voice_turn(sid));
+        crate::events::voice_origin::end(sid);
+        assert!(!is_voice_turn(sid));
+        assert!(VOICE_TURN_REFUSAL.contains("NOT SAVED"));
+
+        for Surface { what, text, .. } in guidance_surfaces() {
+            let lower = text.to_lowercase();
+            assert!(
+                !lower.contains("stop and ask") && !lower.contains("ask them to say it"),
+                "{what} still tells the model to elicit a pronunciation (D5)"
+            );
+            assert!(!lower.contains("orb"), "{what} names a surface");
+        }
     }
 
     #[test]

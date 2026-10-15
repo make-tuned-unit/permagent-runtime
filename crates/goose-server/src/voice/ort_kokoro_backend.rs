@@ -257,6 +257,18 @@ fn technical_lexicon() -> PronunciationLexicon {
         ("usa", "jˌuːˌɛsˈeɪ"),
         ("doin", "dˈuːɪŋ"),
         ("doin'", "dˈuːɪŋ"),
+        // V-09 (2026-10-14): tool, provider and model names Henry says
+        // himself. "Tavily" halted a live answer to ask how to say it. With
+        // no live teaching (D5) an unseeded name still gets a best-guess
+        // reading, but the names he says most should be right, not guessed.
+        ("tavily", "tˈævɪli"),
+        ("deepseek", "dˈiːpsiːk"),
+        ("minimax", "mˈɪnimæks"),
+        ("ollama", "əlˈɑːmə"),
+        ("qwen", "kwˈɛn"),
+        ("kokoro", "kəkˈɔːrəʊ"),
+        ("minicpm", "mˈɪni sˌiːpˌiːˈɛm"),
+        ("openrouter", "ˈəʊpən rˈuːtə"),
     ])
 }
 
@@ -419,6 +431,127 @@ fn phonemize(
         }
     }
     Ok((out, unresolved))
+}
+
+/// One unknown word the synthesizer substituted (D5: substitute, never refuse).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PlannedSubstitution {
+    /// Lowercased key as G2P reported it.
+    word: String,
+    /// As written in the sentence, for the review list.
+    display: String,
+    /// Best-guess reading, or `None` when nothing voiceable existed and the
+    /// word itself was left out (the rest of the sentence is still spoken).
+    ipa: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SubstitutionPlan {
+    /// Text to re-phonemize: compound-expanded, unvoiceable words removed.
+    text: String,
+    /// Fallback readings keyed by lowercased word.
+    overlay: Vec<(String, String)>,
+    subs: Vec<PlannedSubstitution>,
+}
+
+/// Pure: decide how each unresolved word is spoken instead of letter-spelled.
+///
+/// `original` is the sentence as written (for display form and acronym
+/// detection), `expanded` the same sentence after compound expansion, so a
+/// part of `gpt-upneen` or `OpenUpneen` is its own whitespace token and the
+/// overlay can match it whole. Short ALL-CAPS tokens are acronyms: spelling
+/// them IS the right reading, so they are neither substituted nor queued.
+fn plan_substitution(original: &str, expanded: &str, unresolved: &[String]) -> SubstitutionPlan {
+    let mut subs: Vec<PlannedSubstitution> = Vec::new();
+    for word in unresolved {
+        let key = word.trim().to_lowercase();
+        if key.is_empty() || subs.iter().any(|s| s.word == key) {
+            continue;
+        }
+        let display = original
+            .split(|c: char| !(c.is_alphanumeric() || c == '\''))
+            .find(|t| t.eq_ignore_ascii_case(&key))
+            .unwrap_or(&key)
+            .to_string();
+        if crate::voice::oov_fallback::is_spelled_acronym(&display) {
+            continue;
+        }
+        subs.push(PlannedSubstitution {
+            ipa: crate::voice::oov_fallback::fallback_ipa(&key),
+            word: key,
+            display,
+        });
+    }
+    let dropped: Vec<&str> = subs
+        .iter()
+        .filter(|s| s.ipa.is_none())
+        .map(|s| s.word.as_str())
+        .collect();
+    let mut kept: Vec<String> = Vec::new();
+    for token in expanded.split_whitespace() {
+        if dropped.contains(&match_key(token).as_str()) {
+            // Keep a sentence-final mark so the prosody still closes.
+            let trailing: String = token
+                .chars()
+                .rev()
+                .take_while(|c| c.is_ascii_punctuation())
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            if !trailing.is_empty() {
+                match kept.last_mut() {
+                    Some(prev) => prev.push_str(&trailing),
+                    None => kept.push(trailing),
+                }
+            }
+            continue;
+        }
+        kept.push(token.to_string());
+    }
+    let overlay = subs
+        .iter()
+        .filter_map(|s| s.ipa.clone().map(|ipa| (s.word.clone(), ipa)))
+        .collect();
+    SubstitutionPlan {
+        text: kept.join(" "),
+        overlay,
+        subs,
+    }
+}
+
+/// [`phonemize`], but an unresolved word is replaced by its best-guess
+/// reading (or left out when it has none) instead of being spelled letter by
+/// letter. Returns the substitutions made so the caller can log and queue
+/// them. A sentence with no unknown word takes exactly the old path.
+fn phonemize_with_substitution(
+    g2p: &G2P,
+    sentence: &str,
+    lexicon: &PronunciationLexicon,
+) -> anyhow::Result<(String, Vec<PlannedSubstitution>)> {
+    let (phonemes, unresolved) = phonemize(g2p, sentence, lexicon)?;
+    if unresolved.is_empty() {
+        return Ok((phonemes, Vec::new()));
+    }
+    let folded = crate::voice::speech_normalize::fold_apostrophes(sentence);
+    let (expanded, _) = crate::voice::compound::expand_compounds(&MisakiDict(g2p), &folded);
+    let plan = plan_substitution(&folded, &expanded, &unresolved);
+    if plan.subs.is_empty() {
+        // Only acronyms: misaki's letter-by-letter reading is correct.
+        return Ok((phonemes, Vec::new()));
+    }
+    let mut effective = lexicon.clone();
+    effective.entries.extend(plan.overlay.iter().cloned());
+    let (substituted, still) = phonemize(g2p, &plan.text, &effective)?;
+    if !still.is_empty() {
+        tracing::debug!(
+            target: "permagentd::voice",
+            event = "voice_oov_unsubstituted",
+            remaining = still.len(),
+            "some unknown parts kept the default reading"
+        );
+    }
+    Ok((substituted, plan.subs))
 }
 
 /// Voice style vectors loaded from voices-v1.0.bin (NPZ format).
@@ -612,27 +745,27 @@ impl TextToSpeech for OrtKokoroTts {
 
             // G2P (lexicon overrides consulted before misaki for each word)
             let t_g2p = std::time::Instant::now();
-            let (phonemes, unresolved) = {
+            let (phonemes, substitutions) = {
                 let g2p = self
                     .g2p
                     .lock()
                     .map_err(|e| anyhow::anyhow!("G2P lock: {}", e))?;
-                phonemize(&g2p, sentence, &lexicon)?
+                phonemize_with_substitution(&g2p, sentence, &lexicon)?
             };
-            // Words speech is still guessing at. Logged, not silent: an
-            // unresolved word WILL be spelled out letter by letter, and the
-            // only alternative to recording it here is discovering it live.
-            if !unresolved.is_empty() {
-                crate::voice::oov_log::record(&unresolved);
-                if let Some(word) = permagent::events::voice_pronounce::first_teachable(&unresolved)
-                {
-                    anyhow::bail!("refuse_spell:{word} — never letter-spell; place it on the Orb");
-                }
-                tracing::info!(
-                    target: "permagentd::voice",
-                    "PRONUNCIATION unresolved (not teachable): {}",
-                    unresolved.join(", ")
-                );
+            // D5 (2026-10-14): an unknown word is never a reason to refuse
+            // the sentence. It was substituted with a best-guess reading
+            // above; log it and queue it for review (only inside a reply
+            // scope, and never a word from the user's own transcript).
+            if !substitutions.is_empty() {
+                let subs: Vec<crate::voice::oov_log::Substitution<'_>> = substitutions
+                    .iter()
+                    .map(|s| crate::voice::oov_log::Substitution {
+                        word: &s.word,
+                        display: &s.display,
+                        substitute_ipa: s.ipa.as_deref(),
+                    })
+                    .collect();
+                crate::voice::oov_log::record_substitutions(sentence, &subs);
             }
             let g2p_ms = t_g2p.elapsed().as_millis();
 
@@ -854,6 +987,109 @@ mod tests {
     /// comparisons read the way the phonemes actually sound.
     fn clean(s: &str) -> String {
         s.replace('\u{200d}', "")
+    }
+
+    /// Every symbol the unknown-word fallback can emit must be a Kokoro token;
+    /// an unknown symbol would be dropped silently by `phonemes_to_tokens`.
+    #[test]
+    fn oov_fallback_only_emits_kokoro_symbols() {
+        let vocab = build_vocab();
+        for word in [
+            "upneen",
+            "tabouli",
+            "taideta",
+            "zorvane",
+            "kaplin",
+            "wrexham",
+            "knightly",
+            "cinchique",
+            "jaxon",
+            "gyre",
+            "thuringer",
+            "phlox",
+            "quorvath",
+            "sionation",
+            "yarrow",
+            "ayby",
+            "oughton",
+            "beautiful",
+            "strengths",
+            "xylo",
+        ] {
+            if let Some(ipa) = crate::voice::oov_fallback::fallback_ipa(word) {
+                for ch in ipa.chars() {
+                    assert!(
+                        vocab.contains_key(&ch),
+                        "{word} → {ipa}: '{ch}' is not a Kokoro symbol"
+                    );
+                }
+            }
+        }
+    }
+
+    /// V-07/D5: an unknown word is substituted, never a reason to refuse or
+    /// drop the sentence; every other word survives.
+    #[test]
+    fn unknown_words_are_substituted_and_the_sentence_survives() {
+        let sentence = "Upneen is on the tide list.";
+        let plan = plan_substitution(sentence, sentence, &["upneen".to_string()]);
+        assert_eq!(plan.text, sentence, "a substituted word stays in the text");
+        assert_eq!(plan.subs.len(), 1);
+        assert_eq!(plan.subs[0].display, "Upneen");
+        assert!(plan.subs[0].ipa.is_some());
+        assert_eq!(plan.overlay.len(), 1);
+        assert_eq!(plan.overlay[0].0, "upneen");
+    }
+
+    #[test]
+    fn an_unvoiceable_word_is_dropped_alone_not_the_sentence() {
+        let sentence = "Check zzqxwv before lunch.";
+        let plan = plan_substitution(sentence, sentence, &["zzqxwv".to_string()]);
+        assert_eq!(plan.text, "Check before lunch.");
+        assert_eq!(plan.subs[0].ipa, None);
+        let end = "Then check zzqxwv.";
+        let plan = plan_substitution(end, end, &["zzqxwv".to_string()]);
+        assert_eq!(plan.text, "Then check.", "the closing mark survives");
+    }
+
+    #[test]
+    fn short_acronyms_keep_their_spelling_and_are_not_queued() {
+        let sentence = "Ask AWS and Tavily.";
+        let plan = plan_substitution(
+            sentence,
+            sentence,
+            &["aws".to_string(), "tavilyx".to_string()],
+        );
+        assert!(plan.subs.iter().all(|s| s.word != "aws"), "{:?}", plan.subs);
+    }
+
+    /// The real G2P, end to end: an unknown name yields phonemes with no
+    /// letter-name run and is reported as a substitution.
+    #[test]
+    fn real_g2p_substitutes_instead_of_spelling() {
+        let g2p = real_g2p();
+        let (ipa, subs) =
+            phonemize_with_substitution(&g2p, "Upneen is here.", &PronunciationLexicon::default())
+                .unwrap();
+        assert_eq!(subs.len(), 1, "{subs:?}");
+        assert_eq!(subs[0].word, "upneen");
+        let fallback = crate::voice::oov_fallback::fallback_ipa("upneen").unwrap();
+        assert!(ipa.contains(&fallback), "{ipa} should carry {fallback}");
+        let (_, none) = phonemize_with_substitution(
+            &g2p,
+            "Plain words only.",
+            &PronunciationLexicon::default(),
+        )
+        .unwrap();
+        assert!(none.is_empty());
+    }
+
+    #[test]
+    fn product_names_henry_says_are_seeded() {
+        let lex = technical_lexicon();
+        for name in ["tavily", "deepseek", "minimax", "ollama", "qwen"] {
+            assert!(lex.get(name).is_some(), "{name} must be seeded (V-09)");
+        }
     }
 
     #[test]

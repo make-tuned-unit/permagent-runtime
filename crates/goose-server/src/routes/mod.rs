@@ -79,6 +79,7 @@ pub mod tunnel;
 pub mod utils;
 pub mod version;
 pub mod voice;
+pub mod voice_home;
 pub mod workers;
 pub mod workspaces;
 pub mod world;
@@ -233,6 +234,7 @@ pub fn configure(state: Arc<crate::state::AppState>) -> Router {
         // Voice HTTP endpoints — on-demand model downloader + synth primitive
         // (the public `/voice` WS is merged above; these are bearer-protected).
         .merge(voice::http_routes(state.clone()))
+        .merge(voice_home::routes(state.clone()))
         .merge(crate::app_catalog::routes(state.clone()));
 
     #[cfg(feature = "local-inference")]
