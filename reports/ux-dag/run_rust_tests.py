@@ -10,12 +10,14 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--filter')
     parser.add_argument('--http-staging', action='store_true')
+    parser.add_argument('--browser', action='store_true', help='Hold the isolated HTTP test for a browser walkthrough (10 minutes maximum)')
     args = parser.parse_args()
     target = Path(os.environ.get('CARGO_TARGET_DIR', '')).resolve()
     expected = Path('/Volumes/PermagentBuilds/permagent/targets/world-production-20261006')
@@ -78,12 +80,23 @@ def main():
         environment['DYLD_LIBRARY_PATH'] = str(profile)
 
     test_args = [str(executable)]
-    if args.http_staging:
-        test_args += ['--ignored', '--exact', 'routes::projects::tests::ux_stack_discovery_http_staging']
+    browser_dir = None
+    if args.http_staging or args.browser:
+        test_args += ['--ignored', '--exact', 'routes::projects::tests::ux_stack_discovery_http_staging', '--nocapture']
+        if args.browser:
+            browser_dir = Path(tempfile.mkdtemp(prefix='ux-browser-', dir=environment['TMPDIR']))
+            environment['PERMAGENT_UX_BROWSER_DIR'] = str(browser_dir)
+            print(f'Browser review directory: {browser_dir}', flush=True)
     elif args.filter:
         test_args.append(args.filter)
     print('Running isolated daemon tests:', ' '.join(test_args), flush=True)
-    return subprocess.call(test_args, env=environment)
+    try:
+        return subprocess.call(test_args, env=environment)
+    finally:
+        if browser_dir:
+            for name in ('state.json', 'finish'):
+                (browser_dir / name).unlink(missing_ok=True)
+            browser_dir.rmdir()
 
 
 if __name__ == '__main__':

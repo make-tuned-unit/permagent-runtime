@@ -2471,11 +2471,33 @@ mod tests {
     #[serial]
     #[ignore = "requires exclusive isolated staging port 3002"]
     async fn ux_stack_discovery_http_staging() {
-        crate::test_support::test_root();
+        let root = crate::test_support::test_root();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:3002")
             .await
             .expect("staging :3002 must be free; do not stop an unrelated daemon");
+        // The serving application bootstraps this ontology before AppState;
+        // ordinary lib tests deliberately omit it. This isolated acceptance
+        // test needs the real graph to verify person-field persistence.
+        let ontology = permagent::config::paths::Paths::brain_ontology();
+        assert!(
+            ontology.starts_with(&root),
+            "ontology must be inside test_root"
+        );
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(ontology)
+            .unwrap();
+        std::io::Write::write_all(
+            &mut file,
+            crate::brain_bootstrap::BASELINE_ONTOLOGY.as_bytes(),
+        )
+        .unwrap();
         let state = AppState::new(true).await.unwrap();
+        assert!(
+            state.brain.is_some(),
+            "isolated Brain must mount for People acceptance"
+        );
         let token = state.daemon_token.clone().expect("isolated staging token");
         let pool = state.session_manager().pool_clone().await.unwrap();
         let code = tempfile::tempdir().unwrap();
@@ -2630,6 +2652,71 @@ mod tests {
             assert!(
                 data[field].is_array(),
                 "{path} must preserve the UI list contract"
+            );
+        }
+        // Optional interactive acceptance window. Only the explicit ignored
+        // staging test can enter it, and the outer build guard still applies.
+        if let Ok(directory) = std::env::var("PERMAGENT_UX_BROWSER_DIR") {
+            use std::io::Write;
+            #[cfg(unix)]
+            use std::os::unix::fs::OpenOptionsExt;
+            let directory = std::path::PathBuf::from(directory);
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            options.mode(0o600);
+            let mut file = options.open(directory.join("state.json")).unwrap();
+            file.write_all(
+                serde_json::json!({"token": token, "projectId": project.id, "personId": person_id})
+                    .to_string()
+                    .as_bytes(),
+            )
+            .unwrap();
+            println!("Isolated browser acceptance ready on :3002");
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(600);
+            while !directory.join("finish").is_file() {
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "browser acceptance timed out"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+            assert_eq!(
+                projects::get_project_by_id_or_slug(&pool, &project.id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .status,
+                "active",
+                "browser status control must persist its change"
+            );
+            let directory: serde_json::Value = client
+                .get("http://127.0.0.1:3002/api/people/directory")
+                .bearer_auth(&token)
+                .send()
+                .await
+                .unwrap()
+                .error_for_status()
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            let edited = directory
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|p| p["entity_uuid"].as_str() == Some(person_id))
+                .unwrap();
+            assert_eq!(
+                edited["notes"], "UX browser wiring verified",
+                "browser person editor must persist its change"
+            );
+            assert!(
+                permagent::project_stack::list_entries(&pool, &project.id)
+                    .await
+                    .unwrap()
+                    .is_empty(),
+                "browser discovery must not create manual service records"
             );
         }
         drop(server);

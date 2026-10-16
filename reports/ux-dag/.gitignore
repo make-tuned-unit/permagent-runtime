@@ -1,3 +1,5 @@
 *.log
 __pycache__/
+.vite/
+.vite-staging/
 dag-check.json
