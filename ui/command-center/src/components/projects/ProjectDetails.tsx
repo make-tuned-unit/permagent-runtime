@@ -1,65 +1,76 @@
-import { font, space } from '../../styles/tokens';
+import { useEffect, useId, useState, type ReactNode } from 'react';
+import { font } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
-import { ActivityPanel } from './ActivityPanel';
+import { useCommandCenter } from '../../lib/store';
+import { Button } from '../common/Button';
 import { CodeIndexPanel } from './CodeIndexPanel';
 import { DocumentsPanel } from './DocumentsPanel';
 import { EcosystemPanel } from './EcosystemPanel';
 import { MarketPanel } from './MarketPanel';
-import { LinksPanel } from './ProjectOverview';
+import { KeyFactsPanel, LinksPanel } from './ProjectOverview';
 import { MemoriesPanel } from './MemoriesPanel';
 import { NotesPanel } from './NotesPanel';
 import { PeoplePanel } from './PeoplePanel';
 import { StackPanel } from './StackPanel';
 import { VerificationApprovalPanel } from './VerificationApprovalPanel';
+import { PublishSequencePanel } from './PublishSequencePanel';
 import type { Project } from './types';
+import './projectWorkspace.css';
 
-export { ActivityPanel };
+export { ActivityPanel } from './ActivityPanel';
 
-/**
- * ProjectDetails — the project's FULL RECORDS lens (#73).
- *
- * The division of labour with ProjectOverview (ruled 2026-07-26, after the two
- * lenses had drifted into showing the same five panels):
- *
- *   Overview → at a glance. What is this, where does it stand, what's next.
- *   Details  → the records themselves. Everything you read, edit, add or
- *              remove: stack entries, documents, notes, memories, people,
- *              ecosystem, resource links, indexed code.
- *
- * No panel appears in both. If you are adding a panel, ask whether the user
- * comes to it to GLANCE (Overview) or to WORK ON IT (Details).
- */
-export function ProjectDetails({ project, onProjectUpdated }: {
-  project: Project;
-  onProjectUpdated?: () => void;
+/** Load collections on first visit and retain unsaved edits across navigation. */
+function Collections({ label, selected, onSelect, children }: {
+  label: string;
+  selected: string;
+  onSelect: (id: string) => void;
+  children: { id: string; label: string; content: ReactNode }[];
 }) {
-  const { colors, gradient } = useTheme();
-  return (
-    <div style={{ flex: 1, overflow: 'auto', background: gradient.workspace, color: colors.text, fontFamily: font.body }}>
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.2fr) minmax(280px, .8fr)', gap: space.xxl, padding: `${space.xxxl}px ${space.huge}px`, alignItems: 'start' }}>
-        {/* LEFT — the project's own material */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: space.xxl, minWidth: 0 }}>
-          {/* Stack organizer (#512): services + login identity, reference-only. */}
-          <StackPanel project={project} />
-          {/* Verification approval ladder: the allowlist + earned privilege
-              governing Tier-1 auto-approval of model-authored check commands
-              — editable ONLY here (one concept, one place). */}
-          <VerificationApprovalPanel project={project} />
-          <DocumentsPanel project={project} />
-          <NotesPanel project={project} />
-          <MemoriesPanel project={project} />
-          <CodeIndexPanel project={project} />
-        </div>
+  const { colors } = useTheme();
+  const prefix = useId();
+  const [visited, setVisited] = useState(() => new Set([selected]));
+  useEffect(() => { setVisited(prev => new Set([...prev, selected])); }, [selected]);
+  return <>
+    <nav aria-label={label} className="project-section-nav">
+      {children.map(item => <Button key={item.id} colors={colors} variant={selected === item.id ? 'ghostOn' : 'ghost'} aria-pressed={selected === item.id}
+        id={`${prefix}-${item.id}-button`} aria-controls={`${prefix}-${item.id}`} onClick={() => onSelect(item.id)}>
+        {item.label}
+      </Button>)}
+    </nav>
+    {children.map(item =>
+      <section key={item.id} id={`${prefix}-${item.id}`} aria-labelledby={`${prefix}-${item.id}-button`} hidden={selected !== item.id}>
+        <div className="project-section-content">{(visited.has(item.id) || selected === item.id) && item.content}</div>
+      </section>)}
+  </>;
+}
 
-        {/* RIGHT — who and what it connects to */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: space.xxl, minWidth: 0 }}>
-          <PeoplePanel project={project} />
-          <EcosystemPanel project={project} />
-          {/* Directly beneath Ecosystem, because they are one concept: every
-              market series hangs off a row that panel already shows. */}
-          <MarketPanel project={project} />
-          <LinksPanel project={project} onProjectUpdated={onProjectUpdated} title="Resources" />
-        </div>
+export function ProjectDetails(props: { project: Project; onProjectUpdated?: () => void }) {
+  return <ProjectRecords key={props.project.id} {...props} />;
+}
+
+function ProjectRecords({ project, onProjectUpdated }: { project: Project; onProjectUpdated?: () => void }) {
+  const { colors, gradient } = useTheme();
+  const pendingNote = useCommandCenter(s => s.pendingNoteNavigation);
+  const [section, setSection] = useState(pendingNote?.projectId === project.id ? 'knowledge' : 'stack');
+  const [collection, setCollection] = useState(pendingNote?.projectId === project.id ? 'notes' : 'documents');
+  useEffect(() => {
+    if (pendingNote?.projectId === project.id) { setSection('knowledge'); setCollection('notes'); }
+  }, [pendingNote, project.id]);
+  return (
+    <div className="project-workspace-page" style={{ flex: 1, overflow: 'auto', background: gradient.workspace, color: colors.text, fontFamily: font.body }}>
+      <div className="project-workspace-content">
+        <Collections label="Project details sections" selected={section} onSelect={setSection}>{[
+          { id: 'stack', label: 'Stack & connections', content: <><StackPanel project={project} /><LinksPanel project={project} onProjectUpdated={onProjectUpdated} title="Resources" /></> },
+          { id: 'knowledge', label: 'Knowledge', content:
+            <Collections label="Project knowledge collections" selected={collection} onSelect={setCollection}>{[
+              { id: 'documents', label: 'Documents', content: <DocumentsPanel project={project} /> },
+              { id: 'notes', label: 'Notes', content: <NotesPanel project={project} /> },
+              { id: 'memories', label: 'Memories', content: <MemoriesPanel project={project} /> },
+              { id: 'code', label: 'Code', content: <CodeIndexPanel project={project} /> },
+            ]}</Collections> },
+          { id: 'relationships', label: 'People & market', content: <><PeoplePanel project={project} /><EcosystemPanel project={project} /><MarketPanel project={project} /></> },
+          { id: 'settings', label: 'Project settings', content: <><KeyFactsPanel project={project} /><VerificationApprovalPanel project={project} /><PublishSequencePanel project={project} /></> },
+        ]}</Collections>
       </div>
     </div>
   );

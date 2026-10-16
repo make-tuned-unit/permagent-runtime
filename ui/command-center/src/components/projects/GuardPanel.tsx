@@ -12,6 +12,7 @@ import {
 import { useCommandCenter, navigateToTool } from '../../lib/store';
 import { plainText } from '../../lib/plainText';
 import { Panel } from './Panel';
+import { DetailModal } from '../common/DetailModal';
 import type { Project } from './types';
 import { guardFixDirective } from '../grow/guardFixDirective';
 import { CODING_AGENTS, codingAgentById, codingAgentSelectLabel } from '../grow/codingAgents';
@@ -63,7 +64,8 @@ export function statusLabel(f: GuardFinding, agentLabel?: (id: string) => string
 
 const agentName = (id: string) => codingAgentById(id)?.label ?? id;
 
-export function GuardPanel({ project }: { project: Project }) {
+export function GuardPanel({ project, compact = false }: { project: Project; compact?: boolean }) {
+  const [expanded, setExpanded] = useState(false);
   const { colors } = useTheme();
   const setPendingTerminalLaunch = useCommandCenter(s => s.setPendingTerminalLaunch);
   const [guard, setGuard] = useState<GuardSummary | null>(null);
@@ -200,7 +202,7 @@ export function GuardPanel({ project }: { project: Project }) {
     fontSize: textSize.micro, fontFamily: font.body, padding: `${space.xs}px ${space.md}px`,
   };
   const severityColor = (s: string) =>
-    s === 'high' ? colors.danger : s === 'medium' ? colors.warning : colors.textDim;
+    s === 'high' || s === 'critical' ? colors.danger : s === 'medium' ? colors.warning : colors.textDim;
 
   if (!guard) {
     return (
@@ -250,7 +252,7 @@ export function GuardPanel({ project }: { project: Project }) {
       : guard.last_scan
         ? `Scanned ${formatDate(guard.last_scan)} — no open findings.${guard.enabled ? '' : ' The Guard is currently off.'}`
         : !guard.enabled
-          ? 'The Guard is off — enable security sweeps in Settings → Models to scan this project.'
+          ? 'The Guard is off — enable security sweeps in Settings → Agents to scan this project.'
           : 'Never scanned — waiting on the Guard’s first sweep of this project.';
   }
 
@@ -387,7 +389,7 @@ export function GuardPanel({ project }: { project: Project }) {
     );
   };
 
-  return (
+  const fullPanel = (
     <Panel title="Security — from the Guard" action={rescanButton}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: space.xl }}>
         <div data-testid="guard-summary" style={{ fontSize: textSize.micro, color: colors.textDim, lineHeight: 1.5 }}>
@@ -441,5 +443,31 @@ export function GuardPanel({ project }: { project: Project }) {
         )}
       </div>
     </Panel>
+  );
+  if (!compact) return fullPanel;
+  const urgent = active.filter(f => f.severity === 'high' || f.severity === 'critical').length;
+  const severityRank = (f: GuardFinding) => {
+    const rank = ['critical', 'high', 'medium', 'low'].indexOf(f.severity);
+    return rank < 0 ? 4 : rank;
+  };
+  const preview = [...active].sort((a, b) => severityRank(a) - severityRank(b)).slice(0, 2);
+  return (
+    <>
+      <Panel title="Security" action={<Button colors={colors} variant="bare" onClick={() => setExpanded(true)}>Review security</Button>}>
+        <div style={{ fontSize: textSize.caption, color: urgent ? colors.danger : colors.textMuted }}>
+          {counts.active} active findings{urgent > 0 ? ` · ${urgent} high or critical` : ''}
+        </div>
+        {emptyText && <p style={{ fontSize: textSize.micro, color: colors.textDim, lineHeight: 1.5 }}>{emptyText}</p>}
+        {!guard.enabled && active.length > 0 && <p style={{ fontSize: textSize.micro, color: colors.textDim }}>The Guard is off. These findings are from earlier scans.</p>}
+        {preview.map(f => <div key={f.id} style={{ marginTop: space.md, fontSize: textSize.caption, ...clampLines(2) }}>
+          <span style={{ color: severityColor(f.severity) }}>{f.severity} · </span>{plainText(f.title)}
+        </div>)}
+        {active.length > 0 && <div style={{ marginTop: space.md, fontSize: textSize.micro, color: colors.textDim }}>
+          {guard.last_scan ? `Last scan ${formatDate(guard.last_scan)}` : 'No completed scan recorded'}
+          {guard.last_attempt && (!guard.last_scan || guard.last_attempt > guard.last_scan) ? ' · Latest sweep did not finish' : ''}
+        </div>}
+      </Panel>
+      {expanded && <DetailModal title="Project security" width={820} onClose={() => setExpanded(false)}>{fullPanel}</DetailModal>}
+    </>
   );
 }

@@ -99,7 +99,7 @@ export function ProjectWorkspace({ project, projects, onSwitchProject, onBack, o
       </div>
 
       {/* Active lens — both render the SAME selected project */}
-      {lens === 'overview' && <ProjectOverview project={project} onProjectUpdated={onProjectUpdated} />}
+      {lens === 'overview' && <ProjectOverview key={project.id} project={project} onProjectUpdated={onProjectUpdated} />}
       {lens === 'details' && <ProjectDetails project={project} onProjectUpdated={onProjectUpdated} />}
       {lens === 'kanban' && <ProjectKanban project={project} />}
     </div>

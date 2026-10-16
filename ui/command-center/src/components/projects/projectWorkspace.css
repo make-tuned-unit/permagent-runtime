@@ -1,0 +1,30 @@
+.project-workspace-page {
+  container-type: inline-size;
+}
+.project-workspace-content {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 24px 28px;
+}
+.project-overview-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
+  gap: 24px;
+  align-items: start;
+}
+.project-section-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+.project-section-content {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  min-width: 0;
+}
+@container (max-width: 720px) {
+  .project-workspace-content { padding: 16px; }
+  .project-overview-grid { grid-template-columns: minmax(0, 1fr); }
+}

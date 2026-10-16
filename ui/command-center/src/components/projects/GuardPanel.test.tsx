@@ -217,3 +217,21 @@ describe('GuardPanel rescan', () => {
     expect(btn('Rescan now')!.disabled).toBe(true);
   });
 });
+
+describe('compact overview', () => {
+  it('shows the full risk count and opens all existing review controls on demand', async () => {
+    getGuard.mockResolvedValue(summary(Array.from({length: 10}, (_, i) => finding({id: `f${i}`, title: `Finding ${i}`}))));
+    await act(async () => root.render(<GuardPanel project={project} compact />));
+    expect(container.textContent).toContain('10 active findings · 10 high or critical');
+    expect(container.textContent).not.toContain('Finding 2');
+    expect(container.querySelector('select')).toBeNull();
+    await click(btn('Review security'));
+    const dialog = document.querySelector('[role="dialog"]')!;
+    expect(dialog).toBeTruthy();
+    expect(dialog.querySelectorAll('[data-testid="guard-finding"]')).toHaveLength(8);
+    expect(dialog.textContent).toContain('Rescan now');
+    expect(dialog.querySelector('select[aria-label="Coding agent"]')).toBeTruthy();
+    expect(markGuardFindingSent).not.toHaveBeenCalled();
+    expect(requestGuardRescan).not.toHaveBeenCalled();
+  });
+});

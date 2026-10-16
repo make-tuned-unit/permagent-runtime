@@ -1,0 +1,51 @@
+/** @vitest-environment jsdom */
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { act } from 'react-dom/test-utils';
+import { createRoot, type Root } from 'react-dom/client';
+vi.mock('./StackPanel', () => ({ StackPanel: () => <input aria-label="Account draft" defaultValue="" /> }));
+vi.mock('./ProjectOverview', () => ({ LinksPanel: () => <div>Resources collection</div>, KeyFactsPanel: () => <div>Project facts</div> }));
+vi.mock('./DocumentsPanel', () => ({ DocumentsPanel: () => <div>Documents collection</div> }));
+vi.mock('./NotesPanel', () => ({ NotesPanel: () => <div>Notes collection</div> }));
+vi.mock('./MemoriesPanel', () => ({ MemoriesPanel: () => <div>Memories collection</div> }));
+vi.mock('./CodeIndexPanel', () => ({ CodeIndexPanel: () => <div>Code collection</div> }));
+vi.mock('./PeoplePanel', () => ({ PeoplePanel: () => <div>People collection</div> }));
+vi.mock('./EcosystemPanel', () => ({ EcosystemPanel: () => <div>Ecosystem collection</div> }));
+vi.mock('./MarketPanel', () => ({ MarketPanel: () => <div>Market collection</div> }));
+vi.mock('./VerificationApprovalPanel', () => ({ VerificationApprovalPanel: () => <div>Verification configuration</div> }));
+vi.mock('./PublishSequencePanel', () => ({ PublishSequencePanel: () => <div>Publishing configuration</div> }));
+import { ProjectDetails } from './ProjectDetails';
+import { useCommandCenter } from '../../lib/store';
+import type { Project } from './types';
+(globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
+let host: HTMLDivElement;
+let root: Root;
+const project = {id: 'p1', metadataJson: {}} as Project;
+beforeEach(() => { useCommandCenter.setState({pendingNoteNavigation: null}); host = document.createElement('div'); document.body.append(host); root = createRoot(host); });
+afterEach(() => { act(() => root.unmount()); host.remove(); });
+function click(label: string) { act(() => Array.from(host.querySelectorAll('button')).find(b => b.textContent === label)!.click()); }
+it('starts with stack, loads other collections on demand, and retains an unsaved draft', () => {
+  act(() => root.render(<ProjectDetails project={project} />));
+  expect(host.textContent).not.toContain('Verification configuration');
+  expect(host.textContent).not.toContain('Documents collection');
+  const draft = host.querySelector('input')!;
+  draft.value = 'Unsaved account';
+  click('Knowledge');
+  expect(draft.closest('section')?.hidden).toBe(true);
+  expect(host.textContent).toContain('Documents collection');
+  click('Stack & connections');
+  expect(host.querySelector('input')).toBe(draft);
+  expect(draft.value).toBe('Unsaved account');
+  expect(draft.closest('section')?.hidden).toBe(false);
+  click('Project settings');
+  expect(host.textContent).toContain('Verification configuration');
+  expect(host.textContent).toContain('Publishing configuration');
+});
+it('keeps a note deep link reachable and resets records when switching projects', () => {
+  useCommandCenter.setState({pendingNoteNavigation: { projectId: 'p1', noteId: 'n1' }});
+  act(() => root.render(<ProjectDetails project={project} />));
+  expect(host.textContent).toContain('Notes collection');
+  expect(host.querySelector('input')).toBeNull();
+  act(() => root.render(<ProjectDetails project={{...project, id: 'p2'}} />));
+  expect(host.querySelector('input')).toBeTruthy();
+  expect(host.textContent).not.toContain('Notes collection');
+});

@@ -162,3 +162,17 @@ describe('agent provenance marker (§7.2)', () => {
     expect(onOpenCard).not.toHaveBeenCalled();
   });
 });
+
+it('bounds the overview preview and prioritizes review over ready or completed work', () => {
+  const onViewAll = vi.fn();
+  const columns = [...COLS, { ...COLS[0], id: 'review', stateBinding: 'review', name: 'Review' }, { ...COLS[0], id: 'done', stateBinding: 'complete', name: 'Done' }];
+  const cards = [...Array.from({length: 20}, (_, i) => taskCard(`t${i}`, `Ready ${i}`)), { ...taskCard('r1', 'Check this result'), columnId: 'review' }, { ...taskCard('d1', 'Finished work'), columnId: 'done' }];
+  render({ columns, cards, previewLimit: 5, onViewAll });
+  const rows = container.querySelectorAll('[data-testid="overview-task-row"]');
+  expect(rows).toHaveLength(5);
+  expect(rows[0].textContent).toContain('Check this result');
+  expect(container.textContent).not.toContain('Finished work');
+  const board = Array.from(container.querySelectorAll('button')).find(b => b.textContent === 'View board (22)')!;
+  act(() => board.click());
+  expect(onViewAll).toHaveBeenCalledOnce();
+});

@@ -23,7 +23,8 @@ import { describeTask, groupTaskRuns, type FeedItem } from './activityFeed';
 import { Tooltip } from '../common/Tooltip';
 type ActivityItem = FeedItem;
 
-export function ActivityPanel({ project }: { project: Project }) {
+export function ActivityPanel({ project, previewLimit = 12 }: { project: Project; previewLimit?: number }) {
+  const [expanded, setExpanded] = useState(false);
   const { colors } = useTheme();
   const rowVeil = colors.fillSubtle;
   // `fillSubtle` IS this idiom, tokenised (#1162). The hand-written pair it
@@ -126,7 +127,7 @@ export function ActivityPanel({ project }: { project: Project }) {
       )}
       {status === 'ready' && items.length > 0 && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: space.sm }}>
-          {items.map(item => (
+          {(expanded ? items : items.slice(0, previewLimit)).map(item => (
             <div key={item.id} data-testid="activity-item" style={{ display: 'flex', gap: space.md, padding: `${space.md}px ${space.lg}px`, borderRadius: radius.md, background: rowVeil, border: `1px solid ${colors.border}` }}>
               <span style={{ color: colors.cyan, marginTop: space.xxs, flexShrink: 0 }}>{icon(item.kind)}</span>
               <div style={{ minWidth: 0, flex: 1 }}>
@@ -137,6 +138,11 @@ export function ActivityPanel({ project }: { project: Project }) {
             </div>
           ))}
         </div>
+      )}
+      {items.length > previewLimit && (
+        <Button colors={colors} variant="bare" aria-expanded={expanded} onClick={() => setExpanded(value => !value)}>
+          {expanded ? 'Show less activity' : `Show ${items.length - previewLimit} more updates`}
+        </Button>
       )}
     </Panel>
   );

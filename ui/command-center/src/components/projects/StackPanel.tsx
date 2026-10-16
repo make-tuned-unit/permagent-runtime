@@ -24,6 +24,7 @@ import { font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { Button } from '../common/Button';
 import { Panel } from './Panel';
+import { DetectedStack } from './DetectedStack';
 import { normalizeUrl } from './workspaceMeta';
 import {
   createStackEntry,
@@ -214,6 +215,8 @@ export function StackPanel({ project }: { project: Project }) {
         )
       }
     >
+      <DetectedStack project={project} />
+      <div style={{ fontSize: textSize.caption, fontWeight: 600, marginBottom: space.md }}>Accounts & additional services</div>
       {/* Composer (add or edit) */}
       {form && (
         <div style={{
@@ -315,8 +318,7 @@ export function StackPanel({ project }: { project: Project }) {
 
       {status === 'ready' && entries.length === 0 && !form && (
         <div style={{ fontSize: textSize.micro, color: colors.textDim, lineHeight: 1.5 }}>
-          No services yet — add the ones this project runs on and which account
-          you use for each. Reference only: no passwords or secrets, ever.
+          Add an account label or a service that isn’t declared in code when you need it. No passwords or secrets.
         </div>
       )}
 

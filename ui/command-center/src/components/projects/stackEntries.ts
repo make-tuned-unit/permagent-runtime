@@ -48,6 +48,17 @@ export function listStackEntries(projectId: string): Promise<StackEntry[]> {
   return apiFetch<StackEntry[]>(stackPath(projectId));
 }
 
+export interface DetectedStack {
+  entries: { service_name: string; category: string; evidence: string[] }[];
+  scanned_files: number;
+  incomplete: boolean;
+}
+
+/** Read manifest evidence without changing manually recorded services. */
+export function detectProjectStack(projectId: string): Promise<DetectedStack> {
+  return apiFetch<DetectedStack>(`${stackPath(projectId)}/detected`);
+}
+
 /** Add a stack entry; returns the saved row. */
 export function createStackEntry(
   projectId: string,

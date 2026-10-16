@@ -12,24 +12,15 @@ import { GuardPanel } from './GuardPanel';
 import { StateBlock } from '../common/StateBlock';
 import { ActivityPanel } from './ActivityPanel';
 import { readBrief, readLinks, normalizeUrl, saveProjectSummary, type WorkspaceLink } from './workspaceMeta';
-import { PublishSequencePanel } from './PublishSequencePanel';
+import { requestProjectLens } from '../../lib/appNavigationRequests';
+import './projectWorkspace.css';
 import { CardDetailModal } from './CardDetailModal';
 import type { Project, BoardColumn, Card } from './types';
 import { usePersona } from '../settings/useSettings';
 import { Chip } from '../common/Chip';
 
 import { Tooltip } from '../common/Tooltip';
-// ── Project Overview ────────────────────────────────────────────────────────
-//
-// The "command-center dash" lens of the Projects tab (#471, Layer 1). A
-// two-column read of a single project. LEFT = substance, RIGHT = people +
-// action. Ships Summary, Key Facts, Links, Tasks, People, Documents (the
-// #471 Layer 2 document hub + in-app viewer), Notes (freeform notes the
-// user writes, indexed into the Brain), and Stack (#512 — which services the
-// project runs on + which login identity per service, reference-only, no
-// secrets). The Memories panel closes the Brain
-// loop: it reads back the Brain memories this project's own surfaces wrote
-// (notes / documents / indexed code), each deep-linkable into the Brain view.
+// Overview keeps current work and exceptions visible; records live in Details.
 
 export function ProjectOverview({ project, onProjectUpdated }: {
   project: Project;
@@ -74,28 +65,33 @@ export function ProjectOverview({ project, onProjectUpdated }: {
   useGoalEvents(loadBoard);
 
   return (
-    <div style={{
+    <div className="project-workspace-page" style={{
       flex: 1, overflow: 'auto', background: gradient.workspace,
       color: colors.text, fontFamily: font.body,
     }}>
-      <div style={{
-        display: 'grid', gridTemplateColumns: 'minmax(0, 1.3fr) minmax(0, 1fr)',
-        gap: space.xxl, padding: `${space.xxxl}px ${space.huge}px`, alignItems: 'start',
-      }}>
+      <div className="project-workspace-content project-overview-grid">
         {/* LEFT — what this is, and what just happened.
             The records themselves (stack, documents, notes, memories, people,
             ecosystem, links, code index) live in the Details lens — see the
             ProjectDetails header for the ruled division. */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: space.xxl, minWidth: 0 }}>
           <SummaryPanel project={project} onProjectUpdated={onProjectUpdated} />
-          <GuardPanel project={project} />
-          <WatcherInsightsPanel project={project} />
-          <KeyFactsPanel project={project} />
-          <ActivityPanel project={project} />
+          <GuardPanel project={project} compact />
         </div>
 
         {/* RIGHT — where it stands, and what's next */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: space.xxl, minWidth: 0 }}>
+          <TasksPanel
+            columns={columns}
+            cards={cards}
+            loading={boardLoading}
+            error={boardError}
+            onRetry={retryBoard}
+            onOpenGoal={(cardId) => openGoalDetail(project.id, cardId)}
+            onOpenCard={setDetailCardId}
+            previewLimit={5}
+            onViewAll={() => requestProjectLens(project.id, 'kanban')}
+          />
           {/* Build → Grow bridge: take the finished work to market. */}
           <Button
             colors={colors}
@@ -116,19 +112,9 @@ export function ProjectOverview({ project, onProjectUpdated }: {
             <FiTrendingUp size={15} color={colors.cyan} />
             Grow this project
           </Button>
-          <TasksPanel
-            columns={columns}
-            cards={cards}
-            loading={boardLoading}
-            error={boardError}
-            onRetry={retryBoard}
-            onOpenGoal={(cardId) => openGoalDetail(project.id, cardId)}
-            onOpenCard={setDetailCardId}
-          />
-          {/* Publish sequence (#457) — post-push steps before "live"; the
-              orchestrator reads the same metadata key at dispatch/review. */}
-          <PublishSequencePanel project={project} />
         </div>
+        <WatcherInsightsPanel project={project} />
+        <ActivityPanel project={project} previewLimit={4} />
       </div>
       {detailCardId && (
         <CardDetailModal
@@ -159,6 +145,7 @@ function SummaryPanel({ project, onProjectUpdated }: {
   const { colors } = useTheme();
   const brief = readBrief(project.metadataJson);
   const [editing, setEditing] = useState(false);
+  const [showBrief, setShowBrief] = useState(false);
   const [draftDescription, setDraftDescription] = useState('');
   const [draftBrief, setDraftBrief] = useState('');
   const [saving, setSaving] = useState(false);
@@ -230,17 +217,11 @@ function SummaryPanel({ project, onProjectUpdated }: {
           }}>
             {project.description || 'No description yet.'}
           </div>
-          {brief ? (
-            <div style={{
-              fontSize: textSize.caption, color: colors.text, marginTop: space.lg, lineHeight: 1.6,
-              whiteSpace: 'pre-wrap', borderTop: `1px solid ${colors.border}`, paddingTop: space.lg,
-            }}>
-              {brief}
-            </div>
-          ) : (
-            <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: space.lg }}>
-              No brief yet — Edit to add one.
-            </div>
+          {brief && (
+            <details open={showBrief} onToggle={e => setShowBrief(e.currentTarget.open)} style={{ marginTop: space.md }}>
+              <summary style={{ cursor: 'pointer', fontSize: textSize.caption, color: colors.textMuted }}>Project brief</summary>
+              <div style={{ fontSize: textSize.caption, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', lineHeight: 1.6, marginTop: space.md }}>{brief}</div>
+            </details>
           )}
         </>
       )}
@@ -371,7 +352,7 @@ export function WatcherInsightsPanel({ project }: { project: Project }) {
   );
 }
 
-function KeyFactsPanel({ project }: { project: Project }) {
+export function KeyFactsPanel({ project }: { project: Project }) {
   const { colors } = useTheme();
   // White veils vanish on silver — flip to a faint graphite tint there.
   const chipVeil = colors.fillHover;
@@ -669,7 +650,7 @@ function provenanceSessionId(card: Card): string | null {
   return typeof id === 'string' && id.length > 0 ? id : null;
 }
 
-export function TasksPanel({ columns, cards, loading, error, onRetry, onOpenGoal, onOpenCard }: {
+export function TasksPanel({ columns, cards, loading, error, onRetry, onOpenGoal, onOpenCard, previewLimit, onViewAll }: {
   columns: BoardColumn[];
   cards: Card[];
   loading: boolean;
@@ -679,6 +660,8 @@ export function TasksPanel({ columns, cards, loading, error, onRetry, onOpenGoal
   /** Every other card type — opens CardDetailModal, as the Kanban lens does.
    *  These rows used to look clickable and do nothing (QA 2026-09-24). */
   onOpenCard: (cardId: string) => void;
+  previewLimit?: number;
+  onViewAll?: () => void;
 }) {
   const { colors } = useTheme();
   const { data: persona } = usePersona();
@@ -693,13 +676,16 @@ export function TasksPanel({ columns, cards, loading, error, onRetry, onOpenGoal
   // as a shade on the pearl without a conditional here.
   const chipVeil = colors.fillHover;
   // The chip tint, one rung up the same neutral ladder (4/7/11).
-  const ordered = [...columns].sort((a, b) => {
-    const ai = a.stateBinding ? STATE_ORDER.indexOf(a.stateBinding) : 99;
-    const bi = b.stateBinding ? STATE_ORDER.indexOf(b.stateBinding) : 99;
+  const order = previewLimit ? ['review', 'failed', 'in_progress', 'ready', 'triage', 'backlog'] : STATE_ORDER;
+  const ordered = [...columns].filter(c => !previewLimit || !['complete', 'cancelled'].includes(c.stateBinding ?? '')).sort((a, b) => {
+    const ai = a.stateBinding && order.includes(a.stateBinding) ? order.indexOf(a.stateBinding) : 99;
+    const bi = b.stateBinding && order.includes(b.stateBinding) ? order.indexOf(b.stateBinding) : 99;
     if (ai !== bi) return ai - bi;
     return a.position - b.position;
   });
   const total = cards.filter(c => !c.archivedAt).length;
+  const available = ordered.flatMap(col => cards.filter(c => c.columnId === col.id && !c.archivedAt).sort((a, b) => a.position - b.position));
+  const visibleIds = new Set((previewLimit ? available.slice(0, previewLimit) : available).map(c => c.id));
 
   return (
     <Panel
@@ -707,6 +693,7 @@ export function TasksPanel({ columns, cards, loading, error, onRetry, onOpenGoal
       action={
         error || loading
           ? undefined
+          : onViewAll ? <Button colors={colors} variant="bare" onClick={onViewAll} style={panelActionVars(colors)}>View board ({total})</Button>
           : <span style={{ fontSize: 10, color: colors.textDim }}>{total} card{total !== 1 ? 's' : ''}</span>
       }
     >
@@ -720,13 +707,13 @@ export function TasksPanel({ columns, cards, loading, error, onRetry, onOpenGoal
         />
       ) : loading ? (
         <div style={{ fontSize: textSize.micro, color: colors.textDim }}>Loading tasks…</div>
-      ) : total === 0 ? (
-        <div style={{ fontSize: textSize.micro, color: colors.textDim }}>No tasks yet.</div>
+      ) : available.length === 0 ? (
+        <div style={{ fontSize: textSize.micro, color: colors.textDim }}>{total === 0 ? 'No tasks yet.' : 'No tasks to preview. Open the board to see all work.'}</div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: space.lg }}>
           {ordered.map(col => {
             const colCards = cards
-              .filter(c => c.columnId === col.id && !c.archivedAt)
+              .filter(c => c.columnId === col.id && visibleIds.has(c.id))
               .sort((a, b) => a.position - b.position);
             if (colCards.length === 0) return null;
             return (
@@ -736,7 +723,7 @@ export function TasksPanel({ columns, cards, loading, error, onRetry, onOpenGoal
                     {col.name}
                   </span>
                   <span style={{ fontSize: 10, color: colors.textDim, background: chipVeil, padding: '0 5px', borderRadius: radius.md }}>
-                    {colCards.length}
+                    {previewLimit && cards.filter(c => c.columnId === col.id && !c.archivedAt).length > colCards.length ? `${colCards.length} of ${cards.filter(c => c.columnId === col.id && !c.archivedAt).length}` : colCards.length}
                   </span>
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: space.xxs }}>

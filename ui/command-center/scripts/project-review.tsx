@@ -1,0 +1,37 @@
+// Synthetic visual QA. Every request is local; no live data or daemon proxy.
+import React from 'react';
+import { createRoot } from 'react-dom/client';
+import '../src/index.css';
+import { ProjectWorkspace } from '../src/components/projects/ProjectWorkspace';
+import { useCommandCenter } from '../src/lib/store';
+import { setTheme } from '../src/styles/tokens';
+import type { Project } from '../src/components/projects/types';
+const params = new URLSearchParams(location.search);
+const empty = params.get('state') === 'empty';
+const now = new Date().toISOString();
+const project: Project = {id: 'sample', slug: 'sample', name: 'Garden journal', description: 'A small place to track what grows, and plan the next season.', status: 'active', rootPath: empty ? null : '/sample/garden', siteUrl: null, repoUrl: null, tags: ['personal'], createdAt: now, updatedAt: now, lastOpenedAt: now, metadataJson: {brief: 'A garden journal for tracking plants and seasonal changes. '.repeat(20), watcher_insights: empty ? [] : [{text: 'The planting calendar is ready for review. Check the frost-date assumptions before the next release.', created_at: now, cards: [{id: 'task-0', title: 'Review the planting calendar'}]}]}};
+const columns = [{id: 'review', projectId: 'sample', name: 'Review', position: 0, columnKind: 'review', stateBinding: 'review', wipLimit: null}, {id: 'ready', projectId: 'sample', name: 'Ready', position: 1, columnKind: 'todo', stateBinding: 'ready', wipLimit: null}];
+const cards = empty ? [] : Array.from({length: 30}, (_, i) => ({id: `task-${i}`, projectId: 'sample', title: ['Review the planting calendar', 'Improve keyboard navigation for the seed library', 'Add planting reminders'][i % 3], description: '', cardType: 'task', columnId: i < 2 ? 'review' : 'ready', position: i, createdBy: 'user', assignedTo: null, metadataJson: {}, createdAt: now, updatedAt: now, archivedAt: null}));
+localStorage.setItem('permagent-daemon-token', 'synthetic-fixture-not-a-credential');
+window.fetch = async input => {
+  const path = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, location.href).pathname;
+  let data: unknown;
+  if (params.get('state') === 'error' && /\/(guard|cards|detected)$/.test(path)) return new Response('{}', {status: 503});
+  if (path === '/api/projects/sample') data = project;
+  else if (path.endsWith('/columns')) data = columns;
+  else if (path.endsWith('/cards')) data = cards;
+  else if (path.endsWith('/guard')) data = { findings: empty ? [] : Array.from({length: 12}, (_, i) => ({ id: `finding-${i}`, title: ['Validate imported file paths before reading journal attachments', 'Restrict development server access to the loopback interface', 'Review outdated package versions'][i % 3], severity: i < 3 ? 'high' : 'medium', status: 'open', found_at: now })), counts: { active: empty ? 0 : 12, open: empty ? 0 : 12, sent: 0, awaiting_rescan: 0, unconfirmed: 0, fixed: 0, dismissed: 0 }, last_scan: empty ? null : now, last_attempt: empty ? null : now, enabled: true, rescan_requested_at: null };
+  else if (path.endsWith('/stack/detected')) data = {entries: ['Rust', 'Axum', 'TypeScript', 'React', 'SQLite'].map(service_name => ({service_name, category: 'backend', evidence: ['Cargo.toml', 'web/package.json']})), scanned_files: 4, incomplete: params.has('partial')};
+  else if (path.endsWith('/intel')) data = {entities: []};
+  else if (path.endsWith('/market')) data = {series: [], watchlist: []};
+  else if (/\/(notes|memories|documents|stack|people|meetings)$/.test(path)) data = [];
+  else if (path === '/api/agent/identity') data = {first_name: 'Aria', display_name: 'Aria', traits: [], tone: 'warm', opening_greeting: ''};
+  else if (path === '/sse-token') data = {token: 'fixture'};
+  else return new Response('{}', {status: 404});
+  return new Response(JSON.stringify(data), {headers: {'Content-Type': 'application/json'}});
+};
+window.WebSocket = class { close() {} send() {} } as unknown as typeof WebSocket;
+useCommandCenter.setState({currentModel: 'fixture-model', agentName: 'Aria', chatResolvedRoute: {provider: 'fixture', model: 'fixture', source: 'default'} as never, loadProviders: async () => {}});
+setTheme(params.get('theme') === 'silver' ? 'silver' : 'dark');
+const width = Number(params.get('width')) || undefined;
+createRoot(document.getElementById('root')!).render(<div style={{height: '100vh', width: width ? Math.min(width, innerWidth) : '100%', margin: 'auto'}}><ProjectWorkspace project={project} projects={[project]} onSwitchProject={() => {}} onBack={() => {}} /></div>);
