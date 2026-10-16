@@ -94,9 +94,17 @@ pub const VOICE_REPLY_STYLE: &str =
     "The user is speaking to you by voice. Reply in natural conversational speech: \
      short sentences, contractions, concise and direct. No markdown, no bullet points, \
      no numbered lists, no code blocks. Keep replies brief — 1-3 sentences for simple \
-     questions. Only the first few sentences of a reply are spoken aloud; anything \
-     longer is shown to the user as text and never read out, so put the answer \
-     itself in your first sentence. Never say 'do you want me to continue', \
+     questions. Normally only the first few sentences of a reply are spoken aloud \
+     and the rest is shown as text, so put the answer itself in your first sentence. \
+     When the user asks for something to LISTEN to — a story, reading something \
+     aloud, a walk-through, a long explanation, or says to keep going — begin the \
+     reply with [long]; then the whole reply is spoken, so write all of it for the ear. \
+     When the user asks about a person, character, place, story or topic and the \
+     memories already given to you do not plainly answer it, search your memory \
+     yourself before answering — use the exact names they said (speech may misspell \
+     a name, so also try the likely spelling) at full depth — without being asked. \
+     Say a few words first ('Let me think.') so they are not left in silence. Never \
+     say you don't have something until you have searched for it. Never say 'do you want me to continue', \
      'shall I go on', or any mid-reply continue offer. \
      Complete the answer or action they actually asked for before offering any \
      optional adjacent detail. Never replace the conclusion with a generic \
@@ -4276,6 +4284,37 @@ const DEFAULT_MAX_SPOKEN_SECONDS: u32 = 20;
 
 /// Config key overriding the seconds budget. Clamped to [5, 600].
 const MAX_SPOKEN_SECONDS_KEY: &str = "voice_max_spoken_seconds";
+/// Ceiling for a reply the model marked `[long]`: one the user asked to LISTEN
+/// to (a story, a reading, a walk-through). Jesse 2026-10-15: "Sometimes I want
+/// to just listen to him speak to me, I dont want to read after 20 seconds of a
+/// reply."
+const MAX_LONG_SPOKEN_SECONDS_KEY: &str = "voice_max_long_spoken_seconds";
+const DEFAULT_MAX_LONG_SPOKEN_SECONDS: u32 = 300;
+
+/// `Some(true)` when the reply opens with the `[long]` delivery tag, `Some(false)`
+/// when enough text has arrived to know it does not, `None` while undecided.
+fn reply_requests_long(reply_so_far: &str) -> Option<bool> {
+    let t = reply_so_far.trim_start();
+    const TAG: &str = "[long]";
+    if t.len() < TAG.len() {
+        return if TAG.starts_with(&t.to_ascii_lowercase()) {
+            None
+        } else {
+            Some(false)
+        };
+    }
+    Some(
+        t.get(..TAG.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(TAG)),
+    )
+}
+
+fn max_long_spoken_seconds() -> u32 {
+    permagent::config::Config::global()
+        .get_param::<u32>(MAX_LONG_SPOKEN_SECONDS_KEY)
+        .unwrap_or(DEFAULT_MAX_LONG_SPOKEN_SECONDS)
+        .clamp(30, 1800)
+}
 
 /// Speaking-rate estimate used to keep the budget BEFORE audio exists, so a
 /// long sentence is not synthesized only to be cut. Kokoro at speed 1.0 runs
@@ -4332,7 +4371,8 @@ pub fn surface_copy(
             prompt_note: Some(
                 "The user is talking with you in the World view, seated with your avatar. \
                  Anything past your first few sentences appears in the World transcript as \
-                 text. Do not send them to another tab unless they ask.",
+                 text, unless your reply starts with [long], which is spoken in full. Do \
+                 not send them to another tab unless they ask.",
             ),
         },
         (VoiceSurface::Orb, VoiceClient::Desktop) => SurfaceCopy {
@@ -4398,6 +4438,12 @@ impl SpokenBudget {
 
     fn from_config(bridge: &'static str) -> Self {
         Self::new(max_spoken_sentences(), max_spoken_seconds(), bridge)
+    }
+
+    /// The user asked to listen: speak the whole reply up to `max_seconds`.
+    fn lift_for_long(&mut self, max_seconds: u32) {
+        self.max_sentences = u32::MAX / 2;
+        self.max_ms = u64::from(max_seconds.max(1)) * 1_000;
     }
 
     fn estimate_ms(speech: &str, speed: f32) -> u64 {
@@ -5188,6 +5234,7 @@ async fn stream_reply_with_tts(
     // assistant message (text after a tool call), which needs a separator or
     // the two run together (staging 2026-10-15: "screen.I actually").
     let mut last_text_msg_id: Option<String> = None;
+    let mut long_decided: Option<bool> = None;
     let mut budget =
         SpokenBudget::from_config(surface_copy(ctx.surface, ctx.origin.client).budget_bridge);
     // Henry's speech for this turn: unknown words he says are substituted and
@@ -5535,6 +5582,21 @@ async fn stream_reply_with_tts(
                                 }
                                 text_buf.push_str(&text_content.text);
                                 full_reply.push_str(&text_content.text);
+                                if long_decided.is_none() {
+                                    long_decided = reply_requests_long(&full_reply);
+                                    if long_decided == Some(true) {
+                                        let secs = max_long_spoken_seconds();
+                                        budget.lift_for_long(secs);
+                                        tracing::info!(
+                                            target: "permagentd::voice",
+                                            event = "voice_long_reply",
+                                            turn_id = ctx.turn_id,
+                                            session_id = ctx.session_id.unwrap_or("voice-anon"),
+                                            max_seconds = secs,
+                                            "reply marked [long]: spoken in full"
+                                        );
+                                    }
+                                }
                                 enqueue_ready_sentences(
                                     &mut text_buf,
                                     &mut queue,
@@ -7991,6 +8053,44 @@ mod tests {
         // Real audio past the cap does stop the rest.
         b.observe_audio(0, 20_000);
         assert!(b.over_time() || b.mid_sentence);
+    }
+
+    #[test]
+    fn a_long_tag_is_detected_early_and_only_at_the_start() {
+        assert_eq!(reply_requests_long(""), None);
+        assert_eq!(reply_requests_long("  [lo"), None);
+        assert_eq!(reply_requests_long("[long] Once upon a time"), Some(true));
+        assert_eq!(reply_requests_long("[LONG]Once"), Some(true));
+        assert_eq!(reply_requests_long("Sure. [long]"), Some(false));
+        assert_eq!(reply_requests_long("[warm] Hi"), Some(false));
+    }
+
+    #[test]
+    fn a_long_reply_is_spoken_well_past_the_short_cap() {
+        let mut queue = std::collections::VecDeque::new();
+        let mut b = budget(4, 20);
+        b.lift_for_long(300);
+        for _ in 0..12 {
+            push_spoken(
+                "The keeper climbed the tower again and lit the lamp against the storm.",
+                &mut queue,
+                &mut b,
+            );
+        }
+        assert_eq!(
+            queue.len(),
+            12,
+            "a [long] reply must not stop at four sentences"
+        );
+        assert!(!b.exhausted);
+    }
+
+    #[test]
+    fn the_voice_style_tells_the_agent_to_search_memory_unprompted() {
+        let style = VOICE_REPLY_STYLE.to_ascii_lowercase();
+        assert!(style.contains("search your memory"));
+        assert!(style.contains("without being asked"));
+        assert!(style.contains("never say you don't have something until you have searched"));
     }
 
     #[test]

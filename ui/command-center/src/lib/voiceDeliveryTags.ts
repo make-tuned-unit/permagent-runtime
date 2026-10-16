@@ -6,7 +6,7 @@
  * (`[text](url)`), so ordinary bracketed words survive.
  */
 const DELIVERY_TAGS = [
-  'pause', 'excited', 'warm', 'calm', 'gentle', 'soft', 'serious', 'thoughtful', 'playful',
+  'pause', 'long', 'excited', 'warm', 'calm', 'gentle', 'soft', 'serious', 'thoughtful', 'playful',
 ];
 const TAG_RE = new RegExp(`\\[(?:${DELIVERY_TAGS.join('|')})\\](?!\\()[ \\t]*`, 'gi');
 

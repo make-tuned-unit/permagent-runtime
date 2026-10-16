@@ -6,6 +6,7 @@ describe('stripVoiceDeliveryTags', () => {
     expect(stripVoiceDeliveryTags("[pause] Let me add that for you.\n\n[pause] There's a Confirm card."))
       .toBe("Let me add that for you.\n\nThere's a Confirm card.");
     expect(stripVoiceDeliveryTags('[Excited] We shipped it!')).toBe('We shipped it!');
+    expect(stripVoiceDeliveryTags('[long] Once upon a time.')).toBe('Once upon a time.');
   });
   it('keeps links and ordinary bracketed words', () => {
     expect(stripVoiceDeliveryTags('Read [the tide table](https://x.example) now.'))
