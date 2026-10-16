@@ -55,6 +55,7 @@ pub mod owner;
 pub mod packs;
 pub mod people;
 pub mod program;
+mod project_stack_detection;
 pub mod projects;
 pub mod prompts;
 pub mod public_apis;

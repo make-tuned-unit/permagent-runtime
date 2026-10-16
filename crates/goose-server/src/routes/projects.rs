@@ -21,6 +21,7 @@
 //!   DELETE /api/projects/:id/notes/:note_id      — Delete a note
 //!   POST   /api/projects/:id/index-code          — Parse the project's codebase into a Brain code map
 //!   GET    /api/projects/:id/stack               — List the project's stack entries (#512)
+//!   GET    /api/projects/:id/stack/detected      — Discover declared stack from connected code
 //!   POST   /api/projects/:id/stack               — Add a stack entry ({serviceName, category?, identity?, notes?, dashboardUrl?})
 //!   PATCH  /api/projects/:id/stack/:entry_id     — Edit a stack entry (double-Option clears for identity/dashboardUrl)
 //!   DELETE /api/projects/:id/stack/:entry_id     — Remove a stack entry
@@ -1891,6 +1892,39 @@ async fn list_stack_entries_handler(
     Ok(Json(entries))
 }
 
+/// GET /api/projects/{id}/stack/detected — infer declarations from local code.
+/// Read known manifests in the connected folder without running project code.
+async fn detect_stack_handler(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<super::project_stack_detection::Detection>, (StatusCode, String)> {
+    let pool = state
+        .session_manager()
+        .pool_clone()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let project = projects::get_project_by_id_or_slug(&pool, &id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
+        .ok_or((StatusCode::NOT_FOUND, "Project not found".to_string()))?;
+    let root = project.root_path.filter(|p| !p.trim().is_empty()).ok_or((
+        StatusCode::BAD_REQUEST,
+        "Connect a code folder to discover the stack.".to_string(),
+    ))?;
+    tokio::task::spawn_blocking(move || {
+        super::project_stack_detection::detect(std::path::Path::new(&root))
+    })
+    .await
+    .map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Stack discovery could not finish.".to_string(),
+        )
+    })?
+    .map(Json)
+    .map_err(|e| (StatusCode::BAD_REQUEST, e))
+}
+
 /// POST /api/projects/{id}/stack — add a stack entry.
 async fn create_stack_entry_handler(
     State(state): State<Arc<AppState>>,
@@ -2281,6 +2315,10 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route(
             "/api/projects/{id}/stack",
             get(list_stack_entries_handler).post(create_stack_entry_handler),
+        )
+        .route(
+            "/api/projects/{id}/stack/detected",
+            get(detect_stack_handler),
         )
         .route(
             "/api/projects/{id}/stack/{entry_id}",
