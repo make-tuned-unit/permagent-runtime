@@ -63,7 +63,7 @@ describe('PeopleView', () => {
     expect(container.textContent).not.toContain('Search people');
   });
 
-  it('opens a side panel of always-editable fields when a person is selected', async () => {
+  it('opens context first and exposes editable fields on intent', async () => {
     await act(async () => root.render(<PeopleView />));
     expect(container.querySelector('[data-testid="person-detail-panel"]')).toBeNull();
 
@@ -75,6 +75,9 @@ describe('PeopleView', () => {
     expect(panel).toBeTruthy();
     expect(panel!.textContent).toContain('Example Person');
     expect([...panel!.querySelectorAll('button')].some(b => b.textContent === 'Edit fields')).toBe(false);
+    expect(panel!.querySelector('#person-contact-fields input')).toBeNull();
+    const edit = [...panel!.querySelectorAll('button')].find(b => b.textContent === 'Edit contact fields')!;
+    await act(async () => edit.dispatchEvent(new MouseEvent('click', { bubbles: true })));
     const labels = [...panel!.querySelectorAll('label')].map(l => l.textContent ?? '');
     for (const name of ['Photo', 'Role', 'Company', 'Email', 'Phone', 'LinkedIn', 'X', 'Facebook', 'Instagram', 'Site', 'Birthday', 'Last contact', 'Relationship', 'How met', 'Find online', 'Notes']) {
       expect(labels.some(t => t.startsWith(name))).toBe(true);

@@ -14,10 +14,12 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { Children, isValidElement, type ReactNode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { act } from 'react-dom/test-utils';
 
-vi.mock('@react-three/fiber', () => ({ Canvas: () => null }));
+const { canvas } = vi.hoisted(() => ({ canvas: vi.fn() }));
+vi.mock('@react-three/fiber', () => ({ Canvas: (props: { children: ReactNode }) => { canvas(props); return null; } }));
 vi.mock('@react-three/drei', () => ({
   Html: () => null,
   Line: () => null,
@@ -28,6 +30,7 @@ const { apiFetch } = vi.hoisted(() => ({ apiFetch: vi.fn() }));
 vi.mock('../../lib/api', () => ({ apiFetch }));
 
 import { PeopleGraph } from './PeopleGraphCanvas';
+import * as graphLayout from './peopleGraph';
 import { QUIET_AFTER_DAYS } from './contactAge';
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
@@ -120,4 +123,26 @@ describe('People graph key', () => {
     await mount();
     expect(legend()).toBeNull();
   });
+});
+
+
+it('filters in place without relaying out the network or losing the central You node', async () => {
+  const layout = vi.spyOn(graphLayout, 'layoutPeopleGraph');
+  try {
+    await mount();
+    const count = layout.mock.calls.length;
+    const input = container.querySelector<HTMLInputElement>('[aria-label="Filter people"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, 'no match');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    expect(layout.mock.calls.length).toBe(count);
+    expect(container.textContent).toContain('No people match');
+    const scene = canvas.mock.calls[canvas.mock.calls.length - 1][0].children;
+    const nodeKinds = Children.toArray(scene).filter(isValidElement).flatMap(child => {
+      const node = (child.props as { node?: { kind: string } }).node;
+      return node ? [node.kind] : [];
+    });
+    expect(nodeKinds).toEqual(['you']);
+  } finally { layout.mockRestore(); }
 });

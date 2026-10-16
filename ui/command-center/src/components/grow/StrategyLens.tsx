@@ -44,6 +44,7 @@ export function StrategyLens({
   send: (prompt: string) => void;
   agentName: string;
 }) {
+  const [selected, setSelected] = useState(PILLARS[0].key as string);
   return (
     <section>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', margin: `0 0 ${space.xl}px` }}>
@@ -56,8 +57,14 @@ export function StrategyLens({
           >✦ Generate</Button>
         </Tooltip>
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: space.xl }}>
+      <nav aria-label="Strategy sections" style={{ display: 'flex', flexWrap: 'wrap', gap: space.sm, marginBottom: space.xl }}>
+        {[...PILLARS, { key: 'brand', label: 'Brand' }].map(item => <Button key={item.key} colors={colors}
+          variant={selected === item.key ? 'ghostOn' : 'ghost'} aria-pressed={selected === item.key}
+          aria-controls={`strategy-${item.key}`} onClick={() => setSelected(item.key)}>{item.label}</Button>)}
+      </nav>
+      <div>
         {PILLARS.map((pillar) => (
+          <div key={`${active.id}-${pillar.key}`} id={`strategy-${pillar.key}`} hidden={selected !== pillar.key}>
           <PillarCard
             key={pillar.key}
             pillarKey={pillar.key}
@@ -67,14 +74,17 @@ export function StrategyLens({
             saved={readStrategy(active, pillar.key)}
             onSave={(content) => saveStrategy(active.id, pillar.key, content)}
           />
+          </div>
         ))}
-        <BrandCard
+        <div id="strategy-brand" hidden={selected !== 'brand'}>
+        <BrandCard key={active.id}
           colors={colors}
           brand={readBrand(active)}
           onAsk={() => send(brandPrompt(active.name))}
           onSave={(next) => saveBrand(active.id, next)}
           agentName={agentName}
         />
+        </div>
       </div>
     </section>
   );

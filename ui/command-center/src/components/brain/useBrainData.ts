@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { readWithDeadline } from '../../lib/readWithDeadline';
 import { apiFetch } from '../../lib/api';
 import { subscribeWorldEvents } from '../world/shared/worldEvents';
 
@@ -53,13 +54,14 @@ export function useBrainData(searchQuery = '') {
   // error message that is still on screen.
   const fetchGraph = useCallback(async () => {
     const seq = ++seqRef.current;
+    setLoading(true);
     let ok = false;
     try {
       const q = queryRef.current.trim();
       const endpoint = q
         ? `/api/brain/graph?q=${encodeURIComponent(q)}`
         : '/api/brain/graph';
-      const result = await apiFetch<BrainGraph>(endpoint);
+      const result = await readWithDeadline(signal => apiFetch<BrainGraph>(endpoint, { signal }));
       if (seq !== seqRef.current) return false;
       if (!result || !Array.isArray(result.entities) || !Array.isArray(result.memories)) {
         throw new Error('Invalid Brain graph response');
@@ -83,7 +85,7 @@ export function useBrainData(searchQuery = '') {
   useEffect(() => {
     fetchGraph();
     const interval = setInterval(fetchGraph, 60_000);
-    return () => clearInterval(interval);
+    return () => { clearInterval(interval); ++seqRef.current; };
   }, [searchQuery, fetchGraph]);
 
   // Live growth (#24): a new memory or entity link lands → refetch soon, so

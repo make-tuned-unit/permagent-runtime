@@ -57,32 +57,10 @@ import {
 import { Tooltip } from '../common/Tooltip';
 import { classifyQuoteError, unknownSymbolHint } from './quoteError';
 
-/**
- * F1 (dagK UX QA, 2026-09-25): the whole tab sat in one flex column capped at
- * 1120px — Holdings, household, watchlist and notes stacked top to bottom —
- * so a 2560px display showed a ~690px column (chat docked) or a 1120px one
- * (chat closed) with 1,400+px of empty gradient beside it. R1: content at
- * wide widths must use the width, not float in void.
- *
- * A container query, not a viewport one: how wide the Finance column actually
- * is depends on whether the chat panel is docked beside it, the same reason
- * Settings' row layout answers to `@container` rather than `@media`
- * (`components/settings/atoms.tsx`). `.pa-fin-scroll` is the query container;
- * `.pa-fin-layout`'s own width can't be queried by its own descendants, so the
- * container has to be an ancestor, not the element being sized.
- *
- * Below 1200px of container width the two columns stack — Holdings/Lots then
- * Household/Watchlist/Notes — in the exact order they always rendered, so a
- * narrow window loses nothing, it just loses the second column.
- */
+/** Keep each selected area readable at the width left by docked panels. */
 const FINANCE_CSS = `
 .pa-fin-scroll { container-type: inline-size; }
 .pa-fin-layout { max-width: 1120px; margin: 0 auto; width: 100%; }
-.pa-fin-cols { display: flex; flex-direction: column; gap: ${space.xxl}px; }
-@container (min-width: 1200px) {
-  .pa-fin-layout { max-width: 1600px; }
-  .pa-fin-cols { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(360px, 480px); align-items: start; }
-}
 `;
 
 function ensureFinanceStyles(): void {
@@ -430,6 +408,7 @@ export function FinanceView() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [draft, setDraft] = useState<TradeDraft>(emptyDraft);
+  const [area, setArea] = useState<'household' | 'holdings' | 'research'>('household');
   const [optIn, setOptIn] = useState({ polybot: false, picker: false });
   const [currency, setCurrency] = useDisplayCurrency();
   const fx = useFxRates(currency);
@@ -612,58 +591,40 @@ export function FinanceView() {
         )}
         {view && (
           <div className="pa-fin-layout" style={{ display: 'flex', flexDirection: 'column', gap: space.xxl }}>
-            <SummaryStrip
-              board={view}
-              colors={colors}
-              busy={busy}
-              scanJob={scanJob}
-              mutate={mutate}
-              setLab={setLab}
-            />
-            {/* F1: Holdings+Lots left, Household/Watchlist/Notes right, as a
-                CSS grid once the container has room (≥1200px) — see
-                `.pa-fin-cols` above. Below that it's the same single column
-                in the same order it always rendered. */}
-            <div className="pa-fin-cols">
-              <div data-testid="finance-col-holdings" style={{ display: 'flex', flexDirection: 'column', gap: space.xxl, minWidth: 0 }}>
-                <HoldingsSection
-                  holdings={view.holdings}
-                  rsiThreshold={view.rsiThreshold}
-                  picker={view.picker}
-                  colors={colors}
-                  busy={busy}
-                  mutate={mutate}
-                  draft={draft}
-                  setDraft={setDraft}
-                  onRecorded={(hint) => { if (hint) setError(hint); }}
-                />
-                {view.pickerEnabled && (
-                  <PicksSection
-                    board={view}
-                    colors={colors}
-                    onPrefill={(next) => {
-                      setDraft(next);
-                      requestAnimationFrame(() => {
-                        document.getElementById('finance-holdings-form')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                      });
-                    }}
-                  />
-                )}
+            <nav aria-label="Finance views" style={{ display: 'flex', flexWrap: 'wrap', gap: space.md }}>
+              {(['household', 'holdings', 'research'] as const).map(value => <Button key={value} colors={colors}
+                variant={area === value ? 'ghostOn' : 'ghost'} aria-pressed={area === value}
+                aria-controls={`finance-view-${value}`} onClick={() => setArea(value)}>
+                {{ household: 'Household', holdings: 'Holdings', research: 'Research' }[value]}
+              </Button>)}
+            </nav>
+            <section id="finance-view-household" hidden={area !== 'household'}>
+              <div data-testid="finance-col-household">
+                <HouseholdSection household={view.household} colors={colors} busy={busy} mutate={mutate} setError={setError} />
               </div>
-              <div data-testid="finance-col-household" style={{ display: 'flex', flexDirection: 'column', gap: space.xxl, minWidth: 0 }}>
-                <HouseholdSection
-                  household={view.household}
-                  colors={colors}
-                  busy={busy}
-                  mutate={mutate}
-                  setError={setError}
-                />
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: space.xxl }}>
-                  <WatchlistSection board={view} colors={colors} busy={busy} mutate={mutate} />
-                  <NotesSection board={view} colors={colors} busy={busy} mutate={mutate} />
-                </div>
+            </section>
+            <section id="finance-view-holdings" hidden={area !== 'holdings'}>
+              <div data-testid="finance-col-holdings" style={{ display: 'grid', gap: space.xxl }}>
+                <HoldingsSummary board={view} colors={colors} />
+                <HoldingsSection holdings={view.holdings} rsiThreshold={view.rsiThreshold} picker={view.picker}
+                  colors={colors} busy={busy} mutate={mutate} draft={draft} setDraft={setDraft}
+                  onRecorded={hint => { if (hint) setError(hint); }} />
               </div>
-            </div>
+            </section>
+            <section id="finance-view-research" hidden={area !== 'research'}>
+              <div style={{ display: 'grid', gap: space.xxl }}>
+                <WatchlistSection board={view} colors={colors} busy={busy} mutate={mutate} />
+                {view.pickerEnabled && <PicksSection board={view} colors={colors} onPrefill={next => {
+                  setDraft(next); setArea('holdings');
+                  requestAnimationFrame(() => document.getElementById('finance-holdings-form')?.scrollIntoView({ block: 'center' }));
+                }} />}
+                <NotesSection board={view} colors={colors} busy={busy} mutate={mutate} />
+                <details>
+                  <summary style={{ cursor: 'pointer', padding: space.md }}>Research connections and optional desks</summary>
+                  <SummaryStrip board={view} colors={colors} busy={busy} scanJob={scanJob} mutate={mutate} setLab={setLab} />
+                </details>
+              </div>
+            </section>
           </div>
         )}
       </div>
@@ -805,20 +766,7 @@ function SummaryStrip({
           </Card>
         )}
 
-        <Card colors={colors} testId="finance-holdings-card">
-          <Eyebrow colors={colors}>Holdings</Eyebrow>
-          <Hero colors={colors} value={money.signed(board.holdings.netPnl)} tone={toneFor(board.holdings.netPnl, colors)} />
-          <div style={{ ...type.caption, color: colors.textMuted, marginTop: space.xs }}>
-            Net P&amp;L · {board.holdings.openCount} open
-            {' · '}
-            {board.holdings.source === 'picker' ? 'Picker journal' : 'local ledger'}
-          </div>
-          <div style={{ display: 'flex', gap: 14, marginTop: space.lg, flexWrap: 'wrap' }}>
-            <Mini colors={colors} label="Unrealized" value={money.signed(board.holdings.netUnrealized)} tone={toneFor(board.holdings.netUnrealized, colors)} />
-            <Mini colors={colors} label="Realized" value={money.signed(board.holdings.netRealized)} tone={toneFor(board.holdings.netRealized, colors)} />
-          </div>
-          <HoldingsSparkline values={board.holdings.trend ?? []} colors={colors} />
-        </Card>
+
 
         {board.pickerEnabled && (
           <Card colors={colors} warn={!board.picker.reachable && (board.pickerUniverse?.length ?? 0) === 0} testId="finance-picker-card">
@@ -887,6 +835,28 @@ function SummaryStrip({
       )}
       <FundamentalsKey compact onChanged={() => void mutate(async () => undefined)} />
     </div>
+  );
+}
+
+function HoldingsSummary({ board, colors }: { board: FinanceBoard; colors: ThemeColors }) {
+  const money = useMoney();
+  return (
+        <Card colors={colors} testId="finance-holdings-card">
+          <Eyebrow colors={colors}>Holdings</Eyebrow>
+          {board.holdings.rows.length === 0
+            ? <p style={{ color: colors.textMuted }}>No trades recorded. This ledger does not represent a connected portfolio.</p>
+            : <Hero colors={colors} value={money.signed(board.holdings.netPnl)} tone={toneFor(board.holdings.netPnl, colors)} />}
+          <div style={{ ...type.caption, color: colors.textMuted, marginTop: space.xs }}>
+            Net P&amp;L · {board.holdings.openCount} open
+            {' · '}
+            {board.holdings.source === 'picker' ? 'Picker journal' : 'local ledger'}
+          </div>
+          <div style={{ display: 'flex', gap: 14, marginTop: space.lg, flexWrap: 'wrap' }}>
+            <Mini colors={colors} label="Unrealized" value={money.signed(board.holdings.netUnrealized)} tone={toneFor(board.holdings.netUnrealized, colors)} />
+            <Mini colors={colors} label="Realized" value={money.signed(board.holdings.netRealized)} tone={toneFor(board.holdings.netRealized, colors)} />
+          </div>
+          <HoldingsSparkline values={board.holdings.trend ?? []} colors={colors} />
+        </Card>
   );
 }
 

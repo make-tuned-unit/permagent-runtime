@@ -5,8 +5,7 @@
  * Command strings are the same literals ProjectChip.tsx hands to `onLaunch`
  * (the desktop crate greps those literals — keep this list in lockstep).
  *
- * Order is the ranking goal dispatch uses: subscription CLIs first ($0 at the
- * margin), then the Permagent harness for routed cheap models.
+ * Order is the ranking goal dispatch uses: subscription CLIs first, then the Permagent harness for routed API models.
  */
 export const CODING_AGENTS = [
   {
@@ -15,7 +14,7 @@ export const CODING_AGENTS = [
     command: 'claude',
     costTier: 'subscription',
     tooltip:
-      'Claude Code — subscription, $0 extra at the margin. Prefer this over the Anthropic API for coding.',
+      'Claude Code — with your subscription. Uses your CLI sign-in; subscription usage limits apply.',
   },
   {
     id: 'codex',
@@ -23,7 +22,7 @@ export const CODING_AGENTS = [
     command: 'codex',
     costTier: 'subscription',
     tooltip:
-      'Codex — subscription, $0 extra at the margin. Prefer this over a metered OpenAI key for coding.',
+      'Codex — with your subscription. Uses your CLI sign-in; subscription usage limits apply.',
   },
   {
     id: 'cursor',
@@ -31,7 +30,7 @@ export const CODING_AGENTS = [
     command: 'cursor-agent',
     costTier: 'subscription',
     tooltip:
-      'Cursor CLI — subscription, $0 extra at the margin. Install with: curl https://cursor.com/install -fsS | bash',
+      'Cursor CLI — with your subscription. Uses your CLI sign-in; subscription usage limits apply.',
   },
   {
     id: 'permagent',
@@ -39,7 +38,7 @@ export const CODING_AGENTS = [
     command: 'permagent run --recipe permagent-coding --interactive',
     costTier: 'cheap_api',
     tooltip:
-      'Permagent harness — routed cheap models when you want per-role spend, or when no subscription CLI is installed. Not cheaper than Claude/Codex if you already pay for those.',
+      'Permagent harness — uses the configured model routes. API usage is billed by the selected provider; local models use your machine.',
   },
 ] as const;
 
@@ -63,12 +62,12 @@ export function launchTooltip(command: string, hasRoot: boolean): string {
   return codingAgentByCommand(command)?.tooltip ?? NO_ROOT;
 }
 
-/** Grow's Send-to-agent select: subscription CLIs read as $0 extra, harness as routed. */
+/** Explain the billing route without promising a zero price. */
 export function codingAgentSelectLabel(agent: CodingAgent): string {
   return agent.costTier === 'subscription'
-    ? `${agent.label} · $0 extra`
-    : `${agent.label} · routed`;
+    ? `${agent.label} · w/ Subscription`
+    : `${agent.label} · API / Local`;
 }
 
 export const SUBSCRIPTION_FIRST_HINT =
-  'Claude / Codex / Cursor first if you have a subscription — they cost nothing extra. Permagent is for routed cheap models.';
+  'Use Claude, Codex or Cursor with your subscription. Permagent uses your configured API or local model routes.';

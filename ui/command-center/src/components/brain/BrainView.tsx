@@ -118,6 +118,8 @@ export function BrainView() {
   // graph has no legend and an undiscoverable interaction model, so it was the
   // hardest surface in the app to meet first.
   const [viewMode, setViewMode] = useState<ViewMode>(readViewMode);
+  const [sceneError, setSceneError] = useState(false);
+  const [sceneRevision, setSceneRevision] = useState(0);
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [modeBeforeSearch, setModeBeforeSearch] = useState<ViewMode>(readViewMode);
@@ -197,7 +199,7 @@ export function BrainView() {
       })
       .catch(() => { if (active) setPreviewLookup('unavailable'); });
     return () => { active = false; controller.abort(); };
-  }, [selected]);
+  }, [selected, sceneRevision]);
 
   // Forget (R5 "explicit forget with undo") from the side panel. Closing the
   // panel IS the immediate feedback (R8) — the toast that follows offers ~8s
@@ -318,12 +320,19 @@ export function BrainView() {
   // Initialize scene
   useEffect(() => {
     if (!containerRef.current) return;
-    const scene = new BrainScene(containerRef.current, { onHover, onSelect });
+    let scene: BrainScene;
+    try {
+      scene = new BrainScene(containerRef.current, { onHover, onSelect });
+      setSceneError(false);
+    } catch {
+      setSceneError(true);
+      return;
+    }
     sceneRef.current = scene;
     const obs = new ResizeObserver(() => scene.resize());
     obs.observe(containerRef.current);
     return () => { obs.disconnect(); scene.dispose(); sceneRef.current = null; };
-  }, [onHover, onSelect]);
+  }, [onHover, onSelect, sceneRevision]);
 
   /** Overlap (in px) of a chrome element with the canvas's edges, so the
    *  scene can fit the graph into what's actually left over. */
@@ -365,14 +374,14 @@ export function BrainView() {
   // Feed data to scene
   useEffect(() => {
     if (sceneRef.current && data) sceneRef.current.setData(data);
-  }, [data]);
+  }, [data, sceneRevision]);
 
   // The panel's selection breaks a label collision in its favour over an
   // unselected same-degree neighbour (QA 2026-09-25: priority hovered >
   // selected > degree).
   useEffect(() => {
     sceneRef.current?.setSelectedId(selected?.id ?? null);
-  }, [selected]);
+  }, [selected, sceneRevision]);
 
   // Perf (QA 2026-09-25): List mode leaves the graph's container `display:
   // none` — a 0×0 canvas the render loop kept rendering into anyway, hundreds
@@ -381,7 +390,7 @@ export function BrainView() {
   // backgrounded tab; this just tells it which mode is showing.
   useEffect(() => {
     sceneRef.current?.setActive(viewMode === 'graph');
-  }, [viewMode]);
+  }, [viewMode, sceneRevision]);
 
   // Search: debounce 300ms, auto-switch to list mode on non-empty query
   useEffect(() => {
@@ -422,10 +431,10 @@ export function BrainView() {
   }, [data, selectMemory]);
 
   // Filters
-  useEffect(() => { sceneRef.current?.setTypeFilter(filters); }, [filters]);
+  useEffect(() => { sceneRef.current?.setTypeFilter(filters); }, [filters, sceneRevision]);
 
   // Time
-  useEffect(() => { sceneRef.current?.setTimeRange([0, timeValue]); }, [timeValue]);
+  useEffect(() => { sceneRef.current?.setTimeRange([0, timeValue]); }, [timeValue, sceneRevision]);
 
   const isEmpty = !loading && data && data.entities.length === 0 && data.memories.length === 0;
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -473,6 +482,13 @@ export function BrainView() {
         </div>
       )}
 
+      {sceneError && viewMode === 'graph' && <div role="status" style={{ position: 'absolute', inset: 0,
+        display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: space.lg,
+        background: colors.surface, zIndex: 11 }}>
+        <p>The graph could not start. Your saved memories are still available in List.</p>
+        <Button colors={colors} onClick={() => setViewMode('list')}>Open memory list</Button>
+        <Button colors={colors} onClick={() => setSceneRevision(value => value + 1)}>Retry graph</Button>
+      </div>}
       {/* Empty state overlay */}
       {error && !data && (
         <div style={{

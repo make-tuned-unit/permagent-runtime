@@ -2,7 +2,7 @@
  * @vitest-environment jsdom
  *
  * PersonDetailModal manual field-edit (CRM slice 2b, #495) — component wiring:
- *  - Fields are always inputs (no separate edit mode); Save PATCHes only the
+ *  - Contact fields open intentionally; Save PATCHes only the
  *    CHANGED fields to `/api/people/{entity_uuid}/fields` (the manual write path).
  *  - On success the view reconciles from the response and the store's peopleRev
  *    bumps so the decoupled panel refetches.
@@ -75,6 +75,7 @@ async function render() {
   await act(async () => root.render(
     <PersonDetailModal projectId="p1" person={person} onClose={() => {}} />,
   ));
+  await click(buttonByText('Edit contact fields'));
 }
 
 function buttonByText(text: string): HTMLButtonElement {
@@ -113,7 +114,7 @@ describe('PersonDetailModal manual field edit', () => {
     await render();
 
     expect([...container.querySelectorAll('button')].some(b => b.textContent === 'Edit fields')).toBe(false);
-    // Always-editable: seeded from the person; unchanged fields must not be sent.
+    // Seeded from the person; unchanged fields must not be sent.
     expect(inputForLabel('Role').value).toBe('CTO');
 
     await setInput(inputForLabel('Email'), 'jane@acme.com');
@@ -149,4 +150,19 @@ describe('PersonDetailModal manual field edit', () => {
     // The draft input still holds the attempted value.
     expect(inputForLabel('Company').value).toBe('Globex');
   });
+});
+
+
+it('opens read-first, preserves an unsaved draft across disclosure, and never saves on disclosure', async () => {
+  await act(async () => root.render(<PersonDetailModal projectId={null} person={person} onClose={() => {}} />));
+  expect(container.textContent).toContain('CTO · Acme');
+  expect(container.querySelector('#person-contact-fields input')).toBeNull();
+  expect(apiFetch.mock.calls.every(([, opts]) => !opts?.method || opts.method === 'GET')).toBe(true);
+  await click(buttonByText('Edit contact fields'));
+  await setInput(inputForLabel('Company'), 'Draft organization');
+  await click(buttonByText('Hide contact fields · Unsaved changes'));
+  expect(container.querySelector('#person-contact-fields input')).toBeNull();
+  await click(buttonByText('Edit contact fields · Unsaved changes'));
+  expect(inputForLabel('Company').value).toBe('Draft organization');
+  expect(apiFetch.mock.calls.some(([, opts]) => opts?.method === 'PATCH')).toBe(false);
 });

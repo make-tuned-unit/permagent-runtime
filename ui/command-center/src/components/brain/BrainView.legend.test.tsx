@@ -69,6 +69,7 @@ vi.mock('../../lib/api', async (importOriginal) => {
 vi.mock('../world/shared/worldEvents', () => ({ subscribeWorldEvents: () => () => {} }));
 
 import { BrainView } from './BrainView';
+import { BrainScene } from './BrainScene';
 import { VIEW_MODE_KEY } from './viewMode';
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
@@ -153,4 +154,15 @@ describe('Brain graph key', () => {
     expect(legend()).toBeNull();
     expect(container.querySelector('[data-testid="canvas-legend-open"]')).toBeNull();
   });
+});
+
+
+it('a failed renderer offers a usable list and a graph retry', async () => {
+  vi.mocked(BrainScene).mockImplementationOnce(() => { throw new Error('WebGL unavailable'); });
+  await mount('graph');
+  expect(container.textContent).toContain('The graph could not start');
+  const list = [...container.querySelectorAll('button')].find(b => b.textContent === 'Open memory list')!;
+  await act(async () => list.click());
+  expect(container.textContent).not.toContain('The graph could not start');
+  expect(container.textContent).not.toContain("Your agent's memory grows here");
 });

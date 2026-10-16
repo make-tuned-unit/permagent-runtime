@@ -173,8 +173,10 @@ describe('the person panel is a DetailModal, not a second modal', () => {
 });
 
 describe('every body section survived the rebuild', () => {
-  it('renders all nine of them, in the order the drawer had', async () => {
+  it('retains every collection and opens contact fields deliberately', async () => {
     await render();
+    expect(container.querySelector('#person-contact-fields input')).toBeNull();
+    await click('Edit contact fields');
     // B5 the edit form (all sixteen fields, each a labelled control)
     const labels = [...container.querySelectorAll('label')].map(l => l.textContent ?? '');
     for (const field of [
@@ -206,8 +208,10 @@ describe('every body section survived the rebuild', () => {
 });
 
 describe('every footer action survived the rebuild', () => {
-  it('offers the six default actions', async () => {
+  it('retains actions with Save in contact editing', async () => {
     await render();
+    expect(hasButton('Save')).toBe(false);
+    await click('Edit contact fields');
     for (const action of [
       'Run enrichment', 'Save', 'Merge into', 'Remove from project', 'Delete person',
     ]) {

@@ -204,7 +204,7 @@ export function InboxPanel({ embedded = false }: { embedded?: boolean } = {}) {
     setPick(p =>
       p && p.fileId === file.id && p.destination === destination
         ? null
-        : { fileId: file.id, destination, projectId: '' },
+        : { fileId: file.id, destination, projectId: file.project_id ?? '' },
     );
   }, [ensureProjects]);
 
@@ -276,7 +276,7 @@ export function InboxPanel({ embedded = false }: { embedded?: boolean } = {}) {
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontFamily: font.display, ...type.title }}>{'Downloads inbox'}</div>
             <div style={{ fontSize: textSize.caption, color: colors.textMuted, marginTop: space.xxs }}>
-              Files you download in the in-app browser land here — send them to the Brain, a project, or the post scheduler. You choose; nothing is routed for you.
+              Review a download to file it in a project, keep it in Brain, or prepare a post. Existing project context is filled in for you.
             </div>
           </div>
           <Tooltip content="Close the inbox">
@@ -412,15 +412,15 @@ export function InboxPanel({ embedded = false }: { embedded?: boolean } = {}) {
                       </span>
                     </div>
                   </div>
-                  <div style={{
-                    display: 'flex', alignItems: 'center', gap: space.sm,
-                    padding: `${space.sm}px ${ROW_PAD_X}px ${space.lg}px`, flexWrap: 'wrap',
-                  }}>
+                  <details style={{ padding: `${space.sm}px ${ROW_PAD_X}px ${space.lg}px` }}>
+                    <summary style={{ cursor: 'pointer', color: colors.textMuted, fontSize: textSize.caption }}>Review filing options</summary>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: space.sm, flexWrap: 'wrap', marginTop: space.sm }}>
                     <span style={{ ...type.label, color: colors.textDim }}>Send to</span>
                     {actionBtn(busy ? 'Sending…' : 'Brain', 'The Reader reads it and stores the text in your Brain', () => sendTo(f, 'brain'), !routable)}
                     {actionBtn('Project…', 'File it as a document on a project', () => openPicker(f, 'project'), !routable, rowPick?.destination === 'project')}
                     {actionBtn('Post…', 'Draft it as a social post card on a project board', () => openPicker(f, 'scheduler'), !routable, rowPick?.destination === 'scheduler')}
                   </div>
+                  </details>
                   {rowResults.length > 0 && (
                     // One line per destination this file was sent to (#3) — a
                     // Brain failure must not hide an earlier Project success,

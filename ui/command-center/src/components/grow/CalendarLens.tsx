@@ -102,9 +102,12 @@ export function CalendarSection({
           } as CSSProperties}
         >+ Draft a post with {agentName}</Button>
       </div>
-      <HiggsfieldConnect colors={colors} />
-      <PostizConnect colors={colors} />
-      <ProjectChannels projectId={active.id} colors={colors} />
+      <details style={{ marginBottom: space.xl }}>
+        <summary style={{ cursor: 'pointer', padding: space.md }}>Publishing accounts and media connections</summary>
+        <HiggsfieldConnect colors={colors} />
+        <PostizConnect colors={colors} />
+        <ProjectChannels projectId={active.id} colors={colors} />
+      </details>
       {postsMutationError && (
         <div role="alert" style={{
           fontSize: textSize.caption, color: colors.danger, marginBottom: space.lg,

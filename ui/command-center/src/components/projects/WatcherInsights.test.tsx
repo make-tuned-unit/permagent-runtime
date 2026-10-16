@@ -148,3 +148,21 @@ describe('Watcher insights', () => {
     expect(container.textContent).toBe('');
   });
 });
+
+
+it('reports a failed latest check without implying the project is clear', async () => {
+  const p = project([]);
+  p.metadataJson.watcher_check = { status: 'failed', checked_at: '2026-10-15T12:00:00Z' };
+  await act(async () => root.render(<WatcherInsightsPanel project={p} />));
+  expect(container.textContent).toContain("couldn't complete its latest check");
+  expect(container.textContent).not.toContain('all clear');
+});
+
+it('folds duplicate stable evidence identities even when no card is named', async () => {
+  await act(async () => root.render(<WatcherInsightsPanel project={project([
+    { id: 'same-evidence', text: 'New wording', created_at: '2026-10-15' },
+    { id: 'same-evidence', text: 'Repeated wording', created_at: '2026-10-14' },
+  ])} />));
+  expect(container.textContent).toContain('New wording');
+  expect(container.textContent).not.toContain('Repeated wording');
+});

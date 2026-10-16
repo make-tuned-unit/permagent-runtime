@@ -73,6 +73,33 @@ async function flush() {
   await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
 }
 
+it('clears the previous project metrics and distinguishes unavailable sources from empty sources', async () => {
+  const pending: Array<(reason: Error) => void> = [];
+  apiFetch.mockImplementation((url: string) => {
+    if (url.includes('/p2/') && (url.endsWith('/analytics/connection') || url.endsWith('/analytics/first_party/stats') || url.endsWith('/publisher'))) {
+      return new Promise((_resolve, reject) => pending.push(reject));
+    }
+    if (url.endsWith('/analytics/connection')) return Promise.resolve({ connected: false });
+    if (url.endsWith('/analytics/first_party/stats')) return Promise.resolve({ receiving: true, pageviews: 987, deviceSignatures: 100, sessions: 150, byDay: [], period: { days: 30 } });
+    if (url.includes('/analytics/first_party/step_options')) return Promise.resolve({ events: [], paths: [], periodDays: 30, includingBots: false });
+    if (url.endsWith('/publisher')) return Promise.resolve({ configured: true, channels: { instagram: { integrationId: 'fixture-channel' } } });
+    return Promise.resolve({});
+  });
+  await act(async () => root.render(<GrowAnalytics project={project} posts={[]} colors={colors} />));
+  await flush();
+  expect(container.querySelector('[data-testid="metric-tile-lead"]')?.textContent).toContain('987');
+  await act(async () => root.render(<GrowAnalytics project={{ ...project, id: 'p2', name: 'New project' }} posts={[]} colors={colors} />));
+  expect(container.querySelector('[data-testid="metric-tile-lead"]')?.textContent).not.toContain('987');
+  expect(container.textContent).toContain('Checking analytics sources');
+  expect(container.textContent).toContain('Connection status unknown');
+  expect(container.textContent).not.toContain('No source is receiving');
+  await act(async () => pending.forEach(reject => reject(new Error('offline'))));
+  await flush();
+  expect(container.textContent).toContain('Analytics source status is unavailable');
+  expect(container.textContent).not.toContain('No source is receiving');
+  expect(Array.from(container.querySelectorAll('button')).some(button => button.textContent === 'Retry analytics')).toBe(true);
+});
+
 it('renders Reach as its own lead tile, ahead of the setup/config tiles', async () => {
   const posts: SocialCard[] = [];
   await act(async () => {
@@ -82,7 +109,7 @@ it('renders Reach as its own lead tile, ahead of the setup/config tiles', async 
 
   const lead = container.querySelector('[data-testid="metric-tile-lead"]');
   expect(lead, 'lead tile').toBeTruthy();
-  expect(lead!.textContent).toContain('REACH (30D)');
+  expect(lead!.textContent).toContain('PAGEVIEWS (30D)');
   expect(lead!.textContent).toContain('1,023');
 
   const rest = Array.from(container.querySelectorAll('[data-testid="metric-tile"]'));
@@ -245,4 +272,16 @@ describe('GrowAnalytics — Reach delta chip', () => {
     expect(chip!.textContent).toContain('▲');
     expect(chip!.textContent).toContain('50%');
   });
+});
+
+it('leads with measures and discloses installation and coverage without losing them', async () => {
+  await act(async () => root.render(<GrowAnalytics project={project} posts={[]} colors={colors} />));
+  await flush();
+  const details = Array.from(container.querySelectorAll('details'));
+  const source = details.find(el => el.querySelector('summary')?.textContent === 'Source data and installation')!;
+  expect(source.open).toBe(false);
+  const lead = container.querySelector('[data-testid="metric-tile-lead"]')!;
+  expect(lead.compareDocumentPosition(source) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(container.textContent).toContain('not conversion rates');
+  expect(apiFetch.mock.calls.every(([, options]) => !options?.method || options.method === 'GET')).toBe(true);
 });

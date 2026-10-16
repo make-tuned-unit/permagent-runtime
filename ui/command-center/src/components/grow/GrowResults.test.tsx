@@ -147,3 +147,16 @@ describe('Measure now', () => {
     expect(button().disabled).toBe(false);
   }, 10_000);
 });
+
+
+it('keeps project results separate from the explicitly selected all-project scope', async () => {
+  apiFetch.mockResolvedValue(resultsPayload());
+  await render(); await flush();
+  expect((container.querySelector('#growth-results-project') as HTMLElement).hidden).toBe(false);
+  expect((container.querySelector('#growth-results-all') as HTMLElement).hidden).toBe(true);
+  const all = container.querySelector<HTMLButtonElement>('[aria-controls="growth-results-all"]')!;
+  await act(async () => all.click());
+  expect((container.querySelector('#growth-results-project') as HTMLElement).hidden).toBe(true);
+  expect((container.querySelector('#growth-results-all') as HTMLElement).hidden).toBe(false);
+  expect(apiFetch.mock.calls.every(([, opts]) => !opts?.method || opts.method === 'GET')).toBe(true);
+});

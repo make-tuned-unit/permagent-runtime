@@ -248,6 +248,7 @@ export function PersonDetailModal({
   const [view, setView] = useState<Person>(person);
   const [draft, setDraft] = useState<Draft>(() => draftFrom(person));
   const [saving, setSaving] = useState(false);
+  const [editing, setEditing] = useState(false);
   const [relationships, setRelationships] = useState<PersonRelationship[]>([]);
   const [activity, setActivity] = useState<PersonActivity[]>([]);
   const [meetings, setMeetings] = useState<PersonMeeting[]>([]);
@@ -630,9 +631,9 @@ export function PersonDetailModal({
       <Button colors={colors} onClick={requestEnrichment} pending={enriching} disabled={enriching} style={ghostVars(colors)}>
         {enriching ? 'Running enrichment…' : 'Run enrichment'}
       </Button>
-      <Button colors={colors} onClick={() => void saveEdit()} pending={saving} disabled={saving || !dirty} style={primaryVars(colors)}>
+      {editing && <Button colors={colors} onClick={() => void saveEdit()} pending={saving} disabled={saving || !dirty} style={primaryVars(colors)}>
         {saving ? 'Saving…' : 'Save'}
-      </Button>
+      </Button>}
       <span style={{ flex: 1 }} />
       {view.entity_uuid && (
         <Button colors={colors} onClick={() => setMerging(true)} style={ghostVars(colors)}>
@@ -696,12 +697,25 @@ export function PersonDetailModal({
                   onConfirm={doDelete}
                 />
               )}
-              <EditForm
-                colors={colors}
-                personName={view.display_name}
-                draft={draft}
-                onChange={(k, v) => setDraft(d => ({ ...d, [k]: v }))}
-              />
+              <section aria-label="Person context" style={{ display: 'grid', gap: space.md }}>
+                <div style={{ fontSize: textSize.small, color: colors.textMuted }}>
+                  {[view.role, view.company].filter(Boolean).join(' · ') || 'No role or organization recorded'}
+                </div>
+                {[view.email, view.phone].filter(Boolean).map(value => <div key={value} style={{ overflowWrap: 'anywhere' }}>{value}</div>)}
+                {view.last_contact_at && <div>Last recorded contact: {fmtTime(view.last_contact_at)}</div>}
+                {!editing && safeLink(view.linkedin) && <Button colors={colors} variant="ghost"
+                  onClick={() => useCommandCenter.getState().openInBrowser(safeLink(view.linkedin)!)}>Open profile</Button>}
+                {view.how_met && <div>{view.how_met}</div>}
+                {view.notes && <p style={{ margin: 0, whiteSpace: 'pre-wrap' }}>{view.notes}</p>}
+                <Button colors={colors} variant="ghost" aria-expanded={editing} aria-controls="person-contact-fields"
+                  onClick={() => setEditing(value => !value)}>
+                  {editing ? 'Hide contact fields' : 'Edit contact fields'}{dirty ? ' · Unsaved changes' : ''}
+                </Button>
+                <div id="person-contact-fields" hidden={!editing}>
+                  {editing && <EditForm colors={colors} personName={view.display_name} draft={draft}
+                    onChange={(k, v) => setDraft(d => ({ ...d, [k]: v }))} />}
+                </div>
+              </section>
               {association && (
                 <div style={{ fontSize: textSize.micro, color: colors.textDim, fontFamily: font.mono }}>
                   {association.project_role ? `${association.project_role} · ` : ''}Associated {fmtTime(association.associated_at)}

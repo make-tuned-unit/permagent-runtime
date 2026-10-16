@@ -1,0 +1,6 @@
+.pa-settings { container-name: settings-workspace; }
+.pa-settings-picker { display: none; }
+@container settings-workspace (max-width: 700px) {
+  .pa-settings-rail { display: none; }
+  .pa-settings-picker { display: block; }
+}

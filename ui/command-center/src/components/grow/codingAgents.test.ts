@@ -22,21 +22,21 @@ describe('CODING_AGENTS', () => {
     const claude = codingAgentByCommand('claude');
     const codex = codingAgentByCommand('codex');
     expect(claude?.tooltip.toLowerCase()).toContain('subscription');
-    expect(claude?.tooltip).toContain('$0');
+    expect(claude?.tooltip).not.toContain('$0');
     expect(codex?.tooltip.toLowerCase()).toContain('subscription');
-    expect(codex?.tooltip).toContain('$0');
+    expect(codex?.tooltip).not.toContain('$0');
     expect(codingAgentByCommand('permagent run --recipe permagent-coding --interactive')?.tooltip)
-      .toMatch(/not cheaper than Claude\/Codex/i);
+      .toContain('API usage is billed');
   });
 
   it('launchTooltip prefers the root-path gate, then the cost policy', () => {
     expect(launchTooltip('claude', false)).toContain('root path');
     expect(launchTooltip('claude', true)).toContain('subscription');
-    expect(SUBSCRIPTION_FIRST_HINT).toContain('nothing extra');
+    expect(SUBSCRIPTION_FIRST_HINT).toContain('with your subscription');
   });
 
-  it('Grow select labels subscription CLIs as $0 extra and Permagent as routed', () => {
-    expect(codingAgentSelectLabel(CODING_AGENTS[0])).toBe('Claude · $0 extra');
-    expect(codingAgentSelectLabel(CODING_AGENTS[CODING_AGENTS.length - 1]!)).toBe('Permagent · routed');
+  it('labels subscription and API routes without a price promise', () => {
+    expect(codingAgentSelectLabel(CODING_AGENTS[0])).toBe('Claude · w/ Subscription');
+    expect(codingAgentSelectLabel(CODING_AGENTS[CODING_AGENTS.length - 1]!)).toBe('Permagent · API / Local');
   });
 });

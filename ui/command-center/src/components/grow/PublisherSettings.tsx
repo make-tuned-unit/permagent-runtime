@@ -47,6 +47,7 @@ export function useConnectedChannels(projectId: string, refreshKey?: unknown): S
   const [connected, setConnected] = useState<Set<string> | null>(null);
   useEffect(() => {
     let live = true;
+    setConnected(null);
     apiFetch<PublisherSnap>(`/api/projects/${encodeURIComponent(projectId)}/publisher`)
       .then((s) => {
         if (!live || !s || Array.isArray(s)) return;

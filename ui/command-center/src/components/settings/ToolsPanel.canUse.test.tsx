@@ -88,3 +88,14 @@ describe('ToolsPanel "What <name> can use"', () => {
     expect(container.querySelector('[data-testid="can-use-unused"]')).toBeNull();
   });
 });
+
+it('distinguishes failed reads from no tools and retries without changing connections', async () => {
+  allowed.getExtensions.mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce({ extensions: [] });
+  allowed.getIdentity.mockResolvedValue({ first_name: null });
+  await mount();
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain('Could not load tools');
+  const retry = Array.from(container.querySelectorAll('button')).find(b => b.textContent === 'Retry')!;
+  await act(async () => retry.click());
+  expect(container.querySelector('[role="alert"]')).toBeNull();
+  expect(allowed.getExtensions).toHaveBeenCalledTimes(2);
+});

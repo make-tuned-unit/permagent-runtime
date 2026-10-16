@@ -237,6 +237,7 @@ function SummaryPanel({ project, onProjectUpdated }: {
 
 export interface WatcherInsightCard { id: string; title: string }
 export interface WatcherInsight {
+  id?: string;
   text: string;
   created_at: string;
   /** The cards this insight is about. Absent on rows written before the
@@ -259,8 +260,8 @@ export function newestPerCardSet(insights: WatcherInsight[]): WatcherInsight[] {
   // Newest first, so the survivor of a fold is the most recent wording.
   for (const insight of [...insights].sort((a, b) => b.created_at.localeCompare(a.created_at))) {
     const cards = (insight.cards ?? []).map(c => c.id).sort();
-    if (cards.length === 0) { out.push(insight); continue; }
-    const key = cards.join('|');
+    if (cards.length === 0 && !insight.id) { out.push(insight); continue; }
+    const key = insight.id ?? cards.join('|');
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(insight);
@@ -282,12 +283,17 @@ export function WatcherInsightsPanel({ project }: { project: Project }) {
   const { colors } = useTheme();
   const openCardOnBoard = useCommandCenter(s => s.openCardOnBoard);
   const insights = readWatcherInsights(project.metadataJson);
-  if (insights.length === 0) return null;
+  const check = project.metadataJson.watcher_check as { status?: string; checked_at?: string } | undefined;
+  const unavailable = check?.status === 'failed' || check?.status === 'unavailable';
+  if (insights.length === 0 && !unavailable) return null;
   return (
-    <Panel title="From the Watcher">
+    <Panel title="Changes to review">
+      {unavailable && <div role="status" style={{ color: colors.textMuted, fontSize: textSize.caption, marginBottom: space.md }}>
+        Watcher couldn't complete its latest check. Earlier observations may be out of date.
+      </div>}
       <div style={{ display: 'flex', flexDirection: 'column', gap: space.lg }}>
         {insights.map(i => (
-          <div key={i.created_at} style={{ display: 'flex', gap: space.lg, alignItems: 'baseline' }}>
+          <div key={i.id ?? i.created_at} style={{ display: 'flex', gap: space.lg, alignItems: 'baseline' }}>
             <span style={{ color: colors.purpleBright, fontSize: textSize.micro, flexShrink: 0, lineHeight: '18px' }}>◆</span>
             {/* `flex: 1` + `minWidth: 0`: the column must take the row's width and
                 no more, so the chips below have a real edge to truncate against. */}

@@ -25,7 +25,7 @@ vi.mock('../dashboard/decisions/useDecisions', () => ({
 }));
 
 import { NotificationHost } from './NotificationHost';
-import { setTrayOpen, toast } from '../../lib/notifications';
+import { setTrayOpen, toast, markAllRead, markRead, useNotifications } from '../../lib/notifications';
 import { radius, setReduceMotion } from '../../styles/tokens';
 import { useCommandCenter } from '../../lib/store';
 
@@ -158,5 +158,47 @@ describe('NotificationHost — floating-glass radius (D4)', () => {
     // DOM). The card's outer radius is unchanged, just on a different node.
     const toastShell = container.querySelector<HTMLElement>('[role="status"] > div')!;
     expect(toastShell.style.borderRadius).toBe(`${radius.glass}px`);
+  });
+});
+
+
+function UnreadProbe() {
+  const { items, unread } = useNotifications();
+  return <output data-testid="unread" data-count={unread}>{items.filter(i => !i.read).map(i => i.title).join('|')}</output>;
+}
+
+describe('notification acknowledgement is scoped to intent', () => {
+  it('dismissal preserves unread events; selecting one keeps its sibling unread', async () => {
+    markAllRead();
+    const open = vi.fn();
+    await act(async () => {
+      toast('Unread sibling');
+      toast('Selected event', '', open);
+      setTrayOpen(true);
+      root.render(<><NotificationHost /><UnreadProbe /></>);
+    });
+    await act(async () => document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })));
+    expect(container.querySelector('output')!.getAttribute('data-count')).toBe('2');
+    await act(async () => setTrayOpen(true));
+    const row = [...container.querySelectorAll('[data-notifications-ui] button')].find(b => b.textContent?.includes('Selected event'))!;
+    await act(async () => row.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('output')!.textContent).toBe('Unread sibling');
+    await act(async () => setTrayOpen(true));
+    const all = [...container.querySelectorAll('button')].find(b => b.textContent === 'Mark all read')!;
+    await act(async () => all.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    expect(container.querySelector('output')!.getAttribute('data-count')).toBe('0');
+    expect(open).toHaveBeenCalledTimes(1);
+  });
+
+  it('read is idempotent and unread counts stay bounded by retained events', async () => {
+    markAllRead();
+    await act(async () => {
+      root.render(<UnreadProbe />);
+      for (let i = 0; i < 55; i++) toast(`Bounded ${i}`);
+    });
+    expect(container.querySelector('output')!.getAttribute('data-count')).toBe('50');
+    await act(async () => { markRead('missing'); });
+    expect(container.querySelector('output')!.getAttribute('data-count')).toBe('50');
   });
 });

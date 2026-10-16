@@ -1,3 +1,4 @@
+import './peopleLayout.css';
 /**
  * People — a first-class tab, same header as every other top-level view.
  *
@@ -129,7 +130,8 @@ export function PeopleView() {
   };
 
   return (
-    <div style={{
+    <div className="pa-people-view" style={{
+      containerType: 'inline-size',
       width: '100%',
       height: '100%',
       display: 'flex',
@@ -138,12 +140,12 @@ export function PeopleView() {
     }}>
       <ViewHeader
         title="People"
-        subtitle="Quiet contacts fade. Follow-ups live on the person and on Home."
+        subtitle="Your connections, shared projects, and follow-ups."
         afterTitle={<ModeToggle mode={mode} onChange={switchMode} />}
         actions={<CalendarImportNote state={calendar} onRetry={() => setCalendarRun(n => n + 1)} />}
       />
-      <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
-        <div style={{ flex: 1, minWidth: 0, overflow: mode === 'list' ? 'auto' : 'hidden' }}>
+      <div className={selected ? 'pa-people-workspace has-person' : 'pa-people-workspace'} style={{ position: 'relative', flex: 1, minHeight: 0, display: 'flex' }}>
+        <div className="pa-people-main" style={{ flex: 1, minWidth: 0, overflow: mode === 'list' ? 'auto' : 'hidden' }}>
           {mode === 'graph' ? <PeopleGraph /> : <PeopleDirectory />}
         </div>
         {selected && (

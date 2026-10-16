@@ -44,7 +44,7 @@ const KIND_LABEL: Record<RunItem['kind'], string> = {
  *   card used to offer); optional, so a caller with nowhere to send it can
  *   still render the roster read-only.
  */
-export function RunRoster({ schedules, onOpenSchedule }: { schedules?: RosterScheduleFacts[]; onOpenSchedule?: (id: string) => void } = {}) {
+export function RunRoster({ schedules, onOpenSchedule, activeOnly = false }: { activeOnly?: boolean; schedules?: RosterScheduleFacts[]; onOpenSchedule?: (id: string) => void } = {}) {
   const { colors } = useTheme();
   const factsById = useMemo(
     () => new Map((schedules ?? []).map(j => [j.id, j] as const)),
@@ -131,8 +131,10 @@ export function RunRoster({ schedules, onOpenSchedule }: { schedules?: RosterSch
   // Sort the eye to what matters: active first, then problems, then the rest.
   const rank = (s: RunItem['status']) =>
     ({ working: 0, error: 1, missed: 2, paused: 3, idle: 4 }[s] ?? 5);
-  const sorted = [...reconciledRuns].sort((a, b) => rank(a.status) - rank(b.status));
+  const sorted = reconciledRuns.filter(r => !activeOnly || r.status === 'working').sort((a, b) => rank(a.status) - rank(b.status));
   const activeCount = reconciledRuns.filter(r => r.status === 'working').length;
+
+  if (activeOnly && status === 'ready' && sorted.length === 0 && !stopError) return null;
 
   return (
     <div

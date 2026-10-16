@@ -88,7 +88,9 @@ export function PeopleGraph() {
     });
   }, [people, query]);
 
-  const layout = useMemo(() => layoutPeopleGraph(filtered), [filtered]);
+  // Filtering reveals matches in place; it never recomputes the network or camera.
+  const layout = useMemo(() => layoutPeopleGraph(people), [people]);
+  const visibleIds = useMemo(() => new Set(filtered.map(p => p.entity_uuid)), [filtered]);
 
   // The canvas's real size, so the graph is fitted to what is on screen
   // (graphFit.ts: a fixed camera clipped and stacked faces at 660x560).
@@ -159,7 +161,7 @@ export function PeopleGraph() {
           top: space.xl,
           left: space.huge,
           zIndex: 2,
-          width: 240,
+          width: 'min(240px, calc(100% - 64px))',
           fontSize: textSize.caption,
           fontFamily: font.body,
           padding: `${space.sm}px ${space.lg}px`,
@@ -232,7 +234,7 @@ export function PeopleGraph() {
           {layout.edges.map(edge => {
             const from = byId.get(edge.from);
             const to = byId.get(edge.to);
-            if (!from || !to) return null;
+            if (!from || !to || (from.kind !== 'you' && !visibleIds.has(from.id)) || (to.kind !== 'you' && !visibleIds.has(to.id))) return null;
             const ego = edge.kind === 'ego';
             // An edge touching the active person (hovered, keyboard-focused,
             // or selected) reads as "this connects to them" — brighter and
@@ -277,7 +279,7 @@ export function PeopleGraph() {
               </div>
             </Html>
           ))}
-          {nodes.map(node => (
+          {nodes.filter(node => node.kind === 'you' || visibleIds.has(node.id)).map(node => (
             <PersonNode
               key={node.id}
               node={node}

@@ -24,11 +24,11 @@ function formatCompact(n: number): string {
   return new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 }).format(n);
 }
 
-/** ≥1600px, History becomes a Linear/Mail-style list + preview split (the
+/** ≥1100px of available width, History becomes a Linear/Mail-style list + preview split (the
  *  coordinator's R1 ruling 2026-09-25) instead of one long single column —
  *  the width is otherwise wasted void or an over-stretched row. Below it, a
  *  single list capped at a readable width (`NARROW_LIST_MAX_WIDTH`). */
-const WIDE_BREAKPOINT = 1600;
+const WIDE_BREAKPOINT = 1100;
 /** The list column's width at the split, and the single list's cap below it.
  *  `min(720px, 45%)` so the list never eats the majority of an ultra-wide
  *  screen just because it's there. */
@@ -39,14 +39,19 @@ const NARROW_LIST_MAX_WIDTH = 880;
  *  flickers the pane through everything in between. */
 const HOVER_PREVIEW_DELAY_MS = 300;
 
-function useWideLayout(): boolean {
-  const [wide, setWide] = useState(() => typeof window !== 'undefined' && window.innerWidth >= WIDE_BREAKPOINT);
-  useEffect(() => {
-    const onResize = () => setWide(window.innerWidth >= WIDE_BREAKPOINT);
-    onResize();
-    window.addEventListener('resize', onResize);
-    return () => window.removeEventListener('resize', onResize);
-  }, []);
+function useWideLayout(ref: RefObject<HTMLDivElement>): boolean {
+  const [wide, setWide] = useState(false);
+  useLayoutEffect(() => {
+    const measure = () => {
+      const width = ref.current?.getBoundingClientRect().width;
+      setWide((width || (typeof ResizeObserver === 'undefined' ? window.innerWidth : 0)) >= WIDE_BREAKPOINT);
+    };
+    measure();
+    const observer = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null;
+    if (ref.current) observer?.observe(ref.current);
+    window.addEventListener('resize', measure);
+    return () => { observer?.disconnect(); window.removeEventListener('resize', measure); };
+  }, [ref]);
   return wide;
 }
 
@@ -237,6 +242,7 @@ export function SessionsList({ onClose }: { onClose?: () => void } = {}) {
   const { colors } = useTheme();
   const sessions = useCommandCenter(s => s.sessions);
   const sessionsError = useCommandCenter(s => s.sessionsError);
+  const sessionsLoading = useCommandCenter(s => s.sessionsLoading);
   const chatSessionId = useCommandCenter(s => s.chatSessionId);
   const loadSessions = useCommandCenter(s => s.loadSessions);
   const switchToSession = useCommandCenter(s => s.switchToSession);
@@ -259,13 +265,14 @@ export function SessionsList({ onClose }: { onClose?: () => void } = {}) {
   // failed"; failing never removes a match the client filter already found.
   const [deepMatches, setDeepMatches] = useState<Set<string> | null>(null);
   const [forking, setForking] = useState<string | null>(null);
-  // The list/preview split (≥1600px): `selectedId` follows focus (click, or
+  // The list/preview split (≥1100px of available width): `selectedId` follows focus (click, or
   // Enter/↑/↓ from the keyboard) and persists; `hoverId` is a lingering
   // (HOVER_PREVIEW_DELAY_MS) peek that overrides it while the pointer sits on
   // a different row, and reverts the moment it leaves. Below the breakpoint
   // neither renders anything — tracked unconditionally anyway since it's free
   // and means turning the window wider doesn't lose the selection.
-  const wide = useWideLayout();
+  const workspaceRef = useRef<HTMLDivElement>(null);
+  const wide = useWideLayout(workspaceRef);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [hoverId, setHoverId] = useState<string | null>(null);
   const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -380,7 +387,7 @@ export function SessionsList({ onClose }: { onClose?: () => void } = {}) {
   };
 
   return (
-    <div className="flex flex-col h-full" style={{ backgroundColor: colors.bg, color: colors.text }}>
+    <div ref={workspaceRef} className="flex flex-col h-full" style={{ backgroundColor: colors.bg, color: colors.text }}>
       <div
         className="flex items-center justify-between px-4 py-2.5"
         style={{ borderBottom: `1px solid ${colors.border}` }}
@@ -488,7 +495,7 @@ export function SessionsList({ onClose }: { onClose?: () => void } = {}) {
         </div>
       )}
 
-      {/* R1 (coordinator ruling, 2026-09-25): ≥1600px is a list/preview split
+      {/* R1 (coordinator ruling, 2026-09-25): ≥1100px of available width is a list/preview split
           (Linear/Mail pattern) — the list column is min(720px, 45%) so it
           never eats most of an ultra-wide screen, and the rest goes to a
           preview pane instead of sitting as void or over-stretching every
@@ -533,7 +540,10 @@ export function SessionsList({ onClose }: { onClose?: () => void } = {}) {
           </div>
         )}
 
-        {!sessionsError && sessions.length === 0 && (
+        {sessionsLoading && sessions.length === 0 && (
+          <StateBlock tone="loading" title="Loading sessions…" />
+        )}
+        {!sessionsError && !sessionsLoading && sessions.length === 0 && (
           <div
             className="flex flex-col items-center justify-center h-full text-xs gap-2 p-4 text-center"
             style={{ fontFamily: font.mono, color: colors.textMuted }}
@@ -579,7 +589,7 @@ export function SessionsList({ onClose }: { onClose?: () => void } = {}) {
               aria-current={isActive ? 'true' : undefined}
               aria-selected={wide && previewId === s.id ? 'true' : undefined}
               onClick={() => handleSelect(s.id)}
-              // Selection (for the ≥1600px preview pane) follows focus, so a
+              // Selection (for the ≥1100px of available width preview pane) follows focus, so a
               // click, a Tab and an arrow-key move all agree on what's
               // selected without three separate code paths.
               onFocus={() => setSelectedId(s.id)}
@@ -779,7 +789,7 @@ export function SessionsList({ onClose }: { onClose?: () => void } = {}) {
   );
 }
 
-// ── the ≥1600px preview pane ─────────────────────────────────────────────────
+// ── the ≥1100px of available width preview pane ─────────────────────────────────────────────────
 
 /** `GET /api/sessions/{id}` for the preview pane, cached per session id so
  *  re-hovering a row already seen doesn't refetch, and race-safe: a response
@@ -874,7 +884,7 @@ function PreviewMessage({ label, text }: { label: string; text: string | null })
   );
 }
 
-/** The right-hand pane of the ≥1600px split: everything the row itself has no
+/** The right-hand pane of the ≥1100px of available width split: everything the row itself has no
  *  room for — the whole label, both link chips, an absolute created/updated
  *  time on hover, message/token counts, the first and last message, and the
  *  row's own actions (Open/Fork/Rename/Delete) so opening or acting on a

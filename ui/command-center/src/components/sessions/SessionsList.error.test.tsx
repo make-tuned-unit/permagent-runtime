@@ -43,6 +43,7 @@ let container: HTMLDivElement;
 let root: Root;
 
 beforeEach(() => {
+  useCommandCenter.setState({ sessionsLoading: false });
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -127,4 +128,12 @@ describe('C5 — Escape in the rename input cancels the rename only', () => {
     });
     expect(onClose).toHaveBeenCalledTimes(1);
   });
+});
+
+
+it('shows loading rather than an empty-state claim while sessions are pending', () => {
+  useCommandCenter.setState({ sessions: [], sessionsError: false, sessionsLoading: true, loadSessions: vi.fn() });
+  render(<SessionsList />);
+  expect(container.textContent).toContain('Loading sessions');
+  expect(container.textContent).not.toContain('No sessions yet');
 });

@@ -128,23 +128,23 @@ it('A6: a daemon that will not answer /api/job-health reads "unknown", not green
   expect(strip.getAttribute('data-state')).toBe('unknown');
 });
 
-it('A5: mounts the sticky section nav with the page\'s real sections', async () => {
+it('selects actual views without losing their collections or issuing writes', async () => {
   await act(async () => { root.render(<AutomateView />); });
   await settle();
-  const nav = container.querySelector('[data-testid="automate-section-nav"]')!;
+  const nav = container.querySelector('nav[aria-label="Automate views"]')!;
   expect(nav).toBeTruthy();
-  expect(nav.textContent).toContain('Automations');
-  expect(nav.textContent).toContain('Learned');
-  expect(nav.textContent).toContain('Installed');
-  // Only rendered while there IS a recent-activity/running section to jump to
-  // is covered by SectionNav.test.tsx directly; here just confirm every
-  // `data-section` the nav links to actually exists in the DOM.
-  for (const btn of nav.querySelectorAll('button')) {
-    const label = btn.textContent!.replace(/\d+$/, '').trim();
-    const match = [...container.querySelectorAll('[data-section]')]
-      .some(el => el.textContent!.includes(label) || label.length > 0);
-    expect(match).toBe(true);
+  for (const name of ['automations', 'activity', 'skills']) {
+    const button = nav.querySelector(`[aria-controls="automate-view-${name}"]`)!;
+    await act(async () => button.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    expect(button.getAttribute('aria-pressed')).toBe('true');
+    for (const other of ['automations', 'activity', 'skills']) {
+      expect((container.querySelector(`#automate-view-${other}`) as HTMLElement).hidden).toBe(other !== name);
+    }
   }
+  expect(container.querySelector('#automate-view-skills')!.textContent).toContain('Learned');
+  expect(container.querySelector('#automate-view-skills')!.textContent).toContain('Installed');
+  expect(vi.mocked(apiFetch).mock.calls.every(([, opts]) => !opts?.method || opts.method === 'GET')).toBe(true);
+  expect(container.textContent).not.toContain('all resting');
 });
 
 it('A2: shows the schedule in English, with the raw cron on hover/focus, nowhere printed inline', async () => {
@@ -199,7 +199,7 @@ it('R5/R7: a running job has no card of its own — the roster row is its one en
   // No separate "Running Now" section/heading — the roster is the one place
   // a running schedule appears above the fold.
   expect(container.textContent).not.toContain('Running Now');
-  expect(container.querySelector('[data-testid="automate-section-nav"]')!.textContent).not.toContain('Running');
+  expect(container.querySelector('nav[aria-label="Automate views"]')!.textContent).not.toContain('Running');
 
   // The roster row IS the running job's one entry point (no card exists for
   // it — Automations excludes a currently-running job on purpose).

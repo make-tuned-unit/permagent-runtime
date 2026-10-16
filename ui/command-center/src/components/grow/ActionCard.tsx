@@ -7,8 +7,9 @@
  * a list that reorders on every review.
  */
 
-import { useCallback, useState } from 'react';
+import { useCallback, useState, useId } from 'react';
 import type { CSSProperties } from 'react';
+import { FiChevronDown } from 'react-icons/fi';
 import { font, radius, space, textSize } from '../../styles/tokens';
 import type { ThemeColors } from '../../styles/tokens';
 import { apiFetch } from '../../lib/api';
@@ -89,6 +90,8 @@ export function ActionCard({
   showCategory?: boolean;
 }) {
   const readOnly = lane === 'shelf';
+  const [expanded, setExpanded] = useState(false);
+  const detailId = useId();
   const [copied, setCopied] = useState(false);
   const [moving, setMoving] = useState<string | null>(null);
   const [moveError, setMoveError] = useState<string | null>(null);
@@ -281,6 +284,9 @@ export function ActionCard({
         )}
       </div>
 
+      <Button colors={colors} variant="ghost" aria-expanded={expanded} aria-controls={detailId}
+        onClick={() => setExpanded(value => !value)}>{expanded ? 'Hide details' : readOnly ? 'View record' : 'Review action'}</Button>
+      <div id={detailId} hidden={!expanded}>
       {/* What this CATEGORY has measurably done elsewhere — derived from
           `growth_action_outcomes` on the user's other active projects, never
           asserted by the model. The provenance disclosure is mandatory: a card
@@ -356,13 +362,14 @@ export function ActionCard({
               flashSuccess={false}
               style={smallBtn}
             >{copied ? 'Copied ✓' : 'Copy'}</Button>
+            <span style={{ position: 'relative', display: 'inline-flex', maxWidth: '100%' }}>
             <select
               aria-label="Coding agent"
               className={FIELD_CLASS}
               value={agentId}
               onChange={(e) => setAgentId(e.target.value)}
               style={{
-                ...smallButton, cursor: 'pointer',
+                ...smallButton, cursor: 'pointer', appearance: 'none', paddingRight: space.xxl * 2, maxWidth: '100%',
                 opacity: project.rootPath ? 1 : 0.5,
               }}
             >
@@ -372,6 +379,8 @@ export function ActionCard({
                 </option>
               ))}
             </select>
+            <FiChevronDown aria-hidden="true" size={12} style={{ position: 'absolute', right: space.lg, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none', color: colors.textMuted }} />
+            </span>
             <Tooltip content={!project.rootPath
               ? 'Add a root path to this project to launch a coding agent here.'
               : `Open ${codingAgentById(agentId)?.label ?? 'the agent'} in Build with this prompt`}>
@@ -459,6 +468,7 @@ export function ActionCard({
       {moveError && (
         <div style={{ marginTop: space.sm, fontSize: textSize.micro, color: colors.danger }}>{moveError}</div>
       )}
+      </div>
     </div>
   );
 }

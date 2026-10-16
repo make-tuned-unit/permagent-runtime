@@ -54,7 +54,7 @@ import {
 import { LearnedList } from './LearnedList';
 import { JobHealthStrip } from './JobHealthStrip';
 import { summarizeHealth, type JobHealthDigest } from './jobHealthModel';
-import { SectionNav, SECTION_NAV_OFFSET, type SectionNavItem } from './SectionNav';
+import { SECTION_NAV_OFFSET } from './SectionNav';
 import { Chip } from '../common/Chip';
 import { StateBlock } from '../common/StateBlock';
 // ── Types ────────────────────────────────────────────────────────────
@@ -447,6 +447,7 @@ export function AutomateView() {
   const [proposalError, setProposalError] = useState<string | null>(null);
   const [detail, setDetail] = useState<DetailTarget | null>(null);
   const [search, setSearch] = useState('');
+  const [area, setArea] = useState<'automations' | 'activity' | 'skills'>('automations');
   const [showSearch, setShowSearch] = useState(false);
   const [showInstalledExpanded, setShowInstalledExpanded] = useState(() => {
     try { return localStorage.getItem('automate:installed-expanded') === 'true'; } catch { return false; }
@@ -772,15 +773,6 @@ export function AutomateView() {
   const trulyEmpty = jobs.length === 0 && skills.length === 0 && proposals.length === 0
     && !skillsLoading && !jobsLoading && !jobsError;
 
-  // A5: the jump bar only lists sections that actually render below, in the
-  // same order and under the same condition as the JSX — so it never offers a
-  // jump to a section that isn't there.
-  const sectionNavItems: SectionNavItem[] = [
-    ...(jobs.length > 0 ? [{ id: 'recent-activity', label: 'Recent Activity', count: allRuns.length }] : []),
-    ...(!trulyEmpty ? [{ id: 'automations', label: AUTOMATION.title, count: filteredJobs.length }] : []),
-    { id: 'learned', label: 'Learned', count: filteredSkills.length + filteredProposals.length },
-    { id: 'installed', label: 'Installed', count: filteredExtensions.length },
-  ];
 
   return (
     <div style={{ width: '100%', height: '100%', display: 'flex', background: gradient.workspace, color: colors.text, fontFamily: font.body }}>
@@ -853,7 +845,15 @@ export function AutomateView() {
 
         {/* A5: sticky jump bar — the page is one long scroll, and Learned was
             reachable only by scrolling past everything above it. */}
-        <SectionNav items={sectionNavItems} scrollRoot={scrollRootRef} />
+        <nav aria-label="Automate views" style={{ display: 'flex', flexWrap: 'wrap', gap: space.md, marginBottom: space.xxl }}>
+          {(['automations', 'activity', 'skills'] as const).map(value => (
+            <Button key={value} colors={colors} variant={area === value ? 'ghostOn' : 'ghost'}
+              aria-pressed={area === value} aria-controls={`automate-view-${value}`}
+              onClick={() => { setArea(value); if (scrollRootRef.current) scrollRootRef.current.scrollTop = 0; }}>
+              {{ automations: 'Automations', activity: 'Activity', skills: 'Skills' }[value]}
+            </Button>
+          ))}
+        </nav>
 
         {/* A6: one line up top — "everything is running", or which jobs need
             attention (failing / missed / never run / wedged / undelivered).
@@ -868,7 +868,7 @@ export function AutomateView() {
         {/* Live run roster — everything at work right now, at a glance.
             R7: this is now the ONLY place a running schedule's card lives —
             a row opens the same detail panel "Running Now" used to. */}
-        <RunRoster schedules={jobs} onOpenSchedule={id => { const job = jobs.find(j => j.id === id); if (job) setDetail({ kind: 'recipe', job }); }} />
+        <RunRoster activeOnly schedules={jobs} onOpenSchedule={id => { const job = jobs.find(j => j.id === id); if (job) setDetail({ kind: 'recipe', job }); }} />
 
         {/* Run completion banner — the no-scroll path to the produced result:
             "Review result" opens the run detail (findings / report) directly. */}
@@ -939,7 +939,7 @@ export function AutomateView() {
         )}
 
         {/* Truly-empty invitation */}
-        {trulyEmpty && jobs.length === 0 && (
+        {area === 'automations' && trulyEmpty && jobs.length === 0 && (
           <div style={{
             padding: '32px 28px', borderRadius: radius.lg, marginBottom: space.huge,
             background: colors.surface, border: `1px solid ${colors.border}`, textAlign: 'center',
@@ -967,7 +967,7 @@ export function AutomateView() {
             <Button
               colors={colors}
               variant="bare"
-              onClick={() => toggleInstalledExpanded(true)}
+              onClick={() => { setArea('skills'); toggleInstalledExpanded(true); }}
               style={{
                 '--pa-btn-fg': colors.textDim,
                 '--pa-btn-fg-hover': colors.text,
@@ -984,7 +984,7 @@ export function AutomateView() {
         {/* ── RECENT ACTIVITY ── (above Recipes: a finished run's produced
             result is the thing most likely to need a click — confirm/reject —
             so it must be reachable without scrolling.) */}
-        {jobs.length > 0 && (
+        <div id="automate-view-activity" hidden={area !== 'activity'}>
           <Section id="recent-activity" title="Recent Activity" count={allRuns.length}>
             {runsLoading && allRuns.length === 0 ? (
               <StateBlock tone="loading" title="Loading run history…" compact />
@@ -1036,13 +1036,14 @@ export function AutomateView() {
               </div>
             )}
           </Section>
-        )}
+        </div>
 
         {/* ── AUTOMATIONS ── (the word is the tab's own: this header said
             "Recipes" while the button beside it said Create Automation, the
             modal said New Automation and the delete said "Delete automation".
             "Recipe" is the internal type's name — `RecipeCard`, the
             `kind: 'recipe'` detail tag — and it stays there.) */}
+        <div id="automate-view-automations" hidden={area !== 'automations'}>
         {!trulyEmpty && (
           <Section title={AUTOMATION.title} count={filteredJobs.length} id="automations">
             {jobsLoading && jobs.length === 0 ? (
@@ -1070,6 +1071,8 @@ export function AutomateView() {
           </Section>
         )}
 
+        </div>
+        <div id="automate-view-skills" hidden={area !== 'skills'}>
         {/* ── LEARNED ── */}
         <Section id="learned" title="Learned" count={filteredSkills.length + filteredProposals.length}>
           {skillsLoading && filteredSkills.length === 0 && filteredProposals.length === 0 ? (
@@ -1196,6 +1199,7 @@ export function AutomateView() {
             </>
           )}
         </Section>
+        </div>
 
         </div>
       </div>

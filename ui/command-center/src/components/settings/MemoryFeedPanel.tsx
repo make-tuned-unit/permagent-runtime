@@ -127,6 +127,7 @@ export function MemoryFeedPanel() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [failingOnly, setFailingOnly] = useState(false);
+  const [query, setQuery] = useState('');
   const agentName = useCommandCenter(s => s.agentName);
   /** Writes enqueued but not yet settled. A reload must not re-base the queue
    *  while one is in flight: the server snapshot it fetched can predate that
@@ -263,10 +264,14 @@ export function MemoryFeedPanel() {
     );
   }
 
-  const sources = failingOnly ? allSources.filter(s => isFailing(s, chatDead)) : allSources;
+  const sources = (failingOnly ? allSources.filter(s => isFailing(s, chatDead)) : allSources)
+    .filter(s => `${s.label} ${s.source}`.toLowerCase().includes(query.trim().toLowerCase()));
 
   return (
     <div data-testid="memory-feed-panel">
+      <input type="search" aria-label="Search memory sources" value={query} placeholder="Search memory sources"
+        onChange={e => setQuery(e.target.value)} style={{ padding: space.md, marginBottom: space.lg,
+          color: colors.text, background: colors.surface, border: `1px solid ${colors.border}`, borderRadius: radius.md }} />
       <div style={{
         display: 'flex', alignItems: 'center', gap: space.sm, flexWrap: 'wrap',
         fontFamily: font.body, fontSize: textSize.caption, color: colors.textMuted,

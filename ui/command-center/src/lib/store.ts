@@ -13,6 +13,8 @@ import { runViewTransition } from './viewTransition';
 import type { Person, PersonAssociation } from '../components/projects/types';
 import type { BrainMemoryTarget } from '../components/brain/brainMemoryFocus';
 
+let sessionsLoadGeneration = 0;
+
 // --- Types ---
 
 export interface EventRecord {
@@ -517,6 +519,7 @@ interface CommandCenterStore {
       inline error + retry instead of the lying "No sessions yet" empty state
       (#568 empty-body lesson; mirrors providersError). */
   sessionsError: boolean;
+  sessionsLoading: boolean;
   loadSessions: () => Promise<void>;
 
   // --- Event filters ---
@@ -1958,7 +1961,10 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
   // Sessions
   sessions: [],
   sessionsError: false,
+  sessionsLoading: false,
   loadSessions: async () => {
+    const generation = ++sessionsLoadGeneration;
+    set({ sessionsLoading: true, sessionsError: false });
     // #341 instrumentation: time fetch+parse vs the map+store-commit (which
     // triggers the React re-render of the session list). The map projects away
     // the heavy JSON columns (extension_data/recipe_json/model_config_json) the
@@ -1966,6 +1972,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
     const t0 = performance.now();
     try {
       const sessions = await api.getSessions();
+      if (generation !== sessionsLoadGeneration) return;
       const tFetched = performance.now();
       set({
         sessions: sessions.map((s: SessionSummary) => ({
@@ -1987,6 +1994,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
           project_name: s.project_name ?? null,
         })),
         sessionsError: false,
+        sessionsLoading: false,
       });
       console.info(
         `[session-perf] loadSessions fetch+parse=${(tFetched - t0).toFixed(1)}ms ` +
@@ -1995,7 +2003,7 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
     } catch {
       // Daemon unreachable ≠ "no sessions yet" — flag the failure so the list
       // renders an inline error + retry instead of the empty state (#568).
-      set({ sessions: [], sessionsError: true });
+      if (generation === sessionsLoadGeneration) set({ sessionsError: true, sessionsLoading: false });
     }
   },
 

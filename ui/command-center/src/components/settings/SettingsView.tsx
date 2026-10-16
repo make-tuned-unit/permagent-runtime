@@ -1,3 +1,4 @@
+import './settingsLayout.css';
 import { useState, useEffect, useCallback, useRef, useLayoutEffect, type CSSProperties } from 'react';
 import {
   FiCommand, FiCpu, FiDatabase, FiEdit3, FiKey, FiLock, FiServer,
@@ -27,7 +28,7 @@ import { resolveSettingsSection, panelForSection } from './sections';
 import { trustEnvOverrideNotice } from './autonomy';
 import { VoicePicker } from '../voice/VoicePicker';
 import { PronunciationSection } from '../voice/PronunciationSection';
-import { Section, Row, Block, TextInput, Chip, Slider, Kbd, SaveButton, ModelStateBadge, ListRow, selectStyle } from './atoms';
+import { Details, Section, Row, Block, TextInput, Chip, Slider, Kbd, SaveButton, ModelStateBadge, ListRow, selectStyle } from './atoms';
 import { Button } from '../common/Button';
 import { StateBlock } from '../common/StateBlock';
 import { H1 } from '../common/H1';
@@ -253,7 +254,7 @@ function PersonaPanel() {
         <Row label="Voice" hint="The spoken voice used for voice replies and the greeting. Tap ▶ to audition.">
           <VoicePicker value={voiceId} onChange={changeVoice} />
         </Row>
-        <PronunciationSection />
+        <Details summary="Pronunciation"><PronunciationSection /></Details>
       </Section>
       <Section title="Tone">
         <Row label="Tone" hint="How they describe their own speaking style (text, not audio)."><TextInput multi value={tone} onChange={changeTone} /></Row>
@@ -280,7 +281,7 @@ function PersonaPanel() {
           </div>
         </Row>
       </Section>
-      <OnChainIdentitySection />
+      <Details summary="Optional identity integrations"><OnChainIdentitySection /></Details>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: space.xl }}>
         {error && <span style={{ fontSize: textSize.caption, color: colors.danger }}>{error}</span>}
         {/* Failed initial load: offer a retry instead of leaving a form that
@@ -654,7 +655,7 @@ export function AutonomyPanel({ goto }: { goto?: (key: string) => void }) {
   ];
   return (
     <div>
-      <H1 sub="How much your agent can do without checking in. Higher autonomy = faster, but more rope.">Autonomy &amp; guardrails</H1>
+      <H1 sub="Choose when your agent can act and when it must ask for your approval.">Autonomy &amp; guardrails</H1>
       <Section title="Default autonomy" sub="Live — this writes the daemon's tool-approval mode and applies to new turns.">
         {trustError && (
           <div style={{ fontSize: textSize.caption, color: colors.danger, padding: '4px 0 8px' }}>{trustError}</div>
@@ -763,6 +764,9 @@ export function ToolsPanel({ goto }: PanelProps) {
   const { colors } = useThemeHook();
   const [extensions, setExtensions] = useState<ToolExtension[]>([]);
   const [loading, setLoading] = useState(true);
+  const [query, setQuery] = useState('');
+  const [loadError, setLoadError] = useState(false);
+  const [retry, setRetry] = useState(0);
   // Re-read on `config_changed`. The agent's `manage_extensions` writes the
   // same `extensions` config entry this panel renders, and used not to write
   // it at all — this pane showed stale enabled/disabled state for the whole
@@ -776,12 +780,16 @@ export function ToolsPanel({ goto }: PanelProps) {
   const [personaName, setPersonaName] = useState<string | null>(null);
 
   useEffect(() => {
+    let active = true;
+    setLoading(true);
+    setLoadError(false);
     api.getExtensions()
       // Never hand a non-array to the render path: `.filter` on undefined is
       // the same class of crash this panel just had.
-      .then(r => { setExtensions(Array.isArray(r?.extensions) ? r.extensions : []); setLoading(false); })
-      .catch(() => setLoading(false));
-  }, [configRev]);
+      .then(r => { if (!active) return; setExtensions(Array.isArray(r?.extensions) ? r.extensions : []); setLoading(false); })
+      .catch(() => { if (active) { setLoadError(true); setLoading(false); } });
+    return () => { active = false; };
+  }, [configRev, retry]);
 
   useEffect(() => {
     api.getIdentity()
@@ -806,6 +814,7 @@ export function ToolsPanel({ goto }: PanelProps) {
           how you connect/disconnect one): this section answers the plain
           question a non-technical reader actually has, in one line per
           enabled tool, using the persona's own name once it has one. */}
+      <Details summary="Connected capability names">
       <Section title={`What ${personaName ?? 'your agent'} can use`}>
         {loading ? (
           <div style={{ fontSize: textSize.caption, color: colors.textDim, padding: `${space.lg}px ${space.xxl}px` }}>
@@ -832,6 +841,7 @@ export function ToolsPanel({ goto }: PanelProps) {
           </div>
         )}
       </Section>
+      </Details>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: space.lg, marginBottom: space.xxl }}>
         <div style={{ flex: 1 }} />
@@ -850,11 +860,14 @@ export function ToolsPanel({ goto }: PanelProps) {
             {needKeys.map(extensionLabel).join(' and ')} need API keys.
           </span>
           <Button colors={colors} style={ghost(colors)} onClick={() => goto('search')}>
-            Manage keys in Search &amp; tools
+            Manage service keys
           </Button>
         </div>
       )}
-      {loading ? (
+      <input aria-label="Search tools" placeholder="Search tools…" value={query} onChange={e => setQuery(e.target.value)} style={{ width: '100%', marginBottom: space.lg, padding: space.md, background: colors.inputBg, color: colors.text, border: `1px solid ${colors.border}`, borderRadius: radius.sm }} />
+      {loadError ? (
+        <div role="alert">Could not load tools. <Button colors={colors} onClick={() => setRetry(n => n + 1)}>Retry</Button></div>
+      ) : loading ? (
         <div style={{ color: colors.textDim, fontSize: textSize.small }}>Loading extensions...</div>
       ) : extensions.length === 0 ? (
         <Section title="No extensions"><div style={{ color: colors.textMuted, fontSize: textSize.small }}>No MCP tools or extensions configured.</div></Section>
@@ -862,7 +875,7 @@ export function ToolsPanel({ goto }: PanelProps) {
         // Two columns only while two fit: a fixed `repeat(2, 1fr)` held both
         // columns in a ~390px column and pushed the status dots off the edge.
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(min(240px, 100%), 1fr))', gap: space.lg }}>
-          {extensions.map((ext, i) => (
+          {extensions.filter(ext => `${extensionLabel(ext)} ${ext.name} ${ext.type}`.toLowerCase().includes(query.toLowerCase().trim())).sort((a, b) => Number(b.enabled) - Number(a.enabled)).map((ext, i) => (
             <div key={ext.name || `ext-${i}`} style={{ display: 'flex', alignItems: 'center', gap: space.xxl, padding: space.xxl, borderRadius: radius.lg, background: colors.surface, border: `1px solid ${colors.border}` }}>
               <div style={{ width: 32, height: 32, borderRadius: radius.md, background: ext.enabled ? colors.cyanSoft : colors.surfaceHi, border: `1px solid ${ext.enabled ? colors.borderHi : colors.border}`, display: 'grid', placeItems: 'center', fontFamily: font.display, fontSize: textSize.small, fontWeight: 700, color: ext.enabled ? colors.cyan : colors.textMuted, flexShrink: 0 }}>{extensionLabel(ext).charAt(0).toUpperCase() || '?'}</div>
               <div style={{ flex: 1, minWidth: 0 }}>
@@ -1413,6 +1426,7 @@ export function ModelsPanel({ goto }: PanelProps) {
       </Section>
 
       {/* ── Ollama Status ────────────────────────────────────────── */}
+      <Details summary="Local models and downloads">
       <Section title="Local models (Ollama)" sub="Install Ollama on this Mac, download a model, then choose it for Chat. Each step runs only when you select it.">
         {ollamaError && <Row label="Status" hint="The latest Ollama check failed.">
           <div style={{ display: 'flex', alignItems: 'center', gap: space.md, flexWrap: 'wrap' }}>
@@ -1492,6 +1506,7 @@ export function ModelsPanel({ goto }: PanelProps) {
       </Section>
 
       <LocalModelsSection />
+      </Details>
 
       {/* ── The one pointer to Agents ────────────────────────────
           There used to be TWO sections here — "Worker roster" and "Agent
@@ -1524,7 +1539,7 @@ export function ModelsPanel({ goto }: PanelProps) {
 function KeysPanel() {
   return (
     <div>
-      <H1 sub="Bring your own keys for the providers you use. Connected keys sit at the top; the rest of the catalogue stays on Providers. Add, replace, or remove a key here — keys are encrypted in your system keychain and never leave your device.">API keys</H1>
+      <H1 sub="Bring your own keys for the providers you use. Connected keys sit at the top; the rest of the catalogue stays on Providers. Add, replace, or remove a key here — keys are stored in your system keychain and sent to the selected provider when authenticating requests.">API keys</H1>
       <Section title="Keys">
         <ProvidersSection />
       </Section>
@@ -1545,23 +1560,27 @@ function KeysPanel() {
 function ServicesPanel() {
   return (
     <div>
-      <H1 sub="The outside services your agent may reach. Add a key and it is encrypted in your system keychain — it never leaves your device. Switch a public data source on and it is callable immediately.">Services</H1>
+      <H1 sub="The outside services your agent may reach. Keys are stored in your system keychain and used to authenticate requests to the connected service. Switch a public data source on and it is callable immediately.">Services</H1>
       <Section title="Search providers">
         <Block><SearchToolsSection /></Block>
       </Section>
+      <Details summary="Optional financial services">
       <Section title="Polybot" sub="Polymarket credentials. Off until you turn Polybot on from the Finance tab (risk disclaimer). Start reads these from the keychain.">
         <Block><PolybotKeys /></Block>
       </Section>
       <Section title="Fundamentals" sub="Optional financialdatasets.ai key. Quotes still work without it. Same field as the Finance tab.">
         <Block><FundamentalsKey /></Block>
       </Section>
+      </Details>
       <GmailConnectSection />
+      <Details summary="Browse public data sources">
       <Section
         title="Data sources"
         sub="Public APIs you can turn on for agents. Browse a category at a time. Enabling a source makes it callable immediately — suggested agents get it, and the Orchestrator can call every enabled source."
       >
         <Block><DataSourcesSection /></Block>
       </Section>
+      </Details>
     </div>
   );
 }
@@ -1611,12 +1630,14 @@ function AppearancePanel() {
           })}
         </div>
       </Section>
+      <Details summary="Visual effects">
       <Section title="Möbius">
         <Row label="Glow intensity"><Slider value={prefs.mobiusGlow} onChange={v => setMobiusGlow(v)} suffix="%" /></Row>
         <Row label="Animation when idle">
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: space.md }}>{animOptions.map((a, i) => <Chip key={a} on={prefs.idleAnim === a} onClick={() => setIdleAnim(a)}>{animLabels[i]}</Chip>)}</div>
         </Row>
       </Section>
+      </Details>
       <Section title="Density">
         <Row label="UI density"><div style={{ display: 'flex', flexWrap: 'wrap', gap: space.md }}>{densityOptions.map((d, i) => <Chip key={d} on={prefs.density === d} onClick={() => setDensityFn(d)}>{densityLabels[i]}</Chip>)}</div></Row>
         <Row label="Reduce motion" hint="Honors system preference by default."><Toggle on={prefs.reduceMotion} onChange={v => setReduceMotionFn(v)} /></Row>
@@ -1821,9 +1842,10 @@ export function DataPanel() {
  *  blocked. Live end-to-end (2026-07 sovereignty-router build). Absorbed the
  *  Governance → Sovereignty panel (same endpoints): its "Pull the cable"
  *  button and its egress TABLE layout now live here. */
-function SovereigntyBlock() {
+export function SovereigntyBlock() {
   const { colors } = useThemeHook();
   const [status, setStatus] = useState<SovereigntyStatus | null>(null);
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [log, setLog] = useState<EgressLogEntry[] | null>(null);
   /** The read failed. It used to land in `setLog([])`, and the empty state
@@ -1840,34 +1862,39 @@ function SovereigntyBlock() {
       .catch(() => { setLogError(true); return false; });
   }, []);
 
-  useEffect(() => {
-    api.getSovereignty().then(setStatus).catch(() => setError('Could not load sovereignty status.'));
-    refreshLog();
-  }, [refreshLog]);
-
-  const save = (patch: { enabled?: boolean; capturePrompts?: boolean }) => {
+  const refreshStatus = useCallback(async () => {
     setError(null);
-    // Optimistic; the daemon echoes the authoritative status back.
-    setStatus(s => (s ? {
-      enabled: patch.enabled ?? s.enabled,
-      capturePrompts: patch.capturePrompts ?? s.capturePrompts,
-      localProviderAvailable: s.localProviderAvailable,
-    } : s));
-    return api.setSovereignty(patch)
-      .then(status => { setStatus(status); refreshLog(); })
-      .catch(err => setError(`Couldn't save: ${err instanceof Error ? err.message : String(err)}`));
+    try { setStatus(await api.getSovereignty()); return true; }
+    catch { setStatus(null); setError('Could not load sovereignty status.'); return false; }
+  }, []);
+
+  useEffect(() => { refreshStatus(); refreshLog(); }, [refreshStatus, refreshLog]);
+
+  const save = async (patch: { enabled?: boolean; capturePrompts?: boolean }) => {
+    if (!status || saving) return false;
+    setSaving(true);
+    setError(null);
+    try {
+      setStatus(await api.setSovereignty(patch));
+      refreshLog();
+      return true;
+    } catch (err) {
+      setStatus(null);
+      setError(`Couldn't confirm the change: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    } finally { setSaving(false); }
   };
 
   return (
     <>
       {error && (
-        <div style={{ fontSize: textSize.caption, color: colors.danger, padding: '4px 0 8px' }}>{error}</div>
+        <div role="alert" style={{ fontSize: textSize.caption, color: colors.danger, padding: '4px 0 8px' }}>{error} <Button colors={colors} onClick={refreshStatus}>Retry status</Button></div>
       )}
 
-      <Section title="Sovereign mode" sub="Live — writes the daemon's global sovereign flag, enforced at the provider choke point for every session.">
+      <Section title="Sovereign mode" sub="Live — writes the daemon's global sovereign flag, enforced at the model request boundary for every session.">
         <Row
           label="Data boundary"
-          hint={status?.enabled
+          hint={status === null ? 'Current data boundary is unknown until the daemon responds.' : status.enabled
             ? 'All cloud inference is blocked before any data leaves this machine. Only local models run.'
             : 'Cloud inference is allowed. Every cloud call is still recorded in the audit log below.'}
         >
@@ -1875,11 +1902,9 @@ function SovereigntyBlock() {
             colors={colors}
             variant={status?.enabled ? 'ghostOn' : 'primary'}
             onClick={() => save({ enabled: !status?.enabled })}
-            disabled={status === null}
-            // `save` resolves the same way whether the daemon took the write or
-            // refused it (it reports through the `error` line above), so there
-            // is nothing here that could honestly earn a tick. The label
-            // flipping to the opposite verb is the confirmation.
+            disabled={status === null || saving}
+            // The authoritative label change confirms the write; an extra
+            // success tick would duplicate it. Failed writes retain an error.
             flashSuccess={false}
             style={{
               '--pa-btn-bg': status?.enabled ? 'transparent' : colors.cyan,
@@ -1894,7 +1919,7 @@ function SovereigntyBlock() {
               height: 32, fontFamily: font.body, fontSize: textSize.caption,
             } as CSSProperties}
           >
-            {status === null ? '…' : status.enabled ? 'Allow cloud again' : 'Pull the cable'}
+            {status === null ? 'Status unavailable' : status.enabled ? 'Allow cloud again' : 'Pull the cable'}
           </Button>
         </Row>
         {status?.enabled && !status.localProviderAvailable && (
@@ -1903,12 +1928,14 @@ function SovereigntyBlock() {
           </div>
         )}
         <Row label="Capture full prompts in the audit log" hint="Off by default — only a SHA-256 hash is stored. On records the full prompt text locally.">
-          <Toggle on={!!status?.capturePrompts} onChange={v => save({ capturePrompts: v })} />
+          <Toggle on={!!status?.capturePrompts} disabled={status === null || saving} disabledReason="Wait for the current daemon status" onChange={v => save({ capturePrompts: v })} />
         </Row>
       </Section>
 
-      <EgressAuditSection log={log} logError={logError} onRefresh={refreshLog} />
-      <AuthLogSection />
+      <Details summary="Network and authentication logs">
+        <EgressAuditSection log={log} logError={logError} onRefresh={refreshLog} />
+        <AuthLogSection />
+      </Details>
     </>
   );
 }
@@ -1929,8 +1956,8 @@ function PrivacyPanel() {
     <div>
       <H1 sub="What leaves this machine, and what stops it. Memory and traces are local; sovereign mode makes that boundary enforced rather than merely true today.">Privacy &amp; data</H1>
       <SovereigntyBlock />
-      <DataPanel />
-      <BackupsSection />
+      <Details summary="Diagnostics and crash reports"><DataPanel /></Details>
+      <Details summary="Backups and export"><BackupsSection /></Details>
     </div>
   );
 }
@@ -2235,6 +2262,7 @@ export function DevicesPanel() {
         </div>
       </Section>
 
+      <Details summary="Pair a device and network access">
       <Section title="Pair a device" sub="Turn on tailnet access below, then scan the QR code with the device you are adding. Both devices must be on your tailnet.">
         <Row
           label="Remote access"
@@ -2394,7 +2422,8 @@ export function DevicesPanel() {
         </Row>
       </Section>
 
-      <MessagingGatewaysSection />
+      </Details>
+      <Details summary="Messaging connections"><MessagingGatewaysSection /></Details>
     </div>
   );
 }
@@ -2460,8 +2489,8 @@ export function SettingsView() {
   }, [section]);
 
   return (
-    <div style={{ width: '100%', height: '100%', display: 'flex', background: gradient.shell, color: colors.text, fontFamily: font.body }}>
-      <div style={{ width: 240, borderRight: `1px solid ${colors.border}`, background: gradient.navRail, padding: `${space.huge}px 14px`, overflow: 'auto', flexShrink: 0 }} data-settings-rail>
+    <div className="pa-settings" style={{ containerType: 'inline-size', width: '100%', height: '100%', display: 'flex', background: gradient.shell, color: colors.text, fontFamily: font.body }}>
+      <div className="pa-settings-rail" style={{ width: 240, borderRight: `1px solid ${colors.border}`, background: gradient.navRail, padding: `${space.huge}px 14px`, overflow: 'auto', flexShrink: 0 }} data-settings-rail>
         <div style={{ ...type.heading, fontFamily: font.display, padding: `0 ${space.lg}px ${space.xxxl}px` }}>Settings</div>
         {CATEGORIES.map(cat => (
           <div key={cat.group} style={{ marginBottom: space.xxl }}>
@@ -2477,6 +2506,7 @@ export function SettingsView() {
                   key={it.key}
                   colors={colors}
                   flashSuccess={false}
+                  aria-current={on ? 'page' : undefined}
                   onClick={() => setSection(it.key)}
                   style={{
                     '--pa-btn-bg': on ? colors.cyanSoft : 'transparent',
@@ -2511,6 +2541,12 @@ export function SettingsView() {
           content's width instead of widening the pane. */}
       <div ref={scrollRef} tabIndex={-1} data-testid="settings-scroll" style={{ flex: 1, minWidth: 0, overflow: 'auto', containerType: 'inline-size', outline: 'none' }}>
         <div className="pa-set-body">
+          <label className="pa-settings-picker">Settings page
+            <select aria-label="Settings page" value={pane} onChange={e => setSection(e.target.value)}
+              style={{ width: '100%', padding: space.md, marginBottom: space.xl, background: colors.surface, color: colors.text }}>
+              {CATEGORIES.flatMap(category => category.items).map(item => <option key={item.key} value={item.key}>{item.label}</option>)}
+            </select>
+          </label>
           {/* `section`, not `pane` — History needs the segment the caller asked
               for, and every other panel ignores it. */}
           {Panel && <Panel goto={gotoSection} section={section} />}

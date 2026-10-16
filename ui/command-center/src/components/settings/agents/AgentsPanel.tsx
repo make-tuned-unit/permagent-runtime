@@ -5,7 +5,7 @@
  * an in-world character (see lib/worldAgentIds — the two id namespaces differ).
  */
 
-import { useCallback, useEffect, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useState, useRef, type CSSProperties } from 'react';
 import { Chip, Details, ListRow, Row, Section } from '../atoms';
 import { Button } from '../../common/Button';
 import { Tooltip } from '../../common/Tooltip';
@@ -777,6 +777,9 @@ export type RecentActivityState =
 export function AgentsPanel({ goto }: PanelProps) {
   const { colors } = useTheme();
   const [roster, setRoster] = useState<RosterResponse | null>(null);
+  const rosterGeneration = useRef(0);
+  const [query, setQuery] = useState('');
+  const matches = (name: string) => name.toLowerCase().includes(query.trim().toLowerCase());
   const [error, setError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<AgentDetail | null>(null);
@@ -813,10 +816,13 @@ export function AgentsPanel({ goto }: PanelProps) {
   }, []);
 
   const loadRoster = useCallback(() => {
-    fetchRoster()
+    const generation = ++rosterGeneration.current;
+    setError(null);
+    return fetchRoster()
       // Never hand a non-array to the render path — a degraded daemon reply used
       // to take whole settings panes down with `.map of undefined`.
       .then(r => {
+        if (generation !== rosterGeneration.current) return;
         const workers = Array.isArray(r?.workers) ? r.workers : [];
         setRoster({
           workers,
@@ -826,12 +832,13 @@ export function AgentsPanel({ goto }: PanelProps) {
         setError(null);
         loadRecentActivity(workers);
       })
-      .catch(err => setError(
-        `Could not load the agents roster — ${err instanceof Error ? err.message : 'the daemon did not answer'}.`,
-      ));
+      .catch(err => {
+        if (generation === rosterGeneration.current) setError(`Could not load the agents roster — ${err instanceof Error ? err.message : 'the daemon did not answer'}.`);
+        return false;
+      });
   }, [loadRecentActivity]);
 
-  useEffect(() => { loadRoster(); }, [loadRoster]);
+  useEffect(() => { loadRoster(); return () => { ++rosterGeneration.current; }; }, [loadRoster]);
 
   // Deep-link: open detail for pendingAgentFocus, or land on list with a note.
   useEffect(() => {
@@ -870,7 +877,7 @@ export function AgentsPanel({ goto }: PanelProps) {
   }, [selectedId]);
 
   if (error && !roster) {
-    return <div style={{ color: colors.textMuted, fontSize: textSize.small }}>{error}</div>;
+    return <div role="status" style={{ color: colors.textMuted, fontSize: textSize.small }}>{error}<Button colors={colors} onClick={loadRoster}>Retry</Button></div>;
   }
   if (!roster) {
     return <div style={{ color: colors.textDim, fontSize: textSize.small }}>Loading agents…</div>;
@@ -909,7 +916,7 @@ export function AgentsPanel({ goto }: PanelProps) {
           ← Back to agents
         </Button>
         <div style={{ fontSize: textSize.small, color: colors.danger }}>
-          No agent named {selectedId}. {detailError}
+          Could not load agent {selectedId}. {detailError}
         </div>
       </div>
     );
@@ -921,6 +928,9 @@ export function AgentsPanel({ goto }: PanelProps) {
         Agents
       </H1>
 
+      <input type="search" aria-label="Search agents" placeholder="Search agents" value={query}
+        onChange={e => setQuery(e.target.value)} style={{ padding: space.md, marginBottom: space.xl,
+          color: colors.text, background: colors.surface, border: `1px solid ${colors.border}`, borderRadius: radius.md }} />
       {unknownFocus && (
         <div
           data-testid="unknown-agent"
@@ -940,7 +950,7 @@ export function AgentsPanel({ goto }: PanelProps) {
         sub="They run on their own — you don't send them a goal. Switched-off agents stay listed so you can turn them on."
       >
         <div style={{ display: 'flex', flexDirection: 'column', gap: space.md }}>
-          {roster.workers.map(worker => (
+          {roster.workers.filter(worker => matches(worker.display_name ?? worker.id)).map(worker => (
             <WorkerRow
               key={worker.id}
               worker={worker}
@@ -959,7 +969,7 @@ export function AgentsPanel({ goto }: PanelProps) {
         sub="You (or the app) hand these a goal to work on. Shows what's running it, whether it's ready, and what it costs."
       >
         <div style={{ display: 'flex', flexDirection: 'column', gap: space.md }}>
-          {roster.dispatch_roster.map(persona => (
+          {roster.dispatch_roster.filter(persona => matches(`${persona.display_name} ${persona.role}`)).map(persona => (
             <PersonaRow key={persona.key} persona={persona} onOpen={() => setSelectedId(persona.key)} />
           ))}
           {roster.dispatch_roster.length === 0 && (
@@ -979,7 +989,7 @@ export function AgentsPanel({ goto }: PanelProps) {
         sub="Tools your agents can call. Review their configured status in Tools."
       >
         <div style={{ display: 'flex', flexDirection: 'column', gap: space.md }}>
-          {roster.capabilities.map(cap => (
+          {roster.capabilities.filter(cap => matches(cap.display_name)).map(cap => (
             <CapabilityRow key={cap.key} capability={cap} onManage={() => goto('tools')} />
           ))}
           {roster.capabilities.length === 0 && (

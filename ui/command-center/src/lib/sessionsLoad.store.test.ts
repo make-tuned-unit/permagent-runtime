@@ -73,3 +73,34 @@ describe('loadSessions error latch', () => {
     expect(s.sessions).toEqual([]);
   });
 });
+
+
+describe('session refresh races and retained data', () => {
+  it('reports pending, retains cached records on failure, and clears pending', async () => {
+    const cached = { id: 'cached', name: 'Saved conversation', created_at: 'c', message_count: 1 };
+    useCommandCenter.setState({ sessions: [cached] });
+    let reject!: (error: Error) => void;
+    getSessions.mockImplementationOnce(() => new Promise((_, fail) => { reject = fail; }));
+    const pending = useCommandCenter.getState().loadSessions();
+    expect(useCommandCenter.getState().sessionsLoading).toBe(true);
+    expect(useCommandCenter.getState().sessions).toEqual([cached]);
+    reject(new Error('offline'));
+    await pending;
+    expect(useCommandCenter.getState().sessionsLoading).toBe(false);
+    expect(useCommandCenter.getState().sessionsError).toBe(true);
+    expect(useCommandCenter.getState().sessions).toEqual([cached]);
+  });
+
+  it('an older failed request cannot replace a newer successful response', async () => {
+    let reject!: (error: Error) => void;
+    getSessions.mockImplementationOnce(() => new Promise((_, fail) => { reject = fail; }));
+    const older = useCommandCenter.getState().loadSessions();
+    getSessions.mockResolvedValueOnce([{ id: 'new', name: 'New', created_at: 'c', message_count: 1 }]);
+    await useCommandCenter.getState().loadSessions();
+    reject(new Error('late failure'));
+    await older;
+    expect(useCommandCenter.getState().sessions[0].id).toBe('new');
+    expect(useCommandCenter.getState().sessionsError).toBe(false);
+    expect(useCommandCenter.getState().sessionsLoading).toBe(false);
+  });
+});

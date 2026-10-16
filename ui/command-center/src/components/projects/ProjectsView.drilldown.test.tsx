@@ -209,3 +209,20 @@ describe('Projects request validation and ordering', () => {
     expect(container.textContent).toContain("Couldn't load projects");
   });
 });
+
+
+it('searches shelved projects and changes status through the existing route without opening the project', async () => {
+  serveProjects(() => [project('p1', 'First'), { ...project('p42', 'Garden journal'), status: 'paused' }]);
+  await renderView();
+  const search = container.querySelector<HTMLInputElement>('input[aria-label="Search projects"]')!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(search, 'garden');
+    search.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  expect(container.querySelector('[aria-label="Open project First"]')).toBeNull();
+  expect(container.querySelector('[aria-label="Open project Garden journal"]')).toBeTruthy();
+  const status = container.querySelector<HTMLSelectElement>('[aria-label="Status for Garden journal"]')!;
+  await act(async () => { status.value = 'active'; status.dispatchEvent(new Event('change', { bubbles: true })); });
+  expect(apiFetchMock.mock.calls.some(([url, opts]) => url === '/api/projects/p42' && opts?.method === 'PATCH' && JSON.parse(opts.body as string).status === 'active')).toBe(true);
+  expect(useCommandCenter.getState().currentProjectId).toBeNull();
+});

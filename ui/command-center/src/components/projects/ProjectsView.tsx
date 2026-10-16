@@ -267,6 +267,8 @@ projects, onOpenProject, onStatusChange }: {
   // The chip tint, one rung up the same neutral ladder (4/7/11).
   const [dragOverCol, setDragOverCol] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [query, setQuery] = useState('');
+  const matches = (p: Project) => `${p.name} ${p.description} ${(p.tags ?? []).join(' ')}`.toLowerCase().includes(query.trim().toLowerCase());
 
   const handleDragStart = (e: React.DragEvent, projectId: string) => {
     e.dataTransfer.setData('text/plain', projectId);
@@ -297,7 +299,7 @@ projects, onOpenProject, onStatusChange }: {
     if (b.id === PERSONAL_ID) return 1;
     return new Date(b.lastOpenedAt).getTime() - new Date(a.lastOpenedAt).getTime();
   };
-  const active = projects.filter(p => p.status === 'active').sort(byRecency);
+  const active = projects.filter(p => p.status === 'active' && matches(p)).sort(byRecency);
   const hasShelved = projects.some(p => p.status === 'paused' || p.status === 'archived');
   // P3 (QA 2026-09-24): the grid showed name/description/tags only, with no
   // way to tell which project needed attention without opening it. Fetched
@@ -309,7 +311,10 @@ projects, onOpenProject, onStatusChange }: {
     <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', background: gradient.workspace, color: colors.text, fontFamily: font.body }}>
       <ViewHeader
         title="Projects"
-        subtitle={`${active.length} active — drag a card onto Paused or Archived below to shelve it`}
+        subtitle={`${projects.filter(p => p.status === 'active').length} active projects`}
+        actions={<input type="search" aria-label="Search projects" placeholder="Search projects" value={query}
+          onChange={e => setQuery(e.target.value)} style={{ minWidth: 0, width: 200, padding: space.md,
+            borderRadius: radius.md, border: `1px solid ${colors.border}`, background: colors.surface, color: colors.text }} />}
       />
 
       <div style={{ flex: 1, overflowY: 'auto', padding: `18px ${space.huge}px` }}>
@@ -332,6 +337,7 @@ projects, onOpenProject, onStatusChange }: {
           {active.map(project => (
             <ProjectCard
               key={project.id}
+              onStatusChange={status => onStatusChange(project.id, status)}
               project={project}
               signal={signals[project.id]}
               onOpen={() => onOpenProject(project.id)}
@@ -342,8 +348,8 @@ projects, onOpenProject, onStatusChange }: {
             <div style={{ gridColumn: '1 / -1' }}>
               <StateBlock
                 tone="empty"
-                title="No active projects yet"
-                detail={hasShelved
+                title={query.trim() ? "No active projects match" : "No active projects yet"}
+                detail={query.trim() ? 'Try another search, or check the shelves below.' : hasShelved
                   ? 'Create one, or drag a project out of the Paused or Archived shelves below to reactivate it.'
                   : 'Create your first project to start organizing goals, people, and documents.'}
               />
@@ -353,9 +359,9 @@ projects, onOpenProject, onStatusChange }: {
 
         {/* PAUSED / ARCHIVED — slim disclosure shelves, also drop targets. */}
         {SECONDARY_STATUSES.map(col => {
-          const colProjects = projects.filter(p => p.status === col.key).sort(byRecency);
+          const colProjects = projects.filter(p => p.status === col.key && matches(p)).sort(byRecency);
           const isOver = dragOverCol === col.key;
-          const isOpen = expanded[col.key] ?? false;
+          const isOpen = !!query.trim() || (expanded[col.key] ?? false);
           const shelfId = `projects-shelf-${col.key}`;
           return (
             <div
@@ -414,6 +420,7 @@ projects, onOpenProject, onStatusChange }: {
                   {colProjects.map(project => (
                     <ProjectCard
                       key={project.id}
+                      onStatusChange={status => onStatusChange(project.id, status)}
                       project={project}
                       onOpen={() => onOpenProject(project.id)}
                       onDragStart={(e) => handleDragStart(e, project.id)}
@@ -433,7 +440,8 @@ projects, onOpenProject, onStatusChange }: {
 }
 
 function ProjectCard({
-project, signal, onOpen, onDragStart }: {
+project, signal, onOpen, onDragStart, onStatusChange }: {
+  onStatusChange?: (status: string) => void;
   project: Project;
   /** Open tasks / goals in flight / last activity (P3). Absent while the
    *  fetch is in flight or for a shelved project the grid never fetched — the
@@ -448,6 +456,7 @@ project, signal, onOpen, onDragStart }: {
   const hasSignal = !!signal && (signal.openTasks > 0 || signal.goalsInFlight > 0 || !!signal.lastActivityAt);
 
   return (
+    <div style={{ minWidth: 0 }}>
     <div
       role="button"
       tabIndex={0}
@@ -513,6 +522,14 @@ project, signal, onOpen, onDragStart }: {
         </div>
       )}
     </div>
+    {!isPersonal && onStatusChange && <label style={{ display: 'flex', gap: space.md, padding: space.sm, fontSize: textSize.micro, color: colors.textMuted }}>
+      Status
+      <select aria-label={`Status for ${project.name}`} value={project.status} onChange={e => onStatusChange(e.target.value)}
+        style={{ background: colors.surface, color: colors.text, border: `1px solid ${colors.border}`, borderRadius: radius.sm }}>
+        <option value="active">Active</option><option value="paused">Paused</option><option value="archived">Archived</option>
+      </select>
+    </label>}
+    </div>
   );
 }
 
@@ -553,6 +570,9 @@ export function ProjectKanban({ project }: { project: Project }) {
   const ghostGlass = useGlass('glass');
   const [columns, setColumns] = useState<BoardColumn[]>([]);
   const [cards, setCards] = useState<Card[]>([]);
+  const [scope, setScope] = useState<'active' | 'history' | 'all'>('active');
+  const terminal = (col: BoardColumn) => ['complete', 'cancelled'].includes(col.stateBinding ?? '') || /^(done|complete|completed|cancelled|canceled)$/i.test(col.name);
+  const historyCount = cards.filter(card => columns.some(col => col.id === card.columnId && terminal(col))).length;
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [addingCardCol, setAddingCardCol] = useState<string | null>(null);
@@ -661,13 +681,18 @@ export function ProjectKanban({ project }: { project: Project }) {
     if (!pendingCard || pendingCard.projectId !== project.id) return;
     if (!cards.some(c => c.id === pendingCard.cardId)) return;
     const cardId = pendingCard.cardId;
+    const targetColumn = columns.find(col => col.id === cards.find(card => card.id === cardId)?.columnId);
+    if (targetColumn && scope !== 'all' && (terminal(targetColumn) ? scope !== 'history' : scope !== 'active')) {
+      setScope(terminal(targetColumn) ? 'history' : 'active');
+      return;
+    }
     setHighlightedCardId(cardId);
     clearPendingCardNavigation();
     const el = cardEls.current.get(cardId);
-    el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    el?.scrollIntoView({ behavior: reduceMotion ? 'auto' : 'smooth', block: 'center' });
     const timer = setTimeout(() => setHighlightedCardId(null), 2600);
     return () => clearTimeout(timer);
-  }, [pendingCard, project.id, cards, clearPendingCardNavigation]);
+  }, [pendingCard, project.id, cards, columns, scope, reduceMotion, clearPendingCardNavigation]);
 
   // Set or clear a to-do's due date, then refetch so the badge reflects what
   // actually persisted rather than what we hoped would.
@@ -852,6 +877,12 @@ export function ProjectKanban({ project }: { project: Project }) {
 
   return (
     <div style={{ width: '100%', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', background: gradient.workspace, color: colors.text, fontFamily: font.body }}>
+      <nav aria-label="Board scope" style={{ display: 'flex', flexWrap: 'wrap', gap: space.md, padding: space.lg }}>
+        {(['active', 'history', 'all'] as const).map(value => <Button key={value} colors={colors}
+          variant={scope === value ? 'ghostOn' : 'ghost'} aria-pressed={scope === value} onClick={() => setScope(value)}>
+          {value === 'active' ? `Active work (${cards.length - historyCount})` : value === 'history' ? `History (${historyCount})` : `All tasks (${cards.length})`}
+        </Button>)}
+      </nav>
       {/* Kanban columns */}
       <div style={{ flex: 1, minHeight: 0, position: 'relative', display: 'flex' }}>
       <div
@@ -859,7 +890,7 @@ export function ProjectKanban({ project }: { project: Project }) {
         onScroll={e => noteBoardOverflow(e.currentTarget)}
         style={{ flex: 1, display: 'flex', gap: space.lg, padding: space.xxl, overflow: 'auto' }}
       >
-        {columns.map(col => {
+        {columns.filter(col => scope === 'all' || (scope === 'history' ? terminal(col) : !terminal(col))).map(col => {
           const colCards = cards.filter(c => c.columnId === col.id).sort((a, b) => a.position - b.position);
           const isOver = dragOverCol === col.id;
           const isScrolled = scrolledCols.has(col.id);

@@ -1,0 +1,6 @@
+@container (max-width: 720px) {
+  .pa-people-workspace.has-person > .pa-people-main { visibility: hidden; }
+  .pa-people-workspace > [data-testid="person-detail-panel"] {
+    position: absolute; inset: 0; width: 100% !important; z-index: 4;
+  }
+}

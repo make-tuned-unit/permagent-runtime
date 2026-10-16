@@ -866,3 +866,18 @@ describe('the coding-agent prompt', () => {
     expect(maybeButton('Copy')).toBeTruthy();
   });
 });
+
+
+it('keeps prompts and execution controls behind deliberate action review', async () => {
+  routeTo(payload());
+  await act(async () => root.render(<GrowActions project={project} colors={colors} />));
+  for (let i = 0; i < 5; i++) await act(async () => { await Promise.resolve(); });
+  const review = [...container.querySelectorAll('button')].find(b => b.textContent === 'Review action')!;
+  expect(review).toBeTruthy();
+  const detail = document.getElementById(review.getAttribute('aria-controls')!)!;
+  expect(detail.hidden).toBe(true);
+  await act(async () => review.click());
+  expect(detail.hidden).toBe(false);
+  expect(detail.textContent).toContain('Prompt for your coding agent');
+  expect(apiFetch.mock.calls.every(([, opts]) => !opts?.method || opts.method === 'GET')).toBe(true);
+});

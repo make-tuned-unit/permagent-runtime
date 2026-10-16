@@ -913,3 +913,21 @@ describe('AgentsPanel', () => {
     });
   });
 });
+
+
+it('turns a hung roster read into a retryable state and recovers on retry', async () => {
+  vi.useFakeTimers();
+  try {
+    apiFetchMock.mockImplementation(() => new Promise(() => {}));
+    await mount();
+    expect(container.textContent).toContain('Loading agents');
+    await act(async () => { await vi.advanceTimersByTimeAsync(20_001); });
+    expect(container.textContent).toContain('timed out');
+    expect(container.textContent).not.toContain('Loading agents');
+    mockRosterAndDetail();
+    const retry = [...container.querySelectorAll('button')].find(b => b.textContent === 'Retry')!;
+    await act(async () => retry.click());
+    await flush();
+    expect(container.querySelector('[data-testid="worker-row-strix"]')).toBeTruthy();
+  } finally { vi.useRealTimers(); }
+});

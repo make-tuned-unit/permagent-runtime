@@ -140,11 +140,8 @@ function push(n: Omit<AppNotification, 'id' | 'ts' | 'read'>): string {
     ts: Date.now(),
     read: false,
   };
-  state = {
-    ...state,
-    items: [item, ...state.items].slice(0, MAX_ITEMS),
-    unread: state.unread + 1,
-  };
+  const items = [item, ...state.items].slice(0, MAX_ITEMS);
+  state = { ...state, items, unread: items.filter(i => !i.read).length };
   publish();
 
   // Best-effort OS notification — the in-app tray is the guaranteed path.
@@ -158,6 +155,7 @@ function push(n: Omit<AppNotification, 'id' | 'ts' | 'read'>): string {
         if (item.onActivate || item.url || item.target) {
           osNote.onclick = () => {
             window.focus();
+            markRead(item.id);
             if (item.onActivate) {
               item.onActivate();
             } else if (item.url) {
@@ -182,6 +180,15 @@ export function retireToastAction(id: string, text: { title?: string; body?: str
     ...state,
     items: state.items.map((i) => (i.id === id ? { ...i, ...text, action: undefined } : i)),
   };
+  publish();
+}
+
+/** Reading one event never acknowledges unrelated events or resolves a decision. */
+export function markRead(id: string): void {
+  const item = state.items.find(i => i.id === id);
+  if (!item || item.read) return;
+  const items = state.items.map(i => i.id === id ? { ...i, read: true } : i);
+  state = { ...state, items, unread: items.filter(i => !i.read).length };
   publish();
 }
 

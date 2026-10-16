@@ -107,6 +107,7 @@ describe('PersonDetailModal profile links', () => {
 
   it('shows the enriched job title in the Role field', async () => {
     await render(person);
+    await act(async () => findButton('Edit contact fields')!.dispatchEvent(new MouseEvent('click', { bubbles: true })));
     const lbl = [...container.querySelectorAll('label')].find(l => l.textContent?.startsWith('Role'));
     expect((lbl?.querySelector('input') as HTMLInputElement | null)?.value).toBe('Director of Field Operations');
   });
@@ -114,6 +115,7 @@ describe('PersonDetailModal profile links', () => {
   it('opens an enriched Facebook URL from the Facebook field', async () => {
     const url = 'https://www.facebook.com/example.person';
     await render({ ...person, facebook: url });
+    await act(async () => findButton('Edit contact fields')!.dispatchEvent(new MouseEvent('click', { bubbles: true })));
     const btn = [...container.querySelectorAll('label')]
       .find(l => l.textContent?.startsWith('Facebook'))
       ?.querySelector('button');

@@ -118,6 +118,7 @@ export function GrowAnalytics({
     const generation = ++connectionRequestGeneration.current;
     ++statsRequestGeneration.current;
     setConnState('loading');
+    setConn(null);
     setStats(null);
     apiFetch<AnalyticsConnectionStatus>(`/api/projects/${encodeURIComponent(id)}/analytics/connection`)
       .then((c) => {
@@ -144,20 +145,25 @@ export function GrowAnalytics({
   // First-party (self-hosted) analytics — preferred path; the connector stays
   // for people who already have a provider account.
   const [fpStats, setFpStats] = useState<FirstPartyStats | null>(null);
+  const [fpState, setFpState] = useState<LoadState>('loading');
   const fpRequestGeneration = useRef(0);
   const loadFpStats = useCallback((id: string) => {
     const generation = ++fpRequestGeneration.current;
+    setFpState('loading');
     apiFetch<FirstPartyStats>(`/api/projects/${encodeURIComponent(id)}/analytics/first_party/stats`)
       .then((s) => {
         if (generation !== fpRequestGeneration.current) return;
         setFpStats(s);
+        setFpState('ready');
       })
       .catch(() => {
         if (generation !== fpRequestGeneration.current) return;
         setFpStats(null);
+        setFpState('error');
       });
   }, []);
   useEffect(() => {
+    setFpStats(null);
     loadFpStats(project.id);
     return () => { ++fpRequestGeneration.current; };
   }, [project.id, loadFpStats]);
@@ -179,7 +185,11 @@ export function GrowAnalytics({
   // provider genuinely doesn't expose it (e.g. GoatCounter has no site-wide
   // pageview aggregate) — each state named honestly.
   const liveHint = (notExposed: string, awaiting: string): string => {
-    if (!connected) return awaiting;
+    if (!connected) {
+      if (connState === 'loading' || fpState === 'loading') return 'Checking analytics…';
+      if (connState === 'error' || fpState === 'error') return 'Analytics status unavailable';
+      return awaiting;
+    }
     if (statsState === 'loading') return 'Fetching…';
     if (fetchFailed) return 'Fetch failed — see the connection panel';
     return notExposed;
@@ -246,7 +256,7 @@ export function GrowAnalytics({
   const reachDelta = computeDelta(pageviews, previousPageviews);
   const periodDays = fpLive ? (fpStats?.period.days ?? null) : connected ? (stats?.periodDays ?? null) : null;
   const leadTile = {
-    label: 'REACH (30D)',
+    label: `PAGEVIEWS (${periodDays ?? 30}D)`,
     value: pageviews,
     sub: pageviews != null
       ? `pageviews · ${fpLive ? 'self-hosted' : providerLabel}`
@@ -258,7 +268,7 @@ export function GrowAnalytics({
       label: 'ACTIVE CHANNELS',
       value: connectedChannels ? String(channelLabels.length) : '—',
       sub: !connectedChannels
-        ? 'checking connected accounts…'
+        ? 'Connection status unknown'
         : channelLabels.length > 0
           ? channelLabels.join(', ')
           : 'Connect Instagram, LinkedIn or X in Calendar',
@@ -277,6 +287,15 @@ export function GrowAnalytics({
   // already connected, or deliberately opened.
   const [showProviders, setShowProviders] = useState(false);
   const providersOpen = showProviders || !!conn?.provider;
+  const sourceDescription = fpLive
+    ? `Source: your collector · ${periodDays ?? 30} days.`
+    : connected && providerLabel
+      ? `Source: ${providerLabel} · ${periodDays ?? 30} days.`
+      : connState === 'loading' || fpState === 'loading'
+        ? 'Checking analytics sources…'
+        : connState === 'error' || fpState === 'error'
+          ? 'Analytics source status is unavailable.'
+          : 'No source is receiving data yet.';
 
   return (
     <>
@@ -285,75 +304,11 @@ export function GrowAnalytics({
         border: `1px solid ${colors.border}`, borderRadius: CARD_R, padding: `${space.md}px ${space.xl}px`,
         marginBottom: space.xs,
       }}>
-        Analytics for <strong style={{ color: colors.text }}>{project.name}</strong>, collected by
-        Permagent onto your own infrastructure — nothing here is faked or shared. What to DO about
-        it lives in <strong style={{ color: colors.text }}>Actions</strong>.
+        Analytics for <strong style={{ color: colors.text }}>{project.name}</strong>.{' '}
+        {sourceDescription}{' '}
+        Missing measures stay unknown. Recommendations live in <strong style={{ color: colors.text }}>Actions</strong>.
+        {(connState === 'error' || fpState === 'error') && <Button colors={colors} variant="bare" onClick={() => { loadConnection(project.id); loadFpStats(project.id); }}>Retry analytics</Button>}
       </div>
-
-      {/* Self-hosted analytics (#23) — the daemon is the collector.
-          KEYED ON THE PROJECT. `loadSetup` refetches on a projectId change and
-          guards stale responses with a generation counter, but the panel's
-          other state does not reset — so after verifying Acme and switching
-          to Beacon, the previous project's PASS was still on screen, telling
-          the user analytics was installed here when it was not (reported
-          2026-08-04). In a surface where every failure is silent, a false
-          "verified" is the worst thing this panel can say. Keying remounts it,
-          which clears the whole class rather than the one field that leaked.
-
-          `fp:` prefix: this panel and `AnalyticsConnectionPanel` below are
-          both keyed on the same `project.id` and sit as siblings in this same
-          fragment (one hidden behind `providersOpen`, but both mounted in the
-          same React children list), so two bare `key={project.id}` collided —
-          "two children with the same key" in dev, and undefined behaviour
-          per React's own docs. The prefix keeps each panel's remount-on-
-          project-switch behaviour (still id-scoped, still changes when the
-          project changes) while making the two keys distinct from each
-          other. See `analyticsPanelScope.test.ts` for the pinned contract. */}
-      <FirstPartyAnalyticsPanel
-        key={`fp:${project.id}`}
-        colors={colors}
-        projectId={project.id}
-        stats={fpStats}
-        onRefresh={() => loadFpStats(project.id)}
-      />
-
-      {/* Conversion funnel over first-party events — only once the collector
-          is live; an empty form on a project with no data is noise. Keyed on
-          the project so saved steps and results never leak across a switch
-          (the same class of bug as the verify PASS leak above). */}
-      {fpLive && <FunnelPanel key={`funnel-${project.id}`} projectId={project.id} colors={colors} />}
-
-      {/* Third-party connection, deliberately understated. */}
-      {!providersOpen ? (
-        <Button
-          colors={colors}
-          variant="bare"
-          onClick={() => setShowProviders(true)}
-          style={{
-            '--pa-btn-fg': colors.textDim,
-            '--pa-btn-fg-hover': colors.text,
-            '--pa-btn-bg-hover': 'transparent',
-            '--pa-btn-pad': '2px 0',
-            alignSelf: 'flex-start',
-            fontFamily: font.body,
-            textDecoration: 'underline',
-          } as CSSProperties}
-        >
-          Already use Plausible, Fathom or GA? Connect it read-only instead
-        </Button>
-      ) : (
-        <AnalyticsConnectionPanel
-          key={`conn:${project.id}`}
-          colors={colors}
-          projectId={project.id}
-          conn={conn}
-          connState={connState}
-          stats={stats}
-          statsState={statsState}
-          onReload={() => loadConnection(project.id)}
-          onRefreshStats={() => loadStats(project.id)}
-        />
-      )}
 
       {/* Metric tiles — Reach leads, on its own row and at a larger size, so
           the one number backed by a live source is what the eye lands on
@@ -393,8 +348,9 @@ export function GrowAnalytics({
       </div>
 
       {/* Funnel */}
-      <section style={{ marginTop: space.md }}>
-        <h3 style={{ ...growLabel(colors), margin: `0 0 ${space.xl}px` }}>Growth funnel</h3>
+      <details style={{ marginTop: space.md }}>
+        <summary style={{ cursor: 'pointer', color: colors.text }}>Coverage by stage</summary>
+        <p style={{ color: colors.textDim, fontSize: textSize.caption }}>Available measures use different units. These are coverage indicators, not conversion rates.</p>
         <div style={{ display: 'flex', flexDirection: 'column', gap: space.md }}>
           {funnel.map((f) => (
             <div key={f.stage} style={{ display: 'flex', alignItems: 'center', gap: space.xl }}>
@@ -425,7 +381,76 @@ export function GrowAnalytics({
             </div>
           ))}
         </div>
-      </section>
+      </details>
+      {/* Self-hosted analytics (#23) — the daemon is the collector.
+          KEYED ON THE PROJECT. `loadSetup` refetches on a projectId change and
+          guards stale responses with a generation counter, but the panel's
+          other state does not reset — so after verifying Acme and switching
+          to Beacon, the previous project's PASS was still on screen, telling
+          the user analytics was installed here when it was not (reported
+          2026-08-04). In a surface where every failure is silent, a false
+          "verified" is the worst thing this panel can say. Keying remounts it,
+          which clears the whole class rather than the one field that leaked.
+
+          `fp:` prefix: this panel and `AnalyticsConnectionPanel` below are
+          both keyed on the same `project.id` and sit as siblings in this same
+          fragment (one hidden behind `providersOpen`, but both mounted in the
+          same React children list), so two bare `key={project.id}` collided —
+          "two children with the same key" in dev, and undefined behaviour
+          per React's own docs. The prefix keeps each panel's remount-on-
+          project-switch behaviour (still id-scoped, still changes when the
+          project changes) while making the two keys distinct from each
+          other. See `analyticsPanelScope.test.ts` for the pinned contract. */}
+      <details>
+        <summary style={{ cursor: 'pointer', color: colors.text }}>Source data and installation</summary>
+      <FirstPartyAnalyticsPanel
+        key={`fp:${project.id}`}
+        colors={colors}
+        projectId={project.id}
+        stats={fpStats}
+        onRefresh={() => loadFpStats(project.id)}
+      />
+
+      </details>
+
+      {/* Conversion funnel over first-party events — only once the collector
+          is live; an empty form on a project with no data is noise. Keyed on
+          the project so saved steps and results never leak across a switch
+          (the same class of bug as the verify PASS leak above). */}
+      {fpLive && <details><summary style={{ cursor: 'pointer', color: colors.text }}>Conversion funnel</summary><FunnelPanel key={`funnel-${project.id}`} projectId={project.id} colors={colors} /></details>}
+
+      {/* Third-party connection, deliberately understated. */}
+      {!providersOpen ? (
+        <Button
+          colors={colors}
+          variant="bare"
+          onClick={() => setShowProviders(true)}
+          style={{
+            '--pa-btn-fg': colors.textDim,
+            '--pa-btn-fg-hover': colors.text,
+            '--pa-btn-bg-hover': 'transparent',
+            '--pa-btn-pad': '2px 0',
+            alignSelf: 'flex-start',
+            fontFamily: font.body,
+            textDecoration: 'underline',
+          } as CSSProperties}
+        >
+          Already use Plausible, Fathom or GA? Connect it read-only instead
+        </Button>
+      ) : (
+        <AnalyticsConnectionPanel
+          key={`conn:${project.id}`}
+          colors={colors}
+          projectId={project.id}
+          conn={conn}
+          connState={connState}
+          stats={stats}
+          statsState={statsState}
+          onReload={() => loadConnection(project.id)}
+          onRefreshStats={() => loadStats(project.id)}
+        />
+      )}
+
     </>
   );
 }

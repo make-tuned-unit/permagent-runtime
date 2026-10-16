@@ -6,6 +6,7 @@ import { useEffect, useState, type CSSProperties } from 'react';
 import {
   useNotifications,
   markAllRead,
+  markRead,
   setTrayOpen,
   useTrayOpen,
   type AppNotification,
@@ -99,19 +100,18 @@ export function NotificationHost() {
       navigateToTool(n.target);
     }
     setTrayOpen(false);
-    markAllRead();
+    markRead(n.id);
   };
 
   // Click-away dismissal: any press outside the tray (and outside the bell
-  // row, whose own toggle handles those clicks) closes the tray and marks
-  // read — same as closing via the bell. Capture phase so it wins even when
+  // row, whose own toggle handles those clicks) closes without acknowledging
+  // unseen items. Capture phase so it wins even when
   // the clicked surface stops propagation.
   useEffect(() => {
     if (!open) return;
     const onPress = (e: MouseEvent) => {
       const el = e.target as Element | null;
       if (el?.closest('[data-notifications-ui]')) return;
-      markAllRead();
       setTrayOpen(false);
     };
     document.addEventListener('mousedown', onPress, true);
@@ -159,6 +159,9 @@ export function NotificationHost() {
             ...type.label, color: colors.textDim,
             padding: `${space.xs}px ${space.lg}px ${space.md}px`,
           }}>Notifications</div>
+          {items.some(n => !n.read) && (
+            <Button colors={colors} variant="ghost" onClick={markAllRead}>Mark all read</Button>
+          )}
           {/* The Decision Inbox's own count. The rows below are only the live
               pings since launch, so they alone can't say "nothing needs you"
               (QA 2026-09-24: "all quiet" over 23 pending decisions). */}
@@ -242,7 +245,6 @@ function TrayDecisions({ itemCount }: { itemCount: number }) {
   const open = () => {
     if (openDecisionInbox()) {
       setTrayOpen(false);
-      markAllRead();
     } else {
       setLinkNote('Decision Review is on Home, and no workspace holds Home.');
     }

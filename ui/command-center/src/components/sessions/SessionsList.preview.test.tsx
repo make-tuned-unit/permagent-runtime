@@ -1,7 +1,7 @@
 /**
  * @vitest-environment jsdom
  *
- * SessionsList — the ≥1600px list/preview split (coordinator ruling,
+ * SessionsList — the ≥1100px list/preview split (coordinator ruling,
  * 2026-09-25): a list column + a preview pane for the selected/hovered row,
  * fetched lazily via GET /api/sessions/{id} and cached; keyboard ↑/↓ moves
  * selection (never opens), Enter opens. Below the breakpoint the split
@@ -53,7 +53,7 @@ const ROWS = [
 ];
 
 beforeEach(() => {
-  setWidth(1800); // ≥1600: the split renders
+  setWidth(1800); // ≥1100: the split renders
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -88,9 +88,38 @@ function render() {
   act(() => { root.render(<SessionsList onClose={() => {}} />); });
 }
 
-describe('below 1600px: no split', () => {
+describe('below 1100px: no split', () => {
+  it('responds to available container width inside a wide window', async () => {
+    const callbacks: Array<() => void> = [];
+    let availableWidth = 900;
+    const bounds = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(() =>
+      ({ width: availableWidth, height: 600, x: 0, y: 0, top: 0, left: 0, right: availableWidth, bottom: 600, toJSON: () => ({}) }),
+    );
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(callback: () => void) { callbacks.push(callback); }
+      observe() {}
+      disconnect() {}
+    });
+    try {
+      render();
+      await act(async () => { await Promise.resolve(); });
+      expect(window.innerWidth).toBe(1800);
+      expect(container.textContent).not.toContain('Select a session to preview');
+      availableWidth = 1200;
+      act(() => callbacks.forEach(callback => callback()));
+      expect(container.textContent).toContain('Select a session to preview');
+      availableWidth = 700;
+      act(() => callbacks.forEach(callback => callback()));
+      expect(container.textContent).not.toContain('Select a session to preview');
+      expect(container.querySelectorAll('[data-testid="session-row"]')).toHaveLength(3);
+    } finally {
+      bounds.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('renders a single list and no preview pane', async () => {
-    setWidth(1200);
+    setWidth(900);
     render();
     await act(async () => { await Promise.resolve(); });
     expect(container.querySelector('[data-testid="session-preview"]')).toBeNull();
@@ -98,7 +127,7 @@ describe('below 1600px: no split', () => {
   });
 });
 
-describe('≥1600px: list/preview split', () => {
+describe('≥1100px: list/preview split', () => {
   it('shows the empty preview state until a row is selected or hovered', async () => {
     render();
     await act(async () => { await Promise.resolve(); });

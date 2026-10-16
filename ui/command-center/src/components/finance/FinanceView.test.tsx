@@ -624,23 +624,18 @@ it('shows the household run-rate as money once transactions exist', async () => 
  * sections, in the original top-to-bottom order, and the `@container` rule
  * that switches them into a grid is actually shipped.
  */
-it('splits Holdings/Lots from Household/Watchlist/Notes into two column containers', async () => {
+it('separates Household, Holdings and Research with no mutation on navigation', async () => {
   await act(async () => { root.render(<FinanceView />); });
   await flush();
-  const left = container.querySelector('[data-testid="finance-col-holdings"]');
-  const right = container.querySelector('[data-testid="finance-col-household"]');
-  expect(left, 'left column').toBeTruthy();
-  expect(right, 'right column').toBeTruthy();
-  expect(left!.textContent).toContain('Lots'); // the Holdings/Lots section heading
-  expect(right!.textContent).toContain('Household');
-  expect(right!.textContent).toContain('Watchlist');
-  expect(right!.textContent).toContain('Notes');
-  // Document order: the grid's left/right split only takes effect above
-  // 1200px of container width; below it the two divs stack in DOM order,
-  // which must still be Holdings first (unchanged behaviour, not a new one).
-  expect(left!.compareDocumentPosition(right!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-
-  const css = document.getElementById('pa-finance-view')?.textContent ?? '';
-  expect(css).toContain('@container (min-width: 1200px)');
-  expect(css).toContain('.pa-fin-cols { display: grid;');
+  const nav = container.querySelector('nav[aria-label="Finance views"]')!;
+  for (const area of ['household', 'holdings', 'research']) {
+    const button = nav.querySelector(`[aria-controls="finance-view-${area}"]`)!;
+    await act(async () => button.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    for (const other of ['household', 'holdings', 'research']) {
+      expect((container.querySelector(`#finance-view-${other}`) as HTMLElement).hidden).toBe(area !== other);
+    }
+  }
+  expect(container.querySelector('#finance-view-research')!.textContent).toContain('Watchlist');
+  expect(container.querySelector('#finance-view-household')!.textContent).not.toContain('Watchlist');
+  expect(container.querySelector('#finance-view-holdings')!.textContent).toContain('Lots');
 });

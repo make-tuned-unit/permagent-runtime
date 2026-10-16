@@ -93,7 +93,7 @@ describe('ProjectChip', () => {
     expect(demo).toBeTruthy();
     await act(async () => { demo!.click(); });
 
-    expect(container.textContent).toContain('nothing extra');
+    expect(container.textContent).toContain('with your subscription');
     const claude = Array.from(container.querySelectorAll('button')).find(b => b.textContent === 'Claude');
     expect(claude).toBeTruthy();
     await act(async () => { claude!.focus(); });
@@ -101,7 +101,7 @@ describe('ProjectChip', () => {
     const permagent = Array.from(container.querySelectorAll('button')).find(b => b.textContent === 'Permagent');
     expect(permagent).toBeTruthy();
     await act(async () => { permagent!.focus(); });
-    expect(document.querySelector('[role="tooltip"]')?.textContent ?? '').toMatch(/not cheaper than Claude\/Codex/i);
+    expect(document.querySelector('[role="tooltip"]')?.textContent ?? '').toContain('API usage is billed');
   });
 });
 

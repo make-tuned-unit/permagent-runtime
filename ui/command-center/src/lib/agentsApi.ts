@@ -1,3 +1,4 @@
+import { readWithDeadline } from './readWithDeadline';
 /**
  * Settings → Agents API client.
  * Wire shapes mirror crates/goose-server/src/routes/agents_surface.rs — do not
@@ -189,11 +190,11 @@ export interface SecretWriteResponse {
 }
 
 export function fetchRoster(): Promise<RosterResponse> {
-  return apiFetch<RosterResponse>('/api/agents/roster');
+  return readWithDeadline(signal => apiFetch<RosterResponse>('/api/agents/roster', { signal }));
 }
 
 export function fetchAgentDetail(id: string): Promise<AgentDetail> {
-  return apiFetch<AgentDetail>(`/api/agents/${encodeURIComponent(id)}`);
+  return readWithDeadline(signal => apiFetch<AgentDetail>(`/api/agents/${encodeURIComponent(id)}`, { signal }));
 }
 
 export function fetchAgentWork(id: string, limit?: number): Promise<WorkReview> {

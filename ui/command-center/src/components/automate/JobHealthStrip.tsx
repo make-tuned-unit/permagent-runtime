@@ -34,13 +34,13 @@ export function JobHealthStrip({ summary, onOpen, canOpen }: {
       data-state={summary.state}
       style={{
         display: 'flex', alignItems: 'flex-start', gap: space.lg, flexWrap: 'wrap',
-        padding: `${space.md}px ${space.xxl}px`, borderRadius: radius.md, marginBottom: space.xxl,
-        background: withAlpha(tone, 0.08), border: `1px solid ${withAlpha(tone, 0.22)}`,
+        padding: summary.state === 'ok' ? `${space.xs}px 0` : `${space.md}px ${space.xxl}px`, borderRadius: radius.md, marginBottom: space.xl,
+        background: summary.state === 'ok' ? 'transparent' : withAlpha(tone, 0.08), border: summary.state === 'ok' ? 'none' : `1px solid ${withAlpha(tone, 0.22)}`,
         fontFamily: font.body,
       }}
     >
       <span style={{ width: 8, height: 8, borderRadius: '50%', background: tone, flexShrink: 0, marginTop: 5 }} />
-      <span style={{ fontSize: textSize.caption, fontWeight: 600, color: colors.text, flexShrink: 0 }}>{summary.message}</span>
+      <span style={{ fontSize: textSize.caption, fontWeight: summary.state === 'ok' ? 400 : 600, color: summary.state === 'ok' ? colors.textMuted : colors.text, minWidth: 0 }}>{summary.message}</span>
       {summary.state === 'problems' && (
         <span style={{ display: 'flex', flexWrap: 'wrap', gap: space.sm, flex: 1, minWidth: 0 }}>
           {summary.problems.map(p => {

@@ -170,6 +170,9 @@ export function SpendPanel() {
       {/* Budget */}
       <Card>
         <SectionLabel>Budget — optional caps you set</SectionLabel>
+        <p style={{ color: colors.textMuted, fontSize: textSize.caption }}>Session stop: {formatUsd(snap.budget.session.hard)} · Task stop: {formatUsd(snap.budget.task.hard)}</p>
+        <details>
+        <summary style={{ cursor: 'pointer', color: colors.text }}>Edit spending caps</summary>
         <div style={{ fontSize: textSize.caption, color: colors.textMuted, marginTop: space.md, marginBottom: space.xl }}>
           Enforced locally: at the gate ceiling the agent pauses and asks in the Decision Inbox before spending more; at the hard ceiling it stops and preserves your work. Leave high to run uncapped.
         </div>
@@ -204,6 +207,7 @@ export function SpendPanel() {
           {saved && <span style={{ fontSize: textSize.caption, color: colors.success }}>Saved</span>}
         </div>
         {error && <div style={{ color: colors.textMuted, fontSize: textSize.caption, marginTop: space.md }}>{error}</div>}
+        </details>
       </Card>
 
       {/* Per-project */}

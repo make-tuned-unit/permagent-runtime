@@ -10,7 +10,7 @@ import { useGlass } from '../common/Glass';
 import { NATIVE_WINDOW_IS_OPAQUE } from '../../lib/windowChrome';
 import { Tooltip } from '../common/Tooltip';
 import { Mobius } from '../mobius/Mobius';
-import { markAllRead, toggleTray, useNotifications, useTrayOpen } from '../../lib/notifications';
+import { toggleTray, useNotifications, useTrayOpen } from '../../lib/notifications';
 import { resolveIconPath } from '../common/icons';
 import { SidebarTooltip, useSidebarTooltip } from './SidebarTooltip';
 import { MeetingRecorder } from '../voice/MeetingRecorder';
@@ -97,7 +97,6 @@ function NotificationBellRow({ open, onHover, onLeave }: {
         onLeave={onLeave}
         onClick={() => {
           // Mark read on CLOSE so the unread highlight is visible while open.
-          if (trayOpen) markAllRead();
           toggleTray();
         }}
       />

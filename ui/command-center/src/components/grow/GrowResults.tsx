@@ -71,6 +71,7 @@ export function GrowResults({ project, colors }: { project: Project; colors: The
   const projectsRev = useCommandCenter((s) => s.projectsRev);
   const loadGen = useRef(0);
   const [slow, setSlow] = useState(false);
+  const [scope, setScope] = useState<'project' | 'all'>('project');
 
   /** `silent` keeps a background re-read from throwing the lens back to its
    *  loading copy: a refresh must not look like a first load. A failed silent
@@ -176,6 +177,14 @@ export function GrowResults({ project, colors }: { project: Project; colors: The
 
   return (
     <section>
+      <nav aria-label="Results scope" style={{ display: 'flex', gap: space.md, marginBottom: space.xxl }}>
+        {(['project', 'all'] as const).map(value => <Button key={value} colors={colors}
+          variant={scope === value ? 'ghostOn' : 'ghost'} aria-pressed={scope === value}
+          aria-controls={`growth-results-${value}`} onClick={() => setScope(value)}>
+          {value === 'project' ? 'This project' : 'All projects'}
+        </Button>)}
+      </nav>
+      <div id="growth-results-project" hidden={scope !== 'project'}>
       <div style={{ marginBottom: space.xxxl }}>
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: space.lg, justifyContent: 'space-between' }}>
           <div style={{ minWidth: 0 }}>
@@ -254,9 +263,10 @@ export function GrowResults({ project, colors }: { project: Project; colors: The
         </p>
       )}
 
-      {fleet && (
-        <FleetSection fleet={fleet} colors={colors} />
-      )}
+      </div>
+      <div id="growth-results-all" hidden={scope !== 'all'}>
+        {fleet ? <FleetSection fleet={fleet} colors={colors} /> : <p>All-project results are unavailable.</p>}
+      </div>
     </section>
   );
 }

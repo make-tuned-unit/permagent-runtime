@@ -37,6 +37,7 @@ vi.mock('../../lib/useGoalEvents', () => ({ useGoalEvents: () => {} }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn(() => Promise.resolve()) }));
 
 import { ProjectKanban } from './ProjectsView';
+import { useCommandCenter } from '../../lib/store';
 import { apiFetch } from '../../lib/api';
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
@@ -217,4 +218,29 @@ describe('clicking a Kanban card opens its detail', () => {
     expect(detailIsOpen()).toBe(false);
     expect(apiFetchMock.mock.calls.map(c => String(c[0]))).not.toContain('/api/projects/p1/cards/c1');
   });
+});
+
+
+it('hides terminal work by default and reveals it when a canonical deep link arrives', async () => {
+  const history = { ...column, id: 'done', name: 'Complete', stateBinding: 'complete' };
+  const completed = { ...card, id: 'done-card', title: 'A completed task', columnId: 'done' };
+  apiFetchMock.mockImplementation((async (url: string) => {
+    if (url.endsWith('/columns')) return [column, history];
+    if (url.endsWith('/cards')) return [card, completed];
+    return [];
+  }) as typeof apiFetch);
+  useCommandCenter.setState({ pendingCardNavigation: null });
+  const original = HTMLElement.prototype.scrollIntoView;
+  HTMLElement.prototype.scrollIntoView = vi.fn();
+  try {
+    await renderBoard();
+    expect(container.textContent).not.toContain('A completed task');
+    expect(container.textContent).toContain('History (1)');
+    await act(async () => useCommandCenter.setState({ pendingCardNavigation: {projectId: 'p1', cardId: 'done-card'} }));
+    expect(container.textContent).toContain('A completed task');
+    const historyButton = [...container.querySelectorAll('nav button')].find(b => b.textContent === 'History (1)')!;
+    expect(historyButton.getAttribute('aria-pressed')).toBe('true');
+    expect(useCommandCenter.getState().pendingCardNavigation).toBeNull();
+    expect(apiFetchMock.mock.calls.every(([, opts]) => !opts?.method || opts.method === 'GET')).toBe(true);
+  } finally { HTMLElement.prototype.scrollIntoView = original; }
 });

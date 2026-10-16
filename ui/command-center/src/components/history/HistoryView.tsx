@@ -242,7 +242,7 @@ export function HistoryView({ initialTab = 'sessions' }: { initialTab?: HistoryT
       {tab === 'activity' && (
         <>
           <IncidentsStrip />
-          <Frame><ExecutionTrace /></Frame>
+          <Frame><ExecutionTrace activity /></Frame>
         </>
       )}
       {tab === 'spend' && <div style={{ flex: 1, minHeight: 0 }}><SpendPanel /></div>}
