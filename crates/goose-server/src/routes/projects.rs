@@ -2335,6 +2335,306 @@ mod tests {
     use std::path::Path as StdPath;
     use tower::ServiceExt;
 
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn detected_stack_route_resolves_id_and_slug_without_writing_manual_services() {
+        let _root = crate::test_support::test_root();
+        let state = AppState::new(true).await.unwrap();
+        let pool = state.session_manager().pool_clone().await.unwrap();
+        let code = tempfile::tempdir().unwrap();
+        std::fs::write(
+            code.path().join("package.json"),
+            r#"{"dependencies":{"react":"19","next":"15"},"private_key":"fixture-must-not-leak"}"#,
+        )
+        .unwrap();
+        let project = projects::create_project(
+            &pool,
+            projects::CreateProject {
+                name: format!("Stack route {}", uuid::Uuid::new_v4()),
+                root_path: Some(code.path().to_string_lossy().to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let manual = permagent::project_stack::insert_entry(
+            &pool,
+            &uuid::Uuid::new_v4().to_string(),
+            &project.id,
+            "User-corrected service",
+            "other",
+            Some("fixture@example.test"),
+            "Keep my correction",
+            None,
+        )
+        .await
+        .unwrap();
+        let authorization = format!(
+            "Bearer {}",
+            state.daemon_token.as_ref().expect("isolated test token")
+        );
+        // Use the complete production router, including its auth middleware.
+        let app = crate::routes::configure(state);
+        for header in [None, Some("Bearer invalid-test-token")] {
+            let mut request =
+                Request::builder().uri(format!("/api/projects/{}/stack/detected", project.id));
+            if let Some(value) = header {
+                request = request.header("authorization", value);
+            }
+            assert_eq!(
+                app.clone()
+                    .oneshot(request.body(Body::empty()).unwrap())
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::UNAUTHORIZED
+            );
+        }
+        for id in [&project.id, &project.slug] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/api/projects/{id}/stack/detected"))
+                        .header("authorization", &authorization)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+                .await
+                .unwrap();
+            let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert!(json["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["service_name"] == "React"));
+            assert!(!String::from_utf8_lossy(&bytes).contains("fixture-must-not-leak"));
+        }
+        let count: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM project_stack_entries WHERE project_id=?1")
+                .bind(&project.id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            count, 1,
+            "discovery must never create manual account records"
+        );
+        assert_eq!(
+            permagent::project_stack::get_entry(&pool, &project.id, &manual.id)
+                .await
+                .unwrap(),
+            Some(manual)
+        );
+        projects::update_project(
+            &pool,
+            &project.id,
+            projects::UpdateProject {
+                root_path: Some(None),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let missing_root = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/projects/{}/stack/detected", project.id))
+                    .header("authorization", &authorization)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(missing_root.status(), StatusCode::BAD_REQUEST);
+        let missing = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/projects/missing-stack-fixture/stack/detected")
+                    .header("authorization", &authorization)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// Dedicated staging gate. Never falls back to the live daemon or a random
+    /// port. Run explicitly with --ignored; a busy :3002 is a failed preflight.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    #[ignore = "requires exclusive isolated staging port 3002"]
+    async fn ux_stack_discovery_http_staging() {
+        crate::test_support::test_root();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:3002")
+            .await
+            .expect("staging :3002 must be free; do not stop an unrelated daemon");
+        let state = AppState::new(true).await.unwrap();
+        let token = state.daemon_token.clone().expect("isolated staging token");
+        let pool = state.session_manager().pool_clone().await.unwrap();
+        let code = tempfile::tempdir().unwrap();
+        std::fs::write(
+            code.path().join("package.json"),
+            r#"{"dependencies":{"react":"19"}}"#,
+        )
+        .unwrap();
+        let project = projects::create_project(
+            &pool,
+            projects::CreateProject {
+                name: format!("UX HTTP fixture {}", uuid::Uuid::new_v4()),
+                root_path: Some(code.path().to_string_lossy().to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        struct ServerGuard(tokio::task::JoinHandle<()>);
+        impl Drop for ServerGuard {
+            fn drop(&mut self) {
+                self.0.abort();
+            }
+        }
+        let server = ServerGuard(tokio::spawn(async move {
+            axum::serve(listener, crate::routes::configure(state))
+                .await
+                .unwrap();
+        }));
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .unwrap();
+        let url = format!(
+            "http://127.0.0.1:3002/api/projects/{}/stack/detected",
+            project.id
+        );
+        assert_eq!(
+            client.get(&url).send().await.unwrap().status().as_u16(),
+            401
+        );
+        let response = client.get(&url).bearer_auth(&token).send().await.unwrap();
+        assert_eq!(response.status().as_u16(), 200);
+        let body: serde_json::Value = response.json().await.unwrap();
+        assert!(body["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["service_name"] == "React"));
+        assert!(permagent::project_stack::list_entries(&pool, &project.id)
+            .await
+            .unwrap()
+            .is_empty());
+
+        // Exercise the same authenticated routes used by the selected Project,
+        // People, Automate and History views. All records belong to test_root;
+        // no schedules are started and no communication is sent.
+        let project_url = format!("http://127.0.0.1:3002/api/projects/{}", project.id);
+        let shelved = client
+            .patch(&project_url)
+            .bearer_auth(&token)
+            .json(&serde_json::json!({"status": "paused"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(shelved.status().as_u16(), 200);
+        let reread: serde_json::Value = client
+            .get(&project_url)
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(reread["status"], "paused");
+
+        let cards_url = format!("{project_url}/cards");
+        let created = client
+            .post(&cards_url)
+            .bearer_auth(&token)
+            .json(&serde_json::json!({"title": "Inspect synthetic planting guide"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(created.status().as_u16(), 201);
+        let card: serde_json::Value = created.json().await.unwrap();
+        let card_id = card["id"].as_str().expect("created task id");
+        let listed: serde_json::Value = client
+            .get(&cards_url)
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert!(listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["id"].as_str() == Some(card_id)));
+
+        let created = client
+            .post("http://127.0.0.1:3002/api/people")
+            .bearer_auth(&token)
+            .json(&serde_json::json!({"display_name": format!("UX fixture {}", uuid::Uuid::new_v4())}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(created.status().as_u16(), 201);
+        let person: serde_json::Value = created.json().await.unwrap();
+        let person_id = person["person"]["entity_uuid"]
+            .as_str()
+            .expect("created person id");
+        let directory: serde_json::Value = client
+            .get("http://127.0.0.1:3002/api/people/directory")
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert!(directory
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["entity_uuid"].as_str() == Some(person_id)));
+        for (path, field) in [
+            ("/schedule/list", "jobs"),
+            ("/api/sessions?types=user,scheduled,sub_agent", "sessions"),
+        ] {
+            let data: serde_json::Value = client
+                .get(format!("http://127.0.0.1:3002{path}"))
+                .bearer_auth(&token)
+                .send()
+                .await
+                .unwrap()
+                .error_for_status()
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            assert!(
+                data[field].is_array(),
+                "{path} must preserve the UI list contract"
+            );
+        }
+        drop(server);
+    }
+
     // ── Post-landing reindex decision (pure) ────────────────────────────────
     //
     // The invariant under test: landing approved goal work REFRESHES a code

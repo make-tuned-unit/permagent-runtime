@@ -59,6 +59,7 @@ pub mod verification;
 pub mod voice;
 pub mod voice_gateway;
 pub mod wal_checkpoint;
+pub mod watcher_insights;
 
 // Re-export commonly used items
 pub use openapi::*;
