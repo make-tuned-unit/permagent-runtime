@@ -28,7 +28,7 @@ import { Button } from '../../common/Button';
 import { Tooltip } from '../../common/Tooltip';
 import { segmentedTab, SEGMENT_STRIP_PAD, SEGMENT_STRIP_RADIUS } from '../../common/segmented';
 import { runViewTransition } from '../../../lib/viewTransition';
-import { EmptyNote } from '../atoms';
+import { EmptyNote, SectionTitle } from '../atoms';
 import { calendarAccessView } from './calendarAccess';
 import { CalendarAccessPanel } from './CalendarAccessPanel';
 import { useShellCalendar } from './useShellCalendar';
@@ -210,14 +210,11 @@ export function CalendarCard({ nowMs: pinnedNow, sizeMode = 'auto', initialView 
         display: 'flex', flexDirection: 'column', gap: space.lg, overflow: 'hidden', minWidth: 0,
       }}
     >
+      {compact && <SectionTitle title="Calendar" />}
       {compact && home ? (
         <CompactDateHeader nowMs={nowMs} events={ahead.events} loading={ahead.loading && ahead.events.length === 0}
           source={ahead.source} failed={readFailed} onExpand={home.expand} />
-      ) : compact ? (
-        <div style={{ fontFamily: font.display, fontSize: textSize.small, fontWeight: 600, color: colors.text }}>
-          Calendar
-        </div>
-      ) : (
+      ) : compact ? null : (
         <div style={{ display: 'flex', alignItems: 'center', gap: space.lg, flexWrap: 'wrap' }}>
           <h3 data-testid="calendar-title" aria-live="polite" style={{
             margin: 0, marginRight: 'auto', fontFamily: font.display, fontSize: textSize.heading,

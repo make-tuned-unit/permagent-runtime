@@ -132,7 +132,7 @@ export const CARD_REGISTRY: Record<string, CardRegistryEntry> = {
   decisions: { component: DecisionsCard, name: 'Decisions',      description: 'What your agent needs from you', defaultSize: { w: 5, h: 4 } },
   stats:     { component: StatsCard,    name: 'Stats',           description: 'Sessions today, memory nodes',  defaultSize: { w: 5, h: 4 } },
   in_flight: { component: InFlightCard, name: 'In Flight',       description: 'Goals your agent is actively working',defaultSize: { w: 12, h: 3 } },
-  recent:    { component: RecentCard,   name: 'Recent Activity', description: 'Recently completed sessions',   defaultSize: { w: 12, h: 4 } },
+  recent:    { component: RecentCard,   name: 'Recent conversations', description: 'Your recent conversations',   defaultSize: { w: 12, h: 4 } },
   timeline:  { component: TimelineCard, name: 'Timeline',        description: 'What your agents did, day by day', defaultSize: { w: 12, h: 6 } },
   todos:     { component: TodosCard,    name: 'To-dos',          description: 'Dated cards from every board, soonest first', defaultSize: { w: 5, h: 6 } },
   growth_results: { component: GrowthResultsCard, name: 'Growth', description: 'Growth actions across all projects — trendline and per-project performance', defaultSize: { w: 12, h: 6 } },

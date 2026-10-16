@@ -4,6 +4,8 @@
 // --noEmit` and `npx vitest run` — are run from here. A shared package that
 // no gate executes is a shared package nobody can trust.
 import { defineConfig } from 'vitest/config';
+import { searchForWorkspaceRoot } from 'vite';
+import { fileURLToPath } from 'node:url';
 import react from '@vitejs/plugin-react';
 import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
@@ -35,6 +37,8 @@ const buildNumber = process.env.VITE_BUILD_NUMBER
 const gitSha = process.env.VITE_GIT_SHA || gitShortSha();
 
 export default defineConfig({
+  // Isolated worktrees can share node_modules without writing caches there.
+  cacheDir: process.env.PERMAGENT_UI_CACHE_DIR,
   plugins: [react(), {
     name: 'validate-native-daemon-target',
     apply: 'build',
@@ -69,6 +73,9 @@ export default defineConfig({
   envPrefix: ['VITE_', 'PERMAGENT_SHORTLIVED_STREAM_TOKEN'],
   base: isTauri ? '/' : '/ui/',
   server: {
+    // The shared client is part of this project's test/typecheck boundary.
+    // Explicitly allow it when a sparse worktree has no workspace manifest.
+    fs: { allow: [searchForWorkspaceRoot(process.cwd()), fileURLToPath(new URL('../analytics-client', import.meta.url))] },
     port: 5273,
     host: '0.0.0.0',
     proxy: {

@@ -1,0 +1,18 @@
+/* The daily summary has a stable reading order and content-sized rows.
+   Custom layouts retain their resize grid and focus presentation. */
+.pa-home-overview {
+  max-width: 1200px;
+  margin-inline: auto;
+  container-type: inline-size;
+}
+.pa-home-overview .pa-home-section-title {
+  grid-column: 1 / -1;
+  margin: 8px 0 -4px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+@container (max-width: 640px) {
+  .pa-home-overview > .pa-home-cell {
+    grid-column: 1 / -1 !important;
+  }
+}

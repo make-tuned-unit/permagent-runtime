@@ -68,3 +68,12 @@ it('the title owns the row and shows its full text in the shared Tooltip; the st
     vi.useRealTimers();
   }
 });
+
+it.each(['completed', 'idle', 'unknown'])('does not imply successful work for a %s conversation', state => {
+  act(() => root.render(<RecentCard items={[{ id: 's1', title: 'Discuss next steps', state, ended_at: '2026-01-01T00:00:00Z' }]} />));
+  expect(container.textContent).toContain('Recent conversations');
+  if (state === 'completed') expect(container.textContent).toContain('Saved');
+  expect(container.textContent).not.toContain('✓');
+  expect(container.textContent).not.toContain('completed');
+  expect(container.textContent).not.toContain('last 24h');
+});

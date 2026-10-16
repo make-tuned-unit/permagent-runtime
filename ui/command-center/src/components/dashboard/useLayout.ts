@@ -21,7 +21,7 @@ export interface DashboardLayoutData {
 // in favor of the sidebar's nav status indicator beside Home. Positions are
 // recomputed by `reflow` rather than hand-adjusted, same as every other pass
 // in this file.
-export const DEFAULT_LAYOUT: DashboardLayoutData = {
+export const LEGACY_DEFAULT_LAYOUT: DashboardLayoutData = {
   cards: reflow([
     { id: 'decisions', type: 'decisions', position: { x: 0, y: 0 }, size: { w: 5, h: 4 }, visible: true },
     { id: 'stats', type: 'stats', position: { x: 0, y: 0 }, size: { w: 5, h: 4 }, visible: true },
@@ -33,6 +33,68 @@ export const DEFAULT_LAYOUT: DashboardLayoutData = {
     { id: 'timeline', type: 'timeline', position: { x: 0, y: 0 }, size: { w: 12, h: 6 }, visible: true },
   ]),
 };
+
+/** Daily Home: attention, commitments, then activity. */
+export const DEFAULT_LAYOUT: DashboardLayoutData = {
+  cards: reflow([
+    ['decisions', 12, 3], ['calendar', 6, 4], ['todos', 6, 4],
+    ['in_flight', 6, 3], ['recent', 6, 3],
+  ].map(([type, w, h]) => ({
+    id: String(type), type: String(type), position: { x: 0, y: 0 },
+    size: { w: Number(w), h: Number(h) }, visible: true,
+  }))),
+};
+
+export const LEGACY_MORNING_LAYOUT: DashboardLayoutData = {
+  cards: [
+    ['henry_status', 0, 0, 12, 2], ['decisions', 0, 2, 5, 4],
+    ['today_focus', 5, 2, 7, 4], ['in_flight', 0, 6, 12, 3],
+    ['calendar', 0, 9, 7, 8], ['todos', 7, 9, 5, 4],
+    ['overnight_digest', 7, 13, 5, 4], ['weather', 0, 17, 3, 2],
+    ['system_stats', 3, 17, 3, 2],
+  ].map(([type, x, y, w, h]) => ({
+    id: String(type), type: String(type),
+    position: { x: Number(x), y: Number(y) }, size: { w: Number(w), h: Number(h) }, visible: true,
+  })),
+};
+
+/** Older daemon defaults, before readiness moved into the header. */
+export const LEGACY_DAEMON_LAYOUTS: DashboardLayoutData[] = [false, true].map(enabled => {
+  const card = (type: string, x: number, y: number, w: number, h: number): DashboardCardLayout =>
+    ({ id: type, type, position: { x, y }, size: { w, h }, visible: true });
+  return { cards: [
+    card('hero', 0, 0, 7, 4),
+    ...(enabled ? [card('decisions', 7, 0, 5, 4)] : []),
+    card('stats', enabled ? 0 : 7, enabled ? 4 : 0, 5, 4),
+    card('in_flight', 0, enabled ? 8 : 4, 12, 3),
+    card('recent', 0, enabled ? 11 : 7, 12, 4),
+  ] };
+});
+
+function layoutSignature(layout: DashboardLayoutData): string {
+  return JSON.stringify(layout.cards.map(c => [c.id, c.type, c.position.x, c.position.y, c.size.w, c.size.h, c.visible]));
+}
+
+export function isDailyHomeLayout(layout: DashboardLayoutData): boolean {
+  return layoutSignature(layout) === layoutSignature(DEFAULT_LAYOUT);
+}
+
+/** Exact shipped layouts only; never overwrite a user's arrangement on read. */
+export function upgradeHomeDefault(layout: DashboardLayoutData): DashboardLayoutData {
+  const signature = layoutSignature(layout);
+  const defaults = [LEGACY_DEFAULT_LAYOUT, LEGACY_MORNING_LAYOUT,
+    { cards: reflow(LEGACY_MORNING_LAYOUT.cards) }];
+  // Also recognize exact intermediate versions produced by prior migrations.
+  for (let candidate of [...defaults, ...LEGACY_DAEMON_LAYOUTS]) {
+    if (layoutSignature(candidate) === signature) return DEFAULT_LAYOUT;
+    for (const migrate of [stripRetiredCards, compactLayoutPass, ensureGrowthResultsCard,
+      ensureGrowthCardTallEnough, ensureCalendarCard, ensureCouncilCard]) {
+      candidate = migrate(candidate).layout;
+      if (layoutSignature(candidate) === signature) return DEFAULT_LAYOUT;
+    }
+  }
+  return layout;
+}
 
 /** A card's resolved cell on the grid: column/row origin and span. */
 export interface PackedCell { id: string; x: number; y: number; w: number; h: number }
@@ -624,58 +686,10 @@ export function useLayout() {
     apiFetch<DashboardLayoutData>('/api/dashboard/layout')
       .then(fetched => {
         if (cancelled) return;
-        // Strip any retired first-party card (e.g. 'hero') before anything
-        // else touches the layout — every pass below should only ever see
-        // card types the registry can still render.
-        const stripped = stripRetiredCards(fetched);
-        // Run the compaction at most once per machine; afterwards the user's
-        // own sizing is authoritative.
-        const compacted = hasRunCompactPass()
-          ? { layout: stripped.layout, changed: false }
-          : compactLayoutPass(stripped.layout);
-        let normalized = compacted.layout;
-        // Only STRUCTURAL changes (a retired card dropped, a missing card
-        // added) are written back on load. The compact/tall size ceilings are
-        // cosmetic: they are applied to what this browser shows, but a read
-        // must not rewrite a layout another device also edits (QA 2026-10-07
-        // Q8: a fresh browser PUT /api/dashboard/layout with no user change).
-        // Their "done" flags are set only once the user saves a layout.
-        const cosmetic = compacted.changed;
-        let cosmetic_taller = false;
-        let changed = stripped.changed;
-        if (!hasRunGrowthCardPass()) {
-          const inserted = ensureGrowthResultsCard(normalized);
-          normalized = inserted.layout;
-          changed = changed || inserted.changed;
-        }
-        if (!hasRunGrowthCardTallPass()) {
-          const taller = ensureGrowthCardTallEnough(normalized);
-          normalized = taller.layout;
-          if (taller.changed) cosmetic_taller = true;
-        }
-        if (!hasRunCalendarPass()) {
-          const calendar = ensureCalendarCard(normalized);
-          normalized = calendar.layout;
-          changed = changed || calendar.changed;
-        }
-        if (!hasRunCouncilCardPass()) {
-          const council = ensureCouncilCard(normalized);
-          normalized = council.layout;
-          changed = changed || council.changed;
-        }
-        setLayout(normalized);
-        if (!cosmetic) markCompactPassDone();
-        markGrowthCardPassDone();
-        if (!cosmetic_taller) markGrowthCardTallPassDone();
-        markCalendarPassDone();
-        markCouncilCardPassDone();
-        if (changed) {
-          apiFetch<DashboardLayoutData>('/api/dashboard/layout', {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(normalized),
-          }).catch(() => { /* cosmetic; retried next load */ });
-        }
+        // Loading Home is a read. Upgrade only exact shipped defaults for
+        // display; preserve custom sizes/order/visibility and do not auto-add
+        // cards or PUT a layout simply because this device has no flags yet.
+        setLayout(stripRetiredCards(upgradeHomeDefault(fetched)).layout);
       })
       .catch(() => { /* use default */ })
       .finally(() => { if (!cancelled) setLayoutLoaded(true); });

@@ -8,7 +8,7 @@ import { useDashboard } from './useDashboard';
 import { useLiveGoals } from '../../lib/useLiveGoals';
 import { useDueTodos } from '../../lib/useDueTodos';
 import {
-  useLayout, reflow, layoutForDisplay, WIDE_GRID_SPLIT_PX, minSpanForWidth, DEFAULT_LAYOUT,
+  useLayout, reflow, layoutForDisplay, isDailyHomeLayout, WIDE_GRID_SPLIT_PX, minSpanForWidth, DEFAULT_LAYOUT,
   MASONRY_ROW_UNIT, spanForContent, settleSpan,
   type DashboardLayoutData, type DashboardCardLayout, type SpanSettleState,
 } from './useLayout';
@@ -27,13 +27,14 @@ import { HeaderAgentStatus } from '../sidebar/NavAgentStatus';
 import { ConfirmDialog } from '../common/ConfirmDialog';
 import { Button } from '../common/Button';
 import { AsOf } from '../common/AsOf';
-import { useState, useCallback, useEffect, useRef, useMemo, type CSSProperties } from 'react';
+import { Fragment, useState, useCallback, useEffect, useRef, useMemo, type CSSProperties } from 'react';
 import { FiLayout } from 'react-icons/fi';
 import { LayoutsGallery } from './LayoutsGallery';
 import { LayoutPreviewOverlay } from './LayoutPreviewOverlay';
 import { comingSoonCards, DASHBOARD_TEMPLATES } from './templates';
 import { useDashboardLayoutPreviewEvent, clearDashboardLayoutPreview } from './dashboardLayoutPreviewEvent';
 
+import './homeOverview.css';
 import { Tooltip } from '../common/Tooltip';
 import { pressable } from '../common/pressable';
 import {
@@ -398,6 +399,8 @@ export function Dashboard() {
     );
   }
 
+  const dailyLayout = isDailyHomeLayout(layout);
+  const dailyOverview = dailyLayout && !isEditMode && !focusMode;
   const cardDataMap: Record<string, any> = {
     stats: { stats: data.stats },
     in_flight: inFlightProps,
@@ -581,17 +584,17 @@ export function Dashboard() {
           No runs or memories yet. Your activity will appear here as you work.
         </p>
       </section>}
-      {!isEditMode && <LearnNext modelConfigured={hasModel} />}
-      {!isEditMode && <Echo />}
 
       {/* CSS Grid — reflows natively with the container, no JS width measurement */}
       <div
         ref={gridRef}
+        data-testid="home-grid"
+        className={dailyOverview ? 'pa-home-overview' : undefined}
         onPointerMove={dragSrcId ? handlePointerMove : resizeId ? handleResizeMove : undefined}
         onPointerUp={dragSrcId ? handlePointerUp : resizeId ? handleResizeUp : undefined}
         style={{
           display: 'grid',
-          gridTemplateColumns: 'repeat(12, 1fr)',
+          gridTemplateColumns: 'repeat(12, minmax(0, 1fr))',
           // Customize keeps the original fixed-row grid — the resize grip
           // drags in whole `h` units of exactly this height. Outside it, a
           // fine row unit plus dense auto-flow is the masonry technique
@@ -602,8 +605,8 @@ export function Dashboard() {
           // Focus mode leaves masonry: the focused card takes the full width
           // at its full height and the compact tiles a fixed one, so plain
           // content-sized rows are exact and need no measured spans.
-          gridAutoRows: isEditMode ? ROW_HEIGHT : focusMode ? 'auto' : MASONRY_ROW_UNIT,
-          gridAutoFlow: isEditMode ? 'row' : 'row dense',
+          gridAutoRows: isEditMode ? ROW_HEIGHT : focusMode || dailyOverview ? 'auto' : MASONRY_ROW_UNIT,
+          gridAutoFlow: isEditMode || dailyOverview ? 'row' : 'row dense',
           gap: GAP,
           touchAction: isEditMode ? 'none' : 'auto',
           userSelect: (dragSrcId || resizeId) ? 'none' : 'auto',
@@ -642,12 +645,18 @@ export function Dashboard() {
               ? { gridColumn: `span ${Math.max(COMPACT_TILE_SPAN, minSpanForWidth(gridWidth, GAP, 220))}`, gridRow: 'auto', height: COMPACT_TILE_PX, maxHeight: undefined }
               : null;
           return (
+            <Fragment key={card.id}>
+            {dailyOverview && (card.type === 'calendar' || card.type === 'in_flight') && (
+              <h2 className="pa-home-section-title" style={{ color: colors.textMuted, fontFamily: font.display, fontSize: textSize.small }}>
+                {card.type === 'calendar' ? 'Today' : 'Activity'}
+              </h2>
+            )}
             <div
-              key={card.id}
               id={cellId}
               data-testid={`dashboard-cell-${card.id}`}
               data-presentation={presentation}
               data-home-expandable={!isEditMode && presentation !== 'focused' && Component ? '' : undefined}
+              data-home-section={dailyLayout ? (card.type === 'decisions' ? 'attention' : ['calendar', 'todos'].includes(card.type) ? 'today' : 'activity') : undefined}
               className={`pa-home-cell${presentation === 'focused' && !supportsFocusMorph() ? ' pa-home-focus-enter' : ''}`}
               role={presentation === 'focused' ? 'region' : undefined}
               aria-label={presentation === 'focused' ? `${name}, expanded` : undefined}
@@ -655,7 +664,7 @@ export function Dashboard() {
               onPointerDown={isEditMode && !resizeId ? (e) => handlePointerDown(card.id, e) : undefined}
               style={{
                 '--pa-home-vt-name': `pa-home-cell-${index}`,
-                gridColumn: `${x + 1} / span ${w}`,
+                gridColumn: dailyOverview ? (card.type === 'decisions' ? '1 / -1' : 'span 6') : `${x + 1} / span ${w}`,
                 // Customize: explicit start AND span, on the fixed ROW_HEIGHT
                 // grid above — the resize grip drags `h` directly, so this
                 // must be exactly what it edits. Outside Customize: span
@@ -664,7 +673,7 @@ export function Dashboard() {
                 // wherever its column range is free for `contentSpan` tracks,
                 // backfilling a shorter neighbour's leftover space instead of
                 // stacking strictly under whichever card came before it.
-                gridRow: isEditMode ? `${y + 1} / span ${h}` : `span ${contentSpan}`,
+                gridRow: dailyOverview ? 'auto' : isEditMode ? `${y + 1} / span ${h}` : `span ${contentSpan}`,
                 // Rows size to content, with the configured `h` as a MAX, not
                 // a fixed height (coordinator, 2560px pass: In Flight/Needs
                 // You/To-dos sat 50%+ empty; ambient status strips left a
@@ -710,7 +719,7 @@ export function Dashboard() {
                     ? `outline ${duration.fast}ms ${ease.out}, box-shadow ${duration.snappy}ms ${ease.snappy}, transform ${duration.snappy}ms ${ease.snappy}, opacity ${duration.fast}ms ${ease.out}`
                     : `outline ${duration.fast}ms ${ease.out}, box-shadow ${duration.smooth}ms ${ease.smooth}, transform ${duration.smooth}ms ${ease.smooth}, opacity ${duration.fast}ms ${ease.out}`,
                 position: 'relative',
-                minHeight: 0,
+                minWidth: 0, minHeight: 0,
                 overflow: 'hidden',
                 // Outside Customize the cell is capped by `maxHeight`, not
                 // sized, so a card's `height: 100%` has nothing to resolve
@@ -755,9 +764,14 @@ export function Dashboard() {
                 />
               )}
             </div>
+            </Fragment>
           );
         })}
       </div>
+      {!isEditMode && <div style={{ marginTop: space.xxl }}>
+        <LearnNext modelConfigured={hasModel} />
+        <Echo />
+      </div>}
 
       {/* Drag ghost — follows pointer during reorder */}
       {dragSrcId && dragPos && (() => {

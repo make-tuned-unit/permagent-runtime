@@ -100,3 +100,16 @@ describe('Home first action', () => {
     });
   }
 });
+
+it('daily overview keeps attention, commitments and activity in order without saving', async () => {
+  fixture.sessions = 3;
+  await render();
+  const grid = host.querySelector<HTMLElement>('[data-testid="home-grid"]')!;
+  expect(grid.classList.contains('pa-home-overview')).toBe(true);
+  expect(grid.style.gridAutoFlow).toBe('row');
+  expect(grid.style.gridAutoRows).toBe('auto');
+  expect([...grid.querySelectorAll('h2')].map(el => el.textContent)).toEqual(['Today', 'Activity']);
+  expect([...grid.querySelectorAll('[data-home-section]')].map(el => el.getAttribute('data-home-section')))
+    .toEqual(['attention', 'today', 'today', 'activity', 'activity']);
+  expect(fixture.persist).not.toHaveBeenCalled();
+});

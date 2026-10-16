@@ -1,4 +1,5 @@
 import { useCallback } from 'react';
+import { FiMessageSquare } from 'react-icons/fi';
 import { duration, ease, font, radius, space } from '../../../styles/tokens';
 import { useTheme } from '../../../styles/useTheme';
 import { useCommandCenter } from '../../../lib/store';
@@ -54,15 +55,7 @@ export function RecentCard({ items: all }: Props) {
       display: 'flex', flexDirection: 'column',
       overflow: 'hidden',
     }}>
-      {/* "While you were away" (UX_BENCHMARK_RESEARCH.md §1, Linear Priority's
-          rest-split / ChatGPT Tasks framing): dashboard.rs already restricts
-          this feed to non-active sessions and documents every one of them as
-          settled ("all recent sessions are treated as completed" — no
-          explicit pause/stop events exist to say otherwise), so this feed
-          already IS the "happened while you were away" half of Home; it only
-          needed the honest name. Renamed here rather than building a second,
-          parallel card — R7 convergence, one concept in one place. */}
-      <SectionTitle title="While you were away" right={items.length > 0 ? 'last 24h' : undefined} />
+      <SectionTitle title="Recent conversations" />
       {items.length === 0 ? (
         <EmptyNote hint="Sessions you run will appear here">No recent activity</EmptyNote>
       ) : (
@@ -119,7 +112,9 @@ function ActivityItem({ item, isLast, onOpen }: { item: RecentSession; isLast: b
           so title and status stay next to each other at any card width; the
           icon/hover/border still span the full row. */}
       <span style={{ display: 'flex', alignItems: 'center', gap: space.lg, width: '100%', maxWidth: 720, minWidth: 0 }}>
-        <StatusIcon state={item.state} />
+        {item.state === 'paused' || item.state === 'awaiting_input'
+          ? <StatusIcon state={item.state} />
+          : <FiMessageSquare aria-hidden="true" size={18} style={{ color: colors.textMuted, flexShrink: 0 }} />}
         {/* The title owns the row: it grows into every spare pixel and the
             status word is what gives way (below). The full title is one hover
             away — the server no longer cuts it at 40 characters either. */}
@@ -140,7 +135,7 @@ function ActivityItem({ item, isLast, onOpen }: { item: RecentSession; isLast: b
           flex: '0 1 auto', minWidth: 0, maxWidth: '40%',
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
           color: statusColor[item.state] || colors.textMuted,
-        }}>{item.state.replace('_', ' ')}</span>
+        }}>{item.state === 'completed' ? 'Saved' : item.state.replace('_', ' ')}</span>
       </span>
     </div>
   );

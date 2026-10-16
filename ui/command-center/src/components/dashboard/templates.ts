@@ -1,21 +1,8 @@
-/**
- * The five Home dashboard layout templates (HOME_TEMPLATES_RESEARCH.md §2) —
- * the frontend's hand-synced mirror of the daemon's
- * `crates/goose-server/src/routes/dashboard.rs::dashboard_templates()`, the
- * same two-copies-in-sync pattern this file's own `DEFAULT_LAYOUT` already
- * keeps with `DashboardLayout::default_layout` there. `useDashboardTemplates`
- * below prefers the LIVE daemon list (so a future template addition needs no
- * frontend rebuild) and falls back to this static list when the daemon can't
- * be reached — the Layouts gallery must still work offline/in the harness.
- *
- * A card `comingSoon: true` names a real card from the research doc that
- * Phase 2 hasn't built yet — the packer below drops it from what's actually
- * rendered (LANE brief: "omitted with a coming soon note in preview only,
- * never a broken card") while the gallery/preview still lists it by name.
- */
+/** Layout choices for Home. The daily default is owned by this frontend;
+ * other templates can be supplied by the daemon, with bundled fallbacks. */
 import { useEffect, useState } from 'react';
 import { apiFetch } from '../../lib/api';
-import { reflow, type DashboardCardLayout, type DashboardLayoutData } from './useLayout';
+import { DEFAULT_LAYOUT, reflow, type DashboardCardLayout, type DashboardLayoutData } from './useLayout';
 
 export interface TemplateCard {
   type: string;
@@ -35,23 +22,9 @@ export interface DashboardTemplate {
 export const DASHBOARD_TEMPLATES: DashboardTemplate[] = [
   {
     id: 'morning_briefing',
-    name: 'Morning Briefing',
-    question: 'What does today need from me?',
-    cards: [
-      // h:2 — the manifest 'compact' layout (icon+label, a hero value, an
-      // inline supporting row) clipped its hero value's glyphs at h:1.
-      { type: 'henry_status', id: 'henry_status', position: { x: 0, y: 0 }, size: { w: 12, h: 2 } },
-      { type: 'decisions', id: 'decisions', position: { x: 0, y: 2 }, size: { w: 5, h: 4 } },
-      { type: 'today_focus', id: 'today_focus', position: { x: 5, y: 2 }, size: { w: 7, h: 4 } },
-      { type: 'in_flight', id: 'in_flight', position: { x: 0, y: 6 }, size: { w: 12, h: 3 } },
-      // Calendar at its medium size (7 columns): the full Day / Week / Month
-      // calendar, with the others stacked beside it.
-      { type: 'calendar', id: 'calendar', position: { x: 0, y: 9 }, size: { w: 7, h: 8 } },
-      { type: 'todos', id: 'todos', position: { x: 7, y: 9 }, size: { w: 5, h: 4 } },
-      { type: 'overnight_digest', id: 'overnight_digest', position: { x: 7, y: 13 }, size: { w: 5, h: 4 } },
-      { type: 'weather', id: 'weather', position: { x: 0, y: 17 }, size: { w: 3, h: 2 } },
-      { type: 'system_stats', id: 'system_stats', position: { x: 3, y: 17 }, size: { w: 3, h: 2 } },
-    ],
+    name: 'Daily overview',
+    question: 'What needs me, and what is happening today?',
+    cards: DEFAULT_LAYOUT.cards.map(({ visible: _visible, ...card }) => card),
   },
   {
     id: 'operator_command_center',
@@ -162,8 +135,14 @@ export function isCurrentTemplate(template: DashboardTemplate, currentLayout: Da
   return templateTypes.length === currentTypes.length && templateTypes.every((t, i) => t === currentTypes[i]);
 }
 
+/** Keep the daily default current even when connected to an older daemon. */
+export function mergeDashboardTemplates(remote: DashboardTemplate[]): DashboardTemplate[] {
+  const daily = DASHBOARD_TEMPLATES[0];
+  return [daily, ...remote.filter(template => template.id !== daily.id)];
+}
+
 /**
- * Live templates from the daemon, falling back to the static mirror above so
+ * Live templates from the daemon, retaining the frontend daily default so
  * the gallery still renders with the daemon unreachable (offline, or the
  * harness). Fetched once — templates don't change at runtime.
  */
@@ -172,7 +151,7 @@ export function useDashboardTemplates(): DashboardTemplate[] {
   useEffect(() => {
     let cancelled = false;
     apiFetch<DashboardTemplate[]>('/api/dashboard/templates')
-      .then(result => { if (!cancelled && Array.isArray(result) && result.length > 0) setTemplates(result); })
+      .then(result => { if (!cancelled && Array.isArray(result) && result.length > 0) setTemplates(mergeDashboardTemplates(result)); })
       .catch(() => { /* keep the static mirror */ });
     return () => { cancelled = true; };
   }, []);
