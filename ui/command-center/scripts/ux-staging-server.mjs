@@ -35,7 +35,11 @@ const server = await createServer({
   }}],
   resolve: {dedupe: ['react', 'react-dom']}, cacheDir: '../../reports/ux-dag/.vite-staging',
   server: {host: '127.0.0.1', port: 5201, strictPort: true,
-    proxy: {'^/(?!ui/|__ux_review)': {target: 'http://127.0.0.1:3002'}}},
+    proxy: {
+      // Production views subscribe to this read-only authenticated stream.
+      '^/events(?:\\?|$)': {target: 'http://127.0.0.1:3002', ws: true},
+      '^/(?!ui/|__ux_review|events(?:\\?|$))': {target: 'http://127.0.0.1:3002'},
+    }},
 });
 await server.listen();
 console.log('Isolated browser acceptance: http://127.0.0.1:5201/ui/scripts/ux-staging.html');

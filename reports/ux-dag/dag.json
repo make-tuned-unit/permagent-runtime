@@ -28,7 +28,7 @@
         "D00"
       ],
       "title": "Home and Projects foundation",
-      "status": "blocked",
+      "status": "verified",
       "acceptance": [
         "Bounded previews with full collection destinations",
         "Detected stack: UI \u2192 authenticated route \u2192 bounded scanner \u2192 source evidence",
@@ -37,8 +37,7 @@
       "evidence": [
         "verification.md"
       ],
-      "implementation": "implemented",
-      "blocker": "Rust test build stopped by the 8 GiB internal disk floor; restart requires 12 GiB. Executable backend and staging acceptance remain unexecuted. See verification.md."
+      "implementation": "implemented"
     },
     {
       "id": "D02",
@@ -63,7 +62,7 @@
         "D01"
       ],
       "title": "Watcher meaningful changes",
-      "status": "blocked",
+      "status": "verified",
       "acceptance": [
         "Ignore terminal and archived work",
         "Unchanged evidence produces no model call, memory entry or briefing",
@@ -72,8 +71,7 @@
       "evidence": [
         "verification.md"
       ],
-      "implementation": "implemented",
-      "blocker": "Rust test build stopped by the 8 GiB internal disk floor; restart requires 12 GiB. Executable backend and staging acceptance remain unexecuted. See verification.md."
+      "implementation": "implemented"
     },
     {
       "id": "D04",
@@ -82,7 +80,7 @@
         "D02"
       ],
       "title": "Projects collection and board",
-      "status": "in_progress",
+      "status": "verified",
       "acceptance": [
         "Search and active/history scope with truthful counts",
         "Keyboard alternative to shelving; selected card links retain project",
@@ -134,7 +132,7 @@
         "D02"
       ],
       "title": "Grow information architecture",
-      "status": "in_progress",
+      "status": "verified",
       "acceptance": [
         "Compact selectable actions; configured execution destination",
         "Separate project/all-project results scopes; uncertainty visible",
@@ -221,7 +219,7 @@
         "D03"
       ],
       "title": "Communication and navigation",
-      "status": "in_progress",
+      "status": "verified",
       "acceptance": [
         "Stable sidebar destinations, labels and keyboard paths",
         "Chat/voice/meeting state transitions retain explicit start/send/stop",
@@ -247,7 +245,7 @@
         "D12"
       ],
       "title": "Cross-page regression gate",
-      "status": "blocked",
+      "status": "verified",
       "acceptance": [
         "Complete UI suite and TypeScript + production build",
         "Backend unit/integration regressions for changed behavior",
@@ -256,8 +254,7 @@
       "evidence": [
         "verification.md"
       ],
-      "implementation": "UI suite, TypeScript and production build passed; Rust execution blocked",
-      "blocker": "Rust test build stopped by the 8 GiB internal disk floor; restart requires 12 GiB. Executable backend and staging acceptance remain unexecuted. See verification.md."
+      "implementation": "Complete UI suite, TypeScript, production build and daemon library regressions passed; scope and ignored tests in verification.md"
     },
     {
       "id": "D14",
@@ -265,7 +262,7 @@
         "D13"
       ],
       "title": "End-to-end wiring gate",
-      "status": "blocked",
+      "status": "verified",
       "acceptance": [
         "Isolated staging :3002 only; actual matching daemon endpoint and synthetic records",
         "Trace connect/discover, task/security navigation, person inspection, automation review, history and notification actions",
@@ -274,7 +271,7 @@
       "evidence": [
         "verification.md"
       ],
-      "blocker": "Rust test build stopped by the 8 GiB internal disk floor; restart requires 12 GiB. Executable backend and staging acceptance remain unexecuted. See verification.md."
+      "implementation": "Real HTTP/browser gates passed; notifications traced by UI regressions, native installation excluded; interrupted repeat and clean pass recorded in verification.md"
     }
   ]
 }

@@ -22,7 +22,7 @@ import { isBridge, isYou, layoutPeopleGraph, type GraphNode } from './peopleGrap
 import { PersonFace } from './PersonFace';
 import { shouldShowLabel } from './peopleFace';
 import { isQuiet } from './contactAge';
-import { fitPeopleGraph, GRAPH_FOV, insetsAvoiding, LABEL_LIFT, type CameraPose, type Insets, type Rect, type Viewport } from './graphFit';
+import { fitPeopleGraph, GRAPH_FOV, insetsAvoiding, LABEL_LIFT, YOU_MARKER_SIZE_PX, type CameraPose, type Insets, type Rect, type Viewport } from './graphFit';
 
 /** Chrome over the canvas the graph must stay clear of: the filter field at
  *  the top (placed at `space.xl`, ~30px tall, plus a gap). The Key — chip or
@@ -362,32 +362,18 @@ function PersonNode({
   const active = hovered || focused || selected;
   const color = you || bridge || active ? accent : muted;
   const pillVisible = shouldShowLabel({ isYou: you, hovered, focused, selected });
-  // Sphere size, in world units — named apart from the corner-radius token.
-  const nodeRadius = you ? 0.32 : node.relationshipScore !== undefined
-    ? 0.16 + 0.08 * Math.max(0, Math.min(100, node.relationshipScore)) / 100
-    : bridge ? 0.22 : 0.16;
   if (you) {
+    // The fitter reserves pixels for every face, including the hub. A world-
+    // space sphere grew to fill the screen when a sparse graph fitted close
+    // to the camera. Use the same fixed-pixel contract as the other faces.
     return (
       <group position={[node.x, node.y, node.z]}>
-        <mesh
-          onPointerOver={e => { e.stopPropagation(); onHover(node.id); }}
-          onPointerOut={() => onHover(null)}
-        >
-          <sphereGeometry args={[nodeRadius, 24, 24]} />
-          <meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.55} />
-        </mesh>
-        <Html center sprite style={{ pointerEvents: 'none', transform: 'translateY(-18px)' }}>
-          <div style={{
-            fontFamily: font.body,
-            fontSize: textSize.micro,
-            fontWeight: 600,
-            color: '#fff',
-            background: 'rgba(8,10,16,0.78)',
-            borderRadius: radius.xs,
-            padding: `${space.xxs}px ${space.sm}px`,
-            whiteSpace: 'nowrap',
-          }}>
-            {node.name}
+        <Html center sprite style={{ pointerEvents: 'auto' }}>
+          <div
+            onPointerOver={e => { e.stopPropagation(); onHover(node.id); }}
+            onPointerOut={() => onHover(null)}
+          >
+            <YouMarker name={node.name} color={color} />
           </div>
         </Html>
       </group>
@@ -446,5 +432,27 @@ function PersonNode({
         </div>
       </Html>
     </group>
+  );
+}
+
+/** A stable screen-space hub, matching the fitter even at close zoom. */
+export function YouMarker({ name, color }: { name: string; color: string }) {
+  const size = YOU_MARKER_SIZE_PX;
+  return (
+    <div role="img" aria-label={`${name}, center of your network`} style={{
+      width: size, height: size, boxSizing: 'border-box',
+      display: 'grid', placeItems: 'center',
+      fontFamily: font.body,
+      fontSize: textSize.micro,
+      fontWeight: 600,
+      color: '#fff',
+      background: `radial-gradient(circle at 35% 30%, ${color}88, ${color}22)`,
+      border: `2px solid ${color}`,
+      boxShadow: `0 0 12px ${color}55`,
+      borderRadius: '50%',
+      whiteSpace: 'nowrap',
+    }}>
+      {name}
+    </div>
   );
 }

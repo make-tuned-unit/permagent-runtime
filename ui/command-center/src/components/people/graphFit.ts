@@ -83,6 +83,8 @@ export interface FittedGraph {
 /** The view direction the graph was designed for (camera at [0, 7.5, 14]). */
 export const GRAPH_VIEW_DIR: Vec3 = normalize([0, 7.5, 14]);
 export const GRAPH_FOV = 50;
+/** The hub and other faces stay in pixels as the user zooms the graph. */
+export const YOU_MARKER_SIZE_PX = 36;
 /** The cluster chip rides this far above its centroid. */
 export const LABEL_LIFT = 1.6;
 /** Space between two bodies on screen, px. */
@@ -223,7 +225,7 @@ export function chipHalfExtent(name: string): { hw: number; hh: number } {
 
 /** Pixel size of a person face (see PeopleGraphCanvas: 40px, 48 for a bridge). */
 export function faceHalfExtent(node: GraphNode): { hw: number; hh: number } {
-  if (isYou(node)) return { hw: 18, hh: 20 };
+  if (isYou(node)) return { hw: YOU_MARKER_SIZE_PX / 2, hh: YOU_MARKER_SIZE_PX / 2 + 2 };
   const half = (isBridge(node) ? 48 : 40) / 2;
   return { hw: half, hh: half };
 }
