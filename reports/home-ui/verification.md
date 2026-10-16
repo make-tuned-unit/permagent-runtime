@@ -1,7 +1,11 @@
-# Verification — Home and Projects
+# Verification — Home and Projects baseline
+
+**Historical baseline.** The subsequent page-by-page implementation and current gates are tracked in [the UX DAG verification](../ux-dag/verification.md). Statements below describe the earlier Home/Projects slice, not current delivery status.
 
 Source workspace: `/Users/j/Documents/dev/permagent-runtime/.agent-worktrees/home-ui-20261015`, branch `ui/home-20261015`.
-Stack-discovery backend: `/Users/j/Documents/dev/permagent-worktrees/world-production-20261006`, branch `world/production-20261006`.
+Consolidated source and stack-discovery backend: `/Users/j/Documents/dev/permagent-worktrees/world-production-20261006`, branch `world/production-20261006`.
+
+The canonical branch combines the UI commits with the recovered voice changes and the new stack endpoint. The only UI difference from the tested Home worktree is the recovered voice delivery-tag change; its two tests pass again on the canonical branch (`voice-tags-final.log`).
 
 No native installation, deployment, live configuration write, message, recording, or worker launch was performed. The installed application and daemon remained observe-only. Browser fixtures intercept every fetch and replace WebSocket; their data is entirely synthetic.
 

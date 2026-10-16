@@ -1,0 +1,274 @@
+{
+  "version": 1,
+  "source": "../home-ui/APP_UX_REVIEW_2026-10-15.md",
+  "execution": "Sequential dependency order; no node complete until all listed acceptance checks have evidence. Existing passing tests are baseline, not a claim of new E2E acceptance.",
+  "boundaries": [
+    "Live app/profile and :3001 observe-only",
+    "Mutable HTTP acceptance only isolated staging :3002",
+    "External guarded build launcher only",
+    "No install/deploy/send/capture/worker activation"
+  ],
+  "nodes": [
+    {
+      "id": "D00",
+      "depends_on": [],
+      "title": "Research and contracts",
+      "status": "verified",
+      "acceptance": [
+        "All primary pages and 13 Settings pages inventoried; source versus native evidence labeled",
+        "Preserve People centered graph and World; derive available facts; manual corrections remain authoritative"
+      ],
+      "evidence": [
+        "../home-ui/APP_UX_REVIEW_2026-10-15.md"
+      ]
+    },
+    {
+      "id": "D01",
+      "depends_on": [
+        "D00"
+      ],
+      "title": "Home and Projects foundation",
+      "status": "in_progress",
+      "acceptance": [
+        "Bounded previews with full collection destinations",
+        "Detected stack: UI \u2192 authenticated route \u2192 bounded scanner \u2192 source evidence",
+        "Missing, partial, failed, stale response and project-switch regressions"
+      ],
+      "evidence": [
+        "verification.md"
+      ],
+      "implementation": "implemented"
+    },
+    {
+      "id": "D02",
+      "depends_on": [
+        "D00"
+      ],
+      "title": "Truthful loading and notification state",
+      "status": "verified",
+      "acceptance": [
+        "History loading distinct from empty; failed refresh retains existing records",
+        "Opening one notification marks only that item; dismissing tray preserves unread items",
+        "Explicit Mark all read does not resolve decisions"
+      ],
+      "evidence": [
+        "verification.md"
+      ],
+      "implementation": "implemented"
+    },
+    {
+      "id": "D03",
+      "depends_on": [
+        "D01"
+      ],
+      "title": "Watcher meaningful changes",
+      "status": "in_progress",
+      "acceptance": [
+        "Ignore terminal and archived work",
+        "Unchanged evidence produces no model call, memory entry or briefing",
+        "Stable evidence identity and canonical task destinations; failures never claim all clear"
+      ],
+      "evidence": [
+        "verification.md"
+      ],
+      "implementation": "implemented"
+    },
+    {
+      "id": "D04",
+      "depends_on": [
+        "D01",
+        "D02"
+      ],
+      "title": "Projects collection and board",
+      "status": "in_progress",
+      "acceptance": [
+        "Search and active/history scope with truthful counts",
+        "Keyboard alternative to shelving; selected card links retain project",
+        "Keep all tasks reachable and guard actions unchanged"
+      ],
+      "evidence": [
+        "verification.md"
+      ],
+      "implementation": "implemented"
+    },
+    {
+      "id": "D05",
+      "depends_on": [
+        "D02"
+      ],
+      "title": "People read-first inspector",
+      "status": "verified",
+      "acceptance": [
+        "Centered You graph stays primary; list remains available",
+        "Context, meetings, relationships and projects before intentional contact editing",
+        "Unsaved edits and provenance preserved; enrichment and merge remain deliberate"
+      ],
+      "evidence": [
+        "verification.md"
+      ],
+      "implementation": "implemented"
+    },
+    {
+      "id": "D06",
+      "depends_on": [
+        "D02"
+      ],
+      "title": "Automate information architecture",
+      "status": "verified",
+      "acceptance": [
+        "Actual Automations, Activity and Skills views",
+        "Active runs distinct from idle schedules; urgent failures once",
+        "Preserve run/resume/delete/detail wiring and schedule review"
+      ],
+      "evidence": [
+        "verification.md"
+      ],
+      "implementation": "implemented"
+    },
+    {
+      "id": "D07",
+      "depends_on": [
+        "D01",
+        "D02"
+      ],
+      "title": "Grow information architecture",
+      "status": "in_progress",
+      "acceptance": [
+        "Compact selectable actions; configured execution destination",
+        "Separate project/all-project results scopes; uncertainty visible",
+        "Strategy sections, calendar editor and analytics details disclosed intentionally"
+      ],
+      "evidence": [
+        "verification.md"
+      ],
+      "implementation": "implemented"
+    },
+    {
+      "id": "D08",
+      "depends_on": [
+        "D02"
+      ],
+      "title": "Finance information architecture",
+      "status": "verified",
+      "acceptance": [
+        "Household, Holdings and Research selected areas",
+        "Coverage/freshness explicit; empty local ledger not connected portfolio",
+        "Preserve explicit opt-ins and import/trade-recording actions"
+      ],
+      "evidence": [
+        "verification.md"
+      ],
+      "implementation": "implemented"
+    },
+    {
+      "id": "D09",
+      "depends_on": [
+        "D02"
+      ],
+      "title": "Build and History",
+      "status": "verified",
+      "acceptance": [
+        "Current project/run and useful idle state",
+        "Downloads, activity and spend use focused detail/configuration",
+        "History preview adapts to available content width"
+      ],
+      "evidence": [
+        "verification.md"
+      ],
+      "implementation": "implemented"
+    },
+    {
+      "id": "D10",
+      "depends_on": [
+        "D02",
+        "D05"
+      ],
+      "title": "Brain and World",
+      "status": "verified",
+      "acceptance": [
+        "Reproduce graph loading/render issue before assigning cause",
+        "Recoverable graph/list states, selected evidence and accessible alternatives",
+        "World preserves places; authoritative task/decision/result destinations"
+      ],
+      "evidence": [
+        "verification.md"
+      ],
+      "implementation": "implemented"
+    },
+    {
+      "id": "D11",
+      "depends_on": [
+        "D02"
+      ],
+      "title": "Settings all 13 pages",
+      "status": "verified",
+      "acceptance": [
+        "Preferences, Persona, Agents, Memory, Autonomy, Tools, Models, API keys, Devices, Services, Appearance, Shortcuts, Privacy reviewed individually",
+        "Connected/current state first; optional configuration on intent",
+        "Failure/retry, accurate language and existing access enforcement preserved"
+      ],
+      "evidence": [
+        "verification.md"
+      ],
+      "implementation": "implemented"
+    },
+    {
+      "id": "D12",
+      "depends_on": [
+        "D02",
+        "D03"
+      ],
+      "title": "Communication and navigation",
+      "status": "in_progress",
+      "acceptance": [
+        "Stable sidebar destinations, labels and keyboard paths",
+        "Chat/voice/meeting state transitions retain explicit start/send/stop",
+        "Notification event deduplication and canonical decisions remain distinct"
+      ],
+      "evidence": [
+        "verification.md"
+      ],
+      "implementation": "implemented"
+    },
+    {
+      "id": "D13",
+      "depends_on": [
+        "D03",
+        "D04",
+        "D05",
+        "D06",
+        "D07",
+        "D08",
+        "D09",
+        "D10",
+        "D11",
+        "D12"
+      ],
+      "title": "Cross-page regression gate",
+      "status": "in_progress",
+      "acceptance": [
+        "Complete UI suite and TypeScript + production build",
+        "Backend unit/integration regressions for changed behavior",
+        "Dark/light, narrow/desktop, keyboard/focus/reduced-motion and large-data checks"
+      ],
+      "evidence": [
+        "verification.md"
+      ],
+      "implementation": "verification running"
+    },
+    {
+      "id": "D14",
+      "depends_on": [
+        "D13"
+      ],
+      "title": "End-to-end wiring gate",
+      "status": "pending",
+      "acceptance": [
+        "Isolated staging :3002 only; actual matching daemon endpoint and synthetic records",
+        "Trace connect/discover, task/security navigation, person inspection, automation review, history and notification actions",
+        "Record exact commands/results and limitations; fixture tests cannot satisfy real HTTP acceptance"
+      ],
+      "evidence": []
+    }
+  ]
+}
