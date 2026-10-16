@@ -28,7 +28,7 @@
         "D00"
       ],
       "title": "Home and Projects foundation",
-      "status": "in_progress",
+      "status": "blocked",
       "acceptance": [
         "Bounded previews with full collection destinations",
         "Detected stack: UI \u2192 authenticated route \u2192 bounded scanner \u2192 source evidence",
@@ -37,7 +37,8 @@
       "evidence": [
         "verification.md"
       ],
-      "implementation": "implemented"
+      "implementation": "implemented",
+      "blocker": "Rust test build stopped by the 8 GiB internal disk floor; restart requires 12 GiB. Executable backend and staging acceptance remain unexecuted. See verification.md."
     },
     {
       "id": "D02",
@@ -62,7 +63,7 @@
         "D01"
       ],
       "title": "Watcher meaningful changes",
-      "status": "in_progress",
+      "status": "blocked",
       "acceptance": [
         "Ignore terminal and archived work",
         "Unchanged evidence produces no model call, memory entry or briefing",
@@ -71,7 +72,8 @@
       "evidence": [
         "verification.md"
       ],
-      "implementation": "implemented"
+      "implementation": "implemented",
+      "blocker": "Rust test build stopped by the 8 GiB internal disk floor; restart requires 12 GiB. Executable backend and staging acceptance remain unexecuted. See verification.md."
     },
     {
       "id": "D04",
@@ -245,7 +247,7 @@
         "D12"
       ],
       "title": "Cross-page regression gate",
-      "status": "in_progress",
+      "status": "blocked",
       "acceptance": [
         "Complete UI suite and TypeScript + production build",
         "Backend unit/integration regressions for changed behavior",
@@ -254,7 +256,8 @@
       "evidence": [
         "verification.md"
       ],
-      "implementation": "verification running"
+      "implementation": "UI suite, TypeScript and production build passed; Rust execution blocked",
+      "blocker": "Rust test build stopped by the 8 GiB internal disk floor; restart requires 12 GiB. Executable backend and staging acceptance remain unexecuted. See verification.md."
     },
     {
       "id": "D14",
@@ -262,13 +265,16 @@
         "D13"
       ],
       "title": "End-to-end wiring gate",
-      "status": "pending",
+      "status": "blocked",
       "acceptance": [
         "Isolated staging :3002 only; actual matching daemon endpoint and synthetic records",
         "Trace connect/discover, task/security navigation, person inspection, automation review, history and notification actions",
         "Record exact commands/results and limitations; fixture tests cannot satisfy real HTTP acceptance"
       ],
-      "evidence": []
+      "evidence": [
+        "verification.md"
+      ],
+      "blocker": "Rust test build stopped by the 8 GiB internal disk floor; restart requires 12 GiB. Executable backend and staging acceptance remain unexecuted. See verification.md."
     }
   ]
 }

@@ -15,6 +15,8 @@ Canonical branch: `world/production-20261006`, in `/Users/j/Documents/dev/permag
 - `57d8e125`: broader command-center UX, compact subscription label/chevron, preserved centered People graph, loading/failure/draft/unread behavior and synthetic review fixture. Full UI suite: 564 files / 4,622 tests passed; TypeScript passed. Production build and backend gates are recorded separately in the UX DAG receipt.
 - `f54d1a78`: stable Watcher evidence, terminal-task filtering, quiet-review memory and atomic metadata updates; authenticated route regressions plus the explicitly invoked port-3002 HTTP test. Corrected daemon library check passed; executed Rust/HTTP results remain separate gates in the receipt.
 
+- `e2da46f6`: isolated browser acceptance harness uses actual production components and the test-owned daemon on port 3002. It checks persisted project/person edits; execution remains pending until recorded in the UX DAG receipt.
+
 Home/UI work was tested in `/Users/j/Documents/dev/permagent-runtime/.agent-worktrees/home-ui-20261015`. Its Home and Projects changes were cherry-picked into the canonical branch. The canonical branch additionally retains the voice delivery-tag change. The main checkout and unrelated mobile work were not modified.
 
 ## Product decisions
@@ -41,3 +43,7 @@ The canonical broader-page fixture uses port 5200 (`PERMAGENT_REVIEW_UI_PORT=520
 No installation or deployment was performed. `/Applications/Permagent.app`, the live daemon on port 3001 and the live profile remain observe-only. Mutable acceptance work belongs in the established staging lane on port 3002. Do not send messages, start workers, record audio or change live settings while doing a visual review. The paused video work remains paused.
 
 Use the established external build launcher and its disk guards, lane lock, one-job setting and one-hour watchdog. Do not recursively scan or glob the external build volume, weaken the guards, or kill unrelated processes. Build logs are referenced by exact filename in verification. Source reports contain no private-record screenshots; earlier local crawl material and generated logs were excluded from commits.
+
+## Current verification blocker (2026-10-16)
+
+The executable Rust regression build was stopped by the established internal disk floor at 7.91 GiB (child exit 143), before tests ran. The production UI build and corrected daemon library check passed; the complete UI suite passed 4,622 tests. Actual Rust execution and isolated HTTP/browser acceptance remain open. Exact stopped-build log: `/Volumes/PermagentBuilds/permagent/logs/20261016-000441-1017.log`, with matching guard JSON. Internal space must reach the existing 12 GiB startup minimum before retrying. Reuse `run_rust_tests.py` through the external launcher; compiled dependencies remain cached. Read the UX DAG receipt for the browser procedure and exact required persisted values. Do not lower guards or stop unrelated work.
