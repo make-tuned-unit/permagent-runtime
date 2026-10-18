@@ -317,7 +317,7 @@
         "D16"
       ],
       "title": "Complete macOS desktop rebuild",
-      "status": "in_progress",
+      "status": "verified",
       "acceptance": [
         "Fresh release daemon and CLI artifacts recorded from guarded Cargo JSON",
         "Full Tauri app contains current frontend and matching sidecars with verified resources and strict signature",
@@ -325,8 +325,10 @@
       ],
       "evidence": [
         "verification.md",
-        "rebuild_desktop.py"
-      ]
+        "rebuild_desktop.py",
+        "desktop-rebuild-manifest.json"
+      ],
+      "implementation": "Guarded release backend, single frontend/Tauri app build, strict signing/resource/provenance checks and isolated bundled version smoke passed at source 227484e71. Packaged app recorded in desktop-rebuild-manifest.json; not installed or GUI-launched."
     }
   ]
 }

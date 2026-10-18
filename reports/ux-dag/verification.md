@@ -106,7 +106,7 @@ Reproduction: start the guarded runner with `--browser`, wait for readiness, the
 
 D16 and D17 reopen completion for the reported Cursor prompt delay and the missing full desktop rebuild. Cursor now uses its documented initial prompt argument; other harnesses retain readiness-gated delivery. Follow-up delivery must wait for the native PTY write acknowledgement and preserve retry after failure. Focused regressions and actual shell/PTY argument checks passed as recorded below.
 
-The October 16 production build above built the frontend only. A fresh release daemon/CLI build and full Tauri macOS bundle are now in progress. No current desktop build or installation success is claimed until the new artifact passes verification.
+The October 16 production build above built the frontend only. The fresh release daemon/CLI build and full Tauri macOS bundle passed verification. The packaged artifact is recorded below; it has not been installed or GUI-launched.
 
 ### D16 acceptance
 
@@ -118,3 +118,18 @@ The October 16 production build above built the frontend only. A fresh release d
 - **27 Python tests passed** (`python-cursor-final-20261018.log`): 6 DAG, 14 staging-probe, 7 desktop-build orchestration/provenance tests. Probe additions cover malformed private state, symlink refusal, credential-free errors and checking the polling deadline before each read. The socket timeout is not an absolute total request deadline for a trickling peer.
 
 - Full UI regression repeat: **564 files / 4,635 tests passed**, 141.31 seconds (`full-ui-cursor-final-20261018.log`). Final focused rerun above covers the simplified Cursor command after removing unnecessary line splitting. Existing warnings are unchanged; no failing tests.
+
+### D17 build progress
+
+The first full release daemon/CLI build stopped at the unchanged one-hour watchdog before completion: child exit 143, reason `One-hour build deadline reached`. Exact log/receipt: `/Volumes/PermagentBuilds/permagent/logs/20261018-080825-79769.log` and matching `.json`. Minimum free space was 40.11 GiB external and 16.48 GiB internal; no disk floor was reached and no compiler failure was reported. Cached retries used the same guarded command. This attempt is not a passing build or desktop artifact.
+
+
+### D17 acceptance — complete
+
+- The second backend attempt also reached the one-hour watchdog: `20261018-090850-39348.log` / `.json`, exit 143, minimum 37.01 GiB external / 18.32 GiB internal. No compiler error or disk-floor violation. The third attempt **passed**, source `227484e71d44e04e80187f8956f371ca1f6d0de4`: `/Volumes/PermagentBuilds/permagent/logs/20261018-100911-75414.log` and `.json`, exit 0, minimum 34.20 GiB external / 18.07 GiB internal. Both daemon and CLI are Cargo-identified, newly built (`fresh=false`) release executables. Four warning-level diagnostics, zero errors.
+- Backend import and sidecar staging passed. Guarded staging logs in the same directory: `20261018-103541-77155.log`, `20261018-103548-77184.log`, `20261018-103552-77220.log`, `20261018-103556-77281.log`; all matching receipts exit 0.
+- **Full Tauri app build passed**, including one TypeScript/Vite production build (23.17 seconds) to the external dist. Exact guard log/receipt: `/Volumes/PermagentBuilds/permagent/logs/20261018-103701-86795.log` and `.json`, exit 0, minimum 33.58 GiB external / 18.29 GiB internal. Existing chunk-size warnings only. No watchdog or disk threshold was weakened.
+- **Deliverable:** `/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/artifacts/Permagent-227484e71-20261018-104250.app`. Bundle identifier `ai.permagent.desktop`; version 1.31.0. Main executable SHA-256: `7478e040b81e156e6f050b873709c0c1c9b62088498c16d92f166df88593e5b8`.
+- **Verification passed:** deep strict codesign with the existing Developer ID identity; daemon/CLI executable-code sections match the recorded Cargo artifacts; framework/resource hashes and pinned Node/MCP/Whisper inputs match. The exact 332 Vite outputs have recorded hashes, with current source SHA, `w/ Subscription`, Cursor and World markers present. [desktop-rebuild-manifest.json](desktop-rebuild-manifest.json) records separate backend/app source trees, artifact hashes and checks.
+- **Independent final check passed:** root repeated deep strict signature verification, matched the main executable digest, and ran both bundled binaries with a temporary `PERMAGENT_PATH_ROOT` and inherited DYLD paths removed: `permagentd --version` → `permagent-daemon 1.31.0`; `permagent --version` → `1.31.0`. Version smoke evidence is included in the manifest.
+- D00–D17 are verified. The app is **built, not installed**. No native GUI acceptance, real Cursor model execution, live profile mutation or port-3001 change is claimed. Earlier isolated HTTP/browser acceptance and its stated limitations remain separate evidence.
