@@ -25,6 +25,7 @@ flowchart TD
  D14 --> D15[Staging reliability diagnostics]
  D07 & D09 --> D16[Cursor Grow prompt delivery]
  D13 & D16 --> D17[Complete macOS desktop rebuild]
+ D17 --> D18[Authorized dogfood installation]
 ```
 
 Tests must exercise outcomes: retained drafts, exact navigation targets, no unintended writes, stale-response rejection, truthful error states and preservation of unrelated records. Source-string assertions alone do not verify a working route. Existing live data is never a mutable test fixture.
@@ -48,6 +49,6 @@ A failed probe leaves `finish` absent and exits nonzero. Inspect the failure and
 
 `rebuild_desktop.py` runs the backend, stage, app and verify phases sequentially. Native compilation and staging use the existing external guard; no phase installs or launches the live app. Commit product sources before packaging. The backend and UI/Tauri source revisions are recorded separately so documentation/UI changes do not silently invalidate or mislabel a Rust artifact.
 
-A completed external Cargo JSON log may be imported with `backend --cargo-log <exact-log> --source-head <build-start-revision>`. Its adjacent guard receipt must pass. The stage phase checks pinned resources; app builds the frontend and complete Tauri bundle; verify checks signatures, code sections, resources and source provenance. The generated `desktop-rebuild-manifest.json` records the exact deliverable. D17 is verified for the packaged October 18 app; see the manifest and verification receipt for the exact artifact. Installation and native GUI acceptance remain separate.
+A completed external Cargo JSON log may be imported with `backend --cargo-log <exact-log> --source-head <build-start-revision>`. Its adjacent guard receipt must pass. The stage phase checks pinned resources; app builds the frontend and complete Tauri bundle; verify checks signatures, code sections, resources and source provenance. The generated `desktop-rebuild-manifest.json` records the exact deliverable. D17 is verified for the packaged October 18 app; see the manifest and verification receipt for the exact artifact. D18 records the subsequently authorized installation and native Home smoke check; broad live acceptance remains separate.
 
 After a verified build, a UI-only change can reuse the recorded backend/stage artifacts and run `app` then `verify`. The script checks Rust source trees, clean source state, artifact hashes and resource provenance before allowing reuse. A Rust change requires a new backend build; a resource change requires restaging.

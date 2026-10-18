@@ -329,6 +329,24 @@
         "desktop-rebuild-manifest.json"
       ],
       "implementation": "Guarded release backend, single frontend/Tauri app build, strict signing/resource/provenance checks and isolated bundled version smoke passed at source 227484e71. Packaged app recorded in desktop-rebuild-manifest.json; not installed or GUI-launched."
+    },
+    {
+      "id": "D18",
+      "depends_on": [
+        "D17"
+      ],
+      "title": "Authorized dogfood installation",
+      "status": "verified",
+      "acceptance": [
+        "User explicitly authorizes installation; staged app signature and artifact hashes pass before replacement",
+        "Previous app retained for rollback; existing LaunchAgent configuration preserved and restarted with installed backend",
+        "Installed signature and source revision verified; native Home window loads with connected backend"
+      ],
+      "evidence": [
+        "verification.md",
+        "desktop-install-receipt.json"
+      ],
+      "implementation": "Installed verified 227484e71 bundle at /Applications/Permagent.app; preserved previous bundle, restarted existing launchd job, verified HTTP health/source revision and native Home window. No dogfood actions or settings changes performed."
     }
   ]
 }

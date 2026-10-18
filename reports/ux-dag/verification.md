@@ -1,6 +1,6 @@
 # UX DAG implementation and verification
 
-Canonical source: `world/production-20261006` in `/Users/j/Documents/dev/permagent-worktrees/world-production-20261006`. This continues the recovered Claude work. UI checkpoint: `57d8e125`. The live application, live profile and port 3001 are unchanged. No install, deployment, publishing, messages, recordings, pairing or worker activation is part of this verification.
+Canonical source: `world/production-20261006` in `/Users/j/Documents/dev/permagent-worktrees/world-production-20261006`. This continues the recovered Claude work. UI checkpoint: `57d8e125`. The original verification left the live application/profile and port 3001 unchanged. The later user-authorized installation is recorded under D18 below; no publishing, messages, recordings, pairing or manual worker activation was performed.
 
 ## Implemented contracts
 
@@ -133,3 +133,14 @@ The first full release daemon/CLI build stopped at the unchanged one-hour watchd
 - **Verification passed:** deep strict codesign with the existing Developer ID identity; daemon/CLI executable-code sections match the recorded Cargo artifacts; framework/resource hashes and pinned Node/MCP/Whisper inputs match. The exact 332 Vite outputs have recorded hashes, with current source SHA, `w/ Subscription`, Cursor and World markers present. [desktop-rebuild-manifest.json](desktop-rebuild-manifest.json) records separate backend/app source trees, artifact hashes and checks.
 - **Independent final check passed:** root repeated deep strict signature verification, matched the main executable digest, and ran both bundled binaries with a temporary `PERMAGENT_PATH_ROOT` and inherited DYLD paths removed: `permagentd --version` → `permagent-daemon 1.31.0`; `permagent --version` → `1.31.0`. Version smoke evidence is included in the manifest.
 - D00–D17 are verified. The app is **built, not installed**. No native GUI acceptance, real Cursor model execution, live profile mutation or port-3001 change is claimed. Earlier isolated HTTP/browser acceptance and its stated limitations remain separate evidence.
+
+
+## D18 — authorized dogfood installation, 2026-10-18
+
+The user explicitly requested: “Install the new app so I can dogfood it.” This supersedes the earlier installation restriction for this update. The verified `227484e71` artifact is installed at `/Applications/Permagent.app` and open for use.
+
+- Rechecked the source signature/main hash, then staged a complete copy in `/Applications` through the existing guard: `/Volumes/PermagentBuilds/permagent/logs/20261018-114756-90576.log`, exit 0. Staged deep strict signature, main executable, sidecar and resource hashes matched the build manifest before the live service was stopped.
+- Confirmed the old :3001 listener belonged to the existing `ai.permagent.daemon` LaunchAgent and installed executable. The app GUI was not running. Booted out only that job, waited for the old process and listener to exit, renamed the old bundle to `/Applications/.Permagent-rollback-20261018-114756.app`, then moved the verified staged app into place. The same unchanged LaunchAgent plist was bootstrapped afterward.
+- Installed deep strict codesign passed. The installed main hash matches the reviewed build. All three rollback executable hashes match their preinstall baseline. HTTP `/status` returned 200; authenticated `/api/version` reports `227484e71` (previously `89ad8c981`). The sole listener belongs to the new installed daemon; the app process runs from the installed bundle.
+- Native UI smoke passed: the Home window loaded and displayed hub connected. No screenshot/private UI records were saved to the repository. No Grow action, real Cursor model request, recording, message, settings or pairing change was performed. The normal application restart uses the existing profile and configuration.
+- Exact paths, process IDs, baseline hashes and timestamps are in [desktop-install-receipt.json](desktop-install-receipt.json). This is an installation/startup smoke check, not a new full live regression run. D00–D18 are verified.

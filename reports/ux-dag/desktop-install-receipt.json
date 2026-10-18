@@ -1,0 +1,26 @@
+{
+  "source_app": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/artifacts/Permagent-227484e71-20261018-104250.app",
+  "source_head": "227484e71d44e04e80187f8956f371ca1f6d0de4",
+  "destination": "/Applications/Permagent.app",
+  "staged_app": "/Applications/.Permagent-install-20261018-114756.app",
+  "rollback_app": "/Applications/.Permagent-rollback-20261018-114756.app",
+  "original_daemon_pid": 96476,
+  "baseline_api_git_sha": "89ad8c981",
+  "baseline_hashes": {
+    "permagent-app": "13248af41a7ba428da9888fca3432e55d5c3a80ca7e5fde1f410eab69afc7c6d",
+    "permagentd": "ddf036c8c6870a1f55917167af97c0772ab8019bc0f2ee1c57a657a274ad2c46",
+    "permagent": "6eb4da66fd2658d6ba451d71c86897f5741d9ac001096d54b821e0bae37d5723"
+  },
+  "status": "installed_verified",
+  "started_at": "2026-10-18T11:47:56-0300",
+  "installed_at": "2026-10-18T11:48:49-0300",
+  "installed_daemon_pid": 90657,
+  "api_git_sha": "227484e71",
+  "http_status": 200,
+  "app_pid": 90691,
+  "installed_signature": "codesign --deep --strict passed",
+  "rollback_binary_hashes": "match preinstall baseline",
+  "ui_smoke": "Native Home window loaded and reports hub connected; no actions or settings changed",
+  "staging_guard_log": "/Volumes/PermagentBuilds/permagent/logs/20261018-114756-90576.log",
+  "verified_at": "2026-10-18T11:49:38-0300"
+}
