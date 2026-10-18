@@ -88,3 +88,16 @@ The first passing gate used actual production components and real API calls thro
 ## Remaining boundaries
 
 Full native installation and live acceptance are separate, unauthorized steps. The original Brain blank state has not been reproduced with a proven cause; renderer failure and deadline recovery are preventive fixes. Automatic funnel inference, inferred account identity, download semantic classification/durable deduplication and wider connection provisioning remain research recommendations, not implemented automation. No guessed identity or account connection is presented as detected fact.
+
+## Resumed staging diagnostics — 2026-10-18
+
+D15 adds an independent, repeatable HTTP probe for the previously interrupted staging run. It uses only `127.0.0.1:3002`, a three-second socket timeout, private fixture state, explicit synthetic-record identity checks and no redirects. Failure leaves the test's completion marker absent. It checks project, detected stack, task, People, Automate and History reads, then saves and re-reads only the test-owned project's status and person's notes. The daemon independently checks persistence after completion.
+
+- **Passed: 714 polling reads over 240.78 seconds; slowest read 0.070 seconds.** Project/person readbacks passed. Local probe output: `staging-probe-20261018.log` (generated, ignored).
+- **Passed: dedicated daemon HTTP test, 1 passed / 0 failed**, 259.83 seconds. External guard exit 0: `/Volumes/PermagentBuilds/permagent/logs/20261018-075326-59005.log` and matching `.json`. The runner reused the explicitly recorded executable with full source revision `f039d5dcf0484defce3cb7da703697d9aa9c9899`; `git diff 8be925892f24bfd158a80722dc9292158c120d8a HEAD -- crates Cargo.toml Cargo.lock .cargo` was empty. No Rust rebuild or product source change was made. An initial abbreviated-revision invocation was correctly refused before executing tests (`20261018-075313-58693.log`, exit 1); the full-revision invocation above passed.
+- **Passed: 16 Python regression tests**, comprising six DAG tests and ten new probe tests. Coverage includes wrong fixture identity, transport timeout, rejected redirect, dropped persistence, private state, no false completion after failure, fixed staging host/port and credential-free error diagnostics.
+- The owned daemon exited and its private review state was removed by the existing runner. The live app, live profile and port 3001 were unchanged.
+
+This run used the test's interactive hold as an HTTP test fixture; **no fresh browser interaction is claimed**. The earlier browser hang did not recur under these sustained HTTP reads, but its root cause remains unknown. This is additional scoped evidence, not a claim that the earlier failure was fixed. UI/build/backend-suite results above remain the recorded October 16 results; they were not rerun for this diagnostic-only change.
+
+Reproduction: start the guarded runner with `--browser`, wait for readiness, then run `python3 reports/ux-dag/probe_staging.py <printed-private-directory> --seconds 240`. See README for failure handling.

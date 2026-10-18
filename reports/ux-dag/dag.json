@@ -272,6 +272,25 @@
         "verification.md"
       ],
       "implementation": "Real HTTP/browser gates passed; notifications traced by UI regressions, native installation excluded; interrupted repeat and clean pass recorded in verification.md"
+    },
+    {
+      "id": "D15",
+      "depends_on": [
+        "D14"
+      ],
+      "title": "Staging reliability diagnostics",
+      "status": "verified",
+      "acceptance": [
+        "Independent timeout-bounded API probe refuses nonfixture edits and never marks a failed run complete",
+        "Sustained reads plus synthetic project/person persistence checked against isolated :3002",
+        "Exact duration, request count and limitations recorded; no root-cause claim without reproduction"
+      ],
+      "evidence": [
+        "verification.md",
+        "probe_staging.py",
+        "test_probe_staging.py"
+      ],
+      "implementation": "714 reads over 240.78 seconds passed, plus persisted fixture edits and 10 probe regressions; prior browser hang not reproduced or explained"
     }
   ]
 }

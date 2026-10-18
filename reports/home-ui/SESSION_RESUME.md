@@ -51,3 +51,7 @@ The final UI suite passed **564 files / 4,625 tests**. The daemon library suite 
 The real People review exposed a sparse-network rendering bug: the world-space You sphere became enormous when the camera fitted one person. The hub now uses a fixed 36px screen-space marker consistent with the fitter, stays at the network origin and retains hover highlighting. Three regressions and a real browser visual check cover it.
 
 The test artifact was compiled from Rust source at `8be925892f24bfd158a80722dc9292158c120d8a`, with no later Rust changes. The runner supports explicit artifact reuse with a current-revision/clean-Rust check. Read the receipt before reusing an artifact; the check does not independently establish artifact provenance. Synthetic and real staging preview servers on 5200/5201 were stopped after review. The final production UI build is recorded in the DAG receipt; no live installation was performed.
+
+## Resume follow-up — 2026-10-18
+
+Continued the unresolved staging reliability investigation without changing product code. Added `reports/ux-dag/probe_staging.py` and ten regression tests. The independent four-minute probe passed 714 reads (slowest 70 ms), both fixture edit readbacks, and the daemon's own final assertions. All 16 Python tests and the updated D00–D15 DAG completion check passed. Exact receipt: `../ux-dag/verification.md`, October 18 section. The previous browser hang remains unexplained; this sustained HTTP check did not reproduce it and is not a new browser acceptance pass. The live application remains unchanged.
