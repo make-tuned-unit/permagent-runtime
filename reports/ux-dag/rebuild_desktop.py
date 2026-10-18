@@ -30,7 +30,7 @@ TRIPLE = 'aarch64-apple-darwin'
 WHISPER_SHA = '7073e51db7ab02b38cc4fceeac39adc2d7a19beb98badf66aa708f4f0ac71aa9'
 NODE_VERSION = 'v22.22.1'
 RUST_PATHS = ('.cargo', 'crates', 'Cargo.toml', 'Cargo.lock')
-APP_PATHS = ('ui/command-center', 'ui/desktop')
+APP_PATHS = ('ui/command-center', 'ui/desktop', 'ui/analytics-client')
 
 
 def sha(path: Path) -> str:
@@ -260,14 +260,14 @@ def local_resource_machos() -> list[dict]:
             dirs.sort()
             for filename in sorted(files):
                 source = Path(parent) / filename
-                desc = subprocess.run(['file', '-b', str(source)], text=True,
+                desc = subprocess.run(['file', '-b', str(source)], text=True, errors='replace',
                                       stdout=subprocess.PIPE, check=True).stdout
                 if 'Mach-O' in desc:
                     relative = source.relative_to(source_root)
                     result.append({'source': str(source), 'bundle_relative': str(bundle_root / relative),
                                    'sha256': sha(source), 'text_sha256': text_section_sha(source)})
     helper = TAURI / 'audiocap/permagent-audiocap'
-    desc = subprocess.run(['file', '-b', str(helper)], text=True, stdout=subprocess.PIPE, check=True).stdout
+    desc = subprocess.run(['file', '-b', str(helper)], text=True, errors='replace', stdout=subprocess.PIPE, check=True).stdout
     if 'Mach-O' in desc:
         result.append({'source': str(helper), 'bundle_relative': 'Contents/Resources/permagent-audiocap',
                        'sha256': sha(helper), 'text_sha256': text_section_sha(helper)})
@@ -286,7 +286,7 @@ def phase_stage(_: argparse.Namespace) -> None:
         if sha(dest) != arts[name]['sha256']:
             raise RuntimeError(f'copy verification failed for {dest}')
     for script in ('copy-sidecar.sh', 'copy-cli.sh'):
-        subprocess.run([str(RUN_BUILD), str(TAURI / 'scripts' / script)], cwd=ROOT,
+        subprocess.run([str(RUN_BUILD), str(TAURI.parent / 'scripts' / script)], cwd=ROOT,
                        env=env, check=True)
     staged = {}
     for name, path in (
@@ -311,14 +311,15 @@ def vite_command() -> str:
     return f"cd ../command-center && TAURI_ENV_PLATFORM=darwin npm run build -- --outDir {UI_DIST} --manifest"
 
 
-def ui_facts() -> tuple[dict, dict]:
+def ui_facts(source_revision: str) -> tuple[dict, dict]:
     ui_manifest = UI_DIST / '.vite/manifest.json'
     index = UI_DIST / 'index.html'
     if not ui_manifest.is_file() or not index.is_file():
         raise RuntimeError('Tauri beforeBuildCommand did not produce expected external dist and manifest')
     outputs = json.loads(ui_manifest.read_text())
     hashes = {str(index): sha(index), str(ui_manifest): sha(ui_manifest)}
-    markers = {'permagent.world.legacy': False, 'world/vista/': False}
+    markers = {'permagent.world.legacy': False, 'world/vista/': False,
+               'w/ Subscription': False, 'cursor-agent': False, source_revision: False}
     for entry in outputs.values():
         for rel in [entry.get('file'), *entry.get('css', []), *entry.get('assets', [])]:
             if not rel:
@@ -356,6 +357,7 @@ def phase_app(_: argparse.Namespace) -> None:
     # target. Keep the native build in a single outer launcher invocation.
     signing = signing_identity()
     env = guard_env()
+    env['VITE_GIT_SHA'] = app_source_head[:9]
     if signing:
         env['APPLE_SIGNING_IDENTITY'] = signing
     else:
@@ -371,7 +373,7 @@ def phase_app(_: argparse.Namespace) -> None:
     if tree_hashes('HEAD', APP_PATHS) != app_source_trees:
         raise RuntimeError('UI/Tauri source trees changed during app build')
     sign_resource_machos(APP, source_machos, signing)
-    ui_hashes, ui_markers = ui_facts()
+    ui_hashes, ui_markers = ui_facts(app_source_head[:9])
     subprocess.run([str(RUN_BUILD), 'mkdir', '-p', str(ARTIFACTS)], cwd=ROOT,
                    env=guard_env(), check=True)
     packaged = ARTIFACTS / f"Permagent-{app_source_head[:9]}-{time.strftime('%Y%m%d-%H%M%S')}.app"
