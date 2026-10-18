@@ -58,6 +58,20 @@ export const LEGACY_MORNING_LAYOUT: DashboardLayoutData = {
   })),
 };
 
+/** Exact morning_briefing layout shipped by the daemon before the daily Home. */
+export const LEGACY_MORNING_TEMPLATE_LAYOUT: DashboardLayoutData = {
+  cards: [
+    ['henry_status', 0, 0, 12, 2], ['decisions', 0, 2, 5, 4],
+    ['today_focus', 5, 2, 7, 4], ['in_flight', 0, 6, 12, 3],
+    ['calendar', 0, 9, 5, 4], ['todos', 5, 9, 4, 4],
+    ['overnight_digest', 9, 9, 3, 4], ['weather', 0, 13, 3, 2],
+    ['system_stats', 3, 13, 3, 2],
+  ].map(([type, x, y, w, h]) => ({
+    id: String(type), type: String(type),
+    position: { x: Number(x), y: Number(y) }, size: { w: Number(w), h: Number(h) }, visible: true,
+  })),
+};
+
 /** Older daemon defaults, before readiness moved into the header. */
 export const LEGACY_DAEMON_LAYOUTS: DashboardLayoutData[] = [false, true].map(enabled => {
   const card = (type: string, x: number, y: number, w: number, h: number): DashboardCardLayout =>
@@ -79,11 +93,13 @@ export function isDailyHomeLayout(layout: DashboardLayoutData): boolean {
   return layoutSignature(layout) === layoutSignature(DEFAULT_LAYOUT);
 }
 
-/** Exact shipped layouts only; never overwrite a user's arrangement on read. */
+/** Normalize shipped defaults; never persist or overwrite a user's arrangement on read. */
 export function upgradeHomeDefault(layout: DashboardLayoutData): DashboardLayoutData {
   const signature = layoutSignature(layout);
   const defaults = [LEGACY_DEFAULT_LAYOUT, LEGACY_MORNING_LAYOUT,
-    { cards: reflow(LEGACY_MORNING_LAYOUT.cards) }];
+    { cards: reflow(LEGACY_MORNING_LAYOUT.cards) },
+    LEGACY_MORNING_TEMPLATE_LAYOUT,
+    { cards: reflow(LEGACY_MORNING_TEMPLATE_LAYOUT.cards) }];
   // Also recognize exact intermediate versions produced by prior migrations.
   for (let candidate of [...defaults, ...LEGACY_DAEMON_LAYOUTS]) {
     if (layoutSignature(candidate) === signature) return DEFAULT_LAYOUT;

@@ -8,6 +8,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import { font, radius, space, textSize } from '../../styles/tokens';
 import type { ThemeColors } from '../../styles/tokens';
 import { apiFetch } from '../../lib/api';
@@ -27,12 +28,13 @@ import type { FirstPartySetup, FirstPartyStats, LoadState, VerifyResponse } from
 // beacon. No third-party dependency; the daemon is the collector.
 
 export function FirstPartyAnalyticsPanel({
-  colors, projectId, stats, onRefresh,
+  colors, projectId, stats, onRefresh, deltaBadge,
 }: {
   colors: ThemeColors;
   projectId: string;
   stats: FirstPartyStats | null;
   onRefresh: () => void;
+  deltaBadge?: ReactNode;
 }) {
   const [setup, setSetup] = useState<FirstPartySetup | null>(null);
   const [setupState, setSetupState] = useState<LoadState>('loading');
@@ -228,33 +230,41 @@ export function FirstPartyAnalyticsPanel({
     fontSize: textSize.caption,
   } as React.CSSProperties;
 
-  if (setupState === 'error') {
+  if (setupState === 'error' && !stats?.receiving) {
     return (
       <div style={shell}>
-        <ErrorState colors={colors} inline message="Couldn't load self-hosted analytics." onRetry={loadSetup} />
+        <details>
+          <summary style={{ cursor: 'pointer', color: colors.text }}>Source data and installation</summary>
+          <ErrorState colors={colors} inline message="Couldn't load self-hosted analytics." onRetry={loadSetup} />
+        </details>
       </div>
     );
   }
 
   // Not yet enabled: the offer.
-  if (!setup?.enabled) {
+  if (!setup?.enabled && !stats?.receiving) {
     return (
       <div style={shell}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: space.xl }}>
-          <div>
-            <div style={{ fontSize: textSize.small, fontWeight: 600, color: colors.text }}>Self-hosted analytics</div>
-            <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: space.xs / 2 }}>
-              Permagent collects pageviews directly — no third-party account, your data stays here.
+        <div style={{ fontSize: textSize.small, fontWeight: 600, color: colors.text }}>First-party analytics</div>
+        <div style={{ fontSize: textSize.caption, color: colors.textDim }}>No first-party data yet.</div>
+        <details>
+          <summary style={{ cursor: 'pointer', color: colors.text }}>Source data and installation</summary>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: space.xl, marginTop: space.md }}>
+            <div>
+              <div style={{ fontSize: textSize.small, fontWeight: 600, color: colors.text }}>Self-hosted analytics</div>
+              <div style={{ fontSize: textSize.micro, color: colors.textDim, marginTop: space.xs / 2 }}>
+                Permagent collects pageviews directly — no third-party account, your data stays here.
+              </div>
             </div>
+            <Button
+              colors={colors}
+              style={buttonStyle}
+              disabled={setupState === 'loading' || saving}
+              pending={saving}
+              onClick={() => enable()}
+            >{saving ? 'Enabling…' : 'Enable'}</Button>
           </div>
-          <Button
-            colors={colors}
-            style={buttonStyle}
-            disabled={setupState === 'loading' || saving}
-            pending={saving}
-            onClick={() => enable()}
-          >{saving ? 'Enabling…' : 'Enable'}</Button>
-        </div>
+        </details>
       </div>
     );
   }
@@ -290,6 +300,8 @@ export function FirstPartyAnalyticsPanel({
       </div>
 
       {!receiving && (
+        <details>
+          <summary style={{ cursor: 'pointer', color: colors.text }}>Source data and installation</summary>
         <>
           <div style={{ fontSize: textSize.micro, color: colors.textDim, lineHeight: 1.5 }}>
             <b style={{ color: colors.text }}>Step 1.</b> Copy the install brief below and give it to
@@ -303,10 +315,10 @@ export function FirstPartyAnalyticsPanel({
           <div style={{ display: 'flex', gap: space.md }}>
             {/* Each already says "Copied ✓" for itself, so the primitive's tick
                 would be the same confirmation twice. */}
-            <Button colors={colors} style={buttonStyle} flashSuccess={false} onClick={() => copy('prompt', setup.agentPrompt)}>
+            <Button colors={colors} style={buttonStyle} flashSuccess={false} onClick={() => copy('prompt', setup?.agentPrompt)}>
               {copied === 'prompt' ? 'Copied ✓' : 'Copy install brief'}
             </Button>
-            <Button colors={colors} style={buttonStyle} flashSuccess={false} onClick={() => copy('snippet', setup.snippet)}>
+            <Button colors={colors} style={buttonStyle} flashSuccess={false} onClick={() => copy('snippet', setup?.snippet)}>
               {copied === 'snippet' ? 'Copied ✓' : 'Copy snippet only'}
             </Button>
             <Tooltip content="Mint a new drain key — the old one stops working immediately">
@@ -342,7 +354,7 @@ export function FirstPartyAnalyticsPanel({
                 pending={verifying}
                 onClick={() => {
                 // Derive the origin from the drain URL the agent reported.
-                const url = ingestBase.trim() || setup.drainUrl || '';
+                const url = ingestBase.trim() || setup?.drainUrl || '';
                 try { runVerify(new URL(url).origin); } catch { /* not a URL yet */ }
               }}
               >{verifying ? 'Verifying…' : 'Verify install'}</Button>
@@ -357,20 +369,21 @@ export function FirstPartyAnalyticsPanel({
               maxHeight: 260, overflowY: 'auto',
             }}>{verifyResult.summary}</div>
           )}
-          {setup.lastError && (
+          {setup?.lastError && (
             <div style={{ fontSize: textSize.micro, color: colors.danger, fontFamily: font.mono }}>
               Last drain failed: {setup.lastError}
             </div>
           )}
           <div style={{ fontSize: textSize.micro, color: colors.textDim }}>
-            {setup.drainUrl
+            {setup?.drainUrl
               ? `Draining from ${setup.drainUrl}${setup.lastDrainAt ? ` · last checked ${new Date(setup.lastDrainAt).toLocaleTimeString()}` : ' · waiting for the first pass…'}`
               : 'Waiting for a drain URL.'}
           </div>
         </>
+        </details>
       )}
       {receiving && (() => {
-        if (setup.lastError) {
+        if (setup?.lastError) {
           return (
             <div style={{ fontSize: textSize.micro, color: colors.danger, fontFamily: font.mono }}>
               Drain failing: {setup.lastError}
@@ -385,7 +398,7 @@ export function FirstPartyAnalyticsPanel({
         // day because the poller only runs daily (DRAIN_STALE_MS says why), so
         // "drained 6h ago" is the schedule working, not a fault — Refresh
         // above is how you close the gap on demand.
-        const fresh = drainFreshness(stats?.lastDrainAt ?? setup.lastDrainAt);
+        const fresh = drainFreshness(stats?.lastDrainAt ?? setup?.lastDrainAt);
         if (!fresh) return null;
         const lag = stats?.drainLagEvents ?? 0;
         return (
@@ -423,6 +436,7 @@ export function FirstPartyAnalyticsPanel({
             days={dailyAnalyticsSeries(stats.byDay, stats.periodDays ?? 30)}
             colors={colors}
           />
+          {deltaBadge && <div style={{ display: 'flex', justifyContent: 'flex-end' }}>{deltaBadge}</div>}
           {/* Headline figures, each labelled for what it actually is. */}
           <div
             data-testid="fp-stat-tiles"
@@ -488,8 +502,8 @@ export function FirstPartyAnalyticsPanel({
             ] as const).map(([label, rows]) => (
               <div key={label}>
                 <div style={{ ...growLabel(colors), marginBottom: space.xs }}>{label}</div>
-                {rows.length === 0 && <div style={{ fontSize: textSize.micro, color: colors.textDim }}>—</div>}
-                {rows.slice(0, 5).map((r) => (
+                {(rows ?? []).length === 0 && <div style={{ fontSize: textSize.micro, color: colors.textDim }}>—</div>}
+                {(rows ?? []).slice(0, 5).map((r) => (
                   <div key={r.name} style={{ display: 'flex', justifyContent: 'space-between', gap: space.md, fontSize: textSize.micro, color: colors.textMuted, padding: `${space.xs / 2}px 0` }}>
                     <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.name}</span>
                     <span style={{ fontFamily: font.mono, color: colors.text }}>{r.count.toLocaleString()}</span>

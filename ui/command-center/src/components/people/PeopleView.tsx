@@ -27,15 +27,6 @@ import { matchPendingPerson } from './personNavigation';
 
 import { Tooltip } from '../common/Tooltip';
 type PeopleMode = 'graph' | 'list';
-const MODE_KEY = 'permagent-people-mode';
-
-function readMode(): PeopleMode {
-  try {
-    return localStorage.getItem(MODE_KEY) === 'list' ? 'list' : 'graph';
-  } catch {
-    return 'graph';
-  }
-}
 
 /** One calendar import per mount. A dev double-invoked effect (StrictMode) or a
  *  quick remount shares the in-flight/just-finished request instead of POSTing
@@ -55,7 +46,9 @@ function importCalendarOnce(force: boolean): Promise<{ imported: number }> {
 
 export function PeopleView() {
   const { gradient } = useTheme();
-  const [mode, setMode] = useState<PeopleMode>(readMode);
+  // The network is the entry view. List is a temporary working view, so a
+  // previous visit (including the legacy saved List choice) cannot hide it.
+  const [mode, setMode] = useState<PeopleMode>('graph');
   const personDetail = useCommandCenter(s => s.personDetail);
   const closePersonDetail = useCommandCenter(s => s.closePersonDetail);
   const openPersonDetail = useCommandCenter(s => s.openPersonDetail);
@@ -125,7 +118,6 @@ export function PeopleView() {
   }, [pendingPersonNavigation, openPersonDetail, setPendingPersonNavigation]);
 
   const switchMode = (next: PeopleMode) => {
-    try { localStorage.setItem(MODE_KEY, next); } catch { /* ignore */ }
     setMode(next);
   };
 

@@ -4,7 +4,7 @@ import { act } from 'react-dom/test-utils';
 import { createRoot, type Root } from 'react-dom/client';
 
 vi.mock('../../lib/api', () => ({ apiFetch: vi.fn().mockResolvedValue([]) }));
-vi.mock('./PeopleGraphCanvas', () => ({ PeopleGraph: () => null }));
+vi.mock('./PeopleGraphCanvas', () => ({ PeopleGraph: () => <div data-testid="people-network">Your network</div> }));
 
 import { PeopleView } from './PeopleView';
 import { useCommandCenter } from '../../lib/store';
@@ -84,5 +84,18 @@ describe('PeopleView', () => {
     }
     const role = [...panel!.querySelectorAll('label')].find(l => l.textContent?.startsWith('Role'))?.querySelector('input') as HTMLInputElement;
     expect(role.value).toBe('Director of Sales');
+  });
+
+  it('opens Graph despite a legacy List preference, allows List, and returns to Graph on the next visit', async () => {
+    localStorage.setItem('permagent-people-mode', 'list');
+    await act(async () => root.render(<PeopleView />));
+    expect(container.querySelector('[data-testid="people-network"]')).toBeTruthy();
+    const list = [...container.querySelectorAll('button')].find(b => b.textContent === 'List')!;
+    await act(async () => list.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    expect(container.querySelector('[data-testid="people-network"]')).toBeNull();
+    expect(container.querySelector('input[placeholder="Search people…"]')).toBeTruthy();
+    await act(async () => root.render(null));
+    await act(async () => root.render(<PeopleView />));
+    expect(container.querySelector('[data-testid="people-network"]')).toBeTruthy();
   });
 });

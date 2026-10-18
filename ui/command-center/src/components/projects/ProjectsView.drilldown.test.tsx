@@ -47,6 +47,7 @@ vi.mock('../../lib/useGoalEvents', () => ({ useGoalEvents: () => {} }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn(() => Promise.resolve()) }));
 
 import { ProjectsView } from './ProjectsView';
+import { PERSONAL_ID, type Project } from './types';
 import { useCommandCenter } from '../../lib/store';
 import { apiFetch } from '../../lib/api';
 
@@ -64,7 +65,7 @@ vi.stubGlobal('localStorage', {
   clear: () => { storage = {}; },
 });
 
-const project = (id: string, name: string) => ({
+const project = (id: string, name: string): Project => ({
   id, slug: id, name, description: '', status: 'active',
   rootPath: null, siteUrl: null, repoUrl: null, tags: [],
   metadataJson: {}, createdAt: '', updatedAt: '', lastOpenedAt: '',
@@ -225,4 +226,68 @@ it('searches shelved projects and changes status through the existing route with
   await act(async () => { status.value = 'active'; status.dispatchEvent(new Event('change', { bubbles: true })); });
   expect(apiFetchMock.mock.calls.some(([url, opts]) => url === '/api/projects/p42' && opts?.method === 'PATCH' && JSON.parse(opts.body as string).status === 'active')).toBe(true);
   expect(useCommandCenter.getState().currentProjectId).toBeNull();
+});
+
+it('disables a status selector until its PATCH settles, preventing duplicate submissions', async () => {
+  const patchResponse = deferred<unknown>();
+  let patchCalls = 0;
+  apiFetchMock.mockImplementation(((url: string, options?: RequestInit) => {
+    if (url === '/api/projects') return Promise.resolve([project('p42', 'Garden journal')]);
+    if (url === '/api/projects/p42' && options?.method === 'PATCH') {
+      patchCalls += 1;
+      return patchResponse.promise;
+    }
+    return Promise.resolve([]);
+  }) as typeof apiFetch);
+  await renderView();
+
+  const status = container.querySelector<HTMLSelectElement>('[aria-label="Status for Garden journal"]')!;
+  await act(async () => {
+    status.value = 'paused';
+    status.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  expect(status.disabled).toBe(true);
+  expect(status.getAttribute('aria-busy')).toBe('true');
+
+  await act(async () => {
+    status.value = 'archived';
+    status.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  expect(patchCalls).toBe(1);
+
+  await act(async () => { patchResponse.resolve({}); });
+  expect(status.disabled).toBe(false);
+  expect(status.hasAttribute('aria-busy')).toBe(false);
+});
+
+it('groups projects by status and keeps each bounded card control inside its own card', async () => {
+  const personal = { ...project(PERSONAL_ID, 'Personal'), tags: ['default'] };
+  const current = { ...project('active-id', 'Current work'), description: 'A focused project summary',
+    tags: ['one', 'two', 'three', 'four', 'five'] };
+  const paused = { ...project('paused-id', 'Paused work'), status: 'paused' };
+  const archived = { ...project('archived-id', 'Archived work'), status: 'archived' };
+  serveProjects(() => [personal, current, paused, archived]);
+  await renderView();
+
+  expect(container.querySelector('#projects-active-heading')?.textContent).toBe('Active');
+  const activeCard = container.querySelector<HTMLElement>('[aria-label="Open project Current work"]')!
+    .closest<HTMLElement>('.project-collection-card')!;
+  const openControl = activeCard.querySelector('[role="button"]')!;
+  const statusControl = activeCard.querySelector<HTMLSelectElement>('[aria-label="Status for Current work"]')!;
+  expect(statusControl.closest('.project-collection-card')).toBe(activeCard);
+  expect(openControl.contains(statusControl)).toBe(false);
+  expect(activeCard.querySelectorAll('.project-collection-tag')).toHaveLength(4);
+  expect(activeCard.querySelector('.project-collection-tag-more')?.textContent).toBe('+2');
+  expect(container.querySelector('[aria-label="Status for Personal"]')).toBeNull();
+  expect(container.querySelector('[aria-label="Open project Personal"]')?.textContent).toContain('DEFAULT');
+
+  const filter = container.querySelector<HTMLSelectElement>('[aria-label="Filter projects by status"]')!;
+  await act(async () => {
+    filter.value = 'paused';
+    filter.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  expect(container.querySelector('[aria-label="Open project Current work"]')).toBeNull();
+  expect(container.querySelector('[aria-label="Open project Paused work"]')).toBeTruthy();
+  expect(container.querySelector('[aria-label="Open project Archived work"]')).toBeNull();
+  expect(container.textContent).toContain('1 of 4 projects');
 });

@@ -1,5 +1,5 @@
 import {
-  DEFAULT_LAYOUT, LEGACY_DEFAULT_LAYOUT, LEGACY_MORNING_LAYOUT, LEGACY_DAEMON_LAYOUTS, stripRetiredCards, compactLayoutPass, ensureGrowthResultsCard,
+  DEFAULT_LAYOUT, LEGACY_DEFAULT_LAYOUT, LEGACY_MORNING_LAYOUT, LEGACY_MORNING_TEMPLATE_LAYOUT, LEGACY_DAEMON_LAYOUTS, reflow, stripRetiredCards, compactLayoutPass, ensureGrowthResultsCard,
   ensureGrowthCardTallEnough, ensureCalendarCard, ensureCouncilCard,
   type DashboardLayoutData,
 } from './useLayout';
@@ -12,7 +12,8 @@ function signature(layout: DashboardLayoutData): string {
 }
 
 const defaultSignatures = new Set<string>();
-for (const initial of [DEFAULT_LAYOUT, LEGACY_DEFAULT_LAYOUT, LEGACY_MORNING_LAYOUT, ...LEGACY_DAEMON_LAYOUTS]) {
+for (const initial of [DEFAULT_LAYOUT, LEGACY_DEFAULT_LAYOUT, LEGACY_MORNING_LAYOUT, LEGACY_MORNING_TEMPLATE_LAYOUT,
+  { cards: reflow(LEGACY_MORNING_TEMPLATE_LAYOUT.cards) }, ...LEGACY_DAEMON_LAYOUTS]) {
   let layout = initial;
   defaultSignatures.add(signature(layout));
   for (const migrate of [stripRetiredCards, compactLayoutPass, ensureGrowthResultsCard, ensureGrowthCardTallEnough, ensureCalendarCard, ensureCouncilCard]) {

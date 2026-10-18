@@ -254,7 +254,7 @@ export function GrowAnalytics({
       ? (stats?.previousPeriod?.pageviews ?? null)
       : null;
   const reachDelta = computeDelta(pageviews, previousPageviews);
-  const periodDays = fpLive ? (fpStats?.period.days ?? null) : connected ? (stats?.periodDays ?? null) : null;
+  const periodDays = fpLive ? (fpStats?.period?.days ?? null) : connected ? (stats?.periodDays ?? null) : null;
   const leadTile = {
     label: `PAGEVIEWS (${periodDays ?? 30}D)`,
     value: pageviews,
@@ -296,6 +296,24 @@ export function GrowAnalytics({
         : connState === 'error' || fpState === 'error'
           ? 'Analytics source status is unavailable.'
           : 'No source is receiving data yet.';
+  const firstPartyPanel = (
+    <FirstPartyAnalyticsPanel
+      key={`fp:${project.id}`}
+      colors={colors}
+      projectId={project.id}
+      stats={fpStats}
+      onRefresh={() => loadFpStats(project.id)}
+      deltaBadge={fpLive ? (
+        <Chip
+          kind="count"
+          tone={deltaChipTone(reachDelta)}
+          quiet={reachDelta.direction === 'unknown'}
+          data-testid="reach-delta"
+          title={periodDays ? `vs the prior ${periodDays}-day period` : undefined}
+        >{deltaChipText(reachDelta)}</Chip>
+      ) : undefined}
+    />
+  );
 
   return (
     <>
@@ -310,11 +328,15 @@ export function GrowAnalytics({
         {(connState === 'error' || fpState === 'error') && <Button colors={colors} variant="bare" onClick={() => { loadConnection(project.id); loadFpStats(project.id); }}>Retry analytics</Button>}
       </div>
 
+      {/* When live, the chart leads. Until then the source setup stays below
+          the available project metrics. */}
+      {fpLive && firstPartyPanel}
+
       {/* Metric tiles — Reach leads, on its own row and at a larger size, so
           the one number backed by a live source is what the eye lands on
           first (UX_BENCHMARK_RESEARCH §8). The setup/config tiles follow at
           the previous size. */}
-      <div data-testid="metric-tile-lead" style={{ ...growCard(colors, { r: CARD_R, pad: CARD_PAD }), marginBottom: space.xl }}>
+      {!fpLive && <div data-testid="metric-tile-lead" style={{ ...growCard(colors, { r: CARD_R, pad: CARD_PAD }), marginBottom: space.xl }}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: space.md, flexWrap: 'wrap' }}>
           <div style={{ fontFamily: font.display, fontSize: textSize.heading, fontWeight: 700, color: colors.text, fontVariantNumeric: 'tabular-nums' }}>
             {leadTile.value != null ? <AnimatedNumber value={leadTile.value} /> : '—'}
@@ -336,7 +358,7 @@ export function GrowAnalytics({
         </div>
         <div style={{ ...growLabel(colors), marginTop: space.xs }}>{leadTile.label}</div>
         <div style={{ fontSize: textSize.caption, color: colors.textDim, marginTop: space.xs / 2 }}>{leadTile.sub}</div>
-      </div>
+      </div>}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: space.xl }}>
         {tiles.map((t) => (
           <div key={t.label} data-testid="metric-tile" style={growCard(colors, { r: CARD_R, pad: CARD_PAD })}>
@@ -346,6 +368,7 @@ export function GrowAnalytics({
           </div>
         ))}
       </div>
+      {!fpLive && firstPartyPanel}
 
       {/* Funnel */}
       <details style={{ marginTop: space.md }}>
@@ -382,37 +405,6 @@ export function GrowAnalytics({
           ))}
         </div>
       </details>
-      {/* Self-hosted analytics (#23) — the daemon is the collector.
-          KEYED ON THE PROJECT. `loadSetup` refetches on a projectId change and
-          guards stale responses with a generation counter, but the panel's
-          other state does not reset — so after verifying Acme and switching
-          to Beacon, the previous project's PASS was still on screen, telling
-          the user analytics was installed here when it was not (reported
-          2026-08-04). In a surface where every failure is silent, a false
-          "verified" is the worst thing this panel can say. Keying remounts it,
-          which clears the whole class rather than the one field that leaked.
-
-          `fp:` prefix: this panel and `AnalyticsConnectionPanel` below are
-          both keyed on the same `project.id` and sit as siblings in this same
-          fragment (one hidden behind `providersOpen`, but both mounted in the
-          same React children list), so two bare `key={project.id}` collided —
-          "two children with the same key" in dev, and undefined behaviour
-          per React's own docs. The prefix keeps each panel's remount-on-
-          project-switch behaviour (still id-scoped, still changes when the
-          project changes) while making the two keys distinct from each
-          other. See `analyticsPanelScope.test.ts` for the pinned contract. */}
-      <details>
-        <summary style={{ cursor: 'pointer', color: colors.text }}>Source data and installation</summary>
-      <FirstPartyAnalyticsPanel
-        key={`fp:${project.id}`}
-        colors={colors}
-        projectId={project.id}
-        stats={fpStats}
-        onRefresh={() => loadFpStats(project.id)}
-      />
-
-      </details>
-
       {/* Conversion funnel over first-party events — only once the collector
           is live; an empty form on a project with no data is noise. Keyed on
           the project so saved steps and results never leak across a switch

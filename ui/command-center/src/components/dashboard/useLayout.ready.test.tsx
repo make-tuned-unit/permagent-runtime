@@ -4,7 +4,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 const fetcher = vi.hoisted(() => vi.fn());
 vi.mock('../../lib/api', () => ({ apiFetch: fetcher }));
-import { DEFAULT_LAYOUT, useLayout } from './useLayout';
+import { DEFAULT_LAYOUT, LEGACY_MORNING_TEMPLATE_LAYOUT, useLayout } from './useLayout';
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 let root: Root; let host: HTMLDivElement; let resolve: (value: unknown) => void; let reject: (reason: unknown) => void;
 let shownLayout = DEFAULT_LAYOUT;
@@ -32,6 +32,18 @@ it('does not auto-add old cards or write a loaded daily default', async () => {
   await act(async () => { resolve(DEFAULT_LAYOUT); });
   expect(fetcher).toHaveBeenCalledTimes(1);
   expect(fetcher.mock.calls[0][0]).toBe('/api/dashboard/layout');
+});
+
+it('shows the compact daily Home for the exact daemon morning layout without writing preferences', async () => {
+  const legacy = structuredClone(LEGACY_MORNING_TEMPLATE_LAYOUT);
+  const before = JSON.stringify(legacy);
+  await act(async () => { resolve(legacy); });
+
+  expect(shownLayout).toEqual(DEFAULT_LAYOUT);
+  expect(JSON.stringify(legacy)).toBe(before);
+  expect(fetcher).toHaveBeenCalledTimes(1);
+  expect(fetcher.mock.calls[0][0]).toBe('/api/dashboard/layout');
+  expect(fetcher.mock.calls[0][1]?.method).not.toBe('PUT');
 });
 
 it('preserves custom sizes and omitted cards on a fresh device without writing', async () => {

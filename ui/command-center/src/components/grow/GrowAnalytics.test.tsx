@@ -80,16 +80,16 @@ it('clears the previous project metrics and distinguishes unavailable sources fr
       return new Promise((_resolve, reject) => pending.push(reject));
     }
     if (url.endsWith('/analytics/connection')) return Promise.resolve({ connected: false });
-    if (url.endsWith('/analytics/first_party/stats')) return Promise.resolve({ receiving: true, pageviews: 987, deviceSignatures: 100, sessions: 150, byDay: [], period: { days: 30 } });
+    if (url.endsWith('/analytics/first_party/stats')) return Promise.resolve({ receiving: true, pageviews: 987, deviceSignatures: 100, sessions: 150, byDay: [], period: { days: 30 }, topPages: [], topSources: [], topReferrers: [], topCampaigns: [], topEntryPages: [], topEvents: [] });
     if (url.includes('/analytics/first_party/step_options')) return Promise.resolve({ events: [], paths: [], periodDays: 30, includingBots: false });
     if (url.endsWith('/publisher')) return Promise.resolve({ configured: true, channels: { instagram: { integrationId: 'fixture-channel' } } });
     return Promise.resolve({});
   });
   await act(async () => root.render(<GrowAnalytics project={project} posts={[]} colors={colors} />));
   await flush();
-  expect(container.querySelector('[data-testid="metric-tile-lead"]')?.textContent).toContain('987');
+  expect(container.querySelector('[data-testid="fp-stat-tiles"]')?.textContent).toContain('987');
   await act(async () => root.render(<GrowAnalytics project={{ ...project, id: 'p2', name: 'New project' }} posts={[]} colors={colors} />));
-  expect(container.querySelector('[data-testid="metric-tile-lead"]')?.textContent).not.toContain('987');
+  expect(container.querySelector('[data-testid="fp-stat-tiles"]')?.textContent ?? '').not.toContain('987');
   expect(container.textContent).toContain('Checking analytics sources');
   expect(container.textContent).toContain('Connection status unknown');
   expect(container.textContent).not.toContain('No source is receiving');
@@ -98,6 +98,42 @@ it('clears the previous project metrics and distinguishes unavailable sources fr
   expect(container.textContent).toContain('Analytics source status is unavailable');
   expect(container.textContent).not.toContain('No source is receiving');
   expect(Array.from(container.querySelectorAll('button')).some(button => button.textContent === 'Retry analytics')).toBe(true);
+});
+
+it('shows the first-party chart and metrics in the main view without opening setup details', async () => {
+  apiFetch.mockImplementation((url: string) => {
+    if (url.endsWith('/analytics/connection')) return Promise.resolve({ connected: false });
+    if (url.endsWith('/analytics/first_party/stats')) return Promise.resolve({
+      receiving: true,
+      pageviews: 1234,
+      deviceSignatures: 321,
+      sessions: 250,
+      signedUpUsers: 42,
+      signupEventName: 'signup',
+      bounceRate: 0.32,
+      pagesPerSession: 2.4,
+      periodDays: 30,
+      period: { days: 30 },
+      byDay: [{ day: '2026-10-17', pageviews: 18, visitors: 12 }],
+      topPages: [{ name: '/home', count: 900 }],
+      topSources: [], topReferrers: [], topCampaigns: [], topEntryPages: [], topEvents: [],
+      botsExcluded: 0, includingBots: false,
+    });
+    if (url.endsWith('/analytics/first_party')) return Promise.resolve({ enabled: true, drainUrl: 'https://example.test/drain' });
+    if (url.includes('/analytics/first_party/step_options')) return Promise.resolve({ events: [], paths: [], periodDays: 30, includingBots: false });
+    if (url.includes('/publisher')) return Promise.resolve({ configured: true, channels: {} });
+    return Promise.resolve({});
+  });
+
+  await act(async () => root.render(<GrowAnalytics project={project} posts={[]} colors={colors} />));
+  await flush();
+
+  expect(container.querySelector('[data-testid="daily-pageviews-chart"]')).toBeTruthy();
+  expect(container.querySelector('[data-testid="fp-stat-tiles"]')?.textContent).toContain('1,234');
+  expect(container.querySelector('[data-testid="fp-stat-tiles"]')?.textContent).toContain('42');
+  expect(container.textContent).toContain('/home');
+  expect(container.querySelector('[data-testid="metric-tile-lead"]')).toBeNull();
+  expect(Array.from(container.querySelectorAll('details')).every((details) => !details.open)).toBe(true);
 });
 
 it('renders Reach as its own lead tile, ahead of the setup/config tiles', async () => {
@@ -248,7 +284,7 @@ describe('GrowAnalytics — Reach delta chip', () => {
       }
       if (url.includes('/analytics/first_party/stats')) {
         return Promise.resolve({
-          receiving: true, pageviews: 300, deviceSignatures: 120, sessions: 50, byDay: [],
+          receiving: true, pageviews: 300, deviceSignatures: 120, sessions: 50, byDay: [], topPages: [], topSources: [], topReferrers: [], topCampaigns: [], topEntryPages: [], topEvents: [],
           period: { start: '2026-09-01T00:00:00Z', end: '2026-09-26T00:00:00Z', days: 30 },
           previousPeriod: { pageviews: 200, deviceSignatures: 90 },
         });
@@ -265,8 +301,8 @@ describe('GrowAnalytics — Reach delta chip', () => {
     });
     await flush();
 
-    const lead = container.querySelector('[data-testid="metric-tile-lead"]');
-    expect(lead!.textContent).toContain('300');
+    const statsTiles = container.querySelector('[data-testid="fp-stat-tiles"]');
+    expect(statsTiles!.textContent).toContain('300');
     const chip = container.querySelector('[data-testid="reach-delta"]');
     // (300 - 200) / 200 = 50%.
     expect(chip!.textContent).toContain('▲');

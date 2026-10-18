@@ -347,6 +347,84 @@
         "desktop-install-receipt.json"
       ],
       "implementation": "Installed verified 227484e71 bundle at /Applications/Permagent.app; preserved previous bundle, restarted existing launchd job, verified HTTP health/source revision and native Home window. No dogfood actions or settings changes performed."
+    },
+    {
+      "id": "D19",
+      "depends_on": [
+        "D18"
+      ],
+      "title": "Dogfood Home hierarchy",
+      "status": "in_progress",
+      "acceptance": [
+        "Actual shipped morning layout reaches the daily overview without a preference write",
+        "Custom layouts remain intact; rendered daily layout is aligned and bounded"
+      ],
+      "evidence": [
+        "verification.md"
+      ]
+    },
+    {
+      "id": "D20",
+      "depends_on": [
+        "D18"
+      ],
+      "title": "Dogfood Projects organization",
+      "status": "in_progress",
+      "acceptance": [
+        "Status controls stay inside aligned cards with accessible separate navigation",
+        "Dense collections, search/status filtering, narrow widths and status update errors verified"
+      ],
+      "evidence": [
+        "verification.md"
+      ]
+    },
+    {
+      "id": "D21",
+      "depends_on": [
+        "D18"
+      ],
+      "title": "Analytics remains the primary content",
+      "status": "in_progress",
+      "acceptance": [
+        "Chart and real metrics are visible without opening a disclosure",
+        "Installation/configuration remain secondary; loading/error and source truth retained"
+      ],
+      "evidence": [
+        "verification.md"
+      ]
+    },
+    {
+      "id": "D22",
+      "depends_on": [
+        "D18"
+      ],
+      "title": "People opens in Graph",
+      "status": "in_progress",
+      "acceptance": [
+        "A legacy saved List choice cannot hide Graph on entry",
+        "List remains usable and person navigation/inspector work"
+      ],
+      "evidence": [
+        "verification.md"
+      ]
+    },
+    {
+      "id": "D23",
+      "depends_on": [
+        "D19",
+        "D20",
+        "D21",
+        "D22"
+      ],
+      "title": "Dogfood layout release verification",
+      "status": "in_progress",
+      "acceptance": [
+        "Full UI regressions, TypeScript and rendered checks pass",
+        "Rebuilt app provenance/signatures pass; authorized dogfood install and startup verified"
+      ],
+      "evidence": [
+        "verification.md"
+      ]
     }
   ]
 }

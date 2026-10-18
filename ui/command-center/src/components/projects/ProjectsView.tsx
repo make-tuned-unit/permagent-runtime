@@ -16,6 +16,7 @@ import { StateBlock } from '../common/StateBlock';
 import { Chip } from '../common/Chip';
 import { relativeTimeAgo } from '../../lib/time-decay';
 import { useProjectSignals, type ProjectSignal } from './useProjectSignals';
+import './projectsCollection.css';
 
 
 import { Tooltip } from '../common/Tooltip';
@@ -252,7 +253,7 @@ function AllProjectsView({
 projects, onOpenProject, onStatusChange }: {
   projects: Project[];
   onOpenProject: (id: string) => void;
-  onStatusChange: (id: string, status: string) => void;
+  onStatusChange: (id: string, status: string) => Promise<void>;
 }) {
   const { colors } = useTheme();
   const { gradient } = useTheme();
@@ -268,6 +269,7 @@ projects, onOpenProject, onStatusChange }: {
   const [dragOverCol, setDragOverCol] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [query, setQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'paused' | 'archived'>('all');
   const matches = (p: Project) => `${p.name} ${p.description} ${(p.tags ?? []).join(' ')}`.toLowerCase().includes(query.trim().toLowerCase());
 
   const handleDragStart = (e: React.DragEvent, projectId: string) => {
@@ -300,6 +302,8 @@ projects, onOpenProject, onStatusChange }: {
     return new Date(b.lastOpenedAt).getTime() - new Date(a.lastOpenedAt).getTime();
   };
   const active = projects.filter(p => p.status === 'active' && matches(p)).sort(byRecency);
+  const shownActive = statusFilter === 'all' || statusFilter === 'active' ? active : [];
+  const filteredCount = projects.filter(p => (statusFilter === 'all' || p.status === statusFilter) && matches(p)).length;
   const hasShelved = projects.some(p => p.status === 'paused' || p.status === 'archived');
   // P3 (QA 2026-09-24): the grid showed name/description/tags only, with no
   // way to tell which project needed attention without opening it. Fetched
@@ -308,33 +312,46 @@ projects, onOpenProject, onStatusChange }: {
   const signals = useProjectSignals(active.map(p => p.id));
 
   return (
-    <div style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', background: gradient.workspace, color: colors.text, fontFamily: font.body }}>
+    <div className="project-collection-page" style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', background: gradient.workspace, color: colors.text, fontFamily: font.body,
+      '--project-collection-border': colors.border, '--project-collection-surface': colors.surface,
+      '--project-collection-text': colors.text, '--project-collection-muted': colors.textMuted,
+      '--project-collection-drop-border': colors.borderHi, '--project-collection-drop-fill': colors.cyanSoft,
+    } as CSSProperties}>
       <ViewHeader
         title="Projects"
-        subtitle={`${projects.filter(p => p.status === 'active').length} active projects`}
-        actions={<input type="search" aria-label="Search projects" placeholder="Search projects" value={query}
-          onChange={e => setQuery(e.target.value)} style={{ minWidth: 0, width: 200, padding: space.md,
-            borderRadius: radius.md, border: `1px solid ${colors.border}`, background: colors.surface, color: colors.text }} />}
+        subtitle={`${filteredCount} of ${projects.length} projects`}
+        actions={<div className="project-collection-controls">
+          <input type="search" aria-label="Search projects" placeholder="Search name, description, or tags" value={query}
+            onChange={e => setQuery(e.target.value)} />
+          <label className="project-collection-filter">
+            <span>Status</span>
+            <select aria-label="Filter projects by status" value={statusFilter}
+              onChange={e => setStatusFilter(e.target.value as typeof statusFilter)}>
+              <option value="all">All</option><option value="active">Active</option>
+              <option value="paused">Paused</option><option value="archived">Archived</option>
+            </select>
+          </label>
+        </div>}
       />
 
-      <div style={{ flex: 1, overflowY: 'auto', padding: `18px ${space.huge}px` }}>
+      <div className="project-collection-scroll" style={{ flex: 1, overflowY: 'auto', padding: `${space.lg}px ${space.xl}px` }}>
         {/* ACTIVE — the page. Responsive grid, drop target for reactivation. */}
+        {(statusFilter === 'all' || statusFilter === 'active') && <section aria-labelledby="projects-active-heading" className="project-collection-group">
+        <div className="project-collection-group-heading">
+          <div>
+            <h2 id="projects-active-heading">Active</h2>
+            <p>Projects currently in progress</p>
+          </div>
+          <span className="project-collection-count">{active.length}</span>
+        </div>
         <div
+          className={`project-card-grid${dragOverCol === 'active' ? ' is-drop-target' : ''}`}
+          style={{ '--project-collection-drop-border': colors.borderHi, '--project-collection-drop-fill': colors.cyanSoft } as CSSProperties}
           onDragOver={(e) => handleDragOver(e, 'active')}
           onDragLeave={handleDragLeave}
           onDrop={(e) => handleDrop(e, 'active')}
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))',
-            gap: space.xl,
-            borderRadius: radius.lg,
-            padding: space.xs,
-            border: dragOverCol === 'active' ? `1px solid ${colors.borderHi}` : '1px solid transparent',
-            background: dragOverCol === 'active' ? colors.cyanSoft : 'transparent',
-            transition: 'all 150ms',
-          }}
         >
-          {active.map(project => (
+          {shownActive.map(project => (
             <ProjectCard
               key={project.id}
               onStatusChange={status => onStatusChange(project.id, status)}
@@ -344,28 +361,30 @@ projects, onOpenProject, onStatusChange }: {
               onDragStart={(e) => handleDragStart(e, project.id)}
             />
           ))}
-          {active.length === 0 && (
+          {shownActive.length === 0 && (
             <div style={{ gridColumn: '1 / -1' }}>
               <StateBlock
                 tone="empty"
                 title={query.trim() ? "No active projects match" : "No active projects yet"}
-                detail={query.trim() ? 'Try another search, or check the shelves below.' : hasShelved
+                detail={query.trim() ? 'Try another search, or check the other status groups.' : hasShelved
                   ? 'Create one, or drag a project out of the Paused or Archived shelves below to reactivate it.'
                   : 'Create your first project to start organizing goals, people, and documents.'}
               />
             </div>
           )}
         </div>
+        </section>}
 
         {/* PAUSED / ARCHIVED — slim disclosure shelves, also drop targets. */}
-        {SECONDARY_STATUSES.map(col => {
+        {SECONDARY_STATUSES.filter(col => statusFilter === 'all' || statusFilter === col.key).map(col => {
           const colProjects = projects.filter(p => p.status === col.key && matches(p)).sort(byRecency);
           const isOver = dragOverCol === col.key;
-          const isOpen = !!query.trim() || (expanded[col.key] ?? false);
+          const isOpen = statusFilter === col.key || !!query.trim() || (expanded[col.key] ?? false);
           const shelfId = `projects-shelf-${col.key}`;
           return (
             <div
               key={col.key}
+              className="project-collection-group project-shelf"
               onDragOver={(e) => handleDragOver(e, col.key)}
               onDragLeave={handleDragLeave}
               onDrop={(e) => handleDrop(e, col.key)}
@@ -412,11 +431,7 @@ projects, onOpenProject, onStatusChange }: {
                 {isOver && <span style={{ fontSize: 10, color: colors.cyan, marginLeft: 'auto' }}>drop to {col.label.toLowerCase()}</span>}
               </button>
               {isOpen && colProjects.length > 0 && (
-                <div id={shelfId} style={{
-                  display: 'grid',
-                  gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))',
-                  gap: space.lg, padding: `${space.xs}px ${space.xl}px ${space.xl}px`,
-                }}>
+                <div id={shelfId} className="project-card-grid project-shelf-grid">
                   {colProjects.map(project => (
                     <ProjectCard
                       key={project.id}
@@ -440,8 +455,9 @@ projects, onOpenProject, onStatusChange }: {
 }
 
 function ProjectCard({
-project, signal, onOpen, onDragStart, onStatusChange }: {
-  onStatusChange?: (status: string) => void;
+  project, signal, onOpen, onDragStart, onStatusChange,
+}: {
+  onStatusChange?: (status: string) => Promise<void>;
   project: Project;
   /** Open tasks / goals in flight / last activity (P3). Absent while the
    *  fetch is in flight or for a shelved project the grid never fetched — the
@@ -452,12 +468,28 @@ project, signal, onOpen, onDragStart, onStatusChange }: {
   onDragStart: (e: React.DragEvent) => void;
 }) {
   const { colors, reduceMotion } = useTheme();
+  const [statusPending, setStatusPending] = useState(false);
   const isPersonal = project.id === PERSONAL_ID;
   const hasSignal = !!signal && (signal.openTasks > 0 || signal.goalsInFlight > 0 || !!signal.lastActivityAt);
+  const visibleTags = project.tags.slice(0, 3);
+  const remainingTags = project.tags.length - visibleTags.length;
 
   return (
-    <div style={{ minWidth: 0 }}>
+    <article
+      className="project-collection-card"
+      data-reduce-motion={reduceMotion ? 'true' : undefined}
+      style={{
+        '--project-card-surface': colors.surface,
+        '--project-card-border': colors.border,
+        '--project-card-border-hover': colors.borderHi,
+        '--project-card-text': colors.text,
+        '--project-card-muted': colors.textMuted,
+        '--project-card-dim': colors.textDim,
+        '--project-card-inset': colors.fillSubtle,
+      } as CSSProperties}
+    >
     <div
+      className="project-collection-card-open"
       role="button"
       tabIndex={0}
       aria-label={`Open project ${project.name}`}
@@ -465,36 +497,25 @@ project, signal, onOpen, onDragStart, onStatusChange }: {
       onDragStart={onDragStart}
       onClick={onOpen}
       onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen(); } }}
-      style={{
-        padding: `${space.lg}px ${space.xl}px`, borderRadius: radius.md,
-        background: colors.surface,
-        border: `1px solid ${colors.border}`,
-        cursor: 'pointer',
-        transition: reduceMotion ? 'none' : 'all 150ms',
-      }}
-      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.borderHi; }}
-      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.border; }}
-      onFocus={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.borderHi; }}
-      onBlur={e => { (e.currentTarget as HTMLElement).style.borderColor = colors.border; }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: space.sm }}>
+      <div className="project-collection-card-heading">
         {isPersonal && <Chip kind="static" tone="accent">DEFAULT</Chip>}
-        <span style={{ fontSize: textSize.small, fontWeight: 600, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        <span className="project-collection-card-title">
           {project.name}
         </span>
       </div>
-      {project.description && (
-        <div style={{ fontSize: textSize.micro, color: colors.textMuted, marginTop: space.xs, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+      {project.description ? (
+        <div className="project-collection-card-description">
           {project.description}
         </div>
-      )}
+      ) : <div className="project-collection-card-description" aria-hidden="true" />}
       {/* P3 live signal: what's actually in flight, so a reader can tell
           which project needs a look without opening it (NN/g H1, visibility
           of system status; HAX G4, contextually relevant info). Same Chip
           primitive the rest of the app uses for counts, not a hand-rolled
           pill — R6/R7 convergence. */}
-      {hasSignal && (
-        <div data-testid="project-card-signal" style={{ display: 'flex', alignItems: 'center', gap: space.xs, marginTop: space.sm, flexWrap: 'wrap' }}>
+      {hasSignal ? (
+        <div data-testid="project-card-signal" className="project-collection-card-signal">
           {signal!.goalsInFlight > 0 && (
             <Chip kind="count" tone="accent" quiet title={`${signal!.goalsInFlight} goal${signal!.goalsInFlight === 1 ? '' : 's'} in flight`}>
               {signal!.goalsInFlight} goal{signal!.goalsInFlight === 1 ? '' : 's'}
@@ -513,23 +534,40 @@ project, signal, onOpen, onDragStart, onStatusChange }: {
             </Tooltip>
           )}
         </div>
-      )}
-      {project.tags.length > 0 && (
-        <div style={{ display: 'flex', gap: space.xs, marginTop: space.sm, flexWrap: 'wrap' }}>
-          {project.tags.slice(0, 3).map((tag, ti) => (
-            <Chip key={`${tag}-${ti}`} kind="static" quiet>{tag}</Chip>
+      ) : <div className="project-collection-card-signal" aria-hidden="true" />}
+      <div className="project-collection-card-tags" aria-label={project.tags.length ? `${project.tags.length} project tags` : undefined}>
+          {visibleTags.map((tag, ti) => (
+            <Tooltip key={`${tag}-${ti}`} content={tag}>
+              <span className="project-collection-tag">{tag}</span>
+            </Tooltip>
           ))}
-        </div>
+          {remainingTags > 0 && <span className="project-collection-tag project-collection-tag-more">+{remainingTags}</span>}
+      </div>
+    </div>
+    <div className="project-collection-card-footer">
+      {isPersonal || !onStatusChange ? (
+        <span className="project-collection-card-personal">Default workspace</span>
+      ) : (
+        <label className="project-collection-card-status">
+          <span>Status</span>
+          <select aria-label={`Status for ${project.name}`} value={project.status}
+            disabled={statusPending}
+            aria-busy={statusPending || undefined}
+            onChange={async e => {
+              if (statusPending) return;
+              setStatusPending(true);
+              try {
+                await onStatusChange(e.target.value);
+              } finally {
+                setStatusPending(false);
+              }
+            }}>
+            <option value="active">Active</option><option value="paused">Paused</option><option value="archived">Archived</option>
+          </select>
+        </label>
       )}
     </div>
-    {!isPersonal && onStatusChange && <label style={{ display: 'flex', gap: space.md, padding: space.sm, fontSize: textSize.micro, color: colors.textMuted }}>
-      Status
-      <select aria-label={`Status for ${project.name}`} value={project.status} onChange={e => onStatusChange(e.target.value)}
-        style={{ background: colors.surface, color: colors.text, border: `1px solid ${colors.border}`, borderRadius: radius.sm }}>
-        <option value="active">Active</option><option value="paused">Paused</option><option value="archived">Archived</option>
-      </select>
-    </label>}
-    </div>
+    </article>
   );
 }
 

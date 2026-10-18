@@ -3,7 +3,7 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import '../src/index.css';
 import { Dashboard } from '../src/components/dashboard/Dashboard';
-import { DEFAULT_LAYOUT, LEGACY_MORNING_LAYOUT } from '../src/components/dashboard/useLayout';
+import { DEFAULT_LAYOUT, LEGACY_MORNING_LAYOUT, LEGACY_MORNING_TEMPLATE_LAYOUT } from '../src/components/dashboard/useLayout';
 import { useCommandCenter } from '../src/lib/store';
 import { setTheme } from '../src/styles/tokens';
 
@@ -12,7 +12,7 @@ const empty = params.get('state') === 'empty';
 const busy = params.get('state') === 'busy';
 const now = new Date().toISOString();
 const today = new Date().toLocaleDateString('en-CA');
-let layout = structuredClone(params.has('legacy') ? LEGACY_MORNING_LAYOUT : DEFAULT_LAYOUT);
+let layout = structuredClone(params.get('legacy') === 'daemon' ? LEGACY_MORNING_TEMPLATE_LAYOUT : params.has('legacy') ? LEGACY_MORNING_LAYOUT : DEFAULT_LAYOUT);
 localStorage.setItem('permagent-daemon-token', 'synthetic-fixture-not-a-credential');
 // Every fetch is handled locally, including unrecognized routes and writes.
 window.fetch = async (input, init) => {

@@ -77,6 +77,7 @@ vi.mock('./cards/useCardRegistry', () => ({
 }));
 
 import { Dashboard } from './Dashboard';
+import { LEGACY_MORNING_TEMPLATE_LAYOUT, upgradeHomeDefault } from './useLayout';
 import { requestHomeFocus, useAppNavigationRequests } from '../../lib/appNavigationRequests';
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
@@ -123,6 +124,21 @@ async function expandCard(name: string) {
 }
 
 describe('Home focus mode', () => {
+  it('renders the shipped daemon morning layout as the five-card daily Home', () => {
+    layoutCards = upgradeHomeDefault(LEGACY_MORNING_TEMPLATE_LAYOUT).cards;
+    act(() => root.render(<Dashboard />));
+
+    const grid = host.querySelector('[data-testid="home-grid"]')!;
+    expect(grid.classList.contains('pa-home-overview')).toBe(true);
+    expect(host.querySelectorAll('[data-testid^="dashboard-cell-"]')).toHaveLength(5);
+    expect(host.querySelectorAll('[data-testid="dashboard-cell-decisions"]')).toHaveLength(1);
+    expect(host.querySelector('[data-testid="dashboard-cell-today_focus"]')).toBeNull();
+    expect(host.querySelector('[data-testid="dashboard-cell-henry_status"]')).toBeNull();
+    expect(host.querySelector('[data-testid="dashboard-cell-weather"]')).toBeNull();
+    expect(host.querySelector('[data-testid="dashboard-cell-system_stats"]')).toBeNull();
+    expect(host.querySelector('[data-testid="dashboard-cell-in_flight"]')?.getAttribute('style')).toContain('grid-column: span 6');
+  });
+
   it('shows every card in the overview with a labelled, collapsed Expand control', () => {
     for (const [id, name] of [['alpha', 'Alpha'], ['beta', 'Beta'], ['gamma', 'Gamma']]) {
       expect(presentation(id)).toBe('overview');
