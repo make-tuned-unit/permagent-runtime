@@ -49,8 +49,14 @@ vi.mock('@xterm/addon-unicode11', () => ({ Unicode11Addon: class {} }));
 type Invocation = { cmd: string; args?: Record<string, unknown> };
 const invocations: Invocation[] = [];
 let replayData = '';
+let rejectNextFollowUpWrite = false;
 const invoke = vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
   invocations.push({ cmd, args });
+  if (cmd === 'write_to_pty' && typeof args?.data === 'string'
+      && args.data.includes('\x1b[200~') && rejectNextFollowUpWrite) {
+    rejectNextFollowUpWrite = false;
+    throw new Error('PTY closed');
+  }
   if (cmd === 'get_pty_output') return { data: replayData, seq: 0 };
   if (cmd === 'spawn_pty_session') return { session_id: 'pty-fresh', cwd: '/tmp' };
   return undefined;
@@ -66,6 +72,7 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: (c: string, a?: Record<string, 
 vi.mock('@tauri-apps/api/event', () => ({ listen: (e: string, h: (e: { payload: unknown }) => void) => listen(e, h) }));
 
 import { Terminal } from './Terminal';
+import { CODING_AGENTS, codingAgentLaunchCommand } from '../grow/codingAgents';
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -84,6 +91,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   invocations.length = 0;
   replayData = '';
+  rejectNextFollowUpWrite = false;
   invoke.mockClear();
   listen.mockClear();
   ptyDataHandler = null;
@@ -130,6 +138,28 @@ function followUpWrites() {
 }
 
 describe('Terminal follow-up delivery (wired)', () => {
+  it('launches Cursor with the Grow directive as an initial argument and no follow-up paste', async () => {
+    const cursor = CODING_AGENTS.find(agent => agent.id === 'cursor')!;
+    const directive = 'Review the Grow action and implement it in this project.';
+    const command = codingAgentLaunchCommand(cursor, directive);
+    act(() => {
+      root.render(
+        <Terminal sessionId={null} isVisible initialCommand={command} />,
+      );
+    });
+    await flushAsyncSetup();
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(299); });
+    expect(writeToPtyCalls()).toEqual([]);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(writeToPtyCalls().map(call => call.args?.data)).toEqual([`${command}\n`]);
+    expect(followUpWrites()).toEqual([]);
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(followUpWrites()).toEqual([]);
+    expect(container.querySelector('[role="status"]')).toBeNull();
+  });
+
   it('does not deliver the follow-up before a readiness marker arrives', async () => {
     act(() => {
       root.render(
@@ -202,6 +232,27 @@ describe('Terminal follow-up delivery (wired)', () => {
     expect(delivered[0].args?.data).toBe('\x1b[200~do the thing\x1b[201~\r');
 
     // The chip clears once delivery happens.
+    expect(container.querySelector('[role="status"]')).toBeNull();
+  });
+
+  it('keeps the chip after a failed PTY write and lets Send now retry', async () => {
+    act(() => {
+      root.render(
+        <Terminal sessionId={null} isVisible initialCommand="claude" followUpInput="do the thing" />,
+      );
+    });
+    await flushAsyncSetup();
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    rejectNextFollowUpWrite = true;
+
+    const sendNow = () => Array.from(container.querySelectorAll('button'))
+      .find(b => /send now/i.test(b.textContent || ''))!;
+    await act(async () => { sendNow().click(); await flushAsyncSetup(); });
+    expect(followUpWrites()).toHaveLength(1);
+    expect(container.querySelector('[role="status"]')?.textContent).toMatch(/not delivered/i);
+
+    await act(async () => { sendNow().click(); await flushAsyncSetup(); });
+    expect(followUpWrites()).toHaveLength(2);
     expect(container.querySelector('[role="status"]')).toBeNull();
   });
 

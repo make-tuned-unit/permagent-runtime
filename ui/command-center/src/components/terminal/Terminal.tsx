@@ -174,9 +174,8 @@ function NativeTerminal({ sessionId, onSessionSpawned, onTitleChange, onCwdChang
         if (!follow || !api) return;
         followUpDeliveryRef.current = createFollowUpDelivery({
           text: follow,
-          write: (d) => {
-            void api.invoke('write_to_pty', { sessionId: ptySessionId, data: d }).catch(() => {});
-          },
+          write: (d) => api.invoke('write_to_pty', { sessionId: ptySessionId, data: d })
+            .then(() => undefined),
           onPending: () => setPendingPrompt(follow),
           onSent: () => {
             setPendingPrompt(null);

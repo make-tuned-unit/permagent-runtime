@@ -54,6 +54,21 @@ export function codingAgentByCommand(command: string): CodingAgent | undefined {
   return CODING_AGENTS.find((agent) => agent.command === command);
 }
 
+/**
+ * Cursor accepts an initial prompt as a positional CLI argument. Use that
+ * entry point for Grow dispatch so the prompt is present when the CLI starts,
+ * even when its TUI does not emit one of our readiness markers. POSIX single
+ * quoting keeps the full directive a single argument, including quotes and
+ * newlines. Other harnesses keep their existing readiness-gated paste path.
+ */
+export function codingAgentLaunchCommand(agent: CodingAgent, prompt: string): string {
+  if (agent.id !== 'cursor') return agent.command;
+  const quotedPrompt = `'${prompt.replace(/'/g, `'\\''`)}'`;
+  // `--` prevents a directive that begins with `-` from being parsed as an
+  // option by the CLI. It is consumed by the CLI parser, not part of prompt.
+  return `${agent.command} -- ${quotedPrompt}`;
+}
+
 const NO_ROOT = 'Add a root path to launch a terminal here.';
 
 /** Tooltip on a Projects launch button. Root-path gate wins; otherwise the cost policy. */

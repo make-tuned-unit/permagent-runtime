@@ -19,7 +19,7 @@ import { Button } from '../common/Button';
 import { Tooltip } from '../common/Tooltip';
 import type { Project } from '../projects/types';
 import { codingAgentDirective } from './codingAgentDirective';
-import { CODING_AGENTS, codingAgentById, codingAgentSelectLabel } from './codingAgents';
+import { CODING_AGENTS, codingAgentById, codingAgentLaunchCommand, codingAgentSelectLabel } from './codingAgents';
 import { growSmall } from './growStyles';
 import { ARCHIVABLE, categoryColor, verdictMeta, type ActionLane } from './growthWindows';
 import type { GrowthAction } from './growTypes';
@@ -182,13 +182,16 @@ export function ActionCard({
     if (!agent || !project.rootPath) return;
     setSending(true);
     const display = agent.command.split(' ')[0] || agent.label;
+    const cursorPromptArg = agent.id === 'cursor';
     // Queue the launch before switching workspaces: if Build mounts in the
     // same tick, it must already see the pending payload.
     setPendingTerminalLaunch({
       rootPath: project.rootPath,
       label: `${project.slug} · ${display} · grow`,
-      command: agent.command,
-      followUpInput: directive,
+      command: codingAgentLaunchCommand(agent, directive),
+      // Cursor accepts an initial prompt as a CLI argument. The other agents
+      // use Terminal's readiness-gated bracketed-paste delivery.
+      followUpInput: cursorPromptArg ? undefined : directive,
       growthAction: actionId ? { projectId: project.id, actionId } : undefined,
     });
     const opened = navigateToTool('build');

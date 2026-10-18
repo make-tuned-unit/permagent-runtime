@@ -37,6 +37,7 @@ vi.mock('../../lib/api', () => ({
 
 import { GrowActions } from './GrowActions';
 import { getThemedColors } from '../../styles/tokens';
+import { useCommandCenter } from '../../lib/store';
 import type { Project } from '../projects/types';
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
@@ -116,6 +117,7 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   container.remove();
+  localStorage.removeItem('grow.sendAgent.p1');
 });
 
 async function render(ui: React.ReactElement) {
@@ -864,6 +866,30 @@ describe('the coding-agent prompt', () => {
     expect(container.querySelector('select[aria-label="Coding agent"]')).toBeTruthy();
     expect(maybeButton('Send')).toBeTruthy();
     expect(maybeButton('Copy')).toBeTruthy();
+  });
+
+  it('starts Cursor with the exact directive and does not queue a duplicate follow-up paste', async () => {
+    localStorage.setItem('grow.sendAgent.p1', 'cursor');
+    const cursorProject = { ...project, rootPath: '/tmp/project with spaces' };
+    routeTo(payload({
+      actions: [action({
+        title: "Publish user's comparison; $(touch /tmp/nope)",
+        artifactKind: 'post',
+        artifact: "It's multiline\n$(this stays prompt text)",
+        category: 'seo',
+      })],
+    }));
+    await render(<GrowActions project={cursorProject} colors={colors} />);
+    await act(async () => { button('SEO (1)').click(); });
+    await act(async () => { button('Send').click(); });
+
+    const launch = useCommandCenter.getState().pendingTerminalLaunch;
+    expect(launch?.command).toContain("cursor-agent -- '");
+    expect(launch?.command).toContain("'\\''");
+    expect(launch?.command).toContain('$(this stays prompt text)');
+    expect(launch?.followUpInput).toBeUndefined();
+    expect(launch?.growthAction).toEqual({ projectId: 'p1', actionId: 'act-1' });
+    expect(launch?.rootPath).toBe('/tmp/project with spaces');
   });
 });
 

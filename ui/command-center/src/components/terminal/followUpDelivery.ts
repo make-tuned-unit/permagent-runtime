@@ -129,7 +129,7 @@ export interface FollowUpDelivery {
 export function createFollowUpDelivery(opts: {
   text: string;
   /** Writes the bracketed-paste payload to the PTY. */
-  write: (data: string) => void;
+  write: (data: string) => void | Promise<void>;
   /** Ceiling reached without readiness — surface the prompt to the user. */
   onPending: () => void;
   /** Delivered — clear any pending UI. */
@@ -148,14 +148,23 @@ export function createFollowUpDelivery(opts: {
   let scrollRegionReserved = false;
   let carry = '';
   let sent = false;
+  let sending = false;
+  let writeFailed = false;
+  let pendingShown = false;
   let cancelled = false;
   let settleTimer: ReturnType<typeof setTimeout> | null = null;
   let ceilingTimer: ReturnType<typeof setTimeout> | null = ceilingMs > 0 ? setTimeout(() => {
     ceilingTimer = null;
     if (sent || cancelled) return;
-    console.warn('[terminal] follow-up prompt not delivered within %dms — showing pending chip', ceilingMs);
-    onPending();
+    showPending();
   }, ceilingMs) : null;
+
+  const showPending = () => {
+    if (pendingShown || sent || cancelled) return;
+    pendingShown = true;
+    console.warn('[terminal] follow-up prompt not delivered — showing pending chip');
+    onPending();
+  };
 
   const drivesFullScreenSurface = () =>
     enabledModes.has(ALT_SCREEN_MODE) ||
@@ -176,19 +185,43 @@ export function createFollowUpDelivery(opts: {
     }
   };
 
-  const deliver = () => {
-    if (sent || cancelled) return;
-    sent = true;
+  const deliver = (manualRetry = false) => {
+    if (sent || sending || cancelled || (writeFailed && !manualRetry)) return;
+    sending = true;
     clearSettle();
-    if (ceilingTimer !== null) {
-      clearTimeout(ceilingTimer);
-      ceilingTimer = null;
+
+    const complete = () => {
+      sending = false;
+      if (cancelled || sent) return;
+      sent = true;
+      if (ceilingTimer !== null) {
+        clearTimeout(ceilingTimer);
+        ceilingTimer = null;
+      }
+      onSent();
+    };
+    const failed = () => {
+      sending = false;
+      if (cancelled || sent) return;
+      // A failed write can have an ambiguous transport outcome. Do not retry
+      // automatically on later readiness transitions; only an explicit user
+      // action may resend the prompt.
+      writeFailed = true;
+      // A failed PTY write is still pending. Keep the prompt and offer the
+      // same explicit retry surface used when readiness was never observed.
+      showPending();
+    };
+
+    try {
+      const result = write(`\x1b[200~${text}\x1b[201~\r`);
+      if (result && typeof result.then === 'function') {
+        void result.then(complete, failed);
+      } else {
+        complete();
+      }
+    } catch {
+      failed();
     }
-    write(`\x1b[200~${text}\x1b[201~\r`);
-    // If the ceiling already fired, `onPending` put a chip up — clear it now
-    // that delivery actually happened. If it never fired, this is a harmless
-    // second "all clear" the caller is free to no-op on.
-    onSent();
   };
 
   const armSettle = () => {
@@ -262,7 +295,7 @@ export function createFollowUpDelivery(opts: {
 
   return {
     onData,
-    sendNow: () => deliver(),
+    sendNow: () => deliver(true),
     cancel: () => {
       if (cancelled || sent) return;
       cancelled = true;

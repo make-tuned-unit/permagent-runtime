@@ -35,7 +35,7 @@ function make(overrides?: Partial<Parameters<typeof createFollowUpDelivery>[0]>)
   const sentCalls: number[] = [];
   const delivery = createFollowUpDelivery({
     text: 'do the thing',
-    write: (d) => writes.push(d),
+    write: (d) => { writes.push(d); },
     onPending: () => pendingCalls.push(1),
     onSent: () => sentCalls.push(1),
     ...overrides,
@@ -162,6 +162,79 @@ describe('createFollowUpDelivery', () => {
     delivery.onData('\x1b[?2004h');
     vi.advanceTimersByTime(FOLLOW_UP_SETTLE_MS);
     expect(writes).toEqual([EXPECTED_PAYLOAD]); // still just the one
+  });
+
+  it('waits for an asynchronous PTY write before acknowledging delivery', async () => {
+    let resolveWrite!: () => void;
+    const write = vi.fn(() => new Promise<void>((resolve) => { resolveWrite = resolve; }));
+    const { delivery, sentCalls } = make({ write });
+
+    delivery.sendNow();
+    expect(write).toHaveBeenCalledTimes(1);
+    expect(sentCalls).toEqual([]);
+    // Repeated clicks while the native write is pending cannot duplicate it.
+    delivery.sendNow();
+    expect(write).toHaveBeenCalledTimes(1);
+
+    resolveWrite();
+    for (let i = 0; i < 4; i++) await Promise.resolve();
+    expect(sentCalls).toEqual([1]);
+  });
+
+  it('keeps a failed asynchronous write pending and permits an explicit retry', async () => {
+    const write = vi.fn()
+      .mockRejectedValueOnce(new Error('closed PTY'))
+      .mockResolvedValueOnce(undefined);
+    const { delivery, pendingCalls, sentCalls } = make({ write });
+
+    delivery.sendNow();
+    for (let i = 0; i < 4; i++) await Promise.resolve();
+    expect(pendingCalls).toEqual([1]);
+    expect(sentCalls).toEqual([]);
+
+    delivery.sendNow();
+    expect(write).toHaveBeenCalledTimes(2);
+    for (let i = 0; i < 4; i++) await Promise.resolve();
+    expect(sentCalls).toEqual([1]);
+  });
+
+  it('does not retry an ambiguously failed readiness write on later PTY output', async () => {
+    const write = vi.fn()
+      .mockRejectedValueOnce(new Error('closed PTY'))
+      .mockResolvedValueOnce(undefined);
+    const { delivery, pendingCalls, sentCalls } = make({ write });
+
+    delivery.onData(READY_MARKER);
+    vi.advanceTimersByTime(FOLLOW_UP_SETTLE_MS);
+    for (let i = 0; i < 4; i++) await Promise.resolve();
+    expect(write).toHaveBeenCalledTimes(1);
+    expect(pendingCalls).toEqual([1]);
+
+    // A later TUI exit and re-entry is another readiness edge, but it must not
+    // automatically repeat a paste whose first write may have been partial.
+    delivery.onData('\x1b[?1049l');
+    delivery.onData(READY_MARKER);
+    vi.advanceTimersByTime(FOLLOW_UP_SETTLE_MS);
+    expect(write).toHaveBeenCalledTimes(1);
+    expect(sentCalls).toEqual([]);
+
+    delivery.sendNow();
+    expect(write).toHaveBeenCalledTimes(2);
+    for (let i = 0; i < 4; i++) await Promise.resolve();
+    expect(sentCalls).toEqual([1]);
+  });
+
+  it('does not acknowledge a write that resolves after cancellation', async () => {
+    let resolveWrite!: () => void;
+    const write = vi.fn(() => new Promise<void>((resolve) => { resolveWrite = resolve; }));
+    const { delivery, sentCalls, pendingCalls } = make({ write });
+
+    delivery.sendNow();
+    delivery.cancel();
+    resolveWrite();
+    for (let i = 0; i < 4; i++) await Promise.resolve();
+    expect(sentCalls).toEqual([]);
+    expect(pendingCalls).toEqual([]);
   });
 
   it('sendNow() after cancel() is a no-op', () => {
