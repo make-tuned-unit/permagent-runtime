@@ -1,0 +1,42 @@
+{
+  "source_app": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/artifacts/Permagent-68e1dfd8d-20261018-191347.app",
+  "source_head": "68e1dfd8d575551add47f90f756159c1619977b4",
+  "backend_source_head": "227484e71d44e04e80187f8956f371ca1f6d0de4",
+  "destination": "/Applications/Permagent.app",
+  "staged_app": "/Applications/.Permagent-install-20261018-191835.app",
+  "rollback_app": "/Applications/.Permagent-rollback-20261018-191835.app",
+  "original_daemon_pid": 7563,
+  "baseline_api_git_sha": "227484e71",
+  "baseline_hashes": {
+    "permagent-app": "cfe2a2caa06cb1a6080d06fde8656b52ea8da03497b7aebe2966df4098eecfa0",
+    "permagentd": "e0f9230f22efde3902e9c18ac274d5a70ae5b8a609290ecf90327b6f85741118",
+    "permagent": "5b08e1706df9e4984a7525b23d95569c2e5e0f3730a375645c657d107fd63028"
+  },
+  "launchagent_sha256": "5444ce9470dce2e17153ed8eb9c06b45a860839dd66d8f95dc0425f9a1dff8bf",
+  "status": "installed_native_verified",
+  "started_at": "2026-10-18T19:18:35-0300",
+  "staging_guard_log": "/Volumes/PermagentBuilds/permagent/logs/20261018-191835-58620.log",
+  "installed_at": "2026-10-18T19:18:50-0300",
+  "installed_daemon_pid": 58711,
+  "http_status": 200,
+  "api_git_sha": "227484e71",
+  "installed_main_sha256": "f9eca729783b6aba4967d9a4aea3ce7020eafb67d5aa397d503921524edd5c4d",
+  "installed_signature": "codesign --deep --strict passed",
+  "rollback_binary_hashes": "match preinstall baseline",
+  "installed_gui_pid": 59731,
+  "native_verified_at": "2026-10-18T19:20:36-0300",
+  "native_checks": {
+    "home": "Loaded with Henry hub connected",
+    "finance_world": "Research > View in World selected The Financier and opened Agent desk; scene camera focused on agent",
+    "world_readiness": "First entry loading notice cleared; Day lighting applied and rendered scene; no Retry needed in this pass",
+    "history": "Sessions, Downloads, Activity, Spend exposed selected tab and matching named container; sessions loaded; Spend rendered visually; prior intermittent AX omission did not reproduce",
+    "grow": "Actions, Results, Strategy, Calendar, Analytics each opened and rendered truthful empty states for selected project; no generation/measurement/publication submitted",
+    "people": "Opened Graph with You at center",
+    "final_view": "Projects collection, sidebar collapsed, original dark theme"
+  },
+  "limitations": [
+    "Not exhaustive live external-action acceptance",
+    "No real model/harness request, message/publication, recording, financial execution, credential or pairing change",
+    "Earlier intermittent History accessibility-tree issue has no confirmed root cause"
+  ]
+}

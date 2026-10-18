@@ -31,6 +31,11 @@ flowchart TD
  D18 --> D21[Analytics focus]
  D18 --> D22[People Graph default]
  D19 & D20 & D21 & D22 --> D23[Dogfood regressions / rebuild / install]
+ D23 --> D24[Functional flow inventory]
+ D24 --> D25[Interaction fixes / regressions]
+ D24 --> D26[Daemon / real browser persistence]
+ D24 --> D27[Native functional walkthrough]
+ D25 & D26 & D27 --> D28[Functional audit release gate]
 ```
 
 Tests must exercise outcomes: retained drafts, exact navigation targets, no unintended writes, stale-response rejection, truthful error states and preservation of unrelated records. Source-string assertions alone do not verify a working route. Existing live data is never a mutable test fixture.

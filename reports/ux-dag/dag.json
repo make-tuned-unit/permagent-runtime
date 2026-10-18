@@ -486,14 +486,16 @@
         "D24"
       ],
       "title": "Native functional walkthrough",
-      "status": "in_progress",
+      "status": "verified",
       "acceptance": [
         "Primary native views and representative cross-view flows checked",
         "Observed failures and recovery limits recorded truthfully"
       ],
       "evidence": [
-        "../flow-audit-20261018/README.md"
-      ]
+        "../flow-audit-20261018/README.md",
+        "../flow-audit-20261018/desktop-install-receipt.json"
+      ],
+      "implementation": "Primary native views checked before fixes; installed68e post-build Finance-to-Financier, first World readiness, all History/Grow tabs, Home connection, People Graph and Projects passed. Intermittent pre-build History AX omission remains unproven; external actions not executed."
     },
     {
       "id": "D28",
@@ -503,14 +505,17 @@
         "D27"
       ],
       "title": "Functional audit release gate",
-      "status": "in_progress",
+      "status": "verified",
       "acceptance": [
         "Full UI regressions and TypeScript pass for integrated sources",
         "Any product fixes are rebuilt, verified and installed with rollback"
       ],
       "evidence": [
-        "../flow-audit-20261018/README.md"
-      ]
+        "../flow-audit-20261018/README.md",
+        "desktop-rebuild-manifest.json",
+        "../flow-audit-20261018/desktop-install-receipt.json"
+      ],
+      "implementation": "4657 UI tests and TypeScript passed; unchanged-source daemon suite1208passed and isolated real browser persistence passed. Signed68e UI-only rebuild verified and installed with rollback. Disk-floor copy refusal recovered under unchanged guards; no recompilation or guard bypass."
     }
   ]
 }
