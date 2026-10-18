@@ -57,7 +57,7 @@ describe('CODING_AGENTS', () => {
     expect(codingAgentLaunchCommand(claude, 'Fix it')).toBe('claude');
   });
 
-  it('round-trips a long directive through zsh as one literal argv without running shell syntax', () => {
+  it('round-trips a long directive through a POSIX shell as one literal argv without running shell syntax', () => {
     const cursor = CODING_AGENTS.find(a => a.id === 'cursor')!;
     const temp = mkdtempSync(join(tmpdir(), 'grow-cursor-argv-'));
     const capturePath = join(temp, 'argv.json');
