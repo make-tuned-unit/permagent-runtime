@@ -120,12 +120,32 @@ describe('Home first action', () => {
 it('daily overview keeps attention, commitments and activity in order without saving', async () => {
   fixture.sessions = 3;
   await render();
-  const grid = host.querySelector<HTMLElement>('[data-testid="home-grid"]')!;
-  expect(grid.classList.contains('pa-home-overview')).toBe(true);
-  expect(grid.style.gridAutoFlow).toBe('row');
-  expect(grid.style.gridAutoRows).toBe('auto');
-  expect([...grid.querySelectorAll('h2')].map(el => el.textContent)).toEqual(['Today', 'Activity']);
-  expect([...grid.querySelectorAll('[data-home-section]')].map(el => el.getAttribute('data-home-section')))
-    .toEqual(['attention', 'today', 'today', 'activity', 'activity']);
+  const geometry = () => {
+    const grid = host.querySelector<HTMLElement>('[data-testid="home-grid"]')!;
+    expect(grid.classList.contains('pa-home-overview')).toBe(true);
+    expect(grid.style.gridAutoFlow).toBe('row');
+    expect(grid.style.gridAutoRows).toBe('auto');
+    expect([...grid.querySelectorAll('h2')].map(el => el.textContent)).toEqual(['Today', 'Activity']);
+    expect([...grid.querySelectorAll('[data-home-section]')].map(el => el.getAttribute('data-home-section')))
+      .toEqual(['attention', 'today', 'today', 'activity', 'activity']);
+    return DEFAULT_LAYOUT.cards.map(card => {
+      const cell = host.querySelector<HTMLElement>(`[data-testid="dashboard-cell-${card.id}"]`)!;
+      return {
+        id: card.id,
+        gridColumn: cell.style.gridColumn,
+        gridRow: cell.style.gridRow,
+        height: cell.style.height,
+      };
+    });
+  };
+
+  const defaultGeometry = geometry();
+  expect(defaultGeometry.find(cell => cell.id === 'decisions')?.gridColumn).toBe('1 / -1');
+  expect(defaultGeometry.find(cell => cell.id === 'decisions')?.height).toBe('212px');
+  act(() => host.querySelector<HTMLButtonElement>('[data-testid="dashboard-customize"]')!.click());
+  const customizeGeometry = geometry();
+  expect(customizeGeometry).toEqual(defaultGeometry);
+  act(() => host.querySelector<HTMLButtonElement>('[data-testid="dashboard-customize"]')!.click());
+  expect(geometry()).toEqual(defaultGeometry);
   expect(fixture.persist).not.toHaveBeenCalled();
 });

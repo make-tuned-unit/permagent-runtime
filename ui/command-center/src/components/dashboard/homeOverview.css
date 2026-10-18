@@ -1,5 +1,5 @@
-/* The daily summary has a stable reading order and content-sized rows.
-   Custom layouts retain their resize grid and focus presentation. */
+/* Daily Home keeps the same width, card dimensions and reading order in
+   overview and Customize. Only focused cards use a different presentation. */
 .pa-home-overview {
   max-width: 1200px;
   margin-inline: auto;

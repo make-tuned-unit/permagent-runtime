@@ -50,11 +50,11 @@ async function settle() {
   for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise(r => setTimeout(r, 0)); });
 }
 
-async function renderOnHome(presentation: CardPresentation) {
+async function renderOnHome(presentation: CardPresentation, initialView?: 'day' | 'week' | 'month') {
   await act(async () => {
     root.render(
       <CardPresentationProvider value={{ presentation, expand, collapse }}>
-        <CalendarCard nowMs={NOW} />
+        <CalendarCard nowMs={NOW} initialView={initialView} />
       </CardPresentationProvider>,
     );
   });
@@ -80,15 +80,28 @@ afterEach(() => {
 });
 
 describe('Calendar on Home, minimised', () => {
-  it('shows today at a glance: the date, what is left of today, Next up and the list', async () => {
+  it('shows a left-aligned date summary, equal-width view launchers, Next up and the agenda', async () => {
     await renderOnHome('overview');
     expect(q('calendar-card')!.dataset.mode).toBe('compact');
-    // No Day/Week/Month chrome while minimised.
+    // The compact agenda is still Today; these buttons launch a full calendar
+    // view and do not falsely claim that today's visible list is that view.
     expect(host.querySelector('[role="tablist"]')).toBeNull();
 
     const header = q('calendar-compact-header')!;
+    expect(header.tagName).toBe('DIV');
+    expect(header.getAttribute('aria-expanded')).toBeNull();
     const longDate = new Date(NOW).toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' });
-    expect(header.textContent).toContain(longDate);
+    expect(q('calendar-compact-date')!.textContent).toContain(longDate);
+    expect(q('calendar-date-summary')!.style.alignItems).toBe('flex-start');
+    const launchers = header.querySelector<HTMLElement>('[data-calendar-view-launcher]')!;
+    expect(launchers.getAttribute('role')).toBe('group');
+    expect(launchers.style.display).toBe('grid');
+    expect(launchers.style.gridTemplateColumns).toBe('repeat(3, minmax(0, 1fr))');
+    expect(header.style.flexWrap).toBe('wrap');
+    expect(q('calendar-content-scroll')!.style.overflowY).toBe('auto');
+    expect(q('calendar-content-scroll')!.contains(header)).toBe(false);
+    expect(['day', 'week', 'month'].map(view => q(`calendar-open-${view}`)!.getAttribute('aria-label')))
+      .toEqual(['Open Day calendar', 'Open Week calendar', 'Open Month calendar']);
     // Standup, Lunch and the all-day Offsite are still ahead; the 7:00 run is over.
     expect(q('calendar-today-summary')!.textContent).toBe('3 events left today');
 
@@ -99,14 +112,50 @@ describe('Calendar on Home, minimised', () => {
     expect(list).not.toContain('Early run');
   });
 
-  it('expands on click, and says what expanding opens', async () => {
+  it('choosing a compact view opens that full calendar view without a backend write', async () => {
+    await renderOnHome('overview', 'day');
+    const callsBefore = invoke.mock.calls.length;
+    await act(async () => q('calendar-open-week')!.click());
+    expect(expand).toHaveBeenCalledOnce();
+    expect(q('calendar-card')!.dataset.view).toBe('week');
+    expect(localStorage.getItem('permagent.dashboard.calendar.view.v1')).toBe('week');
+    expect(invoke.mock.calls.length).toBe(callsBefore);
+    expect(invoke.mock.calls.some(([command]) => command === 'request_calendar_access')).toBe(false);
+
+    await renderOnHome('focused');
+    expect(q('calendar-card')!.dataset.mode).toBe('full');
+    expect(q('calendar-week')).not.toBeNull();
+    expect(q('calendar-view-week')!.getAttribute('aria-selected')).toBe('true');
+    const panelId = q('calendar-view-week')!.getAttribute('aria-controls')!;
+    expect(document.getElementById(panelId)).toBe(q('calendar-body'));
+    expect(q('calendar-body')!.getAttribute('role')).toBe('tabpanel');
+    expect(q('calendar-body')!.getAttribute('aria-labelledby')).toBe(q('calendar-view-week')!.id);
+  });
+
+  it.each(['day', 'week', 'month'] as const)('compact %s launcher opens the matching selected calendar view', async view => {
     await renderOnHome('overview');
-    const header = q('calendar-compact-header')!;
-    expect(header.tagName).toBe('BUTTON');
-    expect(header.getAttribute('aria-expanded')).toBe('false');
-    expect(header.getAttribute('aria-label')).toMatch(/^Expand calendar — .*3 events left today\. Opens Day, Week and Month views\.$/);
-    act(() => header.click());
-    expect(expand).toHaveBeenCalledTimes(1);
+    await act(async () => q(`calendar-open-${view}`)!.click());
+    expect(expand).toHaveBeenCalledOnce();
+    expect(q('calendar-card')!.dataset.view).toBe(view);
+    await renderOnHome('focused');
+    expect(q(`calendar-${view === 'day' ? 'dayview' : view}`)).not.toBeNull();
+    expect(q(`calendar-view-${view}`)!.getAttribute('aria-selected')).toBe('true');
+    expect([...host.querySelectorAll('[role="tab"]')].filter(tab => tab.getAttribute('aria-selected') === 'true'))
+      .toEqual([q(`calendar-view-${view}`)]);
+    expect(apiFetch.mock.calls.every(([, init]) => !['POST', 'PUT', 'PATCH', 'DELETE'].includes(init?.method ?? 'GET'))).toBe(true);
+  });
+
+  it('moves from a compact launcher to the full roving tab with arrow keys', async () => {
+    await renderOnHome('overview');
+    const day = q('calendar-open-day')!;
+    day.focus();
+    await act(async () => {
+      day.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }));
+    });
+    expect(q('calendar-card')!.dataset.view).toBe('week');
+    expect(expand).toHaveBeenCalledOnce();
+    await renderOnHome('focused');
+    expect(document.activeElement).toBe(q('calendar-view-week'));
   });
 
   it('keeps its own actions while minimised: an event still opens its details', async () => {
@@ -128,8 +177,10 @@ describe('Calendar on Home, minimised', () => {
     delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__;
     await renderOnHome('overview');
     expect(q('calendar-today-summary')!.textContent).toBe('Calendar not connected');
+    expect(q('calendar-access')!.dataset.state).toBe('desktop-only');
     expect(host.textContent).not.toContain('No events today');
-    expect(host.textContent).toContain('Connect a calendar to see events');
+    expect(q('calendar-next-up')).toBeNull();
+    expect(q('calendar-compact-list')).toBeNull();
     expect(invoke.mock.calls.some(([command]) => command === 'request_calendar_access')).toBe(false);
   });
 
@@ -156,7 +207,10 @@ describe('Calendar on Home, minimised', () => {
     invoke.mockImplementation(async (command: string) => command === 'calendar_authorization_status' ? 'fullAccess' : []);
     await renderOnHome('overview');
     expect(q('calendar-today-summary')!.textContent).toBe('Nothing left today');
-    expect(host.textContent).toContain('No events today');
+    expect(q('calendar-next-up')).toBeNull();
+    expect(q('calendar-compact-list')).toBeNull();
+    expect(host.textContent).not.toContain('No events today');
+    expect(host.textContent).not.toContain('Nothing coming up in the next 7 days');
     expect(q('calendar-failed')).toBeNull();
   });
 });

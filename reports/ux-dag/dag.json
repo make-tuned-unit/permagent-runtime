@@ -516,6 +516,53 @@
         "../flow-audit-20261018/desktop-install-receipt.json"
       ],
       "implementation": "4657 UI tests and TypeScript passed; unchanged-source daemon suite1208passed and isolated real browser persistence passed. Signed68e UI-only rebuild verified and installed with rollback. Disk-floor copy refusal recovered under unchanged guards; no recompilation or guard bypass."
+    },
+    {
+      "id": "D29",
+      "depends_on": [
+        "D28"
+      ],
+      "title": "Home Customize and Done geometry parity",
+      "status": "verified",
+      "acceptance": [
+        "Saved dimensions and placement remain stable across Customize and Done",
+        "Default and custom layouts preserve focus behavior and responsive use"
+      ],
+      "evidence": [
+        "home-grid-calendar-20261018.md"
+      ]
+    },
+    {
+      "id": "D30",
+      "depends_on": [
+        "D29"
+      ],
+      "title": "Research-led Calendar hierarchy",
+      "status": "verified",
+      "acceptance": [
+        "Date leads at left and Day/Week/Month controls remain visible at right",
+        "Selection, keyboard, focus, source/error and permission flows verified",
+        "Wide/narrow and empty/populated rendered states reviewed against design guidance"
+      ],
+      "evidence": [
+        "home-grid-calendar-20261018.md"
+      ]
+    },
+    {
+      "id": "D31",
+      "depends_on": [
+        "D29",
+        "D30"
+      ],
+      "title": "Home and Calendar dogfood release",
+      "status": "in_progress",
+      "acceptance": [
+        "Integrated UI regressions and TypeScript pass",
+        "Signed rebuilt app installed and native Customize/Done and Calendar verified"
+      ],
+      "evidence": [
+        "home-grid-calendar-20261018.md"
+      ]
     }
   ]
 }

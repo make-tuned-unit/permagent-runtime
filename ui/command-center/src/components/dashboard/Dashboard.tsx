@@ -8,9 +8,8 @@ import { useDashboard } from './useDashboard';
 import { useLiveGoals } from '../../lib/useLiveGoals';
 import { useDueTodos } from '../../lib/useDueTodos';
 import {
-  useLayout, reflow, layoutForDisplay, isDailyHomeLayout, WIDE_GRID_SPLIT_PX, minSpanForWidth, DEFAULT_LAYOUT,
-  MASONRY_ROW_UNIT, spanForContent, settleSpan,
-  type DashboardLayoutData, type DashboardCardLayout, type SpanSettleState,
+  useLayout, reflow, layoutForDisplay, isDailyHomeLayout, minSpanForWidth, DEFAULT_LAYOUT,
+  type DashboardLayoutData, type DashboardCardLayout,
 } from './useLayout';
 import { useCardRegistry } from './cards/useCardRegistry';
 import { AddCardPicker } from './AddCardPicker';
@@ -109,25 +108,6 @@ export function Dashboard() {
   const dragGhostSize = useRef<{ w: number; h: number }>({ w: 0, h: 0 });
   const cardRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const gridRef = useRef<HTMLDivElement>(null);
-  // Content-driven row spans (masonry via CSS grid; coordinator, 2560px round
-  // 2). Each card's rendered span (in MASONRY_ROW_UNIT-tall tracks) tracks its
-  // OWN measured height, capped at what its configured `h` would reserve
-  // under the old fixed-row grid — see `spanForContent`'s doc. `spans` is
-  // what render reads; `spanSettle`/`pendingHeights`/`flushHandle` are the
-  // measurement pipeline behind it, kept in refs so a ResizeObserver firing
-  // mid-frame never triggers more than one state update per animation frame.
-  const [spans, setSpans] = useState<Record<string, number>>({});
-  const spanSettle = useRef<Map<string, SpanSettleState>>(new Map());
-  const pendingHeights = useRef<Map<string, number>>(new Map());
-  const flushHandle = useRef<number | null>(null);
-  // Each visible card's CURRENT configured `h`, refreshed every render — read
-  // by `measureCard` (stable identity; never re-created) instead of being
-  // captured in a closure, so a resize in Customize is reflected the next
-  // time a measurement lands without giving the callback a changing identity
-  // (which would otherwise mean tearing down and rebuilding every card's
-  // ResizeObserver on every render).
-  const configuredHeights = useRef<Map<string, number>>(new Map());
-  const cellObservers = useRef<Map<string, ResizeObserver>>(new Map());
   const cellRefFns = useRef<Map<string, (el: HTMLDivElement | null) => void>>(new Map());
 
   // Focus mode (homeFocus.tsx): one card expanded, the rest compact. Display
@@ -165,73 +145,18 @@ export function Dashboard() {
     consumeNavigationRequest('homeFocus', requestedFocus);
   }, [requestedFocus, layoutLoaded, loading, data, registryStatus, isEditMode, layout.cards, registry, expand, collapse]);
 
-  // While focused, cells are drawn at focus/compact sizes that say nothing
-  // about their overview height — measuring them would feed the masonry
-  // spans (whose settle state only ever grows once frozen) heights they will
-  // not have again. Measurement pauses, and the settle state starts fresh
-  // when the overview comes back.
-  const focusActive = useRef(false);
-  if (focusActive.current && !focusMode) spanSettle.current.clear();
-  focusActive.current = focusMode;
-
-  const measureCard = useCallback((id: string, heightPx: number) => {
-    if (focusActive.current) return;
-    pendingHeights.current.set(id, heightPx);
-    if (flushHandle.current != null) return;
-    flushHandle.current = requestAnimationFrame(() => {
-      flushHandle.current = null;
-      const updates: Record<string, number> = {};
-      let changed = false;
-      pendingHeights.current.forEach((h, cardId) => {
-        const configuredH = configuredHeights.current.get(cardId) ?? 1;
-        const raw = spanForContent(h, configuredH, MASONRY_ROW_UNIT, GAP, ROW_HEIGHT);
-        const prevSettle = spanSettle.current.get(cardId);
-        const next = settleSpan(prevSettle, raw);
-        spanSettle.current.set(cardId, next);
-        if (!prevSettle || prevSettle.span !== next.span) { updates[cardId] = next.span; changed = true; }
-      });
-      pendingHeights.current.clear();
-      if (changed) setSpans(s => ({ ...s, ...updates }));
-    });
-  }, []);
-
-  // Stable per-card ref callback: caches one function per id so the DOM node
-  // is never torn down and re-observed just because a re-render passed a new
-  // inline arrow function (the pitfall with callback refs). `measureCard`
-  // above is itself stable, so a cached function keeps working forever.
+  // Keep stable refs for focus and drag operations without measuring content
+  // back into the layout. Saved dimensions apply in both overview and Customize.
   const getCellRef = useCallback((id: string) => {
     let fn = cellRefFns.current.get(id);
-    if (fn) return fn;
-    fn = (el: HTMLDivElement | null) => {
-      if (el) {
-        cardRefs.current.set(id, el);
-        if (typeof ResizeObserver !== 'undefined') {
-          let ro = cellObservers.current.get(id);
-          if (!ro) {
-            ro = new ResizeObserver(entries => {
-              const h = entries[0]?.contentRect.height;
-              if (h != null) measureCard(id, h);
-            });
-            cellObservers.current.set(id, ro);
-          }
-          ro.observe(el);
-        }
-      } else {
-        cardRefs.current.delete(id);
-        const ro = cellObservers.current.get(id);
-        if (ro) { ro.disconnect(); cellObservers.current.delete(id); }
-      }
-    };
-    cellRefFns.current.set(id, fn);
+    if (!fn) {
+      fn = (el: HTMLDivElement | null) => {
+        if (el) cardRefs.current.set(id, el);
+        else cardRefs.current.delete(id);
+      };
+      cellRefFns.current.set(id, fn);
+    }
     return fn;
-  }, [measureCard]);
-
-  useEffect(() => {
-    return () => {
-      cellObservers.current.forEach(ro => ro.disconnect());
-      cellObservers.current.clear();
-      if (flushHandle.current != null) cancelAnimationFrame(flushHandle.current);
-    };
   }, []);
   // Resize state
   const [resizeId, setResizeId] = useState<string | null>(null);
@@ -400,7 +325,7 @@ export function Dashboard() {
   }
 
   const dailyLayout = isDailyHomeLayout(layout);
-  const dailyOverview = dailyLayout && !isEditMode && !focusMode;
+  const dailyOverview = dailyLayout && !focusMode;
   const cardDataMap: Record<string, any> = {
     stats: { stats: data.stats },
     in_flight: inFlightProps,
@@ -413,35 +338,18 @@ export function Dashboard() {
     && isUntouchedHomeData(data) && activeCount === 0 && dueTodos.todos.length === 0;
   const firstAction = untouched && layoutLoaded && !isEditMode;
   const visibleCards = firstAction && isDefaultHomeLayout(layout) ? [] : layout.cards.filter(c => c.visible);
-  // Where each card is DRAWN. The stored x/y were a shelf packing that left
-  // holes; this is a dense first-fit pack in the user's order, stretched into
-  // any hole nothing else fits (display-only). Customize shows true sizes —
-  // no stretch — so the resize grip edits what you see.
+  // One geometry for viewing and editing: Done removes the editing controls,
+  // without repacking or shrinking the cards the user just arranged.
   const cells = layoutForDisplay(
     visibleCards.map(c => (resizeId === c.id && resizePreview ? { id: c.id, size: resizePreview } : c)),
     {
       minSpan: minSpanForWidth(gridWidth, GAP),
-      fill: !isEditMode,
-      splitFullWidth: !isEditMode && !focusMode && gridWidth >= WIDE_GRID_SPLIT_PX,
+      fill: false,
+      splitFullWidth: false,
     },
   );
   const canRemove = visibleCards.length > 1;
   const currentTypes = layout.cards.map(c => c.type);
-  // Refreshed every render (not an effect) so `measureCard` — stable, never
-  // re-created — always reads the CURRENT configured `h` for a card, even one
-  // just resized in Customize, without needing `h` in its own dependencies.
-  // An ambient manifest readout (layout 'compact': weather, system, status)
-  // has no inner scroller to give a height cap anything to scroll, so capping
-  // it at its configured `h` just slices the card — QA 2026-10-07: the
-  // weather forecast row was cut off at h:2. Such a card is drawn at its full
-  // content height; scrolling cards keep the cap.
-  // 'decisions' (Needs You) is the same kind of card: a short stack of lines with
-  // no scroller. With six lines its natural height passes the h:4 cap and the
-  // clip cut off "Review →" (QA Q11), so it is drawn at its content's height.
-  // 'calendar' draws its views at their own fixed heights (a month grid is
-  // six rows tall) and scrolls the time grid itself, so an h cap would slice it.
-  const growsToFit = (type: string) => registry[type]?.manifest?.layout === 'compact' || type === 'decisions' || type === 'calendar';
-  visibleCards.forEach(c => configuredHeights.current.set(c.id, growsToFit(c.type) ? Math.max(c.size.h, 12) : c.size.h));
 
   return (
     <div
@@ -595,18 +503,11 @@ export function Dashboard() {
         style={{
           display: 'grid',
           gridTemplateColumns: 'repeat(12, minmax(0, 1fr))',
-          // Customize keeps the original fixed-row grid — the resize grip
-          // drags in whole `h` units of exactly this height. Outside it, a
-          // fine row unit plus dense auto-flow is the masonry technique
-          // (coordinator, 2560px round 2): each card below sets only a row
-          // SPAN (no explicit start), so the browser's own dense packing
-          // decides where it lands, backfilling a shorter neighbour's leftover
-          // tracks instead of leaving them reserved underneath it.
-          // Focus mode leaves masonry: the focused card takes the full width
-          // at its full height and the compact tiles a fixed one, so plain
-          // content-sized rows are exact and need no measured spans.
-          gridAutoRows: isEditMode ? ROW_HEIGHT : focusMode || dailyOverview ? 'auto' : MASONRY_ROW_UNIT,
-          gridAutoFlow: isEditMode || dailyOverview ? 'row' : 'row dense',
+          // Both modes reserve the same saved card space. Daily section
+          // headings use auto rows; their cards get the equivalent fixed height.
+          // Focus is the only presentation that changes card geometry.
+          gridAutoRows: focusMode || dailyOverview ? 'auto' : ROW_HEIGHT,
+          gridAutoFlow: 'row',
           gap: GAP,
           touchAction: isEditMode ? 'none' : 'auto',
           userSelect: (dragSrcId || resizeId) ? 'none' : 'auto',
@@ -627,12 +528,6 @@ export function Dashboard() {
           const isResizing = resizeId === card.id;
           const isDragging = dragSrcId === card.id;
           const isDragTarget = dragOverId === card.id && !isDragging;
-          // The row span this card is actually drawn at, outside Customize:
-          // whatever `measureCard` last settled on, or — before any
-          // measurement has landed (first paint, or a card just added/resized)
-          // — the same ceiling `spanForContent` would cap it at, so a card
-          // never flashes at a single row before its first real measurement.
-          const contentSpan = spans[card.id] ?? spanForContent(0, h, MASONRY_ROW_UNIT, GAP, ROW_HEIGHT);
           const presentation: CardPresentation = !focusMode ? 'overview' : focusedId === card.id ? 'focused' : 'compact';
           const name = entry?.name ?? card.type;
           const cellId = `home-card-${index}`;
@@ -664,34 +559,10 @@ export function Dashboard() {
               onPointerDown={isEditMode && !resizeId ? (e) => handlePointerDown(card.id, e) : undefined}
               style={{
                 '--pa-home-vt-name': `pa-home-cell-${index}`,
-                gridColumn: dailyOverview ? (card.type === 'decisions' ? '1 / -1' : 'span 6') : `${x + 1} / span ${w}`,
-                // Customize: explicit start AND span, on the fixed ROW_HEIGHT
-                // grid above — the resize grip drags `h` directly, so this
-                // must be exactly what it edits. Outside Customize: span
-                // ONLY, no explicit start, on the fine masonry grid above —
-                // that is what lets `grid-auto-flow: dense` place this card
-                // wherever its column range is free for `contentSpan` tracks,
-                // backfilling a shorter neighbour's leftover space instead of
-                // stacking strictly under whichever card came before it.
-                gridRow: dailyOverview ? 'auto' : isEditMode ? `${y + 1} / span ${h}` : `span ${contentSpan}`,
-                // Rows size to content, with the configured `h` as a MAX, not
-                // a fixed height (coordinator, 2560px pass: In Flight/Needs
-                // You/To-dos sat 50%+ empty; ambient status strips left a
-                // void band under them). Outside Customize, every card is
-                // top-aligned instead of stretched to the row's full track
-                // height, and capped at the pixel height its own `h` would
-                // have reserved — content shorter than that shrinks the box
-                // (no more empty band); content at or past it hits the cap,
-                // which gives the card's own CardScrollBody/overflow a
-                // DEFINITE height to fill-then-scroll against, unchanged from
-                // before. Customize keeps the true stretched box so the
-                // resize grip still edits what you see (layoutForDisplay's
-                // `fill: false` does the matching thing for width). This box
-                // cap is independent of (and unchanged by) the row-TRACK fix
-                // above: that fix is what stops the now-shrunk box from
-                // leaving a reserved-but-empty band in the grid underneath it.
-                alignSelf: isEditMode ? undefined : 'start',
-                maxHeight: isEditMode || growsToFit(card.type) ? undefined : h * ROW_HEIGHT + (h - 1) * GAP,
+                gridColumn: dailyOverview ? (w === 12 ? '1 / -1' : `span ${w}`) : `${x + 1} / span ${w}`,
+                gridRow: dailyOverview ? 'auto' : `${y + 1} / span ${h}`,
+                height: dailyOverview ? h * ROW_HEIGHT + (h - 1) * GAP : undefined,
+                alignSelf: 'stretch',
                 cursor: isEditMode ? (isDragging ? 'grabbing' : 'grab') : 'default',
                 borderRadius: radius.lg,
                 outline: isDragTarget
@@ -721,13 +592,7 @@ export function Dashboard() {
                 position: 'relative',
                 minWidth: 0, minHeight: 0,
                 overflow: 'hidden',
-                // Outside Customize the cell is capped by `maxHeight`, not
-                // sized, so a card's `height: 100%` has nothing to resolve
-                // against and a long card (the Council report) painted at its
-                // full content height and was clipped mid-line by this cell
-                // with no way to scroll. A flex column lets the card shrink to
-                // the cap, which gives its own scroll body a real height.
-                ...(isEditMode ? null : { display: 'flex', flexDirection: 'column' }),
+                display: 'flex', flexDirection: 'column',
                 userSelect: isEditMode ? 'none' : 'auto',
                 ...focusGeometry,
               } as CSSProperties}
@@ -738,8 +603,7 @@ export function Dashboard() {
               <CardPresentationProvider value={{ presentation, expand: () => expand(card.id), collapse }}>
                 {/* Keep the card mounted as its presentation changes. In
                     overview/compact, contents preserves its original box and
-                    height:100% sizing against the cell. ResizeObserver
-                    measures the real outer cell, never this boxless wrapper.
+                    height:100% sizing against the saved cell dimensions.
                     Focus needs a flex body below the focus bar. */}
                 <div data-home-card-body="" style={presentation === 'focused'
                   ? { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }

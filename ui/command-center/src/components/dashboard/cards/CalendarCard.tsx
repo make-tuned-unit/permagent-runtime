@@ -19,7 +19,7 @@
  */
 
 import {
-  useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent,
+  useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent,
 } from 'react';
 import { FiChevronLeft, FiChevronRight } from 'react-icons/fi';
 import { font, radius, space, tabularNums, textSize } from '../../../styles/tokens';
@@ -74,6 +74,9 @@ interface Props {
 
 export function CalendarCard({ nowMs: pinnedNow, sizeMode = 'auto', initialView }: Props) {
   const { colors } = useTheme();
+  const calendarId = useId();
+  const tabId = (v: CalendarView) => `${calendarId}-tab-${v}`;
+  const panelId = `${calendarId}-panel`;
   const rootRef = useRef<HTMLDivElement>(null);
   const [clock, setClock] = useState(() => Date.now());
   const nowMs = pinnedNow ?? clock;
@@ -81,6 +84,7 @@ export function CalendarCard({ nowMs: pinnedNow, sizeMode = 'auto', initialView 
   const [anchor, setAnchor] = useState(() => pinnedNow ?? Date.now());
   const [width, setWidth] = useState(0);
   const [popover, setPopover] = useState<{ event: CalEvent; anchor: HTMLElement } | null>(null);
+  const focusViewAfterExpand = useRef<CalendarView | null>(null);
   const firstDay = useMemo(localeFirstDay, []);
 
   useEffect(() => {
@@ -111,6 +115,13 @@ export function CalendarCard({ nowMs: pinnedNow, sizeMode = 'auto', initialView 
     : sizeMode === 'full' ? false
     : home ? home.presentation !== 'focused'
     : width > 0 && width < COMPACT_BELOW_PX;
+
+  useEffect(() => {
+    if (compact || !focusViewAfterExpand.current) return;
+    const target = focusViewAfterExpand.current;
+    focusViewAfterExpand.current = null;
+    rootRef.current?.querySelector<HTMLButtonElement>(`[data-testid="calendar-view-${target}"]`)?.focus();
+  }, [compact, view]);
 
   const shell = useShellCalendar(true, 300, false);
   const access = calendarAccessView(shell.inDesktopApp, shell.status, shell.fullAccessAsked);
@@ -148,15 +159,32 @@ export function CalendarCard({ nowMs: pinnedNow, sizeMode = 'auto', initialView 
       try { localStorage.setItem(VIEW_STORAGE_KEY, next); } catch { /* not persisted: still works */ }
     }, { direction: dir });
   };
+  const openCompactView = (next: CalendarView, fromKeyboard = false) => {
+    if (fromKeyboard) focusViewAfterExpand.current = next;
+    switchView(next);
+    home?.expand();
+  };
   const pickDay = (dayMs: number) => { setAnchor(dayMs); switchView('day'); };
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
-    if (e.metaKey || e.ctrlKey || e.altKey || compact) return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
     const t = e.target as HTMLElement;
     // React bubbles a portal's keys through its React parent: a key pressed in
     // the event popover (portalled to <body>) must not page the calendar.
     if (!rootRef.current?.contains(t)) return;
     if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable) return;
+    if (compact) {
+      if (!t.closest('[data-calendar-view-launcher]')) return;
+      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
+      e.preventDefault();
+      const focusedView = CALENDAR_VIEWS.find(candidate => t.closest(`[data-testid="calendar-open-${candidate}"]`)) ?? view;
+      const index = CALENDAR_VIEWS.indexOf(focusedView);
+      const next = e.key === 'Home' ? CALENDAR_VIEWS[0]
+        : e.key === 'End' ? CALENDAR_VIEWS[CALENDAR_VIEWS.length - 1]
+          : CALENDAR_VIEWS[(index + (e.key === 'ArrowRight' ? 1 : -1) + CALENDAR_VIEWS.length) % CALENDAR_VIEWS.length];
+      openCompactView(next, true);
+      return;
+    }
     if (t.closest('[role="tablist"]') && ['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) {
       e.preventDefault();
       const index = CALENDAR_VIEWS.indexOf(view);
@@ -190,6 +218,7 @@ export function CalendarCard({ nowMs: pinnedNow, sizeMode = 'auto', initialView 
   const readFailed = shown.failed && shell.inDesktopApp && shell.status === 'fullAccess';
   const aheadFailed = ahead.failed && shell.inDesktopApp && shell.status === 'fullAccess';
   const loadingFirst =(compact ? ahead : main).loading && (compact ? ahead : main).events.length === 0;
+  const showNextUp = !compact || Boolean(next) || ahead.loading || aheadFailed;
 
   return (
     <div
@@ -211,27 +240,47 @@ export function CalendarCard({ nowMs: pinnedNow, sizeMode = 'auto', initialView 
       }}
     >
       {compact && <SectionTitle title="Calendar" />}
-      {compact && home ? (
+      {compact && home && (
         <CompactDateHeader nowMs={nowMs} events={ahead.events} loading={ahead.loading && ahead.events.length === 0}
-          source={ahead.source} failed={readFailed} onExpand={home.expand} />
-      ) : compact ? null : (
-        <div style={{ display: 'flex', alignItems: 'center', gap: space.lg, flexWrap: 'wrap' }}>
-          <h3 data-testid="calendar-title" aria-live="polite" style={{
-            margin: 0, marginRight: 'auto', fontFamily: font.display, fontSize: textSize.heading,
-            fontWeight: 600, color: colors.text, letterSpacing: '-0.005em',
-          }}>
-            {periodTitle(view, anchor, firstDay)}
-          </h3>
-          <Tooltip content="Jump to today" shortcut="T">
-            <Button colors={colors} type="button" onClick={goToday} flashSuccess={false}
-              data-testid="calendar-today" style={ghost}>Today</Button>
-          </Tooltip>
-          <div style={{ display: 'inline-flex', gap: space.xxs }}>
+          source={ahead.source} failed={readFailed} onOpenView={nextView => openCompactView(nextView)} />
+      )}
+      <div data-testid={compact ? 'calendar-content-scroll' : undefined} style={compact ? {
+        minHeight: 0, flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: space.lg,
+      } : { display: 'contents' }}>
+      {!compact && (
+        <div data-testid="calendar-toolbar" style={{ display: 'flex', flexDirection: 'column', gap: space.sm, minWidth: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: space.lg, flexWrap: 'wrap', minWidth: 0 }}>
+            <h3 data-testid="calendar-title" aria-live="polite" style={{
+              margin: 0, flex: '1 1 150px', minWidth: 0, fontFamily: font.display, fontSize: textSize.heading,
+              fontWeight: 600, color: colors.text, letterSpacing: '-0.005em', textAlign: 'left',
+            }}>
+              {periodTitle(view, anchor, firstDay)}
+            </h3>
+            <div role="tablist" aria-label="Calendar view" style={{
+              display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
+              flex: '1 1 192px', minWidth: 'min(100%, 192px)', maxWidth: 252,
+              gap: SEGMENT_STRIP_PAD, padding: SEGMENT_STRIP_PAD,
+              borderRadius: SEGMENT_STRIP_RADIUS, background: colors.bgDeeper, border: `1px solid ${colors.border}`,
+            }}>
+              {CALENDAR_VIEWS.map(v => (
+                <Button key={v} colors={colors} role="tab" id={tabId(v)} aria-selected={v === view} tabIndex={v === view ? 0 : -1}
+                  aria-controls={panelId} data-testid={`calendar-view-${v}`} onClick={() => switchView(v)} flashSuccess={false}
+                  style={{ ...segmentedTab(colors, v === view), width: '100%', minWidth: 0, whiteSpace: 'nowrap' }}>
+                  {VIEW_LABEL[v]}
+                </Button>
+              ))}
+            </div>
+          </div>
+          <div data-testid="calendar-period-controls" style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: space.sm }}>
             <Tooltip content="Previous" shortcut="←">
               <Button colors={colors} type="button" aria-label="Previous period" onClick={() => step(-1)}
                 flashSuccess={false} data-testid="calendar-prev" style={{ ...ghost, '--pa-btn-pad': `${space.sm}px` } as CSSProperties}>
                 <FiChevronLeft size={14} />
               </Button>
+            </Tooltip>
+            <Tooltip content="Jump to today" shortcut="T">
+              <Button colors={colors} type="button" onClick={goToday} flashSuccess={false}
+                data-testid="calendar-today" style={ghost}>Today</Button>
             </Tooltip>
             <Tooltip content="Next" shortcut="→">
               <Button colors={colors} type="button" aria-label="Next period" onClick={() => step(1)}
@@ -240,23 +289,11 @@ export function CalendarCard({ nowMs: pinnedNow, sizeMode = 'auto', initialView 
               </Button>
             </Tooltip>
           </div>
-          <div role="tablist" aria-label="Calendar view" style={{
-            display: 'inline-flex', gap: SEGMENT_STRIP_PAD, padding: SEGMENT_STRIP_PAD,
-            borderRadius: SEGMENT_STRIP_RADIUS, background: colors.bgDeeper, border: `1px solid ${colors.border}`,
-          }}>
-            {CALENDAR_VIEWS.map(v => (
-              <Button key={v} colors={colors} role="tab" aria-selected={v === view} tabIndex={v === view ? 0 : -1}
-                data-testid={`calendar-view-${v}`} onClick={() => switchView(v)} flashSuccess={false}
-                style={segmentedTab(colors, v === view)}>
-                {VIEW_LABEL[v]}
-              </Button>
-            ))}
-          </div>
         </div>
       )}
 
-      <NextUpStrip stacked={compact} next={next} loading={ahead.loading && ahead.events.length === 0}
-        empty={ahead.source === 'eventkit'} todayOnly={ahead.source === 'daemon'} failed={aheadFailed} onPick={pick} />
+      {showNextUp && <NextUpStrip stacked={compact} next={next} loading={ahead.loading && ahead.events.length === 0}
+        empty={ahead.source === 'eventkit'} todayOnly={ahead.source === 'daemon'} failed={aheadFailed} onPick={pick} />}
 
       {(compact ? ahead : main).source === 'daemon' && (
         <div data-testid="calendar-partial" role="status">
@@ -269,11 +306,10 @@ export function CalendarCard({ nowMs: pinnedNow, sizeMode = 'auto', initialView 
         <Button colors={colors} type="button" onClick={ahead.refresh} flashSuccess={false} data-testid="calendar-retry" style={ghost}>Retry</Button>
       </div>}
       {compact ? (
-        <CompactList events={ahead.events} nowMs={nowMs} onPick={pick} loading={loadingFirst}
-          emptyLabel={readFailed ? 'Events unavailable' : ahead.source === 'none' ? 'Connect a calendar to see events' : ahead.source === 'daemon' ? 'No events reported today' : 'No events today'}
-          emptyHint={home ? 'Expand for the Day, Week and Month calendar' : undefined} />
+        <CompactList events={ahead.events} nowMs={nowMs} onPick={pick} loading={loadingFirst} />
       ) : (
-        <div key={view} className="pa-enter" data-testid="calendar-body" style={{ minWidth: 0 }}>
+        <div key={view} id={panelId} role="tabpanel" aria-labelledby={tabId(view)} tabIndex={0}
+          className="pa-enter" data-testid="calendar-body" style={{ minWidth: 0 }}>
           {readFailed ? (
             <div data-testid="calendar-failed" style={{ display: 'flex', alignItems: 'center', gap: space.lg, marginBottom: space.md }}>
               <EmptyNote>The calendar could not be read just now</EmptyNote>
@@ -314,71 +350,62 @@ export function CalendarCard({ nowMs: pinnedNow, sizeMode = 'auto', initialView 
       {showAccess && (
         <CalendarAccessPanel view={access} onConnect={shell.connect} onOpenSettings={shell.openSettings} compact />
       )}
+      </div>
 
       {popover && <EventPopover event={popover.event} anchor={popover.anchor} onClose={closePopover} />}
     </div>
   );
 }
 
-/**
- * The minimised card's header on Home: today's date as a tear-off block, how
- * much of today is left, and — the whole header is one button — expand into
- * the full calendar. "Nothing left today" is only said when today's events
- * were actually read; with no calendar connected it says that instead.
- */
-function CompactDateHeader({ nowMs, events, loading, source, failed, onExpand }: {
-  nowMs: number; events: readonly CalEvent[]; loading: boolean; source: CalendarSource; failed: boolean; onExpand: () => void;
+/** Home's compact agenda: a left-aligned date summary and view launch actions. */
+function CompactDateHeader({ nowMs, events, loading, source, failed, onOpenView }: {
+  nowMs: number; events: readonly CalEvent[]; loading: boolean; source: CalendarSource; failed: boolean;
+  onOpenView: (view: CalendarView) => void;
 }) {
   const { colors } = useTheme();
   const now = new Date(nowMs);
-  const weekdayShort = now.toLocaleDateString(undefined, { weekday: 'short' });
   const fullDate = now.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' });
   const left = eventsOnDay(events, startOfDay(nowMs)).filter(e => e.allDay || e.endMs > nowMs).length;
-  const summary = loading ? 'Checking today…'
+  const summary = loading ? 'Checking today’s events…'
     : failed ? 'Calendar unavailable'
     : source === 'none' ? 'Calendar not connected'
     : left > 0 ? `${left} event${left === 1 ? '' : 's'} left today`
-    : source === 'daemon' ? 'Nothing else reported today'
+    : source === 'daemon' ? 'No more events reported today'
     : 'Nothing left today';
   return (
-    <button
-      type="button"
-      className="pa-btn pa-btn--composite"
+    <div
       data-testid="calendar-compact-header"
       data-home-card-heading
-      aria-label={`Expand calendar — ${fullDate}, ${summary}. Opens Day, Week and Month views.`}
-      aria-expanded={false}
-      onClick={onExpand}
+      role="group"
+      aria-label={`Calendar agenda for ${fullDate}: ${summary}`}
       style={{
-        display: 'flex', alignItems: 'center', gap: space.lg, width: '100%', minWidth: 0, textAlign: 'left',
-        '--pa-btn-bg': 'transparent', '--pa-btn-fg': colors.text, '--pa-btn-border': 'transparent',
-        '--pa-btn-bg-hover': colors.fillSubtle, '--pa-btn-fg-hover': colors.text, '--pa-btn-border-hover': 'transparent',
-        '--pa-btn-bg-active': colors.fillSubtle, '--pa-btn-pad': `${space.xs}px`,
-        '--pa-btn-radius': `${radius.md}px`, '--pa-btn-weight': 500,
-      } as CSSProperties}
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: space.lg,
+        flexWrap: 'wrap', width: '100%', minWidth: 0, textAlign: 'left',
+      }}
     >
-      <span aria-hidden style={{
-        display: 'flex', flexDirection: 'column', alignItems: 'center', flexShrink: 0, width: 44,
-        borderRadius: radius.sm, overflow: 'hidden', border: `1px solid ${colors.border}`, background: colors.bgDeeper,
+      <span data-testid="calendar-date-summary" style={{
+        display: 'flex', flex: '1 1 150px', minWidth: 0, flexDirection: 'column', alignItems: 'flex-start', gap: space.xxs,
       }}>
-        <span style={{
-          width: '100%', textAlign: 'center', fontFamily: font.body, fontSize: 9.5, fontWeight: 700,
-          letterSpacing: '0.08em', textTransform: 'uppercase', color: colors.danger, background: colors.fillSubtle,
-          padding: `${space.xxs}px 0`,
-        }}>{weekdayShort}</span>
-        <span style={{
-          fontFamily: font.display, fontSize: textSize.title, fontWeight: 600, lineHeight: 1.2, color: colors.text,
-          padding: `${space.xxs}px 0`, ...tabularNums,
-        }}>{now.getDate()}</span>
-      </span>
-      <span style={{ display: 'flex', flexDirection: 'column', minWidth: 0, gap: space.xxs }}>
-        <span style={{ fontFamily: font.display, fontSize: textSize.small, fontWeight: 600, color: colors.text,
-          whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{fullDate}</span>
-        <span data-testid="calendar-today-summary" style={{ fontFamily: font.body, fontSize: textSize.micro, color: colors.textMuted }}>
+        <span data-testid="calendar-compact-date" style={{ fontFamily: font.display, fontSize: textSize.small, fontWeight: 600, color: colors.text,
+          overflowWrap: 'anywhere', textAlign: 'left' }}>{fullDate}</span>
+        <span data-testid="calendar-today-summary" style={{ fontFamily: font.body, fontSize: textSize.caption, color: colors.textMuted }}>
           {summary}
         </span>
       </span>
-    </button>
+      <div role="group" aria-label="Open calendar view" data-calendar-view-launcher style={{
+        display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', flex: '1 1 192px',
+        minWidth: 'min(100%, 192px)', maxWidth: 252, gap: SEGMENT_STRIP_PAD, padding: SEGMENT_STRIP_PAD,
+        borderRadius: SEGMENT_STRIP_RADIUS, background: colors.bgDeeper, border: `1px solid ${colors.border}`,
+      }}>
+        {CALENDAR_VIEWS.map(v => (
+          <Button key={v} colors={colors} type="button" aria-label={`Open ${VIEW_LABEL[v]} calendar`}
+            data-testid={`calendar-open-${v}`} onClick={() => onOpenView(v)} flashSuccess={false}
+            style={{ ...segmentedTab(colors, false), width: '100%', minWidth: 0, whiteSpace: 'nowrap' }}>
+            {VIEW_LABEL[v]}
+          </Button>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -436,8 +463,8 @@ function NextUpStrip({ next, loading, empty, todayOnly, failed, onPick, stacked 
 }
 
 /** Compact size: today's list, or the next three events when today is done. */
-function CompactList({ events, nowMs, onPick, loading, emptyLabel, emptyHint = 'Make the card wider for the full calendar' }: {
-  events: readonly CalEvent[]; nowMs: number; onPick: PickEvent; loading: boolean; emptyLabel: string; emptyHint?: string;
+function CompactList({ events, nowMs, onPick, loading }: {
+  events: readonly CalEvent[]; nowMs: number; onPick: PickEvent; loading: boolean;
 }) {
   const { colors } = useTheme();
   const today = eventsOnDay(events, startOfDay(nowMs));
@@ -449,9 +476,7 @@ function CompactList({ events, nowMs, onPick, loading, emptyLabel, emptyHint = '
     : upcomingEvents(events, nowMs, 3);
   const heading = stillToday.length > 0 ? 'Today' : 'Coming up';
   if (loading) return null;
-  if (list.length === 0) {
-    return <EmptyNote hint={emptyHint}>{emptyLabel}</EmptyNote>;
-  }
+  if (list.length === 0) return null;
   return (
     <div data-testid="calendar-compact-list" style={{ display: 'flex', flexDirection: 'column', gap: space.xxs, minWidth: 0 }}>
       <div style={{ fontFamily: font.body, fontSize: textSize.micro, fontWeight: 600, letterSpacing: '0.06em',

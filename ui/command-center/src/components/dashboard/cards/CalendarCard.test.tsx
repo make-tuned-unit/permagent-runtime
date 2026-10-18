@@ -129,6 +129,37 @@ describe('views and keyboard', () => {
     expect(q('calendar-week')).not.toBeNull();
   });
 
+  it('uses a left-aligned period title, a separate period toolbar, and unique tab panels', async () => {
+    await act(async () => {
+      root.render(
+        <div>
+          <CalendarCard nowMs={NOW} sizeMode="full" initialView="day" />
+          <CalendarCard nowMs={NOW} sizeMode="full" initialView="month" />
+        </div>,
+      );
+    });
+    for (let i = 0; i < 4; i += 1) await act(async () => { await new Promise(r => setTimeout(r, 0)); });
+
+    const cards = [...host.querySelectorAll<HTMLElement>('[data-testid="calendar-card"]')];
+    expect(cards).toHaveLength(2);
+    const tabIds = cards.map(card => card.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')!.id);
+    const panelIds = cards.map(card => card.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')!.getAttribute('aria-controls'));
+    expect(new Set(tabIds).size).toBe(2);
+    expect(new Set(panelIds).size).toBe(2);
+    cards.forEach((card, index) => {
+      const title = card.querySelector<HTMLElement>('[data-testid="calendar-title"]')!;
+      const selected = card.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')!;
+      const panel = document.getElementById(panelIds[index]!);
+      expect(title.style.textAlign).toBe('left');
+      expect(panel?.getAttribute('role')).toBe('tabpanel');
+      expect(panel?.getAttribute('aria-labelledby')).toBe(selected.id);
+      expect(selected.getAttribute('aria-controls')).toBe(panel?.id);
+      expect(card.querySelector('[data-testid="calendar-period-controls"]')).toBeTruthy();
+      expect(card.querySelector('[data-testid="calendar-period-controls"]')?.contains(title)).toBe(false);
+    });
+    expect(document.querySelectorAll('[role="tabpanel"]')).toHaveLength(2);
+  });
+
   it('arrow keys move the period and T returns to today', async () => {
     await render({ initialView: 'month' });
     const title = () => q('calendar-title')!.textContent;
@@ -273,6 +304,11 @@ describe('compact size', () => {
       expect(q('calendar-week-scroll')!.style.overflowX).toBe('auto');
       expect(host.textContent).toContain('Scroll horizontally to see the full week');
       expect(q('calendar-view-month')).not.toBeNull();
+      expect(q('calendar-title')!.style.textAlign).toBe('left');
+      expect(q('calendar-toolbar')!.style.flexDirection).toBe('column');
+      expect(q('calendar-period-controls')).toBeTruthy();
+      expect(host.querySelector<HTMLElement>('[role="tablist"]')!.style.gridTemplateColumns)
+        .toBe('repeat(3, minmax(0, 1fr))');
     } finally {
       measure.mockRestore();
     }

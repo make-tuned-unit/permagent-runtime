@@ -148,6 +148,38 @@ describe('Home focus mode', () => {
     }
   });
 
+  it('keeps customized overview cell geometry unchanged across Customize and Done', async () => {
+    const geometry = () => {
+      const grid = host.querySelector<HTMLElement>('[data-testid="home-grid"]')!;
+      return {
+        rows: grid.style.gridAutoRows,
+        flow: grid.style.gridAutoFlow,
+        cells: ['alpha', 'beta', 'gamma'].map(id => ({
+          id,
+          column: cell(id).style.gridColumn,
+          row: cell(id).style.gridRow,
+          height: cell(id).style.height,
+          align: cell(id).style.alignSelf,
+          maxHeight: cell(id).style.maxHeight,
+        })),
+      };
+    };
+    const overview = geometry();
+    expect(overview.rows).toBe('60px');
+    expect(overview.flow).toBe('row');
+    expect(overview.cells).toEqual([
+      { id: 'alpha', column: '1 / span 6', row: '1 / span 4', height: '', align: 'stretch', maxHeight: '' },
+      { id: 'beta', column: '7 / span 6', row: '1 / span 4', height: '', align: 'stretch', maxHeight: '' },
+      { id: 'gamma', column: '1 / span 12', row: '5 / span 3', height: '', align: 'stretch', maxHeight: '' },
+    ]);
+
+    act(() => host.querySelector<HTMLButtonElement>('[data-testid="dashboard-customize"]')!.click());
+    expect(geometry()).toEqual(overview);
+    act(() => host.querySelector<HTMLButtonElement>('[data-testid="dashboard-customize"]')!.click());
+    expect(geometry()).toEqual(overview);
+    expect(persistLayout).not.toHaveBeenCalled();
+  });
+
   it('expands one card into focus and makes the others compact', async () => {
     await expandCard('Alpha');
     expect(presentation('alpha')).toBe('focused');
@@ -295,6 +327,26 @@ describe('Home focus mode', () => {
     await frame();
     expect(host.querySelectorAll('[data-presentation="focused"]')).toHaveLength(0);
     expect(button('Expand Beta')).toBeUndefined();
+    const grid = host.querySelector<HTMLElement>('[data-testid="home-grid"]')!;
+    const overviewGeometry = ['alpha', 'beta', 'gamma'].map(id => [
+      cell(id).style.gridColumn,
+      cell(id).style.gridRow,
+      cell(id).style.height,
+      cell(id).style.alignSelf,
+      cell(id).style.maxHeight,
+    ]);
+    act(() => host.querySelector<HTMLButtonElement>('[data-testid="dashboard-customize"]')!.click());
+    await frame();
+    expect(host.querySelectorAll('[data-presentation="focused"]')).toHaveLength(0);
+    expect(grid.style.gridAutoRows).toBe('60px');
+    expect(grid.style.gridAutoFlow).toBe('row');
+    expect(['alpha', 'beta', 'gamma'].map(id => [
+      cell(id).style.gridColumn,
+      cell(id).style.gridRow,
+      cell(id).style.height,
+      cell(id).style.alignSelf,
+      cell(id).style.maxHeight,
+    ])).toEqual(overviewGeometry);
     expect(persistLayout).not.toHaveBeenCalled();
   });
 

@@ -36,6 +36,9 @@ flowchart TD
  D24 --> D26[Daemon / real browser persistence]
  D24 --> D27[Native functional walkthrough]
  D25 & D26 & D27 --> D28[Functional audit release gate]
+ D28 --> D29[Home geometry parity]
+ D29 --> D30[Calendar hierarchy / design research]
+ D29 & D30 --> D31[Home / Calendar verified release]
 ```
 
 Tests must exercise outcomes: retained drafts, exact navigation targets, no unintended writes, stale-response rejection, truthful error states and preservation of unrelated records. Source-string assertions alone do not verify a working route. Existing live data is never a mutable test fixture.
