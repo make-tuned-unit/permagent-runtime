@@ -290,7 +290,43 @@
         "probe_staging.py",
         "test_probe_staging.py"
       ],
-      "implementation": "714 reads over 240.78 seconds passed, plus persisted fixture edits and 10 probe regressions; prior browser hang not reproduced or explained"
+      "implementation": "714 reads over 240.78 seconds passed, plus persisted fixture edits and 14 probe regressions; prior browser hang not reproduced or explained"
+    },
+    {
+      "id": "D16",
+      "depends_on": [
+        "D07",
+        "D09"
+      ],
+      "title": "Cursor Grow prompt delivery",
+      "status": "verified",
+      "acceptance": [
+        "Cursor receives the Grow directive at launch without terminal-readiness polling or duplicate follow-up paste",
+        "Shell quoting and Grow-to-Build metadata survive real argument transport",
+        "Failed PTY follow-up writes remain pending and retryable; acknowledgement and cancellation regressions pass"
+      ],
+      "evidence": [
+        "verification.md"
+      ],
+      "implementation": "Cursor initial prompt uses a quoted positional argument; 90 focused tests and real fake-executable zsh PTY argument checks passed. No real Cursor model request was made."
+    },
+    {
+      "id": "D17",
+      "depends_on": [
+        "D13",
+        "D16"
+      ],
+      "title": "Complete macOS desktop rebuild",
+      "status": "in_progress",
+      "acceptance": [
+        "Fresh release daemon and CLI artifacts recorded from guarded Cargo JSON",
+        "Full Tauri app contains current frontend and matching sidecars with verified resources and strict signature",
+        "Exact app path and build provenance recorded; build completion distinguished from installation"
+      ],
+      "evidence": [
+        "verification.md",
+        "rebuild_desktop.py"
+      ]
     }
   ]
 }

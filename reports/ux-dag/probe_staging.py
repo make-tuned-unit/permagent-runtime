@@ -36,6 +36,10 @@ def request(path, token, method='GET', body=None):
 
 
 def probe(state, seconds, call=request, clock=time.monotonic, pause=time.sleep):
+    if not isinstance(state, dict):
+        raise RuntimeError('Review state must be a JSON object')
+    if not isinstance(state.get('token'), str) or not state['token'].strip():
+        raise RuntimeError('Review state has no usable bearer token')
     project, person = str(UUID(state['projectId'])), str(UUID(state['personId']))
     token = state['token']
     project_path = f'/api/projects/{project}'
@@ -52,13 +56,21 @@ def probe(state, seconds, call=request, clock=time.monotonic, pause=time.sleep):
              '/api/people/directory', '/schedule/list',
              '/api/sessions?types=user,scheduled,sub_agent']
     started, requests, slowest = clock(), 0, 0.0
-    while clock() - started < seconds:
+    deadline = started + seconds
+    while clock() < deadline:
         for path in paths:
+            # Do not start another surface read after the deadline. The
+            # HTTPConnection timeout applies to socket operations; a peer that
+            # keeps trickling data can extend an in-flight request's duration.
+            if clock() >= deadline:
+                break
             before = clock()
             call(path, token)
             slowest = max(slowest, clock() - before)
             requests += 1
-        pause(min(2, max(0, seconds - (clock() - started))))
+        remaining = deadline - clock()
+        if remaining > 0:
+            pause(min(2, remaining))
 
     call(project_path, token, method='PATCH', body={'status': 'active'})
     call(f'/api/people/{person}/fields', token, method='PATCH',
@@ -78,13 +90,19 @@ def main():
     parser.add_argument('directory', type=Path)
     parser.add_argument('--seconds', type=int, default=240, choices=range(1, 301), metavar='1..300')
     args = parser.parse_args()
+    if args.directory.is_symlink():
+        raise RuntimeError('Review directory must not be a symlink')
     directory = args.directory.resolve()
     if directory.parent != REVIEW_ROOT or not directory.name.startswith('ux-browser-'):
         raise RuntimeError('Use the exact private directory printed by the isolated test runner')
     state_path = directory / 'state.json'
     if state_path.is_symlink() or not state_path.is_file() or state_path.stat().st_mode & 0o077:
         raise RuntimeError('Review state must be a private, regular test credential file')
-    result = probe(json.loads(state_path.read_text()), args.seconds)
+    try:
+        state = json.loads(state_path.read_text())
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        raise RuntimeError('Review state could not be read as JSON') from None
+    result = probe(state, args.seconds)
     (directory / 'finish').touch(exist_ok=False)
     print(json.dumps(result), flush=True)
 

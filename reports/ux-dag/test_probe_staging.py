@@ -70,6 +70,20 @@ class ProbeTests(unittest.TestCase):
             self.run_probe(timeout)
         self.assertFalse(any(method == 'PATCH' for method, _, _ in self.calls))
 
+    def test_polling_does_not_start_reads_after_deadline(self):
+        def slow_read(path, token, method='GET', body=None):
+            result = self.call(path, token, method, body)
+            self.now += 0.6
+            return result
+        self.run_probe(slow_read)
+        first_write = next(i for i, (method, _, _) in enumerate(self.calls)
+                           if method == 'PATCH')
+        polling = [path for method, path, _ in self.calls[2:first_write]
+                   if method == 'GET']
+        # Two identity reads take 1.2 seconds before the three-second polling
+        # window starts. Five 0.6-second reads then reach the deadline.
+        self.assertEqual(len(polling), 5)
+
     def test_unpersisted_edit_is_not_success(self):
         def dropped(path, token, method='GET', body=None):
             if method == 'PATCH':
@@ -106,6 +120,26 @@ class ProbeTests(unittest.TestCase):
                     main()
                 run.assert_not_called()
 
+    def test_missing_token_is_rejected_before_any_request(self):
+        state = {**self.state, 'token': ''}
+        with self.assertRaisesRegex(RuntimeError, 'bearer token'):
+            probe(state, 1, call=self.call, clock=lambda: self.now,
+                  pause=self.pause)
+        self.assertEqual(self.calls, [])
+
+    def test_symlink_review_directory_is_rejected(self):
+        with tempfile.TemporaryDirectory() as root:
+            target = Path(root) / 'ux-browser-real'
+            target.mkdir()
+            link = Path(root) / 'ux-browser-link'
+            link.symlink_to(target, target_is_directory=True)
+            with patch('probe_staging.REVIEW_ROOT', Path(root).resolve()), \
+                    patch('sys.argv', ['probe_staging.py', str(link)]), \
+                    patch('probe_staging.probe') as run:
+                with self.assertRaisesRegex(RuntimeError, 'symlink'):
+                    main()
+                run.assert_not_called()
+
     @patch('probe_staging.http.client.HTTPConnection')
     def test_requests_are_timeout_bounded_on_staging_only(self, connection):
         response = connection.return_value.getresponse.return_value
@@ -130,6 +164,15 @@ class ProbeTests(unittest.TestCase):
             request('/api/people/directory', 'test-only-token')
         self.assertNotIn('test-only-token', str(raised.exception))
         connection.return_value.close.assert_called_once()
+
+    @patch('probe_staging.http.client.HTTPConnection')
+    def test_error_response_body_is_not_echoed(self, connection):
+        response = connection.return_value.getresponse.return_value
+        response.status, response.read.return_value = 500, b'test-only-token private detail'
+        with self.assertRaisesRegex(RuntimeError, 'HTTP 500') as raised:
+            request('/api/people/directory', 'test-only-token')
+        self.assertNotIn('test-only-token', str(raised.exception))
+        self.assertNotIn('private detail', str(raised.exception))
 
 
 if __name__ == '__main__':

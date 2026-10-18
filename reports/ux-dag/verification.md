@@ -67,7 +67,7 @@ python3 -m unittest discover -s reports/ux-dag -p 'test_*.py'
 python3 reports/ux-dag/check_dag.py --complete
 ```
 
-The final DAG validator passes `--complete` with every node verified against the scoped evidence here. It must fail whenever a node is reopened. The dedicated HTTP test uses the complete production router, bearer middleware, isolated AppState/database, real TCP on `127.0.0.1:3002`, a synthetic manifest and real detector. It refuses a busy staging port, never falls back to the live daemon, and shuts down its owned server. It is explicitly ignored in ordinary test runs so it cannot unexpectedly contend with staging. An ignored test is not a passing acceptance check.
+The original D00–D15 DAG passed `--complete` against the scoped evidence here. The new Cursor and desktop rebuild gates keep `--complete` failing until their acceptance checks pass. The dedicated HTTP test uses the complete production router, bearer middleware, isolated AppState/database, real TCP on `127.0.0.1:3002`, a synthetic manifest and real detector. It refuses a busy staging port, never falls back to the live daemon, and shuts down its owned server. It is explicitly ignored in ordinary test runs so it cannot unexpectedly contend with staging. An ignored test is not a passing acceptance check.
 
 That dedicated staging test also contains real HTTP project-status PATCH/readback, task creation/list readback, person creation/directory lookup, and the Automate/History list-envelope assertions. These direct HTTP checks passed; browser navigation was also exercised below. Notification read/deduplication/decision behavior is covered by UI regressions, not a newly generated real-daemon notification acceptance event. Creating a synthetic record does not run an automation, send a message or publish content. The executed staging receipt above records these assertions passing.
 
@@ -101,3 +101,20 @@ D15 adds an independent, repeatable HTTP probe for the previously interrupted st
 This run used the test's interactive hold as an HTTP test fixture; **no fresh browser interaction is claimed**. The earlier browser hang did not recur under these sustained HTTP reads, but its root cause remains unknown. This is additional scoped evidence, not a claim that the earlier failure was fixed. UI/build/backend-suite results above remain the recorded October 16 results; they were not rerun for this diagnostic-only change.
 
 Reproduction: start the guarded runner with `--browser`, wait for readiness, then run `python3 reports/ux-dag/probe_staging.py <printed-private-directory> --seconds 240`. See README for failure handling.
+
+## Cursor delivery and desktop rebuild — 2026-10-18
+
+D16 and D17 reopen completion for the reported Cursor prompt delay and the missing full desktop rebuild. Cursor now uses its documented initial prompt argument; other harnesses retain readiness-gated delivery. Follow-up delivery must wait for the native PTY write acknowledgement and preserve retry after failure. Focused regressions and actual shell/PTY argument checks passed as recorded below.
+
+The October 16 production build above built the frontend only. A fresh release daemon/CLI build and full Tauri macOS bundle are now in progress. No current desktop build or installation success is claimed until the new artifact passes verification.
+
+### D16 acceptance
+
+- Cursor CLI's local `--help` advertises an initial positional prompt, consistent with [Cursor's CLI documentation](https://cursor.com/docs/cli/overview). Grow now launches `cursor-agent -- <quoted directive>` and leaves `followUpInput` unset, retaining root path and action-completion metadata. Other harnesses retain their existing path.
+- Native `write_to_pty` resolves only after `write_all` and flush. Follow-up delivery now waits for that promise before reporting sent, retains the pending chip after failure, suppresses concurrent sends, and requires explicit retry after an ambiguous failed write. Cancellation suppresses late callbacks.
+- **90 focused tests / 4 files passed** (`cursor-focused-final-20261018.log`): Grow store wiring, literal shell argv roundtrip, 300ms initial-command dispatch, no Cursor follow-up or 30-second pending chip, write acknowledgement/failure/retry/cancellation.
+- A fake executable received a 5.6 KB Unicode/apostrophe-dense prompt through a real zsh PTY, exactly as one argument, with literal dollar substitutions/backticks and no shell-marker execution. Both unsplit and temporarily split variants passed; unnecessary splitting was removed. The automated POSIX-shell regression preserves the long argument test. No real Cursor model request or live app mutation was performed.
+- TypeScript passed (`typecheck-cursor-20261018.log`). Product changes committed as `5889056f`.
+- **27 Python tests passed** (`python-cursor-final-20261018.log`): 6 DAG, 14 staging-probe, 7 desktop-build orchestration/provenance tests. Probe additions cover malformed private state, symlink refusal, credential-free errors and checking the polling deadline before each read. The socket timeout is not an absolute total request deadline for a trickling peer.
+
+- Full UI regression repeat: **564 files / 4,635 tests passed**, 141.31 seconds (`full-ui-cursor-final-20261018.log`). Final focused rerun above covers the simplified Cursor command after removing unnecessary line splitting. Existing warnings are unchanged; no failing tests.
