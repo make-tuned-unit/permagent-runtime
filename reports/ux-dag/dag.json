@@ -354,14 +354,15 @@
         "D18"
       ],
       "title": "Dogfood Home hierarchy",
-      "status": "in_progress",
+      "status": "verified",
       "acceptance": [
         "Actual shipped morning layout reaches the daily overview without a preference write",
         "Custom layouts remain intact; rendered daily layout is aligned and bounded"
       ],
       "evidence": [
         "verification.md"
-      ]
+      ],
+      "implementation": "Exact shipped daemon morning template now migrates in memory to the five-card daily overview without a preference PUT; custom positions retained. Regression and wide/narrow rendered checks passed."
     },
     {
       "id": "D20",
@@ -369,14 +370,15 @@
         "D18"
       ],
       "title": "Dogfood Projects organization",
-      "status": "in_progress",
+      "status": "verified",
       "acceptance": [
         "Status controls stay inside aligned cards with accessible separate navigation",
         "Dense collections, search/status filtering, narrow widths and status update errors verified"
       ],
       "evidence": [
         "verification.md"
-      ]
+      ],
+      "implementation": "Project cards have integrated status footers, responsive aligned rows, bounded descriptions/tags and status filters. Pending PATCH/error/navigation regressions and dense wide/narrow review passed."
     },
     {
       "id": "D21",
@@ -384,14 +386,15 @@
         "D18"
       ],
       "title": "Analytics remains the primary content",
-      "status": "in_progress",
+      "status": "verified",
       "acceptance": [
         "Chart and real metrics are visible without opening a disclosure",
         "Installation/configuration remain secondary; loading/error and source truth retained"
       ],
       "evidence": [
         "verification.md"
-      ]
+      ],
+      "implementation": "Live first-party chart, metrics and source tables are primary visible content. Setup remains secondary and a setup-status failure cannot hide live stats. Scope/source regressions and rendered review passed."
     },
     {
       "id": "D22",
@@ -399,14 +402,15 @@
         "D18"
       ],
       "title": "People opens in Graph",
-      "status": "in_progress",
+      "status": "verified",
       "acceptance": [
         "A legacy saved List choice cannot hide Graph on entry",
         "List remains usable and person navigation/inspector work"
       ],
       "evidence": [
         "verification.md"
-      ]
+      ],
+      "implementation": "People starts in Graph on each visit even with a legacy saved List preference. Temporary List selection, return to Graph and person navigation regressions passed."
     },
     {
       "id": "D23",
@@ -417,14 +421,17 @@
         "D22"
       ],
       "title": "Dogfood layout release verification",
-      "status": "in_progress",
+      "status": "verified",
       "acceptance": [
         "Full UI regressions, TypeScript and rendered checks pass",
         "Rebuilt app provenance/signatures pass; authorized dogfood install and startup verified"
       ],
       "evidence": [
-        "verification.md"
-      ]
+        "verification.md",
+        "desktop-rebuild-manifest.json",
+        "desktop-dogfood-layout-install-receipt.json"
+      ],
+      "implementation": "4,643 UI tests, TypeScript, synthetic rendered review, signed UI-only Tauri build, resource/provenance checks and native Home/Projects/People/Analytics startup checks passed. Installed55d5ae293 app; retained prior bundle and unchanged launchd configuration."
     }
   ]
 }

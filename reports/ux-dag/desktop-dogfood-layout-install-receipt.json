@@ -1,0 +1,36 @@
+{
+  "source_app": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/artifacts/Permagent-55d5ae293-20261018-121313.app",
+  "source_head": "55d5ae2935f21b4bfb6cbd3ddee9b9d686933475",
+  "backend_source_head": "227484e71d44e04e80187f8956f371ca1f6d0de4",
+  "destination": "/Applications/Permagent.app",
+  "staged_app": "/Applications/.Permagent-install-20261018-121559.app",
+  "rollback_app": "/Applications/.Permagent-rollback-20261018-121559.app",
+  "original_daemon_pid": 90657,
+  "baseline_api_git_sha": "227484e71",
+  "baseline_hashes": {
+    "permagent-app": "7478e040b81e156e6f050b873709c0c1c9b62088498c16d92f166df88593e5b8",
+    "permagentd": "1861a99e8ff407f2fe09aaa1664fa0831f054e0a4a833943893019b1897b5501",
+    "permagent": "ed1a11ce55252653e2d35f4f4371f1cabe43912eca84f9af81a38e14ea0f4051"
+  },
+  "launchagent_sha256": "5444ce9470dce2e17153ed8eb9c06b45a860839dd66d8f95dc0425f9a1dff8bf",
+  "status": "installed_verified",
+  "started_at": "2026-10-18T12:15:59-0300",
+  "staging_guard_log": "/Volumes/PermagentBuilds/permagent/logs/20261018-121600-7486.log",
+  "installed_at": "2026-10-18T12:16:28-0300",
+  "installed_daemon_pid": 7563,
+  "http_status": 200,
+  "api_git_sha": "227484e71",
+  "installed_main_sha256": "cfe2a2caa06cb1a6080d06fde8656b52ea8da03497b7aebe2966df4098eecfa0",
+  "installed_signature": "codesign --deep --strict passed",
+  "rollback_binary_hashes": "match preinstall baseline",
+  "app_pid": 7578,
+  "verified_at": "2026-10-18T12:18:20-0300",
+  "ui_smoke": {
+    "home": "Connected; five-card overview in Decisions, Today and Activity sections",
+    "projects": "Aligned collection cards with integrated status controls and filters",
+    "people": "Graph selected on entry with You at network center",
+    "analytics": "Live chart and six metric tiles visible on entry without opening a disclosure",
+    "left_open": "Home"
+  },
+  "live_actions": "Navigation only; no action execution, record edits, messages or settings changes. Existing People mount checked calendar and reported no new meetings."
+}

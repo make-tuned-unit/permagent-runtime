@@ -26,6 +26,11 @@ flowchart TD
  D07 & D09 --> D16[Cursor Grow prompt delivery]
  D13 & D16 --> D17[Complete macOS desktop rebuild]
  D17 --> D18[Authorized dogfood installation]
+ D18 --> D19[Home layout migration]
+ D18 --> D20[Projects collection]
+ D18 --> D21[Analytics focus]
+ D18 --> D22[People Graph default]
+ D19 & D20 & D21 & D22 --> D23[Dogfood regressions / rebuild / install]
 ```
 
 Tests must exercise outcomes: retained drafts, exact navigation targets, no unintended writes, stale-response rejection, truthful error states and preservation of unrelated records. Source-string assertions alone do not verify a working route. Existing live data is never a mutable test fixture.

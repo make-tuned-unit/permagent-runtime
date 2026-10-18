@@ -87,7 +87,7 @@ The first passing gate used actual production components and real API calls thro
 
 ## Remaining boundaries
 
-Full native installation and live acceptance are separate, unauthorized steps. The original Brain blank state has not been reproduced with a proven cause; renderer failure and deadline recovery are preventive fixes. Automatic funnel inference, inferred account identity, download semantic classification/durable deduplication and wider connection provisioning remain research recommendations, not implemented automation. No guessed identity or account connection is presented as detected fact.
+Native installation was subsequently authorized and completed (D18 and D23 below). Broader live action acceptance remains separate. The original Brain blank state has not been reproduced with a proven cause; renderer failure and deadline recovery are preventive fixes. Automatic funnel inference, inferred account identity, download semantic classification/durable deduplication and wider connection provisioning remain research recommendations, not implemented automation. No guessed identity or account connection is presented as detected fact.
 
 ## Resumed staging diagnostics — 2026-10-18
 
@@ -144,3 +144,37 @@ The user explicitly requested: “Install the new app so I can dogfood it.” Th
 - Installed deep strict codesign passed. The installed main hash matches the reviewed build. All three rollback executable hashes match their preinstall baseline. HTTP `/status` returned 200; authenticated `/api/version` reports `227484e71` (previously `89ad8c981`). The sole listener belongs to the new installed daemon; the app process runs from the installed bundle.
 - Native UI smoke passed: the Home window loaded and displayed hub connected. No screenshot/private UI records were saved to the repository. No Grow action, real Cursor model request, recording, message, settings or pairing change was performed. The normal application restart uses the existing profile and configuration.
 - Exact paths, process IDs, baseline hashes and timestamps are in [desktop-install-receipt.json](desktop-install-receipt.json). This is an installation/startup smoke check, not a new full live regression run. D00–D18 are verified.
+
+
+## D19–D23 — dogfood layout corrections, 2026-10-18
+
+Product source: `55d5ae29`. The user supplied screenshots of the installed Home, Projects and Grow Analytics and asked that People default to Graph. Three cheaper subagents implemented focused changes; root reviewed integration and the rendered results.
+
+- **Home:** a read-only check of layout IDs/geometry found the actual daemon `morning_briefing` template differed from the legacy signature previously handled. The exact shipped template and known reflow variants now normalize in memory to Decisions, Calendar, To-dos, In Flight and Recent conversations. No preference PUT occurs during migration. Exact matching preserves custom positions, dimensions, order and visibility. Focused migration/render tests passed.
+- **Projects:** responsive aligned cards contain their status controls; navigation and status editing are separate accessible targets. Search and status filters, Active/Paused/Archived grouping, bounded descriptions and single-line tags improve dense collections. Pending status writes disable the control and suppress duplicate PATCH requests; existing persistence, errors and navigation remain covered.
+- **Analytics:** the receiving first-party chart, metrics, pages/sources/events tables and Refresh are visible as primary content. Installation and coverage details are secondary. Live stats remain visible when setup-status is unavailable, with safe handling of missing arrays. Scope, user-count truth and error regressions passed.
+- **People:** Graph is the entry default even when localStorage contains the legacy List choice. List remains usable during the visit; reentry returns to Graph. Regression covers this sequence and existing person navigation.
+- **Full UI suite passed: 564 files / 4,643 tests**, 104.03 seconds (`dogfood-layout-full-ui-final-20261018.log`). An earlier run had one source-policy failure because a tag used native `title`; replacing it with the shared Tooltip resolved that failure before this complete rerun. TypeScript passed (`dogfood-layout-typecheck-20261018.log`).
+- **Rendered synthetic review passed in Safari:** Silver wide and Dark 620px Home using the actual daemon template; dense 24-project wide and narrow collections; live-looking synthetic Analytics with its chart and six metrics at the top; dark People opening centered on You despite a seeded List preference, switching to List and returning to Graph on reload. Fixtures deny real mutations and have no daemon proxy. No private UI screenshots were committed. These are production-component browser checks, not new full-daemon regression results.
+
+A separate read-only review of `55d5ae29` found no concrete regressions in exact Home migration/customization, separate project controls, analytics source labeling or Graph entry behavior. The owned synthetic preview server and review tab were closed after review.
+
+D19–D23 are verified; the final build and installation evidence follows. The unchanged Rust backend is reused with the helper's source-tree and resource provenance checks; app/frontend provenance is recorded separately.
+
+
+### D23 build acceptance
+
+- UI-only Tauri release build passed with the unchanged backend/staged resources. Guard `/Volumes/PermagentBuilds/permagent/logs/20261018-120742-5833.log` and adjacent receipt report exit 0; Vite production build took 19.84 seconds and native release compilation 2m33s. Packaging guard `20261018-121313-7162` also exited 0. Existing chunk-size warnings only. No build guard was weakened.
+- New app: `/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/artifacts/Permagent-55d5ae293-20261018-121313.app`. App source `55d5ae2935f21b4bfb6cbd3ddee9b9d686933475`; reused backend source `227484e71d44e04e80187f8956f371ca1f6d0de4`. Main executable SHA-256 `cfe2a2caa06cb1a6080d06fde8656b52ea8da03497b7aebe2966df4098eecfa0`. This digest identifies the main executable, not a serialized whole bundle.
+- Deep strict Developer ID signature, identifier `ai.permagent.desktop`, backend code sections, resource hashes and current frontend provenance all passed. Notarization was skipped because notarization credentials were unavailable; this is a signed local dogfood build, not a notarized distribution claim.
+- Isolated bundled version smoke passed with a temporary profile and DYLD paths removed: daemon `permagent-daemon 1.31.0` (0.04s), CLI `1.31.0` (0.03s). The first daemon smoke timed out at 20s while concurrent external bundle verification was running; its owned child was terminated. Retrying after verification passed immediately. Timing alone does not prove the initial timeout's cause.
+
+
+### D23 installation and native acceptance — complete
+
+- Installed the verified app at `/Applications/Permagent.app`. Staging guard `/Volumes/PermagentBuilds/permagent/logs/20261018-121600-7486.log` and adjacent receipt passed. Staged signature/main/resource hashes were verified before replacement.
+- Confirmed the GUI was closed and the existing launchd job owned the sole port-3001 listener. Stopped only that job, retained the old app at `/Applications/.Permagent-rollback-20261018-121559.app`, atomically moved the staged bundle into place and bootstrapped the same unchanged plist. Its SHA-256 remained unchanged. The earlier pre-update rollback was also retained.
+- Installed signature and main/resource hashes match the manifest. Rollback executable hashes match their preinstall baseline. `/status` returned 200; `/api/version` correctly remains `227484e71` because this is a UI-only build reusing that verified backend. The installed app process and new daemon listener use the intended Applications bundle.
+- **Native WKWebView checks passed:** Home shows Decisions, Today and Activity with the five intended cards and connected hub; Projects has aligned cards and inset status controls inside their footers; People opens selected on Graph with You at the center; Grow Analytics displays its live chart and six metric tiles without a disclosure. Returned to Home and left the app open for dogfooding.
+- These live checks used normal navigation only. No Grow/model actions, refresh-triggered work, record edits, messages, recording, pairing or settings changes were invoked. The existing People mount calendar check reported no new meetings. No private screenshot/data was saved to the repository. Broad backend regression evidence remains the previously recorded isolated run; this is a fresh native view/startup check, not a new full live regression suite.
+- Exact installation receipt: [desktop-dogfood-layout-install-receipt.json](desktop-dogfood-layout-install-receipt.json). All D00–D23 nodes are verified.

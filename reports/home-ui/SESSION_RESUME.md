@@ -66,3 +66,12 @@ D16 and D17 are verified. The complete signed app is `/Volumes/PermagentBuilds/p
 ## Authorized dogfood installation — 2026-10-18
 
 The user subsequently authorized installation. D18 is verified: `/Applications/Permagent.app` now contains build `227484e71` and is open. The existing LaunchAgent was restarted with unchanged configuration; `/status` is 200 and `/api/version` reports `227484e71`. Native Home loaded with hub connected. Previous app retained at `/Applications/.Permagent-rollback-20261018-114756.app`; its executable hashes match the baseline. Read `../ux-dag/desktop-install-receipt.json` for exact installation evidence. The earlier observe-only installation boundary was superseded for this explicitly requested update; it does not authorize unrelated messages, settings changes, recordings or test work against live records.
+
+
+## Dogfood layout corrections installed — 2026-10-18
+
+`55d5ae29` addresses the user's installed-app screenshots: the actual daemon morning template now migrates in memory to the five-card Home overview while preserving custom layouts; Projects uses aligned responsive cards with internal status footers and filters; live Analytics chart/metrics lead the tab; People opens in Graph even with an old List preference. Three cheaper agents assisted implementation/review; root performed integration and installation.
+
+Full UI regressions passed **564 files /4,643 tests** and TypeScript passed. Synthetic wide/narrow review and fresh native Home/Projects/People/Analytics checks passed. A source-policy test initially rejected a native tag title; using the shared Tooltip resolved it before the complete rerun. The full signed app was rebuilt from `55d5ae293` with the verified unchanged `227484e71` backend. Exact provenance, build receipts and initial/retried version smoke are in `../ux-dag/verification.md` and the updated manifest.
+
+The new app is installed and open on Home at `/Applications/Permagent.app`. Rollback `/Applications/.Permagent-rollback-20261018-121559.app` retains the immediately previous version; the earlier rollback also remains. LaunchAgent configuration is unchanged; health and installed signatures/hashes passed. D00–D23 are verified. See `../ux-dag/desktop-dogfood-layout-install-receipt.json`. Review tab/server were closed. Existing live-action boundaries remain; no real Cursor action, messages, settings changes or recordings were executed. Four unrelated untracked October15 release files were left untouched.
