@@ -11,7 +11,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
 import { act } from 'react-dom/test-utils';
 
-vi.mock('../../lib/useNotifications', () => ({ useNotifications: () => ({ items: [] }) }));
+vi.mock('../../lib/notifications', () => ({ useNotifications: () => ({ items: [], unread: 0 }) }));
+vi.mock('../../lib/api', () => ({ api: { getIncidents: vi.fn().mockResolvedValue([]) } }));
+vi.mock('../sessions/SessionsList', () => ({ SessionsList: () => <div data-testid="history-sessions-panel" /> }));
+vi.mock('../inbox/InboxPanel', () => ({ InboxPanel: () => <div data-testid="history-inbox-panel" /> }));
+vi.mock('../trace/ExecutionTrace', () => ({ ExecutionTrace: () => <div data-testid="history-activity-panel" /> }));
+vi.mock('./SpendPanel', () => ({ SpendPanel: () => <div data-testid="history-spend-panel" /> }));
 
 import { HistoryView, HISTORY_PAGE_PADDING } from './HistoryView';
 import { space } from '../../styles/tokens';
@@ -46,6 +51,31 @@ describe('History segmented control', () => {
       // is what made a hovered tab look chosen.
       const other = tabs().find(t => t.getAttribute('aria-selected') !== 'true')!;
       expect(other.style.getPropertyValue('--pa-btn-bg-hover'), theme).not.toBe(want);
+    }
+  });
+
+  it('switches to the matching records panel when a tab is chosen', () => {
+    act(() => root.render(<HistoryView initialTab="sessions" />));
+    const expectedPanels = [
+      ['sessions', 'history-sessions-panel'],
+      ['inbox', 'history-inbox-panel'],
+      ['activity', 'history-activity-panel'],
+      ['spend', 'history-spend-panel'],
+    ] as const;
+
+    for (const [tab, panel] of expectedPanels) {
+      const button = container.querySelector('[data-testid="history-tab-' + tab + '"]') as HTMLButtonElement;
+      act(() => button.click());
+      expect(container.querySelector('[data-testid="' + panel + '"]'), tab).not.toBeNull();
+      const panelRegion = container.querySelector('[role="tabpanel"]')!;
+      expect(panelRegion.id).toBe('history-panel-' + tab);
+      expect(panelRegion.getAttribute('aria-labelledby')).toBe('history-tab-' + tab);
+      expect(button.getAttribute('aria-controls')).toBe('history-panel-' + tab);
+      expect(container.querySelectorAll('[role="tab"][aria-selected="true"]')).toHaveLength(1);
+      expect(button.getAttribute('aria-selected')).toBe('true');
+      for (const [, otherPanel] of expectedPanels.filter(([key]) => key !== tab)) {
+        expect(container.querySelector('[data-testid="' + otherPanel + '"]'), tab + ' hides ' + otherPanel).toBeNull();
+      }
     }
   });
 });

@@ -155,14 +155,7 @@ function push(n: Omit<AppNotification, 'id' | 'ts' | 'read'>): string {
         if (item.onActivate || item.url || item.target) {
           osNote.onclick = () => {
             window.focus();
-            markRead(item.id);
-            if (item.onActivate) {
-              item.onActivate();
-            } else if (item.url) {
-              useCommandCenter.getState().openInBrowser(item.url);
-            } else if (item.target) {
-              navigateToTool(item.target);
-            }
+            if (activateNotificationDestination(item)) markRead(item.id);
           };
         }
       }
@@ -199,6 +192,18 @@ export function markAllRead(): void {
     unread: 0,
   };
   publish();
+}
+
+/** Open a notification's destination. False means the destination is not
+ * reachable in the current workspace set, so callers should leave it unread. */
+export function activateNotificationDestination(item: AppNotification): boolean {
+  if (item.onActivate) {
+    item.onActivate();
+    return true;
+  }
+  if (item.url) return useCommandCenter.getState().openInBrowser(item.url);
+  if (item.target) return navigateToTool(item.target);
+  return true;
 }
 
 export function useNotifications(): NotificationState {

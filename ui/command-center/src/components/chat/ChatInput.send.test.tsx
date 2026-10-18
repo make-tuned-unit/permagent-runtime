@@ -23,6 +23,7 @@ import { getThemedColors, setTheme } from '../../styles/tokens';
 
 let container: HTMLDivElement;
 let root: Root;
+const originalSendMessage = useCommandCenter.getState().sendMessage;
 beforeEach(() => {
   setTheme('dark');
   container = document.createElement('div');
@@ -31,7 +32,13 @@ beforeEach(() => {
   act(() => { useCommandCenter.setState({ isStreaming: false, chatDraft: { text: '', files: [] } }); });
   act(() => root.render(<ChatInput />));
 });
-afterEach(() => { act(() => root.unmount()); container.remove(); });
+afterEach(() => {
+  act(() => {
+    useCommandCenter.setState({ sendMessage: originalSendMessage });
+    root.unmount();
+  });
+  container.remove();
+});
 
 const send = () => container.querySelector('[aria-label="Send message"]') as HTMLElement;
 const field = () => container.querySelector('textarea') as HTMLTextAreaElement;
@@ -69,6 +76,21 @@ describe('the composer placeholder', () => {
 });
 
 describe('send button', () => {
+  it('submits the trimmed draft to the store and clears the composer', async () => {
+    const sendMessage = vi.fn().mockResolvedValue(undefined);
+    act(() => useCommandCenter.setState({ sendMessage }));
+    type('  hello agent  ');
+
+    await act(async () => {
+      send().click();
+      await Promise.resolve();
+    });
+
+    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(sendMessage).toHaveBeenCalledWith('hello agent', undefined);
+    expect(field().value).toBe('');
+  });
+
   it('is square with the field, not a smaller box beside it', () => {
     expect(send().style.width).toBe(send().style.height);
     expect(send().style.width).toBe(field().style.minHeight);

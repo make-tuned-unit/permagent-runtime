@@ -1,0 +1,11 @@
+{
+  "checked_at": "2026-10-18T19:00:22-0300",
+  "port": 3002,
+  "read_only_validation_requests": 6,
+  "project_status_ui_patch_persisted": true,
+  "person_notes_ui_patch_persisted": true,
+  "detected_react": true,
+  "task_list_contract": true,
+  "schedule_and_history_envelopes": true,
+  "no_credential_recorded": true
+}

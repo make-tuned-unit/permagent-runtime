@@ -48,7 +48,7 @@ export interface ToastCardProps {
   /** Called once the exit transition has finished — remove it from the list. */
   onDismiss: (id: string) => void;
   /** Called when the toast body itself is activated (click or Enter/Space). */
-  onActivate: (n: AppNotification) => void;
+  onActivate: (n: AppNotification) => void | boolean;
 }
 
 export function ToastCard({ notification, ttlMs, onDismiss, onActivate }: ToastCardProps) {
@@ -220,7 +220,10 @@ export function ToastCard({ notification, ttlMs, onDismiss, onActivate }: ToastC
         }}
       >
         <button
-          onClick={() => { if (dragX === 0) { onActivate(notification); beginLeave(); } }}
+          onClick={() => {
+            if (dragX !== 0) return;
+            if (onActivate(notification) !== false) beginLeave();
+          }}
           style={{
             textAlign: 'left', cursor: 'pointer', width: '100%',
             background: 'transparent', border: 'none',

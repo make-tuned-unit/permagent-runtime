@@ -55,6 +55,7 @@ vi.mock('../terminal/TerminalManager', () => {
 import { BuildView } from './BuildView';
 import { useCommandCenter } from '../../lib/store';
 import { resetClaimedLaunches } from './pendingLaunch';
+import { codingAgentById, codingAgentLaunchCommand } from '../grow/codingAgents';
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -96,6 +97,39 @@ function mountBuildView(): { container: HTMLDivElement; root: Root } {
 }
 
 describe('BuildView pendingTerminalLaunch — consume once', () => {
+  it('passes Cursor’s inline Grow directive and action attribution into the terminal tab', async () => {
+    const prompt = "Implement the reviewed change.\nKeep the user's wording intact.";
+    const command = codingAgentLaunchCommand(codingAgentById('cursor')!, prompt);
+    useCommandCenter.getState().setPendingTerminalLaunch({
+      rootPath: '/tmp/grow project',
+      label: 'grow project · cursor',
+      command,
+      growthAction: { projectId: 'project-7', actionId: 'action-12' },
+    });
+    const launchId = useCommandCenter.getState().pendingTerminalLaunch?.id;
+    const { root } = mountBuildView();
+
+    await act(async () => {
+      root.render(<BuildView />);
+      await Promise.resolve();
+    });
+
+    expect(createProjectTabSpy).toHaveBeenCalledTimes(1);
+    expect(createProjectTabSpy).toHaveBeenCalledWith(
+      '/tmp/grow project',
+      'grow project · cursor',
+      command,
+      undefined,
+      expect.objectContaining({
+        launchId,
+        growthAction: { projectId: 'project-7', actionId: 'action-12' },
+        followUpInput: undefined,
+      }),
+    );
+    expect(command).toBe("cursor-agent -- 'Implement the reviewed change.\nKeep the user'\\''s wording intact.'");
+    expect(useCommandCenter.getState().pendingTerminalLaunch).toBeNull();
+  });
+
   it('opens exactly one tab for one launch even when two BuildView instances race the same pending launch', async () => {
     useCommandCenter.getState().setPendingTerminalLaunch({
       rootPath: '/tmp/proj',

@@ -9,9 +9,10 @@ import {
   markRead,
   setTrayOpen,
   useTrayOpen,
+  activateNotificationDestination,
   type AppNotification,
 } from '../../lib/notifications';
-import { navigateToTool, useCommandCenter } from '../../lib/store';
+import { useCommandCenter } from '../../lib/store';
 import { font, radius, space, textSize, type } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { useGlass } from '../common/Glass';
@@ -88,19 +89,18 @@ export function NotificationHost() {
   const dismissToast = (id: string) =>
     setToastIds((prev) => prev.filter((tid) => tid !== id));
 
-  const activate = (n: AppNotification) => {
+  const activate = (n: AppNotification): boolean => {
     // A custom action (e.g. "note saved" → the exact note) wins; a notification
     // carrying a link (e.g. a Watcher nudge's source article) opens it in the
     // in-app browser on the Build tab; otherwise fall back to the target tab.
-    if (n.onActivate) {
-      n.onActivate();
-    } else if (n.url) {
-      useCommandCenter.getState().openInBrowser(n.url);
-    } else if (n.target) {
-      navigateToTool(n.target);
-    }
+    const activated = activateNotificationDestination(n);
+    // A destination missing from the user's workspace layouts is a failed
+    // route, not an acknowledged notification. Keep the tray open and item
+    // unread so its destination can be retried after the layout is restored.
+    if (!activated) return false;
     setTrayOpen(false);
     markRead(n.id);
+    return true;
   };
 
   // Click-away dismissal: any press outside the tray (and outside the bell

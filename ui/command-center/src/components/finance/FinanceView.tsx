@@ -18,7 +18,7 @@ import { Button, SUCCESS_FLASH_MS } from '../common/Button';
 import { Chip } from '../common/Chip';
 import { JobProgress } from '../common/JobProgress';
 import { useLongRunningJob, pollingRunner, type LongRunningJob } from '../../hooks/useLongRunningJob';
-import { navigateToTool, useCommandCenter } from '../../lib/store';
+import { useCommandCenter } from '../../lib/store';
 import { GLOSSARY } from '../../lib/vocabulary';
 import { AGENT_TRIM } from '../world/shared/palette';
 import { PolybotKeys } from './PolybotKeys';
@@ -1650,7 +1650,7 @@ function PicksSection({
             colors={colors}
             type="button"
             data-testid="picks-world-link"
-            onClick={() => navigateToTool('world')}
+            onClick={() => useCommandCenter.getState().focusWorldAgent('financier')}
           >
             View in World
           </Button>

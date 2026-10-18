@@ -28,6 +28,7 @@ vi.mock('../../lib/api', () => ({ apiFetch }));
 
 import { PersonDetailModal } from './PersonDetailModal';
 import { useCommandCenter } from '../../lib/store';
+import type { LayoutNode, WorkspaceState } from '../../lib/store';
 import type { ProjectPerson } from './types';
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
@@ -64,10 +65,22 @@ const person: ProjectPerson = {
 
 let container: HTMLDivElement;
 let root: Root;
+let originalStore: ReturnType<typeof useCommandCenter.getState>;
+
+const buildWorkspace = (): WorkspaceState => ({
+  id: 'build-links-test', name: 'Build', icon: '', sortOrder: 0, isDefault: false,
+  layoutJson: { type: 'panel', tool: 'build', config: {} } satisfies LayoutNode,
+});
 
 beforeEach(() => {
+  originalStore = useCommandCenter.getState();
   apiFetch.mockReset().mockResolvedValue([]);
-  useCommandCenter.setState({ pendingBrowserUrl: null });
+  useCommandCenter.setState({
+    pendingBrowserUrl: null,
+    workspaces: [buildWorkspace()],
+    activeWorkspaceId: 'build-links-test',
+    activePanel: 'chat',
+  });
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -76,6 +89,12 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   container.remove();
+  useCommandCenter.setState({
+    pendingBrowserUrl: originalStore.pendingBrowserUrl,
+    workspaces: originalStore.workspaces,
+    activeWorkspaceId: originalStore.activeWorkspaceId,
+    activePanel: originalStore.activePanel,
+  });
 });
 
 async function render(p: ProjectPerson) {
@@ -122,6 +141,16 @@ describe('PersonDetailModal profile links', () => {
     expect(btn?.textContent).toContain('Open profile');
     await act(async () => btn!.dispatchEvent(new MouseEvent('click', { bubbles: true })));
     expect(useCommandCenter.getState().pendingBrowserUrl).toBe(url);
+  });
+
+  it('explains why a profile link cannot open when no Build workspace can receive it', async () => {
+    useCommandCenter.setState({ workspaces: [] });
+    await render(person);
+
+    await act(async () => findButton('Open profile')!.click());
+
+    expect(useCommandCenter.getState().pendingBrowserUrl).toBeNull();
+    expect(container.textContent).toContain('Add a Build tab to a workspace before opening profile links.');
   });
 
   it('does not make a non-http(s) value clickable', async () => {

@@ -47,7 +47,6 @@ import { FiBookOpen, FiCalendar, FiCheck, FiCheckSquare, FiExternalLink, FiFileT
 import { apiFetch } from '../../lib/api';
 import { hapticSuccess } from '../../lib/haptic';
 import { navigateToTool, useCommandCenter } from '../../lib/store';
-import { useBrowserNavigate } from '../../hooks/useBrowserNavigate';
 import { duration, ease, font, radius, space, textSize } from '../../styles/tokens';
 import { useTheme } from '../../styles/useTheme';
 import { TITLEBAR_HEIGHT } from '../../lib/windowChrome';
@@ -220,6 +219,14 @@ export function PersonDetailModal({
   const [removing, setRemoving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [enriching, setEnriching] = useState(false);
+  const openProfileLink = useCallback((url: string) => {
+    if (useCommandCenter.getState().openInBrowser(url)) {
+      setError(null);
+      return true;
+    }
+    setError('Add a Build tab to a workspace before opening profile links.');
+    return false;
+  }, []);
 
   // Merge (duplicate-cleanup epic): `merging` swaps the modal body for
   // MergePersonPanel; on success the panel hands back a MergeReport, which
@@ -704,7 +711,7 @@ export function PersonDetailModal({
                 {[view.email, view.phone].filter(Boolean).map(value => <div key={value} style={{ overflowWrap: 'anywhere' }}>{value}</div>)}
                 {view.last_contact_at && <div>Last recorded contact: {fmtTime(view.last_contact_at)}</div>}
                 {!editing && safeLink(view.linkedin) && <Button colors={colors} variant="ghost"
-                  onClick={() => useCommandCenter.getState().openInBrowser(safeLink(view.linkedin)!)}>Open profile</Button>}
+                  onClick={() => openProfileLink(safeLink(view.linkedin)!)}>Open profile</Button>}
                 {view.how_met && <div>{view.how_met}</div>}
                 {view.notes && <p style={{ margin: 0, whiteSpace: 'pre-wrap' }}>{view.notes}</p>}
                 <Button colors={colors} variant="ghost" aria-expanded={editing} aria-controls="person-contact-fields"
@@ -713,7 +720,7 @@ export function PersonDetailModal({
                 </Button>
                 <div id="person-contact-fields" hidden={!editing}>
                   {editing && <EditForm colors={colors} personName={view.display_name} draft={draft}
-                    onChange={(k, v) => setDraft(d => ({ ...d, [k]: v }))} />}
+                    onChange={(k, v) => setDraft(d => ({ ...d, [k]: v }))} onOpenUrl={openProfileLink} />}
                 </div>
               </section>
               {association && (
@@ -1120,13 +1127,13 @@ function LinkButton({ colors, label, title, onClick }: {
   );
 }
 
-function EditForm({ colors, personName, draft, onChange }: {
+function EditForm({ colors, personName, draft, onChange, onOpenUrl }: {
   colors: ReturnType<typeof useTheme>['colors'];
   personName: string;
   draft: Draft;
   onChange: (key: EditableKey, value: string) => void;
+  onOpenUrl: (url: string) => boolean;
 }) {
-  const openInBrowser = useBrowserNavigate();
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: space.xl }}>
       {EDITABLE_FIELDS.map(({ key, label, multiline, placeholder, link }) => {
@@ -1144,7 +1151,7 @@ function EditForm({ colors, personName, draft, onChange }: {
                     colors={colors}
                     label={key === 'personal_site' ? 'Open site' : key === 'photo_url' ? 'Open image' : 'Open profile'}
                     title={href}
-                    onClick={() => openInBrowser(href)}
+                    onClick={() => onOpenUrl(href)}
                 />
               )}
             </span>

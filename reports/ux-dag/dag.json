@@ -432,6 +432,85 @@
         "desktop-dogfood-layout-install-receipt.json"
       ],
       "implementation": "4,643 UI tests, TypeScript, synthetic rendered review, signed UI-only Tauri build, resource/provenance checks and native Home/Projects/People/Analytics startup checks passed. Installed55d5ae293 app; retained prior bundle and unchanged launchd configuration."
+    },
+    {
+      "id": "D24",
+      "depends_on": [
+        "D23"
+      ],
+      "title": "Functional flow inventory",
+      "status": "verified",
+      "acceptance": [
+        "Every primary surface is inventoried with executed/source-only/external boundaries"
+      ],
+      "evidence": [
+        "../flow-audit-20261018/README.md"
+      ],
+      "implementation": "Per-surface audit reports distinguish interaction tests, source tracing, native visits and external boundaries."
+    },
+    {
+      "id": "D25",
+      "depends_on": [
+        "D24"
+      ],
+      "title": "Button and flow regression audit",
+      "status": "verified",
+      "acceptance": [
+        "Concrete failures reproduced and fixed with outcome-based regressions",
+        "Navigation, failed submission/retry and state preservation tested across assigned surfaces"
+      ],
+      "evidence": [
+        "../flow-audit-20261018/README.md"
+      ],
+      "implementation": "Notification acknowledgements/profile links, Finance focus and core World readiness corrected; interaction regressions passed with full UI suite4657tests. History gained explicit tabpanel relationships; intermittent native AX issue remains unproven."
+    },
+    {
+      "id": "D26",
+      "depends_on": [
+        "D24"
+      ],
+      "title": "Daemon and real persistence checks",
+      "status": "verified",
+      "acceptance": [
+        "Full unchanged-source daemon regression passes",
+        "Isolated real HTTP/browser mutations persist without using live records"
+      ],
+      "evidence": [
+        "../flow-audit-20261018/README.md"
+      ],
+      "implementation": "Unchanged-source daemon suite1208passed/5ignored; explicit HTTP/browser gate separately passed with project/person UI edit persistence and6independent readbacks."
+    },
+    {
+      "id": "D27",
+      "depends_on": [
+        "D24"
+      ],
+      "title": "Native functional walkthrough",
+      "status": "in_progress",
+      "acceptance": [
+        "Primary native views and representative cross-view flows checked",
+        "Observed failures and recovery limits recorded truthfully"
+      ],
+      "evidence": [
+        "../flow-audit-20261018/README.md"
+      ]
+    },
+    {
+      "id": "D28",
+      "depends_on": [
+        "D25",
+        "D26",
+        "D27"
+      ],
+      "title": "Functional audit release gate",
+      "status": "in_progress",
+      "acceptance": [
+        "Full UI regressions and TypeScript pass for integrated sources",
+        "Any product fixes are rebuilt, verified and installed with rollback"
+      ],
+      "evidence": [
+        "../flow-audit-20261018/README.md"
+      ]
     }
   ]
 }

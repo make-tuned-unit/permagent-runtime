@@ -88,6 +88,22 @@ describe('Home first action', () => {
     const custom = structuredClone(DEFAULT_LAYOUT); custom.cards.reverse();
     expect(isDefaultHomeLayout(custom)).toBe(false);
   });
+  it('routes reset through confirmation and persists the shared daily default', async () => {
+    fixture.layout!.cards[0].size.w = 6;
+    await render();
+    act(() => host.querySelector<HTMLButtonElement>('[data-testid="dashboard-customize"]')!.click());
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="More actions"]')!.click());
+    const reset = [...host.querySelectorAll('button')].find(b => b.textContent === 'Reset to default')!;
+    await act(async () => reset.click());
+    expect(fixture.persist).not.toHaveBeenCalled();
+    const dialog = [...document.body.querySelectorAll<HTMLElement>('[role="dialog"]')]
+      .find(candidate => candidate.textContent?.includes('Reset dashboard?'));
+    expect(dialog).toBeTruthy();
+
+    const confirm = [...dialog!.querySelectorAll('button')].find(b => b.textContent === 'Reset')!;
+    await act(async () => confirm.click());
+    expect(fixture.persist).toHaveBeenCalledWith(DEFAULT_LAYOUT);
+  });
   for (const [width, height] of [[1280, 800], [1024, 640]]) for (const theme of ['dark', 'silver'] as const) for (const populated of [false, true]) for (const dockOpen of [false, true]) {
     it(`DOM Home ${populated ? 'returning' : 'untouched'} ${width}x${height} ${theme} dock-${dockOpen ? 'open' : 'closed'}`, async () => {
       Object.defineProperties(window, { innerWidth: { configurable: true, value: width }, innerHeight: { configurable: true, value: height } });

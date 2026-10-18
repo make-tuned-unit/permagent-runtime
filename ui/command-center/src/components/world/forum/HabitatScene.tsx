@@ -1,5 +1,5 @@
 import { useForumBuild } from './useForumBuild';
-import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, lazy, useEffect, useMemo, useRef } from 'react';
 import { OrbitControls } from '@react-three/drei';
 import { useFrame, useThree, type ThreeEvent } from '@react-three/fiber';
 import { Mesh, MeshStandardMaterial, Object3D, PerspectiveCamera, Vector3 } from 'three';
@@ -29,13 +29,15 @@ function* prepareHabitat(){
 }
 export function HabitatScene({directing,onDirected,onReady}:{directing:string|null;onDirected:(point:Point3,ok:boolean)=>void;onReady?:()=>void}){
   const built=useForumBuild('HabitatScene terrain / collision',prepareHabitat,[],value=>value.dispose());
-  const [architecture,setArchitecture]=useState(false),[planting,setPlanting]=useState(false);
-  const architectureReady=useCallback(()=>setArchitecture(true),[]),plantingReady=useCallback(()=>setPlanting(true),[]);
-  useEffect(()=>{if(built&&architecture&&planting)onReady?.();},[built,architecture,planting,onReady]);
+  // Stage readiness means the walkable ground and its collision data exist.
+  // Architecture and planting are progressive details and report their own
+  // asset health; waiting for both here kept the full-screen startup overlay
+  // over a usable scene while those optional builders continued.
+  useEffect(()=>{if(built)onReady?.();},[built,onReady]);
   const direct=(e:ThreeEvent<MouseEvent>)=>{if(!directing)return;e.stopPropagation();const p:Point3=[e.point.x,habitatElevation(e.point.x,e.point.z),e.point.z];onDirected(p,commandHabitatAgent(directing,p));};
   return <group onClick={direct}>
     {built&&<mesh geometry={built.ground} position={[0,-.06,0]} receiveShadow><meshStandardMaterial color="#ac9f87" roughness={1}/></mesh>}
-    <Suspense fallback={null}><HabitatArchitecture onReady={architectureReady}/></Suspense><Suspense fallback={null}><HabitatPlanting onReady={plantingReady}/></Suspense><HabitatWater/>
+    <Suspense fallback={null}><HabitatArchitecture/></Suspense><Suspense fallback={null}><HabitatPlanting/></Suspense><HabitatWater/>
   </group>;
 }
 export function HabitatLighting({appearance,skyAttempt=0}:{appearance:'day'|'night';skyAttempt?:number}){

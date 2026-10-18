@@ -638,7 +638,7 @@ interface CommandCenterStore {
   pendingCardNavigation: { projectId: string; cardId: string } | null;
   openCardOnBoard: (projectId: string, cardId: string) => void;
   clearPendingCardNavigation: () => void;
-  openInBrowser: (url: string) => void;
+  openInBrowser: (url: string) => boolean;
   clearPendingBrowserUrl: () => void;
 
   // --- Build tab pane visibility (#567-adjacent UX): hide either pane so
@@ -2442,8 +2442,11 @@ export const useCommandCenter = create<CommandCenterStore>((set, get) => ({
       buildTerminalHidden: s.buildBrowserHidden ? s.buildTerminalHidden : false,
     })),
   openInBrowser: (url) => {
+    // Do not leave a queued URL behind when this layout cannot open Build —
+    // a later, unrelated Build visit must not inherit a stale deep link.
+    if (!navigateToTool('build')) return false;
     set({ pendingBrowserUrl: url });
-    navigateToTool('build');
+    return true;
   },
   clearPendingBrowserUrl: () => set({ pendingBrowserUrl: null }),
 

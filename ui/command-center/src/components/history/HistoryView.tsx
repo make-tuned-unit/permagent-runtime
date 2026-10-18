@@ -216,6 +216,8 @@ export function HistoryView({ initialTab = 'sessions' }: { initialTab?: HistoryT
               key={t.key}
               colors={colors}
               role="tab"
+              id={'history-tab-' + t.key}
+              aria-controls={'history-panel-' + t.key}
               aria-selected={on}
               data-testid={`history-tab-${t.key}`}
               onClick={() => selectTab(t.key)}
@@ -237,15 +239,27 @@ export function HistoryView({ initialTab = 'sessions' }: { initialTab?: HistoryT
         })}
       </div>
 
-      {tab === 'sessions' && <Frame><SessionsList /></Frame>}
-      {tab === 'inbox' && <Frame><InboxPanel embedded /></Frame>}
+      {tab === 'sessions' && (
+        <div role="tabpanel" id="history-panel-sessions" aria-labelledby="history-tab-sessions" tabIndex={0} style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+          <Frame><SessionsList /></Frame>
+        </div>
+      )}
+      {tab === 'inbox' && (
+        <div role="tabpanel" id="history-panel-inbox" aria-labelledby="history-tab-inbox" tabIndex={0} style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+          <Frame><InboxPanel embedded /></Frame>
+        </div>
+      )}
       {tab === 'activity' && (
-        <>
+        <div role="tabpanel" id="history-panel-activity" aria-labelledby="history-tab-activity" tabIndex={0} style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
           <IncidentsStrip />
           <Frame><ExecutionTrace activity /></Frame>
-        </>
+        </div>
       )}
-      {tab === 'spend' && <div style={{ flex: 1, minHeight: 0 }}><SpendPanel /></div>}
+      {tab === 'spend' && (
+        <div role="tabpanel" id="history-panel-spend" aria-labelledby="history-tab-spend" tabIndex={0} style={{ flex: 1, minHeight: 0 }}>
+          <SpendPanel />
+        </div>
+      )}
     </div>
   );
 }

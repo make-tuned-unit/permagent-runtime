@@ -9,7 +9,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
 import { act } from 'react-dom/test-utils';
 
-const { apiFetch } = vi.hoisted(() => ({ apiFetch: vi.fn() }));
+const { apiFetch, focusWorldAgent } = vi.hoisted(() => ({ apiFetch: vi.fn(), focusWorldAgent: vi.fn() }));
 
 vi.mock('../../lib/api', () => ({
   apiFetch,
@@ -23,10 +23,11 @@ vi.mock('../../lib/api', () => ({
 }));
 
 vi.mock('../../lib/store', () => ({
-  navigateToTool: vi.fn(),
   // FinanceView reads `financeRev` (bumped by livenessSync on finance_changed)
   // only to re-trigger its poll effect; a stable value is enough here.
-  useCommandCenter: vi.fn(() => 0),
+  useCommandCenter: Object.assign(vi.fn(() => 0), {
+    getState: () => ({ focusWorldAgent }),
+  }),
 }));
 
 import { FinanceView } from './FinanceView';
@@ -78,6 +79,7 @@ function board(over: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   apiFetch.mockReset();
+  focusWorldAgent.mockReset().mockReturnValue(true);
   apiFetch.mockResolvedValue(board());
   container = document.createElement('div');
   document.body.appendChild(container);
@@ -171,6 +173,8 @@ it('labels the cross-link with what it does, not with who lives there', async ()
   expect(link?.textContent).toBe('View in World');
   act(() => { link.focus(); });
   expect(document.querySelector('[role="tooltip"]')?.textContent).toMatch(/Financier/);
+  await act(async () => { link.click(); });
+  expect(focusWorldAgent).toHaveBeenCalledWith('financier');
 });
 
 it('separates the scanner pool from the tickers the user added', async () => {
