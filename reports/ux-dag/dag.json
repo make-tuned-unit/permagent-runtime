@@ -569,6 +569,22 @@
         "desktop-rebuild-manifest.json"
       ],
       "implementation": "Signed 3c1c UI build with unchanged verified 227 backend installed. Guard receipts/signatures/resources/hashes passed; local staged version smoke and installed native Home/Calendar checks passed; previous app retained. Two external startup probe timeouts documented."
+    },
+    {
+      "id": "D32",
+      "depends_on": [
+        "D31"
+      ],
+      "title": "Build header subtitle removal",
+      "status": "in_progress",
+      "acceptance": [
+        "Build title and Projects picker align without subtitle",
+        "Build/header regression and TypeScript checks pass",
+        "Rebuilt signed app installed and native header verified"
+      ],
+      "evidence": [
+        "build-header-20261018.md"
+      ]
     }
   ]
 }

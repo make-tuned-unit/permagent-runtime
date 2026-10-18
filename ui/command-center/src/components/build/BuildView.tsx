@@ -129,7 +129,6 @@ export function BuildView() {
     setPendingTerminalLaunch(null);
   }, [pendingTerminalLaunch, setPendingTerminalLaunch, buildTerminalHidden, toggleBuildTerminal]);
 
-  const agentName = data?.agent.name ?? 'Agent';
   // Only a coding-harness run with a turn in flight counts. A plain chat
   // session (the dock creates one on open) is not a Build session.
   const harnessRuns = useActiveHarnessRuns();
@@ -169,10 +168,7 @@ export function BuildView() {
       color: colors.text, fontFamily: font.body,
     }}>
       <ViewHeader
-        // A tab's title is the tab's name. Build used to swap in the active
-        // task's title, which made it the one view whose header didn't say
-        // what tab you were on. The task moved to the subtitle — still
-        // visible, just no longer impersonating the page title.
+        // Keep the title block to one line so Projects stays beside Build.
         title="Build"
         // ProjectChip sits immediately right of the title (afterTitle), NOT in
         // `actions` at the far edge. The Build browser is a native webview that
@@ -181,33 +177,6 @@ export function BuildView() {
         // that. The Mobius that used to lead the header is gone — Build now
         // matches every other tab, whose header is a left-aligned title.
         afterTitle={<ProjectChip onLaunch={handleLaunch} onVisitSite={handleVisitSite} />}
-        subtitle={
-          <span style={{ display: 'flex', alignItems: 'center', gap: space.md, minWidth: 0 }}>
-            <span style={{
-              width: 5, height: 5, borderRadius: '50%', flexShrink: 0,
-              background: hasActive ? colors.cyan : colors.textDim,
-              boxShadow: hasActive ? `0 0 6px ${colors.cyanGlow}` : 'none',
-            }} />
-            {activeTask && (
-              // Task titles are user/agent text and can be long — truncate
-              // here rather than let the subtitle push the bar to two rows.
-              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
-                {activeTask.title}
-              </span>
-            )}
-            <span style={{ flexShrink: 0 }}>
-              {activeTask ? '· ' : ''}{agentName} · {hasActive ? 'thinking' : 'idle'}
-              {/* Idle Build said only "idle" — true, and no help at all to
-                  someone who has just arrived and is looking at an empty
-                  terminal. One clause on the line that is already there.
-                  B1 (dagK): it used to claim "the terminal below runs your
-                  coding agent" — false exactly when it showed (idle, no
-                  active task): the terminal is a plain shell until a project
-                  is launched through the picker beside the title. */}
-              {!hasActive && !activeTask && ' — the terminal below is a plain shell; launch a project to run your coding agent'}
-            </span>
-          </span>
-        }
         actions={<>
         {/* Progress rail — driven by the daemon's per-task progress estimate
             (dashboard in_flight[].progress, 0..0.95). Previously hardcoded to

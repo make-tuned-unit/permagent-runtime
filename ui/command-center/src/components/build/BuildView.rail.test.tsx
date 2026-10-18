@@ -8,8 +8,8 @@
  * caught them moving, since nothing had ever said what they measured.
  *
  * Now they appear when there is progress to show and name what they are
- * counting while they do; and the idle header says what the tab is for instead
- * of only that nothing is happening.
+ * counting while they do. The title stays on one line, without a subtitle,
+ * so the project picker remains aligned beside Build.
  */
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
@@ -106,6 +106,7 @@ describe('Build progress rail', () => {
     await render();
     const rail = container.querySelector('[data-testid="build-progress-rail"]') as HTMLElement;
     expect(rail).not.toBeNull();
+    expect(container.querySelector('[data-testid="view-title-block"]')?.textContent).toBe('Build');
     expect(rail.textContent).toContain('Step 3 of 5');
     expect(rail.getAttribute('aria-label')).toContain('Refactor the parser');
     expect(rail.getAttribute('aria-valuenow')).toBe('3');
@@ -119,8 +120,7 @@ describe('Build progress rail', () => {
     withChatSessionOnly({ id: '20261013_1', title: 'Session 20261013_1', progress: 0 });
     await render();
     const header = container.querySelector('[data-testid="view-header"]')!.textContent!;
-    expect(header).toContain('Aria · idle');
-    expect(header).toContain('the terminal below is a plain shell');
+    expect(container.querySelector('[data-testid="view-title-block"]')?.textContent).toBe('Build');
     expect(header).not.toContain('thinking');
     expect(header).not.toContain('Session 20261013_1');
     expect(header).not.toContain('Take over');
@@ -137,10 +137,8 @@ describe('Build progress rail', () => {
     expect(header).not.toContain('Take over');
   });
 
-  it('says what an idle Build tab is for, truthfully — the terminal is a plain shell until a project is launched (B1)', async () => {
+  it('keeps the idle title block to Build without a subtitle', async () => {
     await render();
-    const text = container.querySelector('[data-testid="view-header"]')!.textContent;
-    expect(text).toContain('the terminal below is a plain shell');
-    expect(text).not.toContain('the terminal below runs your coding agent');
+    expect(container.querySelector('[data-testid="view-title-block"]')?.textContent).toBe('Build');
   });
 });
