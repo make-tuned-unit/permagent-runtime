@@ -1,0 +1,33 @@
+{
+  "source_head": "3c1c9c4e93cf3b0a011ad27d25133c070fadfaf1",
+  "status": "passed",
+  "external_attempts": [
+    {
+      "attempt": 1,
+      "timeout_seconds": 30,
+      "result": "permagentd --version timed out; ran concurrently with bundle verification; child cleaned up"
+    },
+    {
+      "attempt": 2,
+      "timeout_seconds": 30,
+      "result": "permagentd --version timed out after verification; child cleaned up",
+      "sample": "112 KiB footprint; sampled thread at _dyld_start; no application stack or binary images available. Root cause not established."
+    }
+  ],
+  "isolated_state": true,
+  "dyld_variables_removed": true,
+  "staged_app": "/Applications/.Permagent-install-20261018-200312.app",
+  "results": {
+    "permagentd": {
+      "exit_code": 0,
+      "stdout": "permagent-daemon 1.31.0",
+      "seconds": 5.65
+    },
+    "permagent": {
+      "exit_code": 0,
+      "stdout": "1.31.0",
+      "seconds": 0.04
+    }
+  },
+  "verified_at": "2026-10-18T20:04:15-0300"
+}

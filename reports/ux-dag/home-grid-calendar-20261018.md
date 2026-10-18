@@ -28,4 +28,22 @@ Calendar's compact date and three equal-width launch controls fit on one row at 
 
 Regression coverage includes saved-grid mode parity, focus/overview transitions without persistence, all three Calendar launchers, keyboard handoff, no backend writes on view selection, one empty summary, access disclosure, scroll containment, and unique tab/panel relationships. Existing range/navigation/event/access tests remain in the focused gate.
 
-No Calendar event writes or permission changes were used as test inputs. Native verification and installation remain pending. Review-only browser tabs and server were closed.
+No Calendar event writes or permission changes were used as test inputs. Review-only browser tabs and server were closed. Native verification passed as recorded below.
+
+
+## Packaged release
+
+App/UI source: `3c1c9c4e93cf3b0a011ad27d25133c070fadfaf1`; unchanged verified backend: `227484e71d44e04e80187f8956f371ca1f6d0de4`. The guarded Tauri build, artifact directory creation and artifact copy all exited 0 (`20261018-194658-80693`, `20261018-195725-94594`, `20261018-195726-94621`). Normal bundle verification passed deep/strict signatures, selected Developer ID, source/code provenance, resources and 332 UI file hashes. Main executable SHA-256: `14963b4ce8636996b712aa421af9d8763c099790536fbcc26e8d60151f85b580`. Exact artifact and receipts are in [desktop-rebuild-manifest.json](desktop-rebuild-manifest.json).
+
+Two external-volume `permagentd --version` probes timed out at 30 seconds (one during bundle verification, one afterward). A sample of the second process showed 112 KiB footprint and `_dyld_start`, without application frames. Root cause is unproven; the source was not changed to address it. The verified local staged copy then passed both isolated bundled version probes: daemon in 5.65 seconds, CLI in 0.04 seconds, each version 1.31.0. [Version smoke receipt](home-grid-calendar-version-smoke.json) preserves the initial failures and final success. No security protections were changed.
+
+The installation staging copy passed the existing disk/lock/watchdog guard and exact signature/resource/hash validation. [Installation receipt](home-grid-calendar-install-receipt.json) records the preserved baseline, new source and rollback location.
+
+
+## Installed native verification
+
+Installed at `/Applications/Permagent.app` on October 18 at 20:04, with deep/strict signatures and exact executable/resource hashes verified. The existing LaunchAgent configuration is unchanged; the installed daemon returned HTTP 200 and expected backend version 227484e71. Previous app retained at `/Applications/.Permagent-rollback-20261018-200312.app`, with its executable hashes matched to the preinstall baseline.
+
+Native Home loaded with the hub connected. Visual comparison across Customize and Done retained equal Calendar/To-dos card heights and the saved grid geometry. The compact date appeared at left with Day/Week/Month at right. Each launcher opened the matching selected full calendar pane; Month rendered existing calendar events. The full header retained the left period title, right view selector, and separate period navigation. Collapse returned to Home. The app remains open on Home. No live calendar edits, permission changes, outbound messages or model requests were exercised.
+
+D29–D31 are complete within these acceptance criteria. The unchanged backend was reused rather than rebuilt/retested; backend-wide evidence remains in the previous functional audit. The two external-volume startup timeouts remain documented, although staged startup and installed runtime checks passed.

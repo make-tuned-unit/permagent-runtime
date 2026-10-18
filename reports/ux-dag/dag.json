@@ -530,7 +530,8 @@
       ],
       "evidence": [
         "home-grid-calendar-20261018.md"
-      ]
+      ],
+      "implementation": "Same saved geometry in overview and Customize; focused presentation retained. Mode regression tests and wide/narrow rendered rectangle comparisons passed; installed native toggle reviewed."
     },
     {
       "id": "D30",
@@ -546,7 +547,8 @@
       ],
       "evidence": [
         "home-grid-calendar-20261018.md"
-      ]
+      ],
+      "implementation": "Primary Apple guidance informed date/view hierarchy; focused Calendar 55 tests, full UI 4,663 tests, typecheck, synthetic wide/narrow empty/populated review and native Day/Week/Month launch paths passed."
     },
     {
       "id": "D31",
@@ -555,14 +557,18 @@
         "D30"
       ],
       "title": "Home and Calendar dogfood release",
-      "status": "in_progress",
+      "status": "verified",
       "acceptance": [
         "Integrated UI regressions and TypeScript pass",
         "Signed rebuilt app installed and native Customize/Done and Calendar verified"
       ],
       "evidence": [
-        "home-grid-calendar-20261018.md"
-      ]
+        "home-grid-calendar-20261018.md",
+        "home-grid-calendar-install-receipt.json",
+        "home-grid-calendar-version-smoke.json",
+        "desktop-rebuild-manifest.json"
+      ],
+      "implementation": "Signed 3c1c UI build with unchanged verified 227 backend installed. Guard receipts/signatures/resources/hashes passed; local staged version smoke and installed native Home/Calendar checks passed; previous app retained. Two external startup probe timeouts documented."
     }
   ]
 }

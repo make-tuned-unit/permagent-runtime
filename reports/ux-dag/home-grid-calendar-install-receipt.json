@@ -1,0 +1,33 @@
+{
+  "source_app": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/artifacts/Permagent-3c1c9c4e9-20261018-195726.app",
+  "source_head": "3c1c9c4e93cf3b0a011ad27d25133c070fadfaf1",
+  "backend_source_head": "227484e71d44e04e80187f8956f371ca1f6d0de4",
+  "destination": "/Applications/Permagent.app",
+  "staged_app": "/Applications/.Permagent-install-20261018-200312.app",
+  "rollback_app": "/Applications/.Permagent-rollback-20261018-200312.app",
+  "original_daemon_pid": 58711,
+  "baseline_api_git_sha": "227484e71",
+  "baseline_hashes": {
+    "permagent-app": "f9eca729783b6aba4967d9a4aea3ce7020eafb67d5aa397d503921524edd5c4d",
+    "permagentd": "f38eff7e6ec24076eb749b84b3f7d75476b4c91795d2c0c2747100af048964ca",
+    "permagent": "3820c9af3bfcbff61e3f8a973f2f0574a5b8215d74735c64d3e70e92eba57b76"
+  },
+  "launchagent_sha256": "5444ce9470dce2e17153ed8eb9c06b45a860839dd66d8f95dc0425f9a1dff8bf",
+  "status": "installed_ui_verified",
+  "started_at": "2026-10-18T20:03:13-0300",
+  "staging_guard_log": "/Volumes/PermagentBuilds/permagent/logs/20261018-200313-96462.log",
+  "installed_at": "2026-10-18T20:04:50-0300",
+  "installed_daemon_pid": 97083,
+  "http_status": 200,
+  "api_git_sha": "227484e71",
+  "installed_main_sha256": "14963b4ce8636996b712aa421af9d8763c099790536fbcc26e8d60151f85b580",
+  "installed_signature": "codesign --deep --strict passed",
+  "rollback_binary_hashes": "match preinstall baseline",
+  "native_verified_at": "2026-10-18T20:06:58-0300",
+  "native_verification": {
+    "home": "Loaded with hub connected; matching card dimensions visually retained through Customize and Done",
+    "calendar": "Left date and right Day/Week/Month controls rendered; each launcher selected the matching full view; Month showed existing calendar events; collapse returned to Home",
+    "final_surface": "Home overview; app open",
+    "writes": "No calendar event or permission changes; display-mode navigation only"
+  }
+}
