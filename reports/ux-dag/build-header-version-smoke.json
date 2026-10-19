@@ -1,0 +1,19 @@
+{
+  "source_head": "ed03f5d97fb968c9f04a3c23086cf84d609867b5",
+  "staged_app": "/Applications/.Permagent-install-20261019-073447.app",
+  "isolated_state": true,
+  "dyld_variables_removed": true,
+  "status": "passed",
+  "results": {
+    "permagentd": {
+      "exit_code": 0,
+      "stdout": "permagent-daemon 1.31.0",
+      "seconds": 2.91
+    },
+    "permagent": {
+      "exit_code": 0,
+      "stdout": "1.31.0",
+      "seconds": 0.04
+    }
+  }
+}

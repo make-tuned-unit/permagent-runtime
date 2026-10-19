@@ -1,0 +1,33 @@
+{
+  "source_app": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/artifacts/Permagent-ed03f5d97-20261018-202318.app",
+  "source_head": "ed03f5d97fb968c9f04a3c23086cf84d609867b5",
+  "backend_source_head": "227484e71d44e04e80187f8956f371ca1f6d0de4",
+  "destination": "/Applications/Permagent.app",
+  "staged_app": "/Applications/.Permagent-install-20261019-073447.app",
+  "rollback_app": "/Applications/.Permagent-rollback-20261019-073447.app",
+  "original_daemon_pid": 97083,
+  "baseline_api_git_sha": "227484e71",
+  "baseline_hashes": {
+    "permagent-app": "14963b4ce8636996b712aa421af9d8763c099790536fbcc26e8d60151f85b580",
+    "permagentd": "767c901456b5d8efc2f80ac9b159c504769ac2c7e29f603a2f052249a25bcb25",
+    "permagent": "b1bf837530f3d31de054911b6b0d6b7746e63c3830300dbd8baf7ca02cdec219"
+  },
+  "launchagent_sha256": "5444ce9470dce2e17153ed8eb9c06b45a860839dd66d8f95dc0425f9a1dff8bf",
+  "status": "installed_ui_verified",
+  "started_at": "2026-10-19T07:34:48-0300",
+  "staging_guard_log": "/Volumes/PermagentBuilds/permagent/logs/20261019-073448-2900.log",
+  "installed_at": "2026-10-19T07:35:31-0300",
+  "installed_daemon_pid": 3268,
+  "http_status": 200,
+  "api_git_sha": "227484e71",
+  "installed_main_sha256": "b1ff6b70d2400ae00bd7f646a01bdd8383915330ac2a7ba4e6340b26d63fed12",
+  "installed_signature": "codesign --deep --strict passed",
+  "rollback_binary_hashes": "match preinstall baseline",
+  "native_verified_at": "2026-10-19T07:37:03-0300",
+  "native_verification": {
+    "header": "Build title only; Projects picker immediately beside it and vertically aligned in installed native screenshot",
+    "picker": "Projects list opens and closes using Projects trigger; no project launched",
+    "connection": "Home loaded with hub connected; installed health HTTP200",
+    "final_surface": "Build, dropdown closed"
+  }
+}

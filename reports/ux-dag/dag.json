@@ -576,15 +576,19 @@
         "D31"
       ],
       "title": "Build header subtitle removal",
-      "status": "in_progress",
+      "status": "verified",
       "acceptance": [
         "Build title and Projects picker align without subtitle",
         "Build/header regression and TypeScript checks pass",
         "Rebuilt signed app installed and native header verified"
       ],
       "evidence": [
-        "build-header-20261018.md"
-      ]
+        "build-header-20261018.md",
+        "build-header-install-receipt.json",
+        "build-header-version-smoke.json",
+        "desktop-rebuild-manifest.json"
+      ],
+      "implementation": "Build subtitle removed; 53 focused Build/header tests and TypeScript passed. Signed ed03f5d97 app installed with verified unchanged backend227. Native title/picker alignment and trigger open/close verified; rollback retained."
     }
   ]
 }

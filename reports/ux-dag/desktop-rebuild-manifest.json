@@ -89,18 +89,18 @@
       "recorded_at": "2026-10-18T10:36:18-0300"
     },
     "app": {
-      "source_head": "3c1c9c4e93cf3b0a011ad27d25133c070fadfaf1",
+      "source_head": "ed03f5d97fb968c9f04a3c23086cf84d609867b5",
       "source_trees": {
-        "ui/command-center": "cd69808a6cd6f3fa3e98c06a1821cdf42c19cfa0",
+        "ui/command-center": "3da16005741fb3042738cff878cb81894ff6eeb4",
         "ui/desktop": "f3a7cb186e34fcac5069b21f664428d2583d3018",
         "ui/analytics-client": "7f0413a0786d8ba11b9a55aa6c98ebdf9d1cc055"
       },
       "app": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/release/bundle/macos/Permagent.app",
-      "packaged_app": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/artifacts/Permagent-3c1c9c4e9-20261018-195726.app",
+      "packaged_app": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/artifacts/Permagent-ed03f5d97-20261018-202318.app",
       "ui_dist": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist",
       "ui_hashes": {
-        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/index.html": "ba207c94b5f8c33df12476aab8052ed68e448c2243ef77a6e7538b53c1cb0361",
-        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/.vite/manifest.json": "96b729f1e3dc85c8a6298aa909988022db3a81dfbf2a50b8a89888899adbc536",
+        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/index.html": "49a789814fbde0b051eaa95f9d0cb63ac71580ac3e40f8fd8b4ba501e8fcb532",
+        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/.vite/manifest.json": "d369133d23cf394bbbf46907c55279ecf08e49af1313e078145a07cd38300fcf",
         "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/abap-BdImnpbu.js": "d0a7972c37e141f01cc3aaf9aabbbb3e87c4778b9fdd3ccb575d1e1ff279c0fc",
         "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/actionscript-3-CoDkCxhg.js": "cc3e3792f3b16d9244f17680e20712184eac64175649df8add097ca3be123c84",
         "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/ada-bCR0ucgS.js": "fc5d05054dc584a01ec795083de1774ef07f3a29fc6cfbc1902c208a09862313",
@@ -400,44 +400,44 @@
         "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/vitesse-black-Bkuqu6BP.js": "f25530f6e39e64d7dcc0464821c2fff73bf5aab1e311d61645cd740e886a2160",
         "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/vitesse-dark-D0r3Knsf.js": "f3a4064c8e89ebd2349cf3dbf3e211d73b05d11cbd9bbc00feefa1820d74990b",
         "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/vitesse-light-CVO1_9PV.js": "272401bf8f7fa77313d7d3dbdc609a59bde479c8d69763047b5aa508e16ead9d",
-        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/app-ByPciSY9.js": "312797e6aea8461e39fffd0c5b98379d538bd6ae1a6fb49e8ac8488e481b22e3",
-        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/path-CwzksS9s.js": "72db837ee299cf0226101287c59957a613936796a47e9f0aeb75f24c63baec5c",
-        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/webviewWindow-DKJiQ1v0.js": "624075f0d33ffe029f0a46660a4b60a7c415814de5bcf04df0fa5e61f154e62f",
-        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/index-tCJ0CpYT.js": "486744938883bf0b01fd030f2e961d7430aa973e09dc7934b03d475eb50d0164",
-        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/index-BAoA6o_f.js": "a394235da30fc0acf2a4cc93b3d5dc6cdb1b8c0adb31c19ddccfe61539e60fff",
+        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/app-COlXjrPl.js": "4c07e2567e426924367de72fda04c4e9cb4c0ec3fe4a498c5909a1a32b2f83ac",
+        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/path-C2PMZJzr.js": "2a4a017b6b1871c4f423cbd24bcbfc53cd39bdb110ac0f1db65c7a190e88db7c",
+        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/webviewWindow-DcjUuSYq.js": "a4e03a5771cbc61bf802b130184198fdaefae0605c48ff8f78f88aa63a26bb9c",
+        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/index-DPKC5EfS.js": "27dfcb6f6ee2617acff7c1b6915743aae0c79c15bafecdb2538081488ebb75df",
+        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/index-E7dtA2kK.js": "2e84a3d196f429affc7659d08cba0196b30bbe089e5bd54b25533ded5f8dd7f3",
         "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/wasm-CG6Dc4jp.js": "8deb47b0d7b203f733275b554ccf654df3b76026bd14cab89130ae2a61abd719",
-        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/ccip-B5yD-mY2.js": "01dbd1ef49b8ccf5fb6dce4ca108627037b292a8e5a0a61c49cada43834d815f",
+        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/ccip-DdojE6uW.js": "005fcdfaa643dd507d19a72819bef5afcb2a9b60596f53dbe15a43d6c864a23a",
         "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/App-BzbI76ub.css": "b889785401854f867fb7a4663bddea6fa2b189ba1b1e5e8cf7ba09a8a03d824f",
-        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/App-DTfUNBqj.js": "ef25ac9872f9b73d00e72c3da74214d4459ae5828d46473dba48e54ee8cd184a",
+        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/App-C6E5ta9h.js": "1f718384d409dfd387cdbcb181c429365faf7b1fe031127ce6062789dbe21575",
         "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/ForumAppView-DoS-mbVQ.css": "2a5e3d2ba4616b653b52ce2428807655973b584f61226d478a62966628d0fedb",
-        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/ForumAppView-DlS5n_mV.js": "582121b51422cb020f174385849ac5cc6548ddfb6163d24aa218009da3b43ae3",
+        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/ForumAppView-DYfl56Ig.js": "cea56f86a3cbe0cd0b4eeb19566667da4f0d5e2845fe6fded4bae72e485cbea9",
         "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/ForumBuildScope-BNLyrY1G.js": "8a3248a16c309042460c73b00919ea69a1c8ec8fd5c48fa6b540c6b865254848",
-        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/GLTFLoader-DLepuN_i.js": "70c62e49b97761157ab00300d947fe44370bbdc5303860a55d177bbfd05a9d2c",
-        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/IdentityUnlinked-BlNwmbEC.js": "19794b09947580a4e4fe04e476b7a849032fee57f036699fdbc88e490c8e113f",
+        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/GLTFLoader-D7Wu3Rcq.js": "3c70232d4dd74a0d02d88cd45a6f9bee1814d9cb062c6437d7f59ca0254a74d2",
+        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/IdentityUnlinked-BoKudbKt.js": "f51f4beea7b8fa95de214dad5635844365af235155bf02c3ed948368078a604b",
         "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/TerminalManager-9CEnUXvW.css": "abfd7394dae50cb589c8708b4d34af72ad3aac651822b72225e8bd1f74913009",
-        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/TerminalManager-Cdy4HWg3.js": "739f534a49aa8446567451dbfb5531b59b383991e136f26b0d83ac8ee0d9afcc",
+        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/TerminalManager-B_SBbUQ-.js": "8d97fb710e37e4e4dc84f257a9f06bf540cb191fee3ec2c0927d512f5bea24be",
         "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/angular-html-DA-rfuFy.js": "20c25efd0ad9b3afd86114f4ec9bf568ef3fd651ae9db9701bcf6f5e4e1c514f",
         "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/chatSetupState-B9Z7D9kT.css": "a8cd11b3dec086dac4662f3eb2d3369ab8b8ed392739677a4deb204d86e4f5dd",
-        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/chatSetupState-0gGx37QI.js": "d4a79f24ab42451a00b521e9cc2d6c3efa93470a179be678f3f59caf2b5917c6",
-        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/heroRobot-UIWrp1Wy.js": "9cb5afb76157c5bdc58c22d12cbd099f52d5f3d2b60813c0525ba70b93a6b266",
-        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/window-hwjnWEGZ.js": "a07747668f1e17dd1e6b207866c9db1fc199fcf98dc951a1fc9879ec6023b1bc",
-        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/index-DTQqZIw9.js": "a55de8a99d6f59741024d10c06c6b20bb902116f5d4984981bf03b2cde2f32f1",
+        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/chatSetupState-DmPRKrOr.js": "0abd2bd31abc57e3d85a24a7f9b5cfbf03c9f4c6f7b9e2a551da6a042157e5f7",
+        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/heroRobot-CgDXdknd.js": "d90e2095e9d7af18b8e06410587671fa5fcd57a0d04a8012214fc6b233fe5db0",
+        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/window-BmBf_NwH.js": "67dff59283607afe4fd633e9b73e0405b725826ede7de370e2215cb84cce9afa",
+        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/index-Bs8-zYwL.js": "aed9601238a5524195ad7afda9eff1e446d391ed453f18bc4fdd2f58d0894d1c",
         "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/index-BZPMjGQB.css": "d7ff6231c9d5f5ba7ee948072b5ab8e86cd8792ce722c1fab0c03333f9dc390e",
-        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/ChatApp-CnRYVfn8.js": "32793ecedccad67188ea3844893b42792a1b3d2f0eed4eb3aaf2b13267d4b36f",
-        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/PaneWindowApp-CNd0CFQp.js": "19fd6847d5ceae226d3b71cce3901cb566a7d56473f7a04df3893fa0b846fd2e",
-        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/thumbnailCache-D6D59613.js": "8c9d85dc1e610d9d42771e66b0a07a238acd8566a267247c55943457515e6dfd",
-        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/WorldView-BUNZ5fI6.js": "01d2fe94896a6c8d8481cac333da8211bd17365d38dc942b66acddb6371b7a41",
-        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/HabitatArchitecture-CqYQGAUJ.js": "72accea069447093c8f0fae6d1708a58f06f3dab45ee5f6deb93b68b3f472a51",
-        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/HabitatPlanting-CGlVYNsA.js": "fe703206cac51f7a9ca19c05b057855ab772a76aefe3c8654b0c8589d86ddc85",
+        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/ChatApp-D3dVSgKO.js": "9d6a91f59533e0fc4be30ad53e5191fee1f02ed34016ba1868ccb81131d89d1a",
+        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/PaneWindowApp-ibFP96NN.js": "47c9b2fe502d6f18e4640e57c41cbdb5f6f2c53b04b47c679c63b99ebadaf1e5",
+        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/thumbnailCache-AzGuw3-g.js": "06b82e88601f07e0613c3b5fce1f01332518811792e3d2ec6fd6440f324c53da",
+        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/WorldView-DkcmJnri.js": "4265b775ad66ee71a680c4c550fba0282f088ee680f03637f18e9f99475217bd",
+        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/HabitatArchitecture-CjzBbiD4.js": "e146b0677e03a84c986e42e0d33895d5a379693fd0e93db5e836a800507b80d3",
+        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/HabitatPlanting-92XkaAtz.js": "af7ea1d8c0119228b5333ea462f7c7c28f64a41e955932c74241d22da7922219",
         "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/worldRoute-C8jOUwCw.js": "1bcc7bbf0cb65cf255c907d4cbf5709c739b69bed87d0120a8021a19281b3792",
-        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/paneWindows-B43NTK1c.js": "1832de84a6a3886deecefcf51068719fa4161024cc00194e554c837805339e3a"
+        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/paneWindows-C8L_xAZi.js": "daf0d9173fdbc82860eaddd4e0e66e8608f1635b88511321ad8fa0aeb7975201"
       },
       "ui_markers": {
         "permagent.world.legacy": true,
         "world/vista/": true,
         "w/ Subscription": true,
         "cursor-agent": true,
-        "3c1c9c4e9": true
+        "ed03f5d97": true
       },
       "resource_machos": [
         {
@@ -463,72 +463,72 @@
         }
       },
       "signing_identity": "Developer ID Application: Jesse Sharratt (Z58XSBM78S)",
-      "recorded_at": "2026-10-18T19:59:14-0300"
+      "recorded_at": "2026-10-18T20:25:29-0300"
     },
     "verify": {
-      "app": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/artifacts/Permagent-3c1c9c4e9-20261018-195726.app",
-      "app_sha256": "14963b4ce8636996b712aa421af9d8763c099790536fbcc26e8d60151f85b580",
+      "app": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/artifacts/Permagent-ed03f5d97-20261018-202318.app",
+      "app_sha256": "b1ff6b70d2400ae00bd7f646a01bdd8383915330ac2a7ba4e6340b26d63fed12",
       "bundle_identifier": "ai.permagent.desktop",
       "signature": "codesign --deep --strict passed",
       "binaries": {
         "permagentd": {
-          "path": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/artifacts/Permagent-3c1c9c4e9-20261018-195726.app/Contents/MacOS/permagentd",
-          "sha256": "767c901456b5d8efc2f80ac9b159c504769ac2c7e29f603a2f052249a25bcb25",
+          "path": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/artifacts/Permagent-ed03f5d97-20261018-202318.app/Contents/MacOS/permagentd",
+          "sha256": "3a2ab7ab9ef02f29d19143ce0cc0146b546b39c031675788cc75d254b7542774",
           "text_sha256": "a1283aa213f3bfa0b386bd25bfb86df14319067c26c34de715dc2d66a20ebe2d",
           "cargo_sha256": "5c65c0c42d3cfc9c84a7dfc48189fd532e03c7bbb140c210032eacc2f81a89c1"
         },
         "permagent": {
-          "path": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/artifacts/Permagent-3c1c9c4e9-20261018-195726.app/Contents/MacOS/permagent",
-          "sha256": "b1bf837530f3d31de054911b6b0d6b7746e63c3830300dbd8baf7ca02cdec219",
+          "path": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/artifacts/Permagent-ed03f5d97-20261018-202318.app/Contents/MacOS/permagent",
+          "sha256": "cf20fae64d33602dfb4dce7c33627d6c5778e7715846a0a2aae5897001c5651d",
           "text_sha256": "5e752b09a76e02f8dacdfcc6a395556cf04c5dca5af16acdb47c14c4cd629097",
           "cargo_sha256": "802ea80b8db5862f6ced145009cf7f60e227c6f7e5fe4de7b0504df8166dadb7"
         }
       },
       "resources": {
         "daemon": {
-          "path": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/artifacts/Permagent-3c1c9c4e9-20261018-195726.app/Contents/MacOS/permagentd",
-          "sha256": "767c901456b5d8efc2f80ac9b159c504769ac2c7e29f603a2f052249a25bcb25"
+          "path": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/artifacts/Permagent-ed03f5d97-20261018-202318.app/Contents/MacOS/permagentd",
+          "sha256": "3a2ab7ab9ef02f29d19143ce0cc0146b546b39c031675788cc75d254b7542774"
         },
         "cli": {
-          "path": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/artifacts/Permagent-3c1c9c4e9-20261018-195726.app/Contents/MacOS/permagent",
-          "sha256": "b1bf837530f3d31de054911b6b0d6b7746e63c3830300dbd8baf7ca02cdec219"
+          "path": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/artifacts/Permagent-ed03f5d97-20261018-202318.app/Contents/MacOS/permagent",
+          "sha256": "cf20fae64d33602dfb4dce7c33627d6c5778e7715846a0a2aae5897001c5651d"
         },
         "sherpa": {
-          "path": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/artifacts/Permagent-3c1c9c4e9-20261018-195726.app/Contents/Frameworks/libsherpa-onnx-c-api.dylib",
-          "sha256": "8d9831380c1352e868440ab23e4a545c6f2648ddffa2053db32dfa437441b1e0"
+          "path": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/artifacts/Permagent-ed03f5d97-20261018-202318.app/Contents/Frameworks/libsherpa-onnx-c-api.dylib",
+          "sha256": "5dbcbdbb58d9c75d3c8f209504e003a89dabc192f7e5d8dc64375da543d3b46f"
         },
         "onnxruntime": {
-          "path": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/artifacts/Permagent-3c1c9c4e9-20261018-195726.app/Contents/Frameworks/libonnxruntime.dylib",
-          "sha256": "2fada63d14c6484a2597d2af89beca6e1035b37838da24a1e8795c59fcfb2539"
+          "path": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/artifacts/Permagent-ed03f5d97-20261018-202318.app/Contents/Frameworks/libonnxruntime.dylib",
+          "sha256": "fb6ada84fa501b4c225d177a26f47c848569f7b9c1035b82e5342371bb7ac148"
         },
         "audiocap": {
-          "path": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/artifacts/Permagent-3c1c9c4e9-20261018-195726.app/Contents/Resources/permagent-audiocap",
-          "sha256": "34c88da0ab2bdee4e730e896b28e98d7c09c1686c1460a4a3b3f6da68a288a99"
+          "path": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/artifacts/Permagent-ed03f5d97-20261018-202318.app/Contents/Resources/permagent-audiocap",
+          "sha256": "e78314b6c982c35e651526aff7829e225fced62c02feacca9caf8dfb3ea3b116"
         },
         "node": {
-          "path": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/artifacts/Permagent-3c1c9c4e9-20261018-195726.app/Contents/Resources/mcp-runtime/node",
-          "sha256": "188941e1f66072a2953ade37d636a640ee515216175597aa5f4385c93a2abf43"
+          "path": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/artifacts/Permagent-ed03f5d97-20261018-202318.app/Contents/Resources/mcp-runtime/node",
+          "sha256": "84833ef3583f6f89930fc57ec3cf75ec46c1e3b64e0e78c8962e852ffd0fd3bb"
         },
         "brave_manifest": {
-          "path": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/artifacts/Permagent-3c1c9c4e9-20261018-195726.app/Contents/Resources/mcp-runtime/node_modules/@brave/brave-search-mcp-server/package.json",
+          "path": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/artifacts/Permagent-ed03f5d97-20261018-202318.app/Contents/Resources/mcp-runtime/node_modules/@brave/brave-search-mcp-server/package.json",
           "sha256": "d28d14f41d45a99a7e6c676a1d4719dddfae39d39686625b7cbf8676cac44d24"
         },
         "tavily_manifest": {
-          "path": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/artifacts/Permagent-3c1c9c4e9-20261018-195726.app/Contents/Resources/mcp-runtime/node_modules/tavily-mcp/package.json",
+          "path": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/artifacts/Permagent-ed03f5d97-20261018-202318.app/Contents/Resources/mcp-runtime/node_modules/tavily-mcp/package.json",
           "sha256": "1897f07f844a997b4e1ee624cecb9bf7ca8eb21cc0129369738021c59522a7a4"
         },
         "whisper": {
-          "path": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/artifacts/Permagent-3c1c9c4e9-20261018-195726.app/Contents/Resources/whisper/whisper-base-q8_0.gguf",
+          "path": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/artifacts/Permagent-ed03f5d97-20261018-202318.app/Contents/Resources/whisper/whisper-base-q8_0.gguf",
           "sha256": "7073e51db7ab02b38cc4fceeac39adc2d7a19beb98badf66aa708f4f0ac71aa9"
         },
         "Contents/Resources/mcp-runtime/node": {
-          "path": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/artifacts/Permagent-3c1c9c4e9-20261018-195726.app/Contents/Resources/mcp-runtime/node",
-          "sha256": "188941e1f66072a2953ade37d636a640ee515216175597aa5f4385c93a2abf43",
+          "path": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/artifacts/Permagent-ed03f5d97-20261018-202318.app/Contents/Resources/mcp-runtime/node",
+          "sha256": "84833ef3583f6f89930fc57ec3cf75ec46c1e3b64e0e78c8962e852ffd0fd3bb",
           "text_sha256": "455e9b3f2f01fa29fb9c22d5e74c2d8109714ded6288fd02b046db235fa33b25"
         },
         "Contents/Resources/permagent-audiocap": {
-          "path": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/artifacts/Permagent-3c1c9c4e9-20261018-195726.app/Contents/Resources/permagent-audiocap",
-          "sha256": "34c88da0ab2bdee4e730e896b28e98d7c09c1686c1460a4a3b3f6da68a288a99",
+          "path": "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/artifacts/Permagent-ed03f5d97-20261018-202318.app/Contents/Resources/permagent-audiocap",
+          "sha256": "e78314b6c982c35e651526aff7829e225fced62c02feacca9caf8dfb3ea3b116",
           "text_sha256": "529ef6d5e33bcd354df2024e088787e8b2f9c314283ca1f34c72485742630753"
         }
       },
@@ -544,16 +544,16 @@
         "rust_worktree_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
       },
       "app_source": {
-        "head": "3c1c9c4e93cf3b0a011ad27d25133c070fadfaf1",
+        "head": "ed03f5d97fb968c9f04a3c23086cf84d609867b5",
         "trees": {
-          "ui/command-center": "cd69808a6cd6f3fa3e98c06a1821cdf42c19cfa0",
+          "ui/command-center": "3da16005741fb3042738cff878cb81894ff6eeb4",
           "ui/desktop": "f3a7cb186e34fcac5069b21f664428d2583d3018",
           "ui/analytics-client": "7f0413a0786d8ba11b9a55aa6c98ebdf9d1cc055"
         }
       },
       "ui_hashes": {
-        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/index.html": "ba207c94b5f8c33df12476aab8052ed68e448c2243ef77a6e7538b53c1cb0361",
-        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/.vite/manifest.json": "96b729f1e3dc85c8a6298aa909988022db3a81dfbf2a50b8a89888899adbc536",
+        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/index.html": "49a789814fbde0b051eaa95f9d0cb63ac71580ac3e40f8fd8b4ba501e8fcb532",
+        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/.vite/manifest.json": "d369133d23cf394bbbf46907c55279ecf08e49af1313e078145a07cd38300fcf",
         "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/abap-BdImnpbu.js": "d0a7972c37e141f01cc3aaf9aabbbb3e87c4778b9fdd3ccb575d1e1ff279c0fc",
         "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/actionscript-3-CoDkCxhg.js": "cc3e3792f3b16d9244f17680e20712184eac64175649df8add097ca3be123c84",
         "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/ada-bCR0ucgS.js": "fc5d05054dc584a01ec795083de1774ef07f3a29fc6cfbc1902c208a09862313",
@@ -853,39 +853,39 @@
         "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/vitesse-black-Bkuqu6BP.js": "f25530f6e39e64d7dcc0464821c2fff73bf5aab1e311d61645cd740e886a2160",
         "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/vitesse-dark-D0r3Knsf.js": "f3a4064c8e89ebd2349cf3dbf3e211d73b05d11cbd9bbc00feefa1820d74990b",
         "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/vitesse-light-CVO1_9PV.js": "272401bf8f7fa77313d7d3dbdc609a59bde479c8d69763047b5aa508e16ead9d",
-        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/app-ByPciSY9.js": "312797e6aea8461e39fffd0c5b98379d538bd6ae1a6fb49e8ac8488e481b22e3",
-        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/path-CwzksS9s.js": "72db837ee299cf0226101287c59957a613936796a47e9f0aeb75f24c63baec5c",
-        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/webviewWindow-DKJiQ1v0.js": "624075f0d33ffe029f0a46660a4b60a7c415814de5bcf04df0fa5e61f154e62f",
-        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/index-tCJ0CpYT.js": "486744938883bf0b01fd030f2e961d7430aa973e09dc7934b03d475eb50d0164",
-        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/index-BAoA6o_f.js": "a394235da30fc0acf2a4cc93b3d5dc6cdb1b8c0adb31c19ddccfe61539e60fff",
+        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/app-COlXjrPl.js": "4c07e2567e426924367de72fda04c4e9cb4c0ec3fe4a498c5909a1a32b2f83ac",
+        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/path-C2PMZJzr.js": "2a4a017b6b1871c4f423cbd24bcbfc53cd39bdb110ac0f1db65c7a190e88db7c",
+        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/webviewWindow-DcjUuSYq.js": "a4e03a5771cbc61bf802b130184198fdaefae0605c48ff8f78f88aa63a26bb9c",
+        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/index-DPKC5EfS.js": "27dfcb6f6ee2617acff7c1b6915743aae0c79c15bafecdb2538081488ebb75df",
+        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/index-E7dtA2kK.js": "2e84a3d196f429affc7659d08cba0196b30bbe089e5bd54b25533ded5f8dd7f3",
         "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/wasm-CG6Dc4jp.js": "8deb47b0d7b203f733275b554ccf654df3b76026bd14cab89130ae2a61abd719",
-        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/ccip-B5yD-mY2.js": "01dbd1ef49b8ccf5fb6dce4ca108627037b292a8e5a0a61c49cada43834d815f",
+        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/ccip-DdojE6uW.js": "005fcdfaa643dd507d19a72819bef5afcb2a9b60596f53dbe15a43d6c864a23a",
         "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/App-BzbI76ub.css": "b889785401854f867fb7a4663bddea6fa2b189ba1b1e5e8cf7ba09a8a03d824f",
-        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/App-DTfUNBqj.js": "ef25ac9872f9b73d00e72c3da74214d4459ae5828d46473dba48e54ee8cd184a",
+        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/App-C6E5ta9h.js": "1f718384d409dfd387cdbcb181c429365faf7b1fe031127ce6062789dbe21575",
         "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/ForumAppView-DoS-mbVQ.css": "2a5e3d2ba4616b653b52ce2428807655973b584f61226d478a62966628d0fedb",
-        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/ForumAppView-DlS5n_mV.js": "582121b51422cb020f174385849ac5cc6548ddfb6163d24aa218009da3b43ae3",
+        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/ForumAppView-DYfl56Ig.js": "cea56f86a3cbe0cd0b4eeb19566667da4f0d5e2845fe6fded4bae72e485cbea9",
         "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/ForumBuildScope-BNLyrY1G.js": "8a3248a16c309042460c73b00919ea69a1c8ec8fd5c48fa6b540c6b865254848",
-        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/GLTFLoader-DLepuN_i.js": "70c62e49b97761157ab00300d947fe44370bbdc5303860a55d177bbfd05a9d2c",
-        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/IdentityUnlinked-BlNwmbEC.js": "19794b09947580a4e4fe04e476b7a849032fee57f036699fdbc88e490c8e113f",
+        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/GLTFLoader-D7Wu3Rcq.js": "3c70232d4dd74a0d02d88cd45a6f9bee1814d9cb062c6437d7f59ca0254a74d2",
+        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/IdentityUnlinked-BoKudbKt.js": "f51f4beea7b8fa95de214dad5635844365af235155bf02c3ed948368078a604b",
         "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/TerminalManager-9CEnUXvW.css": "abfd7394dae50cb589c8708b4d34af72ad3aac651822b72225e8bd1f74913009",
-        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/TerminalManager-Cdy4HWg3.js": "739f534a49aa8446567451dbfb5531b59b383991e136f26b0d83ac8ee0d9afcc",
+        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/TerminalManager-B_SBbUQ-.js": "8d97fb710e37e4e4dc84f257a9f06bf540cb191fee3ec2c0927d512f5bea24be",
         "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/angular-html-DA-rfuFy.js": "20c25efd0ad9b3afd86114f4ec9bf568ef3fd651ae9db9701bcf6f5e4e1c514f",
         "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/chatSetupState-B9Z7D9kT.css": "a8cd11b3dec086dac4662f3eb2d3369ab8b8ed392739677a4deb204d86e4f5dd",
-        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/chatSetupState-0gGx37QI.js": "d4a79f24ab42451a00b521e9cc2d6c3efa93470a179be678f3f59caf2b5917c6",
-        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/heroRobot-UIWrp1Wy.js": "9cb5afb76157c5bdc58c22d12cbd099f52d5f3d2b60813c0525ba70b93a6b266",
-        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/window-hwjnWEGZ.js": "a07747668f1e17dd1e6b207866c9db1fc199fcf98dc951a1fc9879ec6023b1bc",
-        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/index-DTQqZIw9.js": "a55de8a99d6f59741024d10c06c6b20bb902116f5d4984981bf03b2cde2f32f1",
+        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/chatSetupState-DmPRKrOr.js": "0abd2bd31abc57e3d85a24a7f9b5cfbf03c9f4c6f7b9e2a551da6a042157e5f7",
+        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/heroRobot-CgDXdknd.js": "d90e2095e9d7af18b8e06410587671fa5fcd57a0d04a8012214fc6b233fe5db0",
+        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/window-BmBf_NwH.js": "67dff59283607afe4fd633e9b73e0405b725826ede7de370e2215cb84cce9afa",
+        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/index-Bs8-zYwL.js": "aed9601238a5524195ad7afda9eff1e446d391ed453f18bc4fdd2f58d0894d1c",
         "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/index-BZPMjGQB.css": "d7ff6231c9d5f5ba7ee948072b5ab8e86cd8792ce722c1fab0c03333f9dc390e",
-        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/ChatApp-CnRYVfn8.js": "32793ecedccad67188ea3844893b42792a1b3d2f0eed4eb3aaf2b13267d4b36f",
-        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/PaneWindowApp-CNd0CFQp.js": "19fd6847d5ceae226d3b71cce3901cb566a7d56473f7a04df3893fa0b846fd2e",
-        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/thumbnailCache-D6D59613.js": "8c9d85dc1e610d9d42771e66b0a07a238acd8566a267247c55943457515e6dfd",
-        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/WorldView-BUNZ5fI6.js": "01d2fe94896a6c8d8481cac333da8211bd17365d38dc942b66acddb6371b7a41",
-        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/HabitatArchitecture-CqYQGAUJ.js": "72accea069447093c8f0fae6d1708a58f06f3dab45ee5f6deb93b68b3f472a51",
-        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/HabitatPlanting-CGlVYNsA.js": "fe703206cac51f7a9ca19c05b057855ab772a76aefe3c8654b0c8589d86ddc85",
+        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/ChatApp-D3dVSgKO.js": "9d6a91f59533e0fc4be30ad53e5191fee1f02ed34016ba1868ccb81131d89d1a",
+        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/PaneWindowApp-ibFP96NN.js": "47c9b2fe502d6f18e4640e57c41cbdb5f6f2c53b04b47c679c63b99ebadaf1e5",
+        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/thumbnailCache-AzGuw3-g.js": "06b82e88601f07e0613c3b5fce1f01332518811792e3d2ec6fd6440f324c53da",
+        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/WorldView-DkcmJnri.js": "4265b775ad66ee71a680c4c550fba0282f088ee680f03637f18e9f99475217bd",
+        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/HabitatArchitecture-CjzBbiD4.js": "e146b0677e03a84c986e42e0d33895d5a379693fd0e93db5e836a800507b80d3",
+        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/HabitatPlanting-92XkaAtz.js": "af7ea1d8c0119228b5333ea462f7c7c28f64a41e955932c74241d22da7922219",
         "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/worldRoute-C8jOUwCw.js": "1bcc7bbf0cb65cf255c907d4cbf5709c739b69bed87d0120a8021a19281b3792",
-        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/paneWindows-B43NTK1c.js": "1832de84a6a3886deecefcf51068719fa4161024cc00194e554c837805339e3a"
+        "/Volumes/PermagentBuilds/permagent/targets/world-production-20261006/ux-ui-dist/assets/paneWindows-C8L_xAZi.js": "daf0d9173fdbc82860eaddd4e0e66e8608f1635b88511321ad8fa0aeb7975201"
       },
-      "recorded_at": "2026-10-18T20:01:02-0300"
+      "recorded_at": "2026-10-18T20:27:02-0300"
     }
   },
   "backend_source": {
